@@ -36,7 +36,7 @@ RETRY_CONFIG = {
     "base_delay": 1.0,         # 基础退避延迟（秒）
     "max_delay": 10.0,         # 最大退避延迟（秒）
     "timeout": 10,             # 单次请求超时（秒）
-    "circuit_threshold": 5,    # 熔断阈值：连续失败N次后触发
+    "circuit_threshold": 20,    # 熔断阈值：连续20只不同股票失败后触发
     "circuit_reset_minutes": 30,  # 熔断恢复时间（分钟）
 }
 

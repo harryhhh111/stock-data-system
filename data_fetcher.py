@@ -136,6 +136,7 @@ def with_retry(max_retries: int = None, timeout: int = None):
     """
     带指数退避重试和熔断的装饰器
     用于单个 API 调用的重试；跨数据源切换由 fetch_with_fallback 负责。
+    同一个函数的多次重试，只计1次熔断成功/失败（避免单只股票触发全局熔断）。
     """
     if max_retries is None:
         max_retries = config.RETRY_CONFIG["max_retries"]
@@ -198,9 +199,6 @@ def with_retry(max_retries: int = None, timeout: int = None):
 
         return wrapper
     return decorator
-
-
-# ============================================================
 # A股数据源函数
 # ============================================================
 
@@ -679,6 +677,9 @@ def fetch_with_fallback(data_type: str, stock_code: str = None, **kwargs) -> Opt
     """
     按 DATA_SOURCES 中注册的优先级，依次尝试每个数据源。
     成功则返回标准化 DataFrame，全部失败返回 None。
+    
+    熔断由本函数统一管理：一只股票所有源失败只计1次熔断失败，
+    任何源成功只计1次成功。避免单只股票多次重试触发全局熔断。
 
     Args:
         data_type: 数据类型 key（如 "a_income", "hk_indicator"）
@@ -699,6 +700,7 @@ def fetch_with_fallback(data_type: str, stock_code: str = None, **kwargs) -> Opt
             logger.debug(f"Trying {source_name} for {data_type}/{stock_code}")
             result = source_func(stock_code, **kwargs)
             if result is not None and not result.empty:
+                circuit_breaker.record_success()
                 logger.info(f"[{data_type}] {stock_code}: success via {source_name}")
                 return result
             else:
@@ -706,6 +708,8 @@ def fetch_with_fallback(data_type: str, stock_code: str = None, **kwargs) -> Opt
         except Exception as e:
             logger.warning(f"[{data_type}] {stock_code}: {source_name} failed: {e}")
 
+    # 所有数据源都失败了，只计1次熔断失败
+    circuit_breaker.record_failure()
     logger.warning(f"[{data_type}] {stock_code}: ALL sources exhausted")
     return None
 
@@ -1258,6 +1262,30 @@ def _get_latest_report_dates_bulk(session: Session) -> Dict[str, str]:
     }
 
 
+def _get_stocks_needing_reports(session: Session) -> Set[str]:
+    """
+    获取三张报表中缺少数据的股票代码集合
+    如果某只股票在 income/balance/cash_flow 表中没有任何记录，则需要补数据
+    """
+    from sqlalchemy import func as sql_func
+    
+    has_income = set(
+        r[0] for r in session.query(models.IncomeStatement.stock_code).distinct().all()
+    )
+    has_balance = set(
+        r[0] for r in session.query(models.BalanceSheet.stock_code).distinct().all()
+    )
+    has_cash_flow = set(
+        r[0] for r in session.query(models.CashFlowStatement.stock_code).distinct().all()
+    )
+    
+    # 三张表都有的股票不需要补
+    has_all = has_income & has_balance & has_cash_flow
+    logger.info(f"Report coverage: income={len(has_income)}, balance={len(has_balance)}, cash_flow={len(has_cash_flow)}, all_three={len(has_all)}")
+    
+    return has_all  # 返回已经齐全的集合，用于排除
+
+
 def _quarter_sort_key(quarter_str: str) -> int:
     """将 YYYY-QN 格式转换为可排序的整数，如 '2025-Q3' → 20253"""
     if not quarter_str:
@@ -1380,6 +1408,11 @@ def sync_financial_data(quarters: int = None):
 
     logger.info(f"Loaded {len(latest_dates)} existing latest dates for incremental check")
 
+    # 检查三张报表覆盖情况（用于增量判断：报表不全的股票需要补数据）
+    with get_db_session() as session:
+        stocks_with_all_reports = _get_stocks_needing_reports(session)
+    logger.info(f"Stocks with all 3 reports complete: {len(stocks_with_all_reports)}")
+
     # 预获取所有A股市值
     a_share_codes = [code for code, mkt in stock_list if mkt == "CN_A"]
     all_market_caps = {}
@@ -1432,19 +1465,27 @@ def sync_financial_data(quarters: int = None):
                 time.sleep(0.2)
                 continue
 
-            # 增量判断：如果返回的最新指标日期 <= 数据库已有的，跳过
+            # 增量判断：如果返回的最新指标日期 <= 数据库已有的
+            indicator_skipped = False
             if stock_code in latest_dates:
                 db_latest = latest_dates[stock_code]
                 api_latest = indicator_df["indicator_date"].max()
                 api_latest_str = api_latest.isoformat() if hasattr(api_latest, 'isoformat') else str(api_latest)
 
                 if _date_to_sort_key(api_latest_str) <= _date_to_sort_key(db_latest):
-                    skipped += 1
-                    continue
+                    indicator_skipped = True
+            else:
+                indicator_skipped = False
 
-            # 保存财务指标
-            with get_db_session() as session:
-                save_financial_indicator(session, stock_code, indicator_df)
+            # 保存财务指标（有新数据才写入）
+            if not indicator_skipped:
+                with get_db_session() as session:
+                    save_financial_indicator(session, stock_code, indicator_df)
+            
+            # 如果指标无新数据 且 报表数据已齐全，则整只股票跳过
+            if indicator_skipped and stock_code in stocks_with_all_reports:
+                skipped += 1
+                continue
 
             # FCF 计算（保留现有逻辑）
             mkt_cap = all_market_caps.get(stock_code)
