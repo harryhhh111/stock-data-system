@@ -46,7 +46,7 @@ def job_sync_financial_data():
     logger.info("=" * 40)
     logger.info("Job [sync_financial_data] started")
     try:
-        data_fetcher.sync_financial_data(days=config.SYNC_CONFIG["lookback_days"])
+        data_fetcher.sync_financial_data(quarters=config.SYNC_CONFIG["quarters"])
         logger.info("Job [sync_financial_data] completed")
     except Exception as e:
         logger.error(f"Job [sync_financial_data] failed: {e}")

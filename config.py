@@ -14,8 +14,8 @@ DB_PATH = DATA_DIR / "stock_data.db"
 
 # akshare 数据同步配置
 SYNC_CONFIG = {
-    # 同步时间范围（单位：天）
-    "lookback_days": 30,  # 先同步最近30天，稳定后扩展到90天
+    # 每只股票保留最近几个季度的数据
+    "quarters": 4,  # 最近4个季度（约1年）
     # A股市场
     "a_share": {
         "exchange": ["shanghai", "shenzhen"],  # 沪市、深市
