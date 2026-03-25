@@ -69,7 +69,6 @@ class EastmoneyTransformer(BaseTransformer):
                 "notice_date": _parse_date(row.get("NOTICE_DATE")),
                 "update_date": _parse_date(row.get("UPDATE_DATE")),
                 "currency": str(row.get("CURRENCY", "CNY")).strip(),
-                "market": market,
             }
             if record["report_date"] and record["report_type"]:
                 results.append(record)
@@ -102,7 +101,6 @@ class EastmoneyTransformer(BaseTransformer):
             record["notice_date"] = _parse_date(row.get("NOTICE_DATE"))
             record["update_date"] = _parse_date(row.get("UPDATE_DATE"))
             record["currency"] = str(row.get("CURRENCY", "CNY")).strip()
-            record["market"] = market
 
             # 字段映射
             for em_col, std_field in mapped_cols.items():
@@ -138,7 +136,6 @@ class EastmoneyTransformer(BaseTransformer):
                 "notice_date": _parse_date(row.get("NOTICE_DATE")),
                 "update_date": _parse_date(row.get("UPDATE_DATE")),
                 "currency": str(row.get("CURRENCY", "CNY")).strip(),
-                "market": market,
             }
 
             for em_col, std_field in mapped_cols.items():
@@ -168,7 +165,6 @@ class EastmoneyTransformer(BaseTransformer):
                 "notice_date": _parse_date(row.get("NOTICE_DATE")),
                 "update_date": _parse_date(row.get("UPDATE_DATE")),
                 "currency": str(row.get("CURRENCY", "CNY")).strip(),
-                "market": market,
             }
 
             for em_col, std_field in mapped_cols.items():

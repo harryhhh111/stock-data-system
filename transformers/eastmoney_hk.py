@@ -105,7 +105,6 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
-                "market": market,
                 "currency": "HKD",
             }
             results.append(record)
@@ -142,7 +141,6 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
-                "market": market,
                 "currency": "HKD",
             }
 
@@ -178,7 +176,6 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
-                "market": market,
                 "currency": "HKD",
             }
 
@@ -208,7 +205,6 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
-                "market": market,
                 "currency": "HKD",
             }
 
