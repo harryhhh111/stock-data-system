@@ -428,16 +428,225 @@ class SyncManager:
         self._shutdown = True
 
 
+# ── 美股同步 ───────────────────────────────────────────────
+
+def sync_us_market(args) -> dict:
+    """美股 SEC EDGAR 财务数据同步（串行执行）。
+
+    SEC 限流 10次/秒，多线程无收益，因此串行执行。
+    每家公司只发一次请求获取完整 Company Facts。
+
+    Args:
+        args: 命令行参数（需包含 us_index, us_tickers, force）
+
+    Returns:
+        统计结果字典
+    """
+    from fetchers.us_financial import USFinancialFetcher
+    from transformers.us_gaap import USGAAPTransformer
+
+    fetcher = USFinancialFetcher()
+    transformer = USGAAPTransformer()
+
+    # 1. 获取公司列表（CIK ↔ ticker 映射）
+    logger.info("Step 1/4: 获取 SEC 公司列表...")
+    try:
+        fetcher.fetch_company_list()
+    except Exception as exc:
+        logger.error("获取公司列表失败: %s", exc)
+        return {"total": 0, "success": 0, "failed": 0, "error": str(exc)}
+
+    # 2. 确定同步范围
+    logger.info("Step 2/4: 确定同步范围...")
+    if args.us_tickers:
+        # 指定 ticker 列表
+        tickers = [t.strip().upper() for t in args.us_tickers.split(",") if t.strip()]
+    elif args.us_index == "SP500":
+        tickers = fetcher.fetch_sp500_constituents()
+    elif args.us_index == "NASDAQ100":
+        # TODO: 后续扩展
+        logger.error("NASDAQ100 暂未实现")
+        return {"total": 0, "success": 0, "failed": 0, "error": "NASDAQ100 not implemented"}
+    elif args.us_index == "ALL":
+        # 所有 SEC 申报公司
+        company_df = fetcher.fetch_company_list()
+        tickers = company_df["ticker"].tolist()
+    else:
+        tickers = fetcher.fetch_sp500_constituents()
+
+    # 过滤掉没有 CIK 的 ticker
+    valid_tickers = []
+    for t in tickers:
+        try:
+            fetcher.ticker_to_cik(t)
+            valid_tickers.append(t)
+        except ValueError:
+            logger.warning("跳过无 CIK 的 ticker: %s", t)
+
+    total = len(valid_tickers)
+    logger.info("待同步: %d 只美股", total)
+
+    if total == 0:
+        logger.warning("没有找到需要同步的美股")
+        return {"total": 0, "success": 0, "failed": 0, "skipped": 0, "elapsed": 0}
+
+    # 断点续传
+    ensure_sync_progress_table()
+    completed = set()
+    if not args.force:
+        rows = execute(
+            "SELECT stock_code FROM sync_progress WHERE status = 'success' AND market = 'US'",
+            fetch=True,
+        )
+        completed = {r[0] for r in rows}
+
+    if not args.force:
+        pending = [t for t in valid_tickers if t not in completed]
+    else:
+        pending = valid_tickers
+
+    skipped = len(valid_tickers) - len(pending)
+    logger.info("总计=%d, 待同步=%d, 跳过(已成功)=%d", total, len(pending), skipped)
+
+    # 3. 串行同步
+    logger.info("Step 3/4: 开始同步...")
+    success = 0
+    failed = 0
+    errors: list[str] = []
+    t0 = time.time()
+
+    for i, ticker in enumerate(pending, 1):
+        try:
+            # 获取 Company Facts（自动缓存）
+            facts = fetcher.fetch_company_facts(ticker)
+            cik = str(facts.get("cik", "")).strip().zfill(10)
+
+            # 提取三大报表宽表
+            income_df = fetcher._extract_table(facts, fetcher.INCOME_TAGS)
+            balance_df = fetcher._extract_table(facts, fetcher.BALANCE_TAGS)
+            cashflow_df = fetcher._extract_table(facts, fetcher.CASHFLOW_TAGS)
+
+            # 转换 + 写入
+            tables_synced = []
+            income_records = transformer.transform_income(income_df, stock_code=ticker, cik=cik)
+            if income_records:
+                upsert("us_income_statement", income_records,
+                       ["stock_code", "report_date", "report_type"])
+                tables_synced.append("income")
+
+            balance_records = transformer.transform_balance(balance_df, stock_code=ticker, cik=cik)
+            if balance_records:
+                upsert("us_balance_sheet", balance_records,
+                       ["stock_code", "report_date", "report_type"])
+                tables_synced.append("balance")
+
+            cashflow_records = transformer.transform_cashflow(cashflow_df, stock_code=ticker, cik=cik)
+            if cashflow_records:
+                upsert("us_cash_flow_statement", cashflow_records,
+                       ["stock_code", "report_date", "report_type"])
+                tables_synced.append("cashflow")
+
+            if tables_synced:
+                success += 1
+                execute(
+                    """INSERT INTO sync_progress (stock_code, market, last_sync_time, tables_synced, status)
+                       VALUES (%s, 'US', NOW(), %s, 'success')
+                       ON CONFLICT (stock_code) DO UPDATE SET
+                           last_sync_time = NOW(), tables_synced = %s, status = 'success', error_detail = NULL""",
+                    (ticker, tables_synced, tables_synced),
+                    commit=True,
+                )
+            else:
+                logger.warning("%s: 无数据写入", ticker)
+                failed += 1
+
+        except Exception as exc:
+            failed += 1
+            error_msg = f"{type(exc).__name__}: {exc}"
+            errors.append(f"{ticker}: {error_msg}")
+            logger.error("%s 同步失败: %s", ticker, exc)
+            execute(
+                """INSERT INTO sync_progress (stock_code, market, last_sync_time, tables_synced, status, error_detail)
+                   VALUES (%s, 'US', NOW(), '{}', 'failed', %s)
+                   ON CONFLICT (stock_code) DO UPDATE SET
+                       last_sync_time = NOW(), status = 'failed', error_detail = %s""",
+                (ticker, error_msg, error_msg),
+                commit=True,
+            )
+
+        # 进度日志
+        if i % 10 == 0 or i == len(pending):
+            elapsed = time.time() - t0
+            rate = i / elapsed if elapsed > 0 else 0
+            eta = (len(pending) - i) / rate if rate > 0 else 0
+            logger.info(
+                "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%.0fs",
+                i, len(pending), i / len(pending) * 100,
+                success, failed, rate * 60, eta,
+            )
+
+    elapsed = time.time() - t0
+
+    # 4. 更新 stock_info 中的美股数据
+    logger.info("Step 4/4: 更新 stock_info...")
+    try:
+        company_df = fetcher.fetch_company_list()
+        stock_rows = []
+        for _, r in company_df.iterrows():
+            ticker_val = str(r["ticker"]).strip()
+            if ticker_val in {t.upper() for t in valid_tickers}:
+                stock_rows.append({
+                    "stock_code": ticker_val,
+                    "stock_name": str(r.get("title", "")).strip(),
+                    "cik": str(r["cik"]).strip().zfill(10),
+                    "market": "US",
+                    "exchange": "NYSE/NASDAQ/AMEX",
+                    "currency": "USD",
+                    "updated_at": datetime.now(),
+                })
+        if stock_rows:
+            # stock_info 的 upsert 以 stock_code 为冲突键
+            upsert("stock_info", stock_rows, ["stock_code"])
+            logger.info("stock_info 更新: %d 只美股", len(stock_rows))
+    except Exception as exc:
+        logger.warning("stock_info 更新失败: %s", exc)
+
+    result = {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "skipped": skipped,
+        "elapsed": elapsed,
+    }
+
+    logger.info(
+        "美股同步完成: 总计=%d, 成功=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
+        total, success, failed, skipped, elapsed,
+    )
+
+    if errors:
+        logger.info("错误 (前%d条):", min(len(errors), 20))
+        for e in errors[:20]:
+            logger.info("  - %s", e)
+
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
     parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend"],
                         help="同步类型")
-    parser.add_argument("--market", default=None, choices=["CN_A", "HK", "all"],
+    parser.add_argument("--market", default=None, choices=["CN_A", "HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
     parser.add_argument("--workers", type=int, default=4, help="并发线程数")
     parser.add_argument("--force", action="store_true", help="强制全量同步（忽略断点续传）")
+    parser.add_argument("--us-index", default="SP500",
+                        choices=["SP500", "NASDAQ100", "ALL"],
+                        help="美股指数范围（仅 US 市场有效）")
+    parser.add_argument("--us-tickers", default=None,
+                        help="美股指定 ticker 列表，逗号分隔（覆盖 --us-index）")
 
     args = parser.parse_args()
 
@@ -462,7 +671,10 @@ def main():
     elif args.type == "financial":
         if not args.market:
             parser.error("financial 类型需要指定 --market")
-        result = manager.sync_financial(args.market)
+        if args.market == "US":
+            result = sync_us_market(args)
+        else:
+            result = manager.sync_financial(args.market)
     elif args.type == "index":
         result = manager.sync_index()
     elif args.type == "dividend":

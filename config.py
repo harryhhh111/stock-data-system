@@ -110,6 +110,28 @@ class RetryConfig:
     )
 
 
+# ── SEC EDGAR 配置 ─────────────────────────────────────────
+@dataclass
+class SECConfig:
+    """SEC EDGAR API 配置。"""
+
+    user_agent: str = field(
+        default_factory=lambda: _env(
+            "STOCK_SEC_USER_AGENT",
+            "StockDataSync/1.0 user@example.com",
+        )
+    )
+    rate_limit: int = field(
+        default_factory=lambda: _env("STOCK_SEC_RATE_LIMIT", "10", cast=int)
+    )
+    cache_ttl_days: int = field(
+        default_factory=lambda: _env("STOCK_SEC_CACHE_TTL_DAYS", "7", cast=int)
+    )
+    base_url: str = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+    ticker_url: str = "https://www.sec.gov/files/company_tickers.json"
+    sp500_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+
 # ── 熔断配置 ──────────────────────────────────────────────
 @dataclass
 class CircuitBreakerConfig:
@@ -129,6 +151,7 @@ concurrency: ConcurrencyConfig = ConcurrencyConfig()
 throttle: ThrottleConfig = ThrottleConfig()
 retry: RetryConfig = RetryConfig()
 circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()
+sec: SECConfig = SECConfig()
 
 # ── 日志配置 ──────────────────────────────────────────────
 LOG_CONFIG: dict = {

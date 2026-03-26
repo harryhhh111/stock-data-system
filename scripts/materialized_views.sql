@@ -1,0 +1,162 @@
+-- 物化视图：财务指标
+-- 创建时间：2026-03-27
+-- 刷新命令：REFRESH MATERIALIZED VIEW CONCURRENTLY mv_financial_indicator;
+--           REFRESH MATERIALIZED VIEW CONCURRENTLY mv_indicator_ttm;
+
+-- ============================================================
+-- mv_financial_indicator: 单期财务指标
+-- 覆盖：A 股 + 港股（CN_A + HK）
+-- 美股独立表（us_*），后续可扩展
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_financial_indicator CASCADE;
+
+CREATE MATERIALIZED VIEW mv_financial_indicator AS
+SELECT
+    i.stock_code,
+    i.report_date,
+    i.report_type,
+    s.market,
+    s.currency,
+
+    -- 利润表指标
+    CASE WHEN i.operating_revenue IS NOT NULL AND i.operating_revenue != 0 THEN
+        i.gross_profit / i.operating_revenue
+    END AS gross_margin,
+    CASE WHEN i.operating_revenue IS NOT NULL AND i.operating_revenue != 0 THEN
+        i.operating_profit / i.operating_revenue
+    END AS operating_margin,
+    CASE WHEN i.operating_revenue IS NOT NULL AND i.operating_revenue != 0 THEN
+        i.net_profit / i.operating_revenue
+    END AS net_margin,
+    CASE WHEN i.operating_revenue IS NOT NULL AND i.operating_revenue != 0 THEN
+        i.net_profit_excl / i.operating_revenue
+    END AS net_margin_excl,
+    CASE WHEN i.operating_revenue IS NOT NULL AND i.operating_revenue != 0 THEN
+        i.parent_net_profit / i.operating_revenue
+    END AS parent_net_margin,
+
+    -- 增长率（同比）
+    CASE WHEN i.report_type IN ('quarterly', 'semi') THEN
+        (i.operating_revenue - prev_q.operating_revenue) / NULLIF(prev_q.operating_revenue, 0)
+    END AS revenue_yoy,
+    CASE WHEN i.report_type IN ('quarterly', 'semi') THEN
+        (i.parent_net_profit - prev_q.parent_net_profit) / NULLIF(prev_q.parent_net_profit, 0)
+    END AS net_profit_yoy,
+
+    -- 资产负债表指标
+    b.total_assets,
+    b.total_liab,
+    CASE WHEN b.total_assets IS NOT NULL AND b.total_assets != 0 THEN
+        b.total_liab / b.total_assets
+    END AS debt_ratio,
+    CASE WHEN b.current_liab IS NOT NULL AND b.current_liab != 0 THEN
+        b.current_assets / b.current_liab
+    END AS current_ratio,
+    CASE WHEN b.current_liab IS NOT NULL AND b.current_liab != 0 THEN
+        (b.current_assets - b.inventory) / b.current_liab
+    END AS quick_ratio,
+    b.total_equity,
+    b.parent_equity,
+
+    -- ROE
+    CASE
+        WHEN i.report_type = 'annual' AND b.parent_equity IS NOT NULL AND b.parent_equity != 0 THEN
+            i.parent_net_profit / b.parent_equity
+        WHEN i.report_type IN ('semi', 'quarterly')
+            AND b.parent_equity IS NOT NULL AND b.parent_equity != 0
+            AND prev_a.parent_equity IS NOT NULL AND prev_a.parent_equity != 0 THEN
+            i.parent_net_profit / ((b.parent_equity + prev_a.parent_equity) / 2)
+    END AS roe,
+
+    -- ROA
+    CASE WHEN b.total_assets IS NOT NULL AND b.total_assets != 0 THEN
+        i.parent_net_profit / b.total_assets
+    END AS roa,
+
+    -- 每股指标
+    i.eps_basic,
+    i.eps_diluted,
+
+    -- FCF
+    cf.cfo_net,
+    cf.capex,
+    CASE WHEN cf.cfo_net IS NOT NULL AND cf.capex IS NOT NULL THEN
+        cf.cfo_net - cf.capex
+    END AS fcf,
+
+    i.updated_at
+FROM income_statement i
+JOIN balance_sheet b
+    ON i.stock_code = b.stock_code
+    AND i.report_date = b.report_date
+    AND i.report_type = b.report_type
+LEFT JOIN cash_flow_statement cf
+    ON i.stock_code = cf.stock_code
+    AND i.report_date = cf.report_date
+    AND i.report_type = cf.report_type
+LEFT JOIN stock_info s ON i.stock_code = s.stock_code
+LEFT JOIN income_statement prev_q
+    ON i.stock_code = prev_q.stock_code
+    AND prev_q.report_date = (i.report_date - INTERVAL '1 year')
+    AND prev_q.report_type = i.report_type
+LEFT JOIN balance_sheet prev_a
+    ON i.stock_code = prev_a.stock_code
+    AND prev_a.report_type = 'annual'
+    AND prev_a.report_date = (DATE_TRUNC('year', i.report_date) - INTERVAL '1 year' + INTERVAL '11 months')::date
+WHERE i.report_type IN ('quarterly', 'semi', 'annual');
+
+CREATE UNIQUE INDEX idx_mv_indicator_pk ON mv_financial_indicator(stock_code, report_date, report_type);
+CREATE INDEX idx_mv_indicator_market ON mv_financial_indicator(market);
+CREATE INDEX idx_mv_indicator_roe ON mv_financial_indicator(roe);
+CREATE INDEX idx_mv_indicator_fcf ON mv_financial_indicator(fcf);
+
+
+-- ============================================================
+-- mv_indicator_ttm: TTM（滚动十二个月）指标
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_indicator_ttm CASCADE;
+
+CREATE MATERIALIZED VIEW mv_indicator_ttm AS
+SELECT
+    stock_code,
+    report_date,
+    report_type,
+    notice_date,
+    SUM(operating_revenue) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS revenue_ttm,
+    SUM(parent_net_profit) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS net_profit_ttm,
+    SUM(net_profit_excl) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS net_profit_excl_ttm,
+    SUM(cfo_net) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS cfo_ttm,
+    SUM(CASE WHEN cfo_net IS NOT NULL AND capex IS NOT NULL THEN cfo_net - capex END) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS fcf_ttm,
+    updated_at
+FROM (
+    SELECT DISTINCT ON (stock_code, report_date)
+        i.stock_code, i.report_date, i.report_type,
+        i.operating_revenue, i.parent_net_profit, i.net_profit_excl,
+        cf.cfo_net, cf.capex,
+        i.notice_date, i.updated_at
+    FROM income_statement i
+    LEFT JOIN cash_flow_statement cf
+        ON i.stock_code = cf.stock_code AND i.report_date = cf.report_date AND i.report_type = cf.report_type
+    WHERE i.report_type IN ('quarterly', 'annual')
+    ORDER BY stock_code, report_date
+) t;
+
+CREATE UNIQUE INDEX idx_mv_ttm_pk ON mv_indicator_ttm(stock_code, report_date);
+CREATE INDEX idx_mv_ttm_fcf ON mv_indicator_ttm(fcf_ttm);
