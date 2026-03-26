@@ -105,12 +105,56 @@ def _filter_columns(table: str, columns: list[str]) -> list[str]:
     filtered = [c for c in columns if c in valid]
     if len(filtered) < len(columns):
         ignored = set(columns) - valid
-        logger.debug("upsert(%s): 忽略表中不存在的列: %s", table, ignored)
+        logger.warning(
+            "upsert(%s): %d 列被过滤（不在表中）: %s",
+            table, len(ignored), sorted(ignored),
+        )
     return filtered
 
 
 _table_columns_cache: dict[str, set[str]] = {}
 _table_columns_lock = threading.Lock()
+
+
+# ── 保存原始快照 ──────────────────────────────────────────
+def save_raw_snapshot(
+    stock_code: str,
+    data_type: str,
+    source: str,
+    api_params: dict,
+    raw_data: Any,
+) -> None:
+    """保存原始 API 响应到 raw_snapshot 表（Layer 0）。
+
+    Args:
+        stock_code: 股票代码
+        data_type: 数据类型（income/balance/cashflow 等）
+        source: 数据源名称
+        api_params: API 请求参数
+        raw_data: 原始响应数据（dict/list/DataFrame）
+    """
+    import json as _json
+
+    # 处理 DataFrame
+    data_to_store = raw_data
+    if hasattr(raw_data, "to_dict"):
+        data_to_store = raw_data.to_dict(orient="records")
+
+    sql = """
+        INSERT INTO raw_snapshot (stock_code, data_type, source, api_params, raw_data, sync_time)
+        VALUES (%s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (stock_code, data_type, source)
+        DO UPDATE SET raw_data = EXCLUDED.raw_data, sync_time = NOW()
+    """
+    try:
+        execute(
+            sql,
+            (stock_code, data_type, source, _json.dumps(api_params, default=str),
+             _json.dumps(data_to_store, ensure_ascii=False, default=str)),
+        )
+        logger.info("raw_snapshot 已保存: stock=%s type=%s source=%s", stock_code, data_type, source)
+    except Exception as exc:
+        logger.error("raw_snapshot 保存失败: stock=%s type=%s err=%s", stock_code, data_type, exc)
 
 
 def upsert(

@@ -78,60 +78,85 @@ def _em_code(stock_code: str) -> str:
     return f"SZ{stock_code}"
 
 
+# ── 市场配置注册 ──────────────────────────────────────────
+MARKET_CONFIG: dict[str, dict] = {
+    "CN_A": {
+        "fetcher_cls": "fetchers.a_financial.AFinancialFetcher",
+        "transformer_cls": "transformers.eastmoney.EastmoneyTransformer",
+        "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "fetch_kwargs_builder": lambda stock_code, fetcher: {
+            "symbol": stock_code,
+            "em_code": _em_code(stock_code),
+        },
+    },
+    "HK": {
+        "fetcher_cls": "fetchers.hk_financial.HkFinancialFetcher",
+        "transformer_cls": "transformers.eastmoney_hk.EastmoneyHkTransformer",
+        "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "fetch_kwargs_builder": lambda stock_code, fetcher: {"stock_code": stock_code},
+    },
+    "US": {
+        "fetcher_cls": "fetchers.us_financial.USFinancialFetcher",
+        "transformer_cls": "transformers.us_gaap.USGAAPTransformer",
+        "tables": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "special": "us",
+    },
+}
+
+
 # ── 同步单只股票（核心函数）─────────────────────────────────
 
 def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str | None]:
-    """同步单只股票的三大报表。
+    """同步单只股票的三大报表（通用版）。
 
-    Returns:
-        (成功与否, 成功同步的表列表, 错误信息)
+    支持 CN_A、HK 市场。US 市场走 sync_us_market 特殊路径。
     """
+    cfg = MARKET_CONFIG.get(market)
+    if cfg is None:
+        return False, [], f"不支持的市场: {market}"
+    if cfg.get("special"):
+        return False, [], f"市场 {market} 需要走专用同步路径"
+
     tables_synced: list[str] = []
 
     try:
-        # ── 选择 fetcher 和 transformer ──────────────────
-        if market == "CN_A":
-            from fetchers.a_financial import AFinancialFetcher
-            from transformers.eastmoney import EastmoneyTransformer
+        # 动态导入
+        parts = cfg["fetcher_cls"].rsplit(".", 1)
+        module = __import__(parts[0], fromlist=[parts[1]])
+        fetcher_cls = getattr(module, parts[1])
+        fetcher = fetcher_cls()
 
-            fetcher = AFinancialFetcher()
-            transformer = EastmoneyTransformer()
-            em = _em_code(stock_code)
-            fetch_kw = {"symbol": stock_code, "em_code": em}
-            source = "eastmoney"
-        elif market == "HK":
-            from fetchers.hk_financial import HkFinancialFetcher
-            from transformers.eastmoney_hk import EastmoneyHkTransformer
+        parts = cfg["transformer_cls"].rsplit(".", 1)
+        module = __import__(parts[0], fromlist=[parts[1]])
+        transformer_cls = getattr(module, parts[1])
+        transformer = transformer_cls()
 
-            fetcher = HkFinancialFetcher()
-            transformer = EastmoneyHkTransformer()
-            fetch_kw = {"stock_code": stock_code}
-            source = "eastmoney_hk"
-        else:
-            return False, [], f"不支持的市场: {market}"
+        fetch_kwargs = cfg["fetch_kwargs_builder"](stock_code, fetcher)
 
-        # ── Fetch ────────────────────────────────────────
-        raw_income = fetcher.fetch_income(**fetch_kw)
-        raw_balance = fetcher.fetch_balance(**fetch_kw)
-        raw_cashflow = fetcher.fetch_cashflow(**fetch_kw)
-
-        # ── Transform + Upsert ──────────────────────────
-        jobs = [
-            ("income", raw_income, "income_statement", transformer.transform_income),
-            ("balance", raw_balance, "balance_sheet", transformer.transform_balance),
-            ("cashflow", raw_cashflow, "cash_flow_statement", transformer.transform_cashflow),
-        ]
-
-        for data_type, raw_df, table_name, transform_func in jobs:
-            if raw_df is None or raw_df.empty:
-                continue
+        # Fetch + Transform + Upsert 三步走
+        for fetch_method, transform_method, table, conflict_keys in zip(
+            cfg["fetch_methods"], cfg["transform_methods"],
+            cfg["tables"], [cfg["conflict_keys"]] * len(cfg["tables"]),
+        ):
             try:
-                records = transform_func(raw_df)
+                raw_df = getattr(fetcher, fetch_method)(**fetch_kwargs)
+                if raw_df is None or raw_df.empty:
+                    continue
+                records = getattr(transformer, transform_method)(raw_df)
                 if records:
-                    upsert(table_name, records, ["stock_code", "report_date", "report_type"])
-                    tables_synced.append(data_type)
+                    upsert(table, records, conflict_keys)
+                    tables_synced.append(table)
             except Exception as exc:
-                logger.warning("%s %s 失败: %s", stock_code, data_type, exc)
+                logger.warning("%s %s 失败: %s", stock_code, table, exc)
 
         return (len(tables_synced) > 0, tables_synced, None)
 
@@ -522,29 +547,22 @@ def sync_us_market(args) -> dict:
             cik = str(facts.get("cik", "")).strip().zfill(10)
 
             # 提取三大报表宽表
-            income_df = fetcher._extract_table(facts, fetcher.INCOME_TAGS)
-            balance_df = fetcher._extract_table(facts, fetcher.BALANCE_TAGS)
-            cashflow_df = fetcher._extract_table(facts, fetcher.CASHFLOW_TAGS)
+            income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
+            balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
+            cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
 
-            # 转换 + 写入
+            # 转换 + 写入（使用 MARKET_CONFIG 中的表名和冲突键）
+            cfg = MARKET_CONFIG["US"]
             tables_synced = []
-            income_records = transformer.transform_income(income_df, stock_code=ticker, cik=cik)
-            if income_records:
-                upsert("us_income_statement", income_records,
-                       ["stock_code", "report_date", "report_type"])
-                tables_synced.append("income")
-
-            balance_records = transformer.transform_balance(balance_df, stock_code=ticker, cik=cik)
-            if balance_records:
-                upsert("us_balance_sheet", balance_records,
-                       ["stock_code", "report_date", "report_type"])
-                tables_synced.append("balance")
-
-            cashflow_records = transformer.transform_cashflow(cashflow_df, stock_code=ticker, cik=cik)
-            if cashflow_records:
-                upsert("us_cash_flow_statement", cashflow_records,
-                       ["stock_code", "report_date", "report_type"])
-                tables_synced.append("cashflow")
+            for table, df, transform_method in zip(
+                cfg["tables"],
+                [income_df, balance_df, cashflow_df],
+                cfg["transform_methods"],
+            ):
+                records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+                if records:
+                    upsert(table, records, cfg["conflict_keys"])
+                    tables_synced.append(table)
 
             if tables_synced:
                 success += 1

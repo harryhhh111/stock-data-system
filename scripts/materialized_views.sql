@@ -160,3 +160,136 @@ FROM (
 
 CREATE UNIQUE INDEX idx_mv_ttm_pk ON mv_indicator_ttm(stock_code, report_date);
 CREATE INDEX idx_mv_ttm_fcf ON mv_indicator_ttm(fcf_ttm);
+
+
+-- ============================================================
+-- mv_us_financial_indicator: 美股单期财务指标
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_us_financial_indicator CASCADE;
+
+CREATE MATERIALIZED VIEW mv_us_financial_indicator AS
+SELECT
+    i.stock_code,
+    i.report_date,
+    i.report_type,
+    i.cik,
+    'USD' AS currency,
+    'US' AS market,
+
+    -- 利润率
+    CASE WHEN i.revenues IS NOT NULL AND i.revenues != 0 THEN
+        i.gross_profit / i.revenues
+    END AS gross_margin,
+    CASE WHEN i.revenues IS NOT NULL AND i.revenues != 0 THEN
+        i.operating_income / i.revenues
+    END AS operating_margin,
+    CASE WHEN i.revenues IS NOT NULL AND i.revenues != 0 THEN
+        i.net_income / i.revenues
+    END AS net_margin,
+
+    -- 资产负债率
+    CASE WHEN b.total_assets IS NOT NULL AND b.total_assets != 0 THEN
+        b.total_liabilities / b.total_assets
+    END AS debt_ratio,
+
+    -- ROE（按 report_type 区分计算方式）
+    CASE
+        WHEN i.report_type = 'annual'
+            AND b.total_equity IS NOT NULL AND b.total_equity != 0 THEN
+            i.net_income / b.total_equity
+        WHEN i.report_type IN ('quarterly', 'semi')
+            AND b.total_equity IS NOT NULL AND b.total_equity != 0
+            AND prev_b.total_equity IS NOT NULL AND prev_b.total_equity != 0 THEN
+            i.net_income / ((b.total_equity + prev_b.total_equity) / 2)
+    END AS roe,
+
+    -- ROA
+    CASE WHEN b.total_assets IS NOT NULL AND b.total_assets != 0 THEN
+        i.net_income / b.total_assets
+    END AS roa,
+
+    -- EPS
+    i.eps_basic,
+    i.eps_diluted,
+
+    -- 每股净资产
+    CASE WHEN i.weighted_avg_shares_basic IS NOT NULL AND i.weighted_avg_shares_basic != 0
+        AND b.total_equity IS NOT NULL THEN
+        b.total_equity / i.weighted_avg_shares_basic
+    END AS book_value_per_share,
+
+    -- FCF
+    CASE WHEN cf.net_cash_from_operations IS NOT NULL AND cf.capital_expenditures IS NOT NULL THEN
+        cf.net_cash_from_operations + cf.capital_expenditures  -- capex 通常是负数
+    END AS fcf,
+
+    i.filed_date,
+    i.updated_at
+FROM us_income_statement i
+JOIN us_balance_sheet b
+    ON i.stock_code = b.stock_code
+    AND i.report_date = b.report_date
+    AND i.report_type = b.report_type
+LEFT JOIN us_cash_flow_statement cf
+    ON i.stock_code = cf.stock_code
+    AND i.report_date = cf.report_date
+    AND i.report_type = cf.report_type
+LEFT JOIN us_balance_sheet prev_b
+    ON i.stock_code = prev_b.stock_code
+    AND prev_b.report_type = 'annual'
+    AND prev_b.report_date = (DATE_TRUNC('year', i.report_date) - INTERVAL '1 year' + INTERVAL '11 months')::date
+WHERE i.report_type IN ('quarterly', 'semi', 'annual');
+
+CREATE UNIQUE INDEX idx_mv_us_indicator_pk ON mv_us_financial_indicator(stock_code, report_date, report_type);
+CREATE INDEX idx_mv_us_indicator_roe ON mv_us_financial_indicator(roe);
+CREATE INDEX idx_mv_us_indicator_fcf ON mv_us_financial_indicator(fcf);
+
+
+-- ============================================================
+-- mv_us_indicator_ttm: 美股 TTM 指标
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_us_indicator_ttm CASCADE;
+
+CREATE MATERIALIZED VIEW mv_us_indicator_ttm AS
+SELECT
+    stock_code,
+    report_date,
+    report_type,
+    filed_date,
+    SUM(revenues) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS revenue_ttm,
+    SUM(net_income) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS net_income_ttm,
+    SUM(COALESCE(net_cash_from_operations, 0)) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS cfo_ttm,
+    SUM(CASE
+        WHEN net_cash_from_operations IS NOT NULL AND capital_expenditures IS NOT NULL
+        THEN net_cash_from_operations + capital_expenditures
+    END) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS fcf_ttm,
+    updated_at
+FROM (
+    SELECT DISTINCT ON (stock_code, report_date)
+        i.stock_code, i.report_date, i.report_type,
+        i.revenues, i.net_income,
+        cf.net_cash_from_operations, cf.capital_expenditures,
+        i.filed_date, i.updated_at
+    FROM us_income_statement i
+    LEFT JOIN us_cash_flow_statement cf
+        ON i.stock_code = cf.stock_code AND i.report_date = cf.report_date AND i.report_type = cf.report_type
+    WHERE i.report_type IN ('quarterly', 'annual')
+    ORDER BY stock_code, report_date
+) t;
+
+CREATE UNIQUE INDEX idx_mv_us_ttm_pk ON mv_us_indicator_ttm(stock_code, report_date);
+CREATE INDEX idx_mv_us_ttm_fcf ON mv_us_indicator_ttm(fcf_ttm);

@@ -326,7 +326,7 @@ if __name__ == "__main__":
 
     result = flaky_fn()
     assert result == "ok" and Counter.count == 2
-    print(f"✓ 重试装饰器测试通过 (called {call_count} times)")
+    print(f"✓ 重试装饰器测试通过 (called {Counter.count} times)")
 
     # 测试快照保存
     bf = BaseFetcher()

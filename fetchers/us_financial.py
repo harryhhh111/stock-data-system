@@ -363,7 +363,7 @@ class USFinancialFetcher(BaseFetcher):
         "FreeCashFlow": "free_cash_flow",
     }
 
-    def _extract_table(self, facts: dict, tag_mapping: dict[str, str]) -> pd.DataFrame:
+    def extract_table(self, facts: dict, tag_mapping: dict[str, str]) -> pd.DataFrame:
         """从 Company Facts 中提取某张报表的数据，返回宽表 DataFrame。
 
         每家公司只调用一次 fetch_company_facts，然后用此方法分别提取三大表。
@@ -457,17 +457,17 @@ class USFinancialFetcher(BaseFetcher):
     def fetch_income(self, ticker: str) -> pd.DataFrame:
         """获取利润表宽表。"""
         facts = self.fetch_company_facts(ticker)
-        return self._extract_table(facts, self.INCOME_TAGS)
+        return self.extract_table(facts, self.INCOME_TAGS)
 
     def fetch_balance(self, ticker: str) -> pd.DataFrame:
         """获取资产负债表宽表。"""
         facts = self.fetch_company_facts(ticker)
-        return self._extract_table(facts, self.BALANCE_TAGS)
+        return self.extract_table(facts, self.BALANCE_TAGS)
 
     def fetch_cashflow(self, ticker: str) -> pd.DataFrame:
         """获取现金流量表宽表。"""
         facts = self.fetch_company_facts(ticker)
-        return self._extract_table(facts, self.CASHFLOW_TAGS)
+        return self.extract_table(facts, self.CASHFLOW_TAGS)
 
     # ── 内部工具方法 ──────────────────────────────────────
 
