@@ -8,7 +8,7 @@ sync.py — 股票基本面数据同步调度器
     python sync.py --type financial --market HK --workers 4
     python sync.py --type financial --market all --workers 4
     python sync.py --type index
-    python sync.py --type dividend
+    python sync.py --type dividend [--market CN_A|HK]
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ import psycopg2.extras
 
 from config import DBConfig
 from db import upsert, execute, health_check
-from models import transform_report_type
+from transformers.base import transform_report_type
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,23 +46,24 @@ logger = logging.getLogger("sync")
 
 # ── sync_progress 表 ──────────────────────────────────────────
 
-SYNC_PROGRESS_DDL = """
-CREATE TABLE IF NOT EXISTS sync_progress (
-    stock_code VARCHAR(20) PRIMARY KEY,
-    market VARCHAR(10),
-    last_sync_time TIMESTAMPTZ,
-    tables_synced TEXT[],
-    status VARCHAR(20),
-    error_detail TEXT
-);
-"""
-
-
 def ensure_sync_progress_table():
     """确保 sync_progress 表存在。"""
+    from config import DBConfig
+    # DDL 已统一到 scripts/init_pg.sql，此处做兼容确保
     with psycopg2.connect(DBConfig().dsn) as conn:
         with conn.cursor() as cur:
-            cur.execute(SYNC_PROGRESS_DDL)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sync_progress (
+                    stock_code VARCHAR(20) PRIMARY KEY,
+                    market VARCHAR(10),
+                    last_sync_time TIMESTAMPTZ,
+                    tables_synced TEXT[],
+                    status VARCHAR(20),
+                    error_detail TEXT
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status)")
         conn.commit()
 
 
@@ -360,6 +361,68 @@ class SyncManager:
         logger.info("指数成分同步完成: 成功=%d, 失败=%d", len(results["success"]), len(results["failed"]))
         return results
 
+    # ── 分红数据同步 ────────────────────────────────────
+
+    def sync_dividend(self, market: str | None = None) -> dict:
+        """同步分红数据。
+
+        Args:
+            market: "CN_A" | "HK" | None (全部)
+        """
+        from fetchers.dividend import DividendFetcher
+        from transformers.dividend import transform_a_dividend, transform_hk_dividend
+
+        logger.info("开始同步分红数据...")
+
+        # 获取股票列表
+        markets = []
+        if market:
+            markets = [market]
+        else:
+            markets = ["CN_A", "HK"]
+
+        fetcher = DividendFetcher()
+        success = 0
+        failed = 0
+        total = 0
+        errors: list[str] = []
+
+        for m in markets:
+            rows = execute(
+                "SELECT stock_code FROM stock_info WHERE market = %s", (m,),
+                fetch=True,
+            )
+            stocks = [r[0] for r in rows]
+            total += len(stocks)
+            logger.info("分红同步: %s 市场 %d 只股票", m, len(stocks))
+
+            for code in stocks:
+                try:
+                    if m == "CN_A":
+                        df = fetcher.fetch_a_dividend(code)
+                        records = transform_a_dividend(df, code)
+                    else:
+                        df = fetcher.fetch_hk_dividend(code)
+                        records = transform_hk_dividend(df, code)
+
+                    if records:
+                        upsert("dividend_split", records, ["stock_code", "announce_date", "dividend_per_share", "bonus_share", "convert_share"])
+                        success += 1
+                    else:
+                        logger.debug("%s 无分红数据", code)
+                except Exception as exc:
+                    failed += 1
+                    if len(errors) < 20:
+                        errors.append(f"{code}: {exc}")
+
+        logger.info("分红同步完成: 总计=%d, 成功=%d, 失败=%d", total, success, failed)
+        if errors:
+            logger.info("错误 (前%d条):", len(errors))
+            for e in errors:
+                logger.info("  - %s", e)
+
+        return {"total": total, "success": success, "failed": failed}
+
     def shutdown(self):
         """标记关闭，让正在运行的同步优雅退出。"""
         self._shutdown = True
@@ -403,8 +466,7 @@ def main():
     elif args.type == "index":
         result = manager.sync_index()
     elif args.type == "dividend":
-        logger.info("分红同步暂未实现")
-        sys.exit(0)
+        result = manager.sync_dividend(market=args.market)
 
     print("\n" + "=" * 50)
     for k, v in result.items():

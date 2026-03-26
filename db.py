@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Optional
 
 import psycopg2
@@ -90,17 +91,17 @@ def _filter_columns(table: str, columns: list[str]) -> list[str]:
 
     缓存表结构信息以减少查询次数。
     """
-    global _table_columns_cache
-    if table not in _table_columns_cache:
-        with Connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema='public' AND table_name=%s",
-                    (table,),
-                )
-                _table_columns_cache[table] = {row[0] for row in cur.fetchall()}
-    valid = _table_columns_cache[table]
+    with _table_columns_lock:
+        if table not in _table_columns_cache:
+            with Connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s",
+                        (table,),
+                    )
+                    _table_columns_cache[table] = {row[0] for row in cur.fetchall()}
+        valid = _table_columns_cache[table]
     filtered = [c for c in columns if c in valid]
     if len(filtered) < len(columns):
         ignored = set(columns) - valid
@@ -109,6 +110,7 @@ def _filter_columns(table: str, columns: list[str]) -> list[str]:
 
 
 _table_columns_cache: dict[str, set[str]] = {}
+_table_columns_lock = threading.Lock()
 
 
 def upsert(
