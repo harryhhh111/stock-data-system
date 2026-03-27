@@ -40,4 +40,8 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# SEC cache
+data/sec_cache/
+
 data/raw_snapshots/*.json
