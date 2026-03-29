@@ -15,11 +15,13 @@
 | Layer | 用途 | 更新方式 |
 |-------|------|----------|
 | Layer 0: raw_snapshot | API 原始响应存档 | Append-only |
-| Layer 1: stock_info | 股票基本信息 | Upsert |
-| Layer 2: financial_reports | 三大报表（标准化核心字段） | Upsert |
-| Layer 3: derived_indicators | 物化视图，从报表计算 | 定时刷新 |
+| Layer 1: stock_info | 股票基本信息（A 股/港股/美股） | Upsert |
+| Layer 2: financial_reports | 三大报表（A 股/港股共用，美股独立表） | Upsert |
+| Layer 3: derived_indicators | 物化视图，从报表计算（A 股/港股 + 美股） | 定时刷新 |
 | Layer 4: dividend_split | 分红送转事件 | Append-only |
 | Layer 5: index_constituent | 指数成分股 | Upsert |
+| 辅助: sync_progress | 同步状态 + 增量判断 | Upsert |
+| 辅助: validation_results | 数据校验结果 | Append-only |
 
 ---
 
@@ -57,13 +59,13 @@ CREATE INDEX idx_snapshot_batch ON raw_snapshot(sync_batch);
 CREATE TABLE stock_info (
     stock_code      VARCHAR(20) PRIMARY KEY,
     stock_name      VARCHAR(100) NOT NULL,
-    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'HK'
+    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK'
     list_date       DATE,                    -- 上市日期
     delist_date     DATE,                    -- 退市日期（如有）
     industry        VARCHAR(100),            -- 申万/证监会行业
     board_type      VARCHAR(50),             -- 主板/科创板/创业板/北交所 等
     exchange        VARCHAR(20),             -- SSE | SZSE | HKEX
-    currency        VARCHAR(10) DEFAULT 'CNY', -- CNY | HKD
+    currency        VARCHAR(10) DEFAULT 'CNY', -- CNY | HKD | USD
     em_code         VARCHAR(20),             -- 东方财富代码（如 SH600519）
     ths_code        VARCHAR(20),             -- 同花顺代码（如 600519）
     
@@ -411,7 +413,7 @@ CREATE INDEX idx_div_ex ON dividend_split(ex_date);
 CREATE TABLE index_info (
     index_code      VARCHAR(20) PRIMARY KEY, -- '000300' | '000905' | 'HSI'
     index_name      VARCHAR(100) NOT NULL,   -- '沪深300' | '中证500' | '恒生指数'
-    market          VARCHAR(10),             -- 'CN_A' | 'HK'
+    market          VARCHAR(10),             -- 'CN_A' | 'CN_HK'
     source          VARCHAR(30) DEFAULT 'csindex',
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -545,12 +547,53 @@ CREATE TABLE sync_log (
 
 ---
 
+## 美股表（独立 schema）
+
+美股使用独立的表结构，DDL 见 `scripts/us_tables.sql`：
+
+| 表名 | 说明 |
+|------|------|
+| `us_income_statement` | 美股利润表（US-GAAP 标签） |
+| `us_balance_sheet` | 美股资产负债表 |
+| `us_cash_flow_statement` | 美股现金流量表 |
+
+美股物化视图：`mv_us_financial_indicator`、`mv_us_indicator_ttm`（见 `scripts/materialized_views.sql`）。
+
+> A 股/港股与美股字段差异较大（US-GAAP vs 中国会计准则），因此保持独立表结构。
+
+## 校验结果表
+
+`validate.py` 写入的校验结果：
+
+```sql
+validation_results (
+    batch_id, stock_code, market, report_date,
+    check_name, severity, field_name,
+    actual_value, expected_value, message, suggestion
+)
+```
+
+## sync_progress 表
+
+跟踪每只股票的同步状态和增量判断：
+
+| 字段 | 说明 |
+|------|------|
+| `stock_code` | 主键 |
+| `market` | 市场标识 |
+| `last_sync_time` | 上次同步时间 |
+| `tables_synced` | 已同步的表列表 |
+| `status` | `success` / `failed` |
+| `last_report_date` | 上次同步时的最新报告期（增量判断依据） |
+
 ## 物化视图刷新策略
 
 ```sql
 -- 并发刷新（不锁表，不影响查询）
 REFRESH MATERIALIZED VIEW CONCURRENTLY mv_financial_indicator;
 REFRESH MATERIALIZED VIEW CONCURRENTLY mv_indicator_ttm;
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_financial_indicator;
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_indicator_ttm;
 ```
 
 建议在每次数据同步完成后刷新，或每天凌晨定时刷新一次。

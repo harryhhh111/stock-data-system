@@ -36,6 +36,11 @@ import psycopg2.extras
 from config import DBConfig
 from db import upsert, execute, health_check
 from transformers.base import transform_report_type
+from incremental import (
+    ensure_last_report_date_column,
+    determine_stocks_to_sync,
+    update_last_report_date,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +52,7 @@ logger = logging.getLogger("sync")
 # ── sync_progress 表 ──────────────────────────────────────────
 
 def ensure_sync_progress_table():
-    """确保 sync_progress 表存在。"""
+    """确保 sync_progress 表存在（含增量同步字段）。"""
     from config import DBConfig
     # DDL 已统一到 scripts/init_pg.sql，此处做兼容确保
     with psycopg2.connect(DBConfig().dsn) as conn:
@@ -64,6 +69,9 @@ def ensure_sync_progress_table():
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status)")
+            # 增量同步：添加 last_report_date 列
+            cur.execute("ALTER TABLE sync_progress ADD COLUMN IF NOT EXISTS last_report_date DATE")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_last_report ON sync_progress(last_report_date)")
         conn.commit()
 
 
@@ -92,7 +100,7 @@ MARKET_CONFIG: dict[str, dict] = {
             "em_code": _em_code(stock_code),
         },
     },
-    "HK": {
+    "CN_HK": {
         "fetcher_cls": "fetchers.hk_financial.HkFinancialFetcher",
         "transformer_cls": "transformers.eastmoney_hk.EastmoneyHkTransformer",
         "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
@@ -213,7 +221,7 @@ class SyncManager:
                 rows.append({
                     "stock_code": str(r["stock_code"]).strip(),
                     "stock_name": str(r["stock_name"]).strip(),
-                    "market": "HK",
+                    "market": "CN_HK",
                     "exchange": "HKEX",
                     "list_date": r.get("list_date"),
                     "currency": "HKD",
@@ -234,16 +242,16 @@ class SyncManager:
     # ── 财务数据同步 ────────────────────────────────────
 
     def sync_financial(self, market: str) -> dict:
-        """并发同步财务数据。
+        """并发同步财务数据（支持增量判断）。
 
         Args:
-            market: "CN_A" | "HK" | "all"
+            market: "CN_A" | "CN_HK" | "all"
         """
         ensure_sync_progress_table()
 
         # 获取股票列表
         if market == "all":
-            markets = ["CN_A", "HK"]
+            markets = ["CN_A", "CN_HK"]
         else:
             markets = [market]
 
@@ -261,25 +269,23 @@ class SyncManager:
             logger.warning("没有找到股票，请先运行 --type stock_list")
             return {"total": 0, "success": 0, "failed": 0, "skipped": 0, "elapsed": 0}
 
-        # 断点续传：加载已完成的股票
-        completed = set()
-        if not self.force:
-            rows = execute(
-                "SELECT stock_code FROM sync_progress WHERE status = 'success'",
-                fetch=True,
-            )
-            completed = {r[0] for r in rows}
+        # 增量同步判断：确定哪些股票需要拉取
+        pending, incremental_skipped = determine_stocks_to_sync(
+            all_stocks, force=self.force,
+        )
 
-        # 过滤
+        # 兼容旧的断点续传逻辑（sync_progress.status = 'success' 的跳过）
+        # 增量模式已通过 last_report_date 判断，此处仅在 force 模式下不做额外跳过
+        legacy_skipped = 0
         if not self.force:
-            pending = [(code, m) for code, m in all_stocks if code not in completed]
-        else:
-            pending = all_stocks
+            # 旧的断点续传：同步进行中的如果已完成也跳过
+            # 但增量判断已经覆盖了这种情况，这里只做日志
+            pass
 
-        skipped = len(all_stocks) - len(pending)
+        skipped = incremental_skipped + legacy_skipped
         logger.info(
-            "SyncManager 初始化: workers=%d, force=%s, 总计=%d, 待同步=%d, 跳过=%d",
-            self.max_workers, self.force, total, len(pending), skipped,
+            "SyncManager 初始化: workers=%d, force=%s, 总计=%d, 待同步=%d, 跳过=%d (增量跳过=%d)",
+            self.max_workers, self.force, total, len(pending), skipped, incremental_skipped,
         )
 
         # 并发执行
@@ -312,6 +318,11 @@ class SyncManager:
                             (code, m, tables, tables),
                             commit=True,
                         )
+                        # 增量同步：更新 last_report_date
+                        try:
+                            update_last_report_date(code, tables)
+                        except Exception as uerr:
+                            logger.debug("更新 last_report_date 失败: %s %s", code, uerr)
                     else:
                         failed += 1
                         if err and len(errors) < 20:
@@ -392,7 +403,7 @@ class SyncManager:
         """同步分红数据。
 
         Args:
-            market: "CN_A" | "HK" | None (全部)
+            market: "CN_A" | "CN_HK" | None (全部)
         """
         from fetchers.dividend import DividendFetcher
         from transformers.dividend import transform_a_dividend, transform_hk_dividend
@@ -404,7 +415,7 @@ class SyncManager:
         if market:
             markets = [market]
         else:
-            markets = ["CN_A", "HK"]
+            markets = ["CN_A", "CN_HK"]
 
         fetcher = DividendFetcher()
         success = 0
@@ -515,22 +526,20 @@ def sync_us_market(args) -> dict:
         logger.warning("没有找到需要同步的美股")
         return {"total": 0, "success": 0, "failed": 0, "skipped": 0, "elapsed": 0}
 
-    # 断点续传
+    # 断点续传 + 增量判断
     ensure_sync_progress_table()
-    completed = set()
-    if not args.force:
-        rows = execute(
-            "SELECT stock_code FROM sync_progress WHERE status = 'success' AND market = 'US'",
-            fetch=True,
-        )
-        completed = {r[0] for r in rows}
+    ensure_last_report_date_column()
 
-    if not args.force:
-        pending = [t for t in valid_tickers if t not in completed]
-    else:
-        pending = valid_tickers
+    # 构造股票列表用于增量判断
+    all_us_stocks = [(t, "US") for t in valid_tickers]
 
-    skipped = len(valid_tickers) - len(pending)
+    pending_stocks, incremental_skipped = determine_stocks_to_sync(
+        all_us_stocks, force=args.force,
+    )
+
+    pending = [code for code, m in pending_stocks]
+
+    skipped = incremental_skipped
     logger.info("总计=%d, 待同步=%d, 跳过(已成功)=%d", total, len(pending), skipped)
 
     # 3. 串行同步
@@ -574,6 +583,12 @@ def sync_us_market(args) -> dict:
                     (ticker, tables_synced, tables_synced),
                     commit=True,
                 )
+                # 增量同步：更新 last_report_date
+                try:
+                    us_tables = [t for t in tables_synced if t.startswith("us_")]
+                    update_last_report_date(ticker, us_tables)
+                except Exception as uerr:
+                    logger.debug("更新 last_report_date 失败: %s %s", ticker, uerr)
             else:
                 logger.warning("%s: 无数据写入", ticker)
                 failed += 1
@@ -656,7 +671,7 @@ def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
     parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend"],
                         help="同步类型")
-    parser.add_argument("--market", default=None, choices=["CN_A", "HK", "US", "all"],
+    parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
     parser.add_argument("--workers", type=int, default=4, help="并发线程数")
     parser.add_argument("--force", action="store_true", help="强制全量同步（忽略断点续传）")

@@ -145,6 +145,53 @@ class CircuitBreakerConfig:
     )
 
 
+# ── 调度配置 ──────────────────────────────────────────────
+@dataclass
+class SchedulerConfig:
+    """定时任务调度配置。
+
+    每个市场使用独立的 cron 表达式控制触发时间。
+    配置含义：只在对应时间点触发，实际执行时会检查是否为交易日。
+    """
+
+    # A 股：每个交易日 16:30 (北京时间) 收盘后触发
+    cn_a_cron: str = field(
+        default_factory=lambda: _env("STOCK_CN_A_CRON", "30 16 * * 1-5")
+    )
+    # 港股：每个交易日 17:00 (北京时间) 收盘后触发
+    hk_cron: str = field(
+        default_factory=lambda: _env("STOCK_HK_CRON", "0 17 * * 1-5")
+    )
+    # 美股：每个美股交易日收盘后触发（北京时间 06:00 ≈ 美东 18:00 前一交易日）
+    us_cron: str = field(
+        default_factory=lambda: _env("STOCK_US_CRON", "0 6 * * 1-6")
+    )
+
+    # 重试配置
+    max_retries: int = field(
+        default_factory=lambda: _env("STOCK_SCHEDULER_MAX_RETRIES", "3", cast=int)
+    )
+    # 重试间隔基数（秒），实际间隔 = base * 2^(attempt-1)
+    retry_base_delay: float = field(
+        default_factory=lambda: _env("STOCK_SCHEDULER_RETRY_DELAY", "60", cast=float)
+    )
+
+    # 同步时使用的并发线程数
+    sync_workers: int = field(
+        default_factory=lambda: _env("STOCK_SCHEDULER_WORKERS", "4", cast=int)
+    )
+
+    # 是否在启动时强制全量同步（忽略断点续传）
+    force_sync: bool = field(
+        default_factory=lambda: _env("STOCK_SCHEDULER_FORCE", "false", cast=lambda v: v.lower() in ("1", "true", "yes"))
+    )
+
+    # 通知回调 URL（可选，留空则仅日志）
+    notify_url: str = field(
+        default_factory=lambda: _env("STOCK_SCHEDULER_NOTIFY_URL", "")
+    )
+
+
 # ── 聚合配置对象 ──────────────────────────────────────────
 db: DBConfig = DBConfig()
 concurrency: ConcurrencyConfig = ConcurrencyConfig()
@@ -152,6 +199,7 @@ throttle: ThrottleConfig = ThrottleConfig()
 retry: RetryConfig = RetryConfig()
 circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()
 sec: SECConfig = SECConfig()
+scheduler: SchedulerConfig = SchedulerConfig()
 
 # ── 日志配置 ──────────────────────────────────────────────
 LOG_CONFIG: dict = {
@@ -180,3 +228,10 @@ if __name__ == "__main__":
     print(f"timeout      : {retry.timeout}")
     print(f"circuit threshold : {circuit_breaker.threshold}")
     print(f"circuit reset_min : {circuit_breaker.reset_minutes}")
+    print()
+    print(f"CN_A cron     : {scheduler.cn_a_cron}")
+    print(f"HK cron       : {scheduler.hk_cron}")
+    print(f"US cron       : {scheduler.us_cron}")
+    print(f"sched retries : {scheduler.max_retries}")
+    print(f"sched workers : {scheduler.sync_workers}")
+    print(f"sched force   : {scheduler.force_sync}")

@@ -309,6 +309,60 @@ def health_check() -> bool:
         return False
 
 
+# ── 数据迁移 ──────────────────────────────────────────────
+def migrate_market_check() -> bool:
+    """执行 market 字段 CHECK 约束迁移。
+
+    - 检查并清理脏数据（'HK' → 'CN_HK'，删除其他非法值）
+    - 添加 CHECK (market IN ('CN_A', 'CN_HK', 'US')) 约束
+    - 同时处理 stock_info 和 sync_progress 表
+
+    Returns:
+        True 表示迁移成功或约束已存在。
+    """
+    migration_sql = """
+    -- 检查并清理 stock_info 脏数据
+    DO $$
+    BEGIN
+        -- 将 'HK' 统一为 'CN_HK'
+        UPDATE stock_info SET market = 'CN_HK' WHERE market = 'HK';
+        -- 删除其他非法值
+        DELETE FROM stock_info WHERE market IS NULL OR market NOT IN ('CN_A', 'CN_HK', 'US');
+    END $$;
+
+    -- 添加 stock_info CHECK 约束
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'chk_stock_info_market'
+        ) THEN
+            ALTER TABLE stock_info ADD CONSTRAINT chk_stock_info_market
+                CHECK (market IN ('CN_A', 'CN_HK', 'US'));
+        END IF;
+    END $$;
+
+    -- 清理 sync_progress 并添加约束
+    DO $$
+    BEGIN
+        DELETE FROM sync_progress WHERE market IS NULL OR market NOT IN ('CN_A', 'CN_HK', 'US');
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'chk_sync_progress_market'
+        ) THEN
+            ALTER TABLE sync_progress ADD CONSTRAINT chk_sync_progress_market
+                CHECK (market IN ('CN_A', 'CN_HK', 'US'));
+        END IF;
+    END $$;
+    """
+
+    try:
+        execute(migration_sql, commit=True)
+        logger.info("market CHECK 约束迁移完成")
+        return True
+    except Exception as exc:
+        logger.error("market CHECK 约束迁移失败: %s", exc)
+        return False
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,

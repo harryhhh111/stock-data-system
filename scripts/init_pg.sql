@@ -12,7 +12,7 @@ SET timezone = 'Asia/Shanghai';
 CREATE TABLE IF NOT EXISTS stock_info (
     stock_code      VARCHAR(20) PRIMARY KEY,
     stock_name      VARCHAR(100) NOT NULL,
-    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'HK'
+    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK' | 'US'
     list_date       DATE,                    -- 上市日期
     delist_date     DATE,                    -- 退市日期（如有）
     industry        VARCHAR(100),            -- 申万/证监会行业
@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS stock_info (
     em_code         VARCHAR(20),             -- 东方财富代码（如 SH600519）
     ths_code        VARCHAR(20),             -- 同花顺代码（如 600519）
 
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_stock_info_market CHECK (market IN ('CN_A', 'CN_HK', 'US'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_market ON stock_info(market);
