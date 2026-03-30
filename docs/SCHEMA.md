@@ -20,6 +20,8 @@
 | Layer 3: derived_indicators | 物化视图，从报表计算（A 股/港股 + 美股） | 定时刷新 |
 | Layer 4: dividend_split | 分红送转事件 | Append-only |
 | Layer 5: index_constituent | 指数成分股 | Upsert |
+| Layer 6: daily_quote | 日线行情（A 股/港股） | Upsert |
+| Layer 3b: mv_fcf_yield | FCF Yield 物化视图 | 定时刷新 |
 | 辅助: sync_progress | 同步状态 + 增量判断 | Upsert |
 | 辅助: validation_results | 数据校验结果 | Append-only |
 
@@ -597,3 +599,138 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_indicator_ttm;
 ```
 
 建议在每次数据同步完成后刷新，或每天凌晨定时刷新一次。
+
+---
+
+## Layer 6: daily_quote（日线行情）
+
+```sql
+CREATE TABLE daily_quote (
+    stock_code      VARCHAR(20) NOT NULL,
+    trade_date      DATE NOT NULL,
+    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK'
+
+    -- OHLCV
+    open            DECIMAL(12,4),
+    high            DECIMAL(12,4),
+    low             DECIMAL(12,4),
+    close           DECIMAL(12,4),
+    volume          BIGINT,                 -- 成交量（股）
+    amount          DECIMAL(20,2),           -- 成交额（元/港元）
+    turnover_rate   DECIMAL(8,4),            -- 换手率（%）
+
+    -- 市值（来自实时行情接口，历史回填时可能为 NULL）
+    market_cap      DECIMAL(20,2),           -- 总市值
+    float_market_cap DECIMAL(20,2),          -- 流通市值（仅 A 股）
+
+    -- 估值（来自实时行情接口，仅当日快照有效）
+    pe_ttm          DECIMAL(12,4),           -- 市盈率 TTM
+    pb              DECIMAL(12,4),           -- 市净率
+
+    currency        VARCHAR(10) DEFAULT 'CNY',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_daily_quote PRIMARY KEY (stock_code, trade_date),
+    CONSTRAINT fk_quote_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
+    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK'))
+);
+
+CREATE INDEX idx_quote_date ON daily_quote(trade_date);
+CREATE INDEX idx_quote_market_date ON daily_quote(market, trade_date);
+CREATE INDEX idx_quote_cap ON daily_quote(market_cap) WHERE market_cap IS NOT NULL;
+```
+
+### 数据来源
+
+| 模式 | A 股接口 | 港股接口 | 说明 |
+|------|---------|---------|------|
+| 增量（每日） | `ak.stock_zh_a_spot_em()` | 东方财富 API 直调（绕过 akshare） | 含市值（A 股/港股）、PE、PB |
+| 全量回填 | `ak.stock_zh_a_hist()` | `ak.stock_hk_hist()` | 逐只拉 OHLCV，无市值 |
+
+> **港股市值说明（2026-03-30）**
+>
+> 港股增量同步已改为直接调用东方财富 API，获取 f20(总市值)、f9(PE)、f23(PB)。
+> 2026-03-30 之前的港股 daily_quote 记录（~2642 条）market_cap 为 NULL，
+> 需通过重新同步当日数据或 SQL 回填来补全。
+> 待港股市值补全后，`mv_fcf_yield` 刷新即可纳入港股 FCF Yield。
+
+### 同步命令
+
+```bash
+# 每日增量（A 股 + 港股）
+python sync.py --type daily --market all
+
+# 只同步 A 股
+python sync.py --type daily --market CN_A
+
+# 全量历史回填（从 2020 年开始）
+python sync.py --type daily --market CN_A --force
+```
+
+---
+
+## mv_fcf_yield（FCF Yield 物化视图）
+
+连接最新日线行情（含市值）+ 最新 TTM 指标（含 fcf_ttm），计算 FCF Yield。
+
+```sql
+CREATE MATERIALIZED VIEW mv_fcf_yield AS
+WITH latest_quote AS (
+    SELECT stock_code, MAX(trade_date) AS latest_date
+    FROM daily_quote
+    WHERE market_cap IS NOT NULL AND market_cap > 0
+    GROUP BY stock_code
+),
+latest_ttm AS (
+    SELECT DISTINCT ON (stock_code)
+        stock_code, report_date AS ttm_report_date,
+        fcf_ttm, revenue_ttm, net_profit_ttm, cfo_ttm
+    FROM mv_indicator_ttm
+    WHERE fcf_ttm IS NOT NULL
+    ORDER BY stock_code, report_date DESC
+)
+SELECT
+    q.stock_code, s.stock_name, s.market, s.currency,
+    q.trade_date, q.close, q.market_cap, q.float_market_cap,
+    q.pe_ttm, q.pb,
+    t.fcf_ttm, t.revenue_ttm, t.net_profit_ttm, t.cfo_ttm, t.ttm_report_date,
+    t.fcf_ttm / q.market_cap AS fcf_yield,
+    t.fcf_ttm / q.float_market_cap AS fcf_yield_float,
+    q.updated_at
+FROM daily_quote q
+JOIN latest_quote lq ON q.stock_code = lq.stock_code AND q.trade_date = lq.latest_date
+JOIN latest_ttm t ON q.stock_code = t.stock_code
+JOIN stock_info s ON q.stock_code = s.stock_code
+WHERE q.market_cap > 0 AND t.fcf_ttm IS NOT NULL;
+```
+
+### 查询示例
+
+```sql
+-- A 股 FCF Yield > 10%
+SELECT stock_code, stock_name, close, market_cap, fcf_ttm, fcf_yield
+FROM mv_fcf_yield
+WHERE market = 'CN_A' AND fcf_yield > 0.10
+ORDER BY fcf_yield DESC;
+
+-- 港股 FCF Yield > 10%（注意：FCF 是 CNY，市值是 HKD）
+SELECT stock_code, stock_name, close, market_cap, fcf_ttm, fcf_yield
+FROM mv_fcf_yield
+WHERE market = 'CN_HK' AND fcf_yield > 0.10
+ORDER BY fcf_yield DESC;
+```
+
+### 刷新命令
+
+```sql
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_fcf_yield;
+```
+
+> DDL 完整文件见 `scripts/fcf_yield_views.sql`
+
+### 数据量估算
+
+| 表 | 预估行数（5 年运行） | 单行大小 | 总大小 |
+|----|-------------------|---------|-------|
+| daily_quote | ~7,000,000（5,500 股 × 250 天 × 5 年） | 120B | ~840MB |
+| mv_fcf_yield | ~5,000 | 200B | ~1MB |

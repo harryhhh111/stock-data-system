@@ -126,7 +126,7 @@ class BaseTransformer(ABC):
 
         Args:
             raw_df: 原始 DataFrame（来自 fetcher 层）
-            market: 市场标识，'CN_A' 或 'HK'
+            market: 市场标识，'CN_A' 或 'CN_HK'
 
         Returns:
             标准化字典列表，每个字典对应一行报表记录

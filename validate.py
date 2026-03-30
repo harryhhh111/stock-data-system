@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS validation_results (
     id              BIGSERIAL PRIMARY KEY,
     batch_id        VARCHAR(50) NOT NULL,       -- 批次标识，如 '2026-03-29_153300'
     stock_code      VARCHAR(20) NOT NULL,
-    market          VARCHAR(10) NOT NULL,        -- 'CN_A' | 'HK' | 'US'
+    market          VARCHAR(10) NOT NULL,        -- 'CN_A' | 'CN_HK' | 'US'
     report_date     DATE NOT NULL,
     check_name      VARCHAR(80) NOT NULL,        -- 检查规则名称
     severity        VARCHAR(10) NOT NULL,        -- 'error' | 'warning' | 'info'
@@ -137,7 +137,7 @@ def _market_filter(market: str, table_alias: str = "s") -> tuple[str, tuple]:
     if market == "A":
         return f" AND {table_alias}.market = 'CN_A'", ()
     elif market == "HK":
-        return f" AND {table_alias}.market = 'HK'", ()
+        return f" AND {table_alias}.market = 'CN_HK'", ()
     elif market == "US":
         # US 数据在独立表中，无 stock_info 关联的市场字段
         return "", ()
@@ -506,7 +506,7 @@ def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
     """
     if market in ("A", "HK", ""):
         issues.append(ValidationIssue(
-            stock_code="*", market="CN_A" if market == "A" else "HK",
+            stock_code="*", market="CN_A" if market == "A" else "CN_HK",
             report_date="*",
             check_name="single_source_limitation",
             severity="info",

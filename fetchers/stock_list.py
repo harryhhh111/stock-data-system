@@ -90,7 +90,7 @@ def _fetch_hk_from_em() -> pd.DataFrame:
         records.append({
             "stock_code": code,
             "stock_name": name,
-            "market": "HK",
+            "market": "CN_HK",
             "exchange": "HKEX",
             "list_date": None,
         })
@@ -110,7 +110,7 @@ def _fetch_hk_from_sina() -> pd.DataFrame:
         records.append({
             "stock_code": code,
             "stock_name": name,
-            "market": "HK",
+            "market": "CN_HK",
             "exchange": "HKEX",
             "list_date": None,
         })

@@ -292,6 +292,43 @@ CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market);
 CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status);
 
 -- ============================================================
+-- Layer 6: daily_quote（日线行情）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS daily_quote (
+    stock_code      VARCHAR(20) NOT NULL,
+    trade_date      DATE NOT NULL,
+    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK'
+
+    -- OHLCV
+    open            DECIMAL(12,4),
+    high            DECIMAL(12,4),
+    low             DECIMAL(12,4),
+    close           DECIMAL(12,4),
+    volume          BIGINT,                 -- 成交量（股）
+    amount          DECIMAL(20,2),           -- 成交额（元/港元）
+    turnover_rate   DECIMAL(8,4),            -- 换手率（%）
+
+    -- 市值（来自实时行情接口，历史回填时可能为 NULL）
+    market_cap      DECIMAL(20,2),           -- 总市值
+    float_market_cap DECIMAL(20,2),          -- 流通市值（仅 A 股）
+
+    -- 估值（来自实时行情接口，仅当日快照有效）
+    pe_ttm          DECIMAL(12,4),           -- 市盈率 TTM
+    pb              DECIMAL(12,4),           -- 市净率
+
+    currency        VARCHAR(10) DEFAULT 'CNY',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_daily_quote PRIMARY KEY (stock_code, trade_date),
+    CONSTRAINT fk_quote_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
+    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_quote_date ON daily_quote(trade_date);
+CREATE INDEX IF NOT EXISTS idx_quote_market_date ON daily_quote(market, trade_date);
+CREATE INDEX IF NOT EXISTS idx_quote_cap ON daily_quote(market_cap) WHERE market_cap IS NOT NULL;
+
+-- ============================================================
 -- Layer 3: 物化视图（在数据导入后手动创建）
 -- ============================================================
 -- 见 docs/SCHEMA.md 中的 mv_financial_indicator 和 mv_indicator_ttm

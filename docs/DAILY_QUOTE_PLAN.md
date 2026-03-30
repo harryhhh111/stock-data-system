@@ -21,52 +21,46 @@
 | 市场 | 接口 | 返回字段 | 备注 |
 |------|------|---------|------|
 | A 股 | `ak.stock_zh_a_spot_em()` | 代码、名称、最新价、总市值、流通市值、市盈率-动态、市净率、换手率、成交额 | ✅ **有总市值**。分 58 页拉取，~20s |
-| 港股 | `ak.stock_hk_spot_em()` | 代码、名称、最新价、成交量、成交额 | ⚠️ **无总市值**，需额外补总股本 |
+| 港股 | 东方财富 API 直调 | 代码、名称、最新价、成交量、成交额、**总市值**、**PE**、**PB** | ✅ **有总市值**（绕过 akshare，直接调东方财富 API） |
 | 美股 | `ak.stock_us_spot_em()` | 代码、名称、最新价、总市值、成交量、成交额、换手率、涨跌幅、涨跌额 | ⚠️ **无 prev_close、PE、PB**。有总市值 |
+
+> **港股市值发现（2026-03-30）**
+>
+> `ak.stock_hk_spot_em()` 内部调用东方财富 API 时，请求字段包含 f20（总市值）、f9（PE）、f23（PB），
+> 但最终输出时丢弃了这些列。实际上东方财富港股行情 API **本身是包含市值的**。
+> 因此方案调整为：绕过 akshare 的 `stock_hk_spot_em()`，直接调用东方财富 API 并保留所有有价值字段。
 
 ### 2.2 港股市值的解决方案
 
-> ⚠️ **实施前强制前置验证**
+> **⚠️ 实施状态：已完成方案调整**
 >
-> 在启动港股行情同步前，**必须先查询 `stock_share` 表验证港股数据覆盖率**：
-> ```sql
-> -- 检查港股股本数据覆盖率
-> SELECT
->     COUNT(*) AS total_hk_stocks,
->     COUNT(ss.stock_code) AS covered,
->     ROUND(COUNT(ss.stock_code)::NUMERIC / COUNT(*) * 100, 2) AS coverage_pct
-> FROM stock_info si
-> LEFT JOIN stock_share ss ON si.stock_code = ss.stock_code
-> WHERE si.market = 'HK';
-> ```
-> - 覆盖率 ≥ 80%：可正常启动港股行情同步
-> - 覆盖率 < 80%：需先补充港股股本数据，否则大量股票市值计算为 NULL
+> 原方案假设港股接口无市值，需要通过 `stock_share` 关联计算。
+> 经调研发现东方财富 API 本身包含市值字段（f20），但 akshare 封装时丢弃了。
 >
-> 此验证为**阻塞条件**，不满足则不得进入实施阶段。
+> **最终方案**：绕过 akshare，直接调用东方财富港股行情 API，保留市值/PE/PB。
+> `stock_share` 表暂不使用（当前为空），可作为长期备选方案。
 
-港股接口 `stock_hk_spot_em()` 无总市值字段，采用两阶段计算：
+**方案 A（已采用）：直接调东方财富 API 获取市值**
 
-**阶段一：`stock_share` 表关联计算**
+东方财富港股行情 API `https://72.push2.eastmoney.com/api/qt/clist/get` 返回的 fields 中：
+- `f20`：总市值（港元）
+- `f9`：市盈率（动态）
+- `f23`：市净率
+
+实现：新增 `fetch_hk_spot_with_cap()` 方法，直接请求 API 并解析这些字段。
+
+**方案 B（备选）：`stock_share` 表关联计算**
 
 当前系统已有 `stock_share` 表（外键引用 `stock_info`），内含各股票的总股本数据。
-- 市值 = `最新价 × total_share`（取 `stock_share` 中该股票最新的总股本记录）
-- 每次行情同步时 JOIN `stock_share` 计算市值，不额外拉取
+- 市值 = `最新价 × total_share`
+- 前提条件：`stock_share` 表需要有港股数据（当前为空）
+- 可在未来财报同步时顺带填充 `stock_share`
 
 > **港股货币单位说明**
 > - 港股最新价的货币单位是 **HKD（港币）**
-> - 计算出的市值单位也是 **HKD**
-> - FCF TTM 的货币单位是 **CNY（人民币）**，因此港股 FCF Yield 计算时分子分母货币单位不同
-> - 由于不跨市场比较，同一市场内的计算结果数值可正常用于排序和筛选，但需注意单位差异
-> - **FCF Yield 数值偏差范围示例**：假设某港股 FCF TTM = 100 亿 CNY，总市值 = 1000 亿 HKD
->   - 若不做汇率调整，FCF Yield ≈ 100 / 1000 = **10.0%**
->   - 按 CNY/HKD ≈ 1.08 换算，FCF Yield ≈ 100 / (1000 × 1.08) ≈ **9.3%**
->   - 不做换算时偏差约 8%（USD/HKD ≈ 7.82，CNY/HKD ≈ 1.08），排序不受影响但绝对值偏低
-
-**阶段二：财报同步时自动更新股本（长期）**
-
-- 港股年报/中报中包含最新股本数，财报同步后顺带更新 `stock_share`
-- 股本数据新鲜度阈值：超过 365 天的记录标注为"可能过期"
-- 若 `stock_share` 无某港股数据，该股票的 `total_market_cap` 置 NULL，跳过 FCF Yield 计算
+> - 东方财富 API 返回的总市值单位也是 **HKD**
+> - 港股财务报表（income_statement / cash_flow_statement 等）的 currency 字段均为 **HKD**
+> - FCF TTM 与市值单位一致（均为 HKD），**不存在货币偏差**
 
 ### 2.3 数据量预估
 
@@ -257,7 +251,7 @@ ORDER BY fcf_yield DESC;
 WITH latest_quote_date AS (
     SELECT MAX(quote_date) AS max_date
     FROM stock_daily_quote
-    WHERE market = 'HK'
+    WHERE market = 'CN_HK'
 ),
 latest_fcf_ttm AS (
     SELECT DISTINCT ON (stock_code)
@@ -278,16 +272,16 @@ JOIN latest_fcf_ttm fcf USING (stock_code)
 JOIN stock_info info ON quote.stock_code = info.stock_code
 CROSS JOIN latest_quote_date latest
 WHERE quote.quote_date = latest.max_date
-  AND quote.market = 'HK'
+  AND quote.market = 'CN_HK'
   AND quote.total_market_cap IS NOT NULL AND quote.total_market_cap > 0
   AND fcf.fcf_ttm IS NOT NULL AND fcf.fcf_ttm > 0
   AND (fcf.fcf_ttm / quote.total_market_cap) > 0.10
 ORDER BY fcf_yield DESC;
--- 注意：港股 FCF Yield 分子(fcf_ttm)是 CNY，分母(市值)是 HKD，货币单位不同，绝对值偏低约 8%
+-- 注意：港股 FCF Yield 分子(fcf_ttm)与分母(市值)均为 HKD，单位一致
 
 -- 美股 FCF Yield > 10%
 -- 同 A 股结构，WHERE market = 'US'，JOIN mv_us_indicator_ttm 即可
--- 美股市值单位为 USD，FCF TTM 单位也是 USD，无货币偏差问题
+-- 美股市值单位为 USD，FCF TTM 单位也为 USD，无货币偏差问题
 ```
 
 > **注意**：各市场独立查询，SQL 中 A 股 JOIN `mv_indicator_ttm`，美股 JOIN `mv_us_indicator_ttm`。
@@ -311,7 +305,7 @@ ORDER BY fcf_yield DESC;
 ## 八、待确认事项
 
 1. **美股行情接口覆盖范围？** `stock_us_spot_em` 是全量还是只覆盖部分股票？
-2. ~~**`stock_share` 表港股数据完整性？** 需确认港股总股本覆盖率和数据新鲜度~~
-   > ✅ **已提升为实施前强制前置验证**（见 §2.2），需在实施前执行 SQL 验证覆盖率
-3. **`market` 字段枚举约束？** 当前 `market` 为 `VARCHAR(10)`，是否需要加 `CHECK (market IN ('CN_A', 'HK', 'US'))` 约束，还是保持自由文本以便未来扩展？
+2. ~~**`stock_share` 表港股数据完整性？**~~ → ✅ 已确认 stock_share 为空，改用东方财富 API 直调获取市值
+3. **`market` 字段枚举约束？** 当前 `market` 为 `VARCHAR(10)`，是否需要加 `CHECK (market IN ('CN_A', 'CN_HK'))` 约束，还是保持自由文本以便未来扩展？
 4. **美股 `quote_date` 时区语义？** 美股交易时间跨北京时间日期（美东 9:30–16:00 = 北京 21:30–次日 04:00）。建议 `quote_date` 存储**美东交易日日期**（即北京时间次日早同步时，用美东日期而非北京时间日期），避免同一交易日数据被拆到两个日期。需确认实现时是否需要引入时区转换逻辑。
+5. ~~**港股 market 标识不一致**~~：~~`stock_info.market = 'HK'`，`daily_quote.market = 'CN_HK'`，同步时需映射。是否应统一？~~ → ✅ 已于 2026-03-30 统一为 `CN_HK`。stock_info、sync_progress、validation_results 存量数据已全部修正，代码中的适配代码已移除。

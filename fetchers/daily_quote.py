@@ -1,0 +1,412 @@
+"""
+fetchers/daily_quote.py — 日线行情数据拉取
+
+数据源：
+  - A 股历史日线: ak.stock_zh_a_hist（OHLCV + 换手率，无市值）
+  - A 股实时行情: ak.stock_zh_a_spot_em（含总市值、流通市值、PE、PB）
+  - 港股历史日线: ak.stock_hk_hist（OHLCV + 换手率，无市值）
+  - 港股实时行情: 东方财富 API 直调（含总市值、PE、PB）
+
+策略：
+  - 历史回填（全量）：逐只股票拉取历史日线（OHLCV），市值留 NULL
+  - 每日增量：用实时行情接口（含市值），批量拉全市场当天数据
+
+港股市值说明（2026-03-30）：
+  ak.stock_hk_spot_em() 内部调用东方财富 API 时请求了 f20(总市值)、f9(PE)、f23(PB)，
+  但最终输出时丢弃了这些列。因此改用直接调 API 的方式获取完整数据。
+"""
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import Optional
+
+import akshare as ak
+import pandas as pd
+import requests
+
+from .base import BaseFetcher, retry_with_backoff, rate_limiter
+
+logger = logging.getLogger(__name__)
+
+
+class DailyQuoteFetcher(BaseFetcher):
+    """日线行情拉取器。"""
+
+    source_name = "eastmoney_quote"
+
+    # ── A 股历史日线（单只股票）──────────────────────────
+
+    @retry_with_backoff
+    def fetch_a_hist(
+        self,
+        symbol: str,
+        start_date: str = "19700101",
+        end_date: str = "20500101",
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        """拉取单只 A 股历史日线。
+
+        Args:
+            symbol: 股票代码，如 "000001"
+            start_date: 开始日期 YYYYMMDD
+            end_date: 结束日期 YYYYMMDD
+            adjust: 复权方式 "" | "qfq" | "hfq"
+
+        Returns:
+            DataFrame with columns: 日期, 股票代码, 开盘, 收盘, 最高, 最低,
+                                    成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
+        """
+        rate_limiter.wait()
+        df = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust=adjust,
+        )
+        return df
+
+    # ── A 股实时行情（全市场，含市值）────────────────────
+
+    @retry_with_backoff(max_retries=3)
+    def fetch_a_spot(self) -> pd.DataFrame:
+        """拉取 A 股全市场实时行情（含市值）。
+
+        返回字段：代码, 名称, 最新价, 涨跌幅, 成交量, 成交额,
+                  换手率, 市盈率-动态, 市净率, 总市值, 流通市值, 今开, 最高, 最低, 昨收 等
+        """
+        logger.info("开始拉取 A 股实时行情...")
+        t0 = time.time()
+        rate_limiter.wait()
+        df = ak.stock_zh_a_spot_em()
+        elapsed = time.time() - t0
+        logger.info("A 股实时行情: %d 只, 耗 %.1fs", len(df), elapsed)
+        return df
+
+    # ── 港股历史日线（单只股票）──────────────────────────
+
+    @retry_with_backoff
+    def fetch_hk_hist(
+        self,
+        symbol: str,
+        start_date: str = "19700101",
+        end_date: str = "20500101",
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        """拉取单只港股历史日线。
+
+        Args:
+            symbol: 港股代码，如 "00700"
+            start_date: 开始日期 YYYYMMDD
+            end_date: 结束日期 YYYYMMDD
+
+        Returns:
+            DataFrame: 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 换手率 等
+        """
+        rate_limiter.wait()
+        df = ak.stock_hk_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust=adjust,
+        )
+        return df
+
+    # ── 港股实时行情（全市场，含市值）────────────────────
+
+    @retry_with_backoff(max_retries=3)
+    def fetch_hk_spot(self) -> pd.DataFrame:
+        """拉取港股全市场实时行情（含市值）。
+
+        直接调用东方财富 API，保留总市值、PE、PB 等字段。
+        ak.stock_hk_spot_em() 在输出时丢弃了这些字段，因此绕过 akshare。
+
+        返回字段：代码, 名称, 最新价, 涨跌额, 涨跌幅, 今开, 最高, 最低, 昨收,
+                  成交量, 成交额, 总市值, 市盈率-动态, 市净率
+        """
+        logger.info("开始拉取港股实时行情（含市值）...")
+        t0 = time.time()
+
+        url = "https://72.push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1",
+            "pz": "5000",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": "m:128 t:3,m:128 t:4,m:128 t:1,m:128 t:2",
+            "fields": "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f14,f15,f16,f17,f18,f20,f23",
+        }
+
+        all_items = []
+        page = 1
+
+        while True:
+            params["pn"] = str(page)
+            rate_limiter.wait()
+            resp = requests.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not data.get("data") or not data["data"].get("diff"):
+                break
+
+            diff = data["data"]["diff"]
+            all_items.extend(diff)
+
+            total = data["data"]["total"]
+            if len(all_items) >= total:
+                break
+
+            page += 1
+
+        # 构造 DataFrame
+        df = pd.DataFrame(all_items)
+        if df.empty:
+            logger.warning("港股实时行情: 无数据")
+            return pd.DataFrame(columns=[
+                "代码", "名称", "最新价", "涨跌额", "涨跌幅",
+                "今开", "最高", "最低", "昨收",
+                "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+            ])
+
+        df = df.rename(columns={
+            "f12": "代码",
+            "f14": "名称",
+            "f2": "最新价",
+            "f4": "涨跌额",
+            "f3": "涨跌幅",
+            "f17": "今开",
+            "f15": "最高",
+            "f16": "最低",
+            "f18": "昨收",
+            "f5": "成交量",
+            "f6": "成交额",
+            "f20": "总市值",
+            "f9": "市盈率-动态",
+            "f23": "市净率",
+        })
+
+        # 只保留需要的列（存在的才保留）
+        keep_cols = [
+            "代码", "名称", "最新价", "涨跌额", "涨跌幅",
+            "今开", "最高", "最低", "昨收",
+            "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+        ]
+        for col in keep_cols:
+            if col not in df.columns:
+                df[col] = None
+        df = df[keep_cols]
+
+        # 类型转换
+        numeric_cols = [
+            "最新价", "涨跌额", "涨跌幅", "今开", "最高", "最低", "昨收",
+            "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+        ]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        elapsed = time.time() - t0
+        has_cap = df["总市值"].notna().sum()
+        logger.info("港股实时行情: %d 只, 含市值 %d 只, 耗 %.1fs", len(df), has_cap, elapsed)
+        return df
+
+
+# ── 标准化函数 ────────────────────────────────────────────
+
+def transform_a_hist_to_records(df: pd.DataFrame, market: str = "CN_A") -> list[dict]:
+    """将 A 股历史日线 DataFrame 转为 upsert 记录列表。
+
+    Args:
+        df: ak.stock_zh_a_hist 返回的 DataFrame
+        market: 市场标识
+    """
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "stock_code": str(row.get("股票代码", "")).strip(),
+            "trade_date": pd.to_datetime(row["日期"]).date(),
+            "market": market,
+            "open": _safe_float(row.get("开盘")),
+            "high": _safe_float(row.get("最高")),
+            "low": _safe_float(row.get("最低")),
+            "close": _safe_float(row.get("收盘")),
+            "volume": _safe_int(row.get("成交量")),
+            "amount": _safe_float(row.get("成交额")),
+            "turnover_rate": _safe_float(row.get("换手率")),
+            "market_cap": None,  # 历史数据无市值
+            "float_market_cap": None,
+            "pe_ttm": None,
+            "pb": None,
+            "currency": "CNY",
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
+def transform_a_spot_to_records(df: pd.DataFrame) -> list[dict]:
+    """将 A 股实时行情 DataFrame 转为 upsert 记录列表。
+
+    含市值、PE、PB 字段。trade_date 取当前日期（交易日收盘后调用）。
+    """
+    today = datetime.now().date()
+    records = []
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).strip()
+        if not code:
+            continue
+        records.append({
+            "stock_code": code,
+            "trade_date": today,
+            "market": "CN_A",
+            "open": _safe_float(row.get("今开")),
+            "high": _safe_float(row.get("最高")),
+            "low": _safe_float(row.get("最低")),
+            "close": _safe_float(row.get("最新价")),
+            "volume": _safe_int(row.get("成交量")),
+            "amount": _safe_float(row.get("成交额")),
+            "turnover_rate": _safe_float(row.get("换手率")),
+            "market_cap": _safe_float(row.get("总市值")),
+            "float_market_cap": _safe_float(row.get("流通市值")),
+            "pe_ttm": _safe_float(row.get("市盈率-动态")),
+            "pb": _safe_float(row.get("市净率")),
+            "currency": "CNY",
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
+def transform_hk_hist_to_records(df: pd.DataFrame, stock_code: str, market: str = "CN_HK") -> list[dict]:
+    """将港股历史日线 DataFrame 转为 upsert 记录列表。
+
+    注意：港股历史数据无「股票代码」列，需外部传入。
+    """
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "stock_code": stock_code,
+            "trade_date": pd.to_datetime(row["日期"]).date(),
+            "market": market,
+            "open": _safe_float(row.get("开盘")),
+            "high": _safe_float(row.get("最高")),
+            "low": _safe_float(row.get("最低")),
+            "close": _safe_float(row.get("收盘")),
+            "volume": _safe_int(row.get("成交量")),
+            "amount": _safe_float(row.get("成交额")),
+            "turnover_rate": _safe_float(row.get("换手率")),
+            "market_cap": None,
+            "float_market_cap": None,
+            "pe_ttm": None,
+            "pb": None,
+            "currency": "HKD",
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
+def transform_hk_spot_to_records(df: pd.DataFrame) -> list[dict]:
+    """将港股实时行情 DataFrame 转为 upsert 记录列表。
+
+    支持含市值（总市值、PE、PB）的新格式（来自东方财富 API 直调）
+    和不含市值的旧格式（来自 ak.stock_hk_spot_em()，兼容回退）。
+    """
+    today = datetime.now().date()
+    records = []
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).strip()
+        if not code:
+            continue
+        records.append({
+            "stock_code": code,
+            "trade_date": today,
+            "market": "CN_HK",
+            "open": _safe_float(row.get("今开")),
+            "high": _safe_float(row.get("最高")),
+            "low": _safe_float(row.get("最低")),
+            "close": _safe_float(row.get("最新价")),
+            "volume": _safe_int(row.get("成交量")),
+            "amount": _safe_float(row.get("成交额")),
+            "turnover_rate": None,  # 港股实时接口无换手率
+            "market_cap": _safe_float(row.get("总市值")),  # 东方财富 API f20
+            "float_market_cap": None,
+            "pe_ttm": _safe_float(row.get("市盈率-动态")),  # 东方财富 API f9
+            "pb": _safe_float(row.get("市净率")),  # 东方财富 API f23
+            "currency": "HKD",
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
+# ── 辅助函数 ──────────────────────────────────────────────
+
+def _safe_float(val) -> Optional[float]:
+    """安全转换浮点数，处理 NaN/None。"""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if pd.isna(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_int(val) -> Optional[int]:
+    """安全转换整数，处理 NaN/None。"""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if pd.isna(f):
+            return None
+        return int(f)
+    except (ValueError, TypeError):
+        return None
+
+
+if __name__ == "__main__":
+    import os
+    os.environ["TQDM_DISABLE"] = "1"
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    fetcher = DailyQuoteFetcher()
+
+    print("=== 测试 A 股历史日线 ===")
+    df = fetcher.fetch_a_hist("000001", start_date="20250101", end_date="20250110")
+    print(f"行数: {len(df)}")
+    records = transform_a_hist_to_records(df)
+    for r in records[:2]:
+        print(f"  {r['stock_code']} {r['trade_date']} close={r['close']} vol={r['volume']}")
+
+    print("\n=== 测试港股实时行情（含市值） ===")
+    df = fetcher.fetch_hk_spot()
+    print(f"行数: {len(df)}")
+    print(f"列: {list(df.columns)}")
+    if len(df) > 0:
+        # 过滤有市值的
+        has_cap = df[df["总市值"].notna()]
+        print(f"有市值的: {len(has_cap)}")
+        if len(has_cap) > 0:
+            for _, row in has_cap.head(3).iterrows():
+                print(f"  {row['代码']} {row['名称']} close={row['最新价']} cap={row['总市值']} pe={row['市盈率-动态']} pb={row['市净率']}")
+
+        records = transform_hk_spot_to_records(df)
+        cap_records = [r for r in records if r["market_cap"] is not None]
+        print(f"\n转换后记录数: {len(records)}, 有市值: {len(cap_records)}")
+        if cap_records:
+            for r in cap_records[:3]:
+                print(f"  {r['stock_code']} cap={r['market_cap']} pe={r['pe_ttm']} pb={r['pb']}")
+
+    print("\n=== 测试港股历史日线 ===")
+    df = fetcher.fetch_hk_hist("00700", start_date="20250101", end_date="20250110")
+    print(f"行数: {len(df)}")
+    records = transform_hk_hist_to_records(df, "00700")
+    for r in records[:2]:
+        print(f"  {r['stock_code']} {r['trade_date']} close={r['close']} vol={r['volume']}")

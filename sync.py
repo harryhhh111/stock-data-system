@@ -463,6 +463,169 @@ class SyncManager:
         """标记关闭，让正在运行的同步优雅退出。"""
         self._shutdown = True
 
+    # ── 日线行情同步 ─────────────────────────────────────
+
+    def sync_daily_quote(self, market: str) -> dict:
+        """同步日线行情数据。
+
+        策略：
+          - 增量模式（默认）：拉取全市场实时行情（含市值），写入当日快照
+          - 全量回填（--force）：逐只股票拉取历史日线
+
+        Args:
+            market: "CN_A" | "CN_HK" | "all"
+        """
+        from fetchers.daily_quote import (
+            DailyQuoteFetcher,
+            transform_a_spot_to_records,
+            transform_hk_spot_to_records,
+            transform_a_hist_to_records,
+            transform_hk_hist_to_records,
+        )
+
+        fetcher = DailyQuoteFetcher()
+
+        if market == "all":
+            markets = ["CN_A", "CN_HK"]
+        else:
+            markets = [market]
+
+        results = {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
+        t0 = time.time()
+
+        for m in markets:
+            logger.info("日线行情同步: market=%s force=%s", m, self.force)
+            try:
+                if self.force:
+                    # 全量回填：逐只拉历史日线
+                    count = self._backfill_hist(fetcher, m)
+                    results["success"] += count
+                else:
+                    # 增量：拉当日实时行情
+                    count = self._sync_spot(fetcher, m)
+                    results["success"] += count
+            except Exception as exc:
+                logger.error("日线行情同步失败: market=%s err=%s", m, exc)
+                results["failed"] += 1
+
+        results["elapsed"] = time.time() - t0
+        logger.info(
+            "日线行情同步完成: 成功=%d 失败=%d 耗时=%.1fs",
+            results["success"], results["failed"], results["elapsed"],
+        )
+        return results
+
+    def _sync_spot(self, fetcher: "DailyQuoteFetcher", market: str) -> int:
+        """同步当日实时行情快照（含市值）。"""
+        from fetchers.daily_quote import (
+            transform_a_spot_to_records,
+            transform_hk_spot_to_records,
+        )
+
+        if market == "CN_A":
+            df = fetcher.fetch_a_spot()
+            records = transform_a_spot_to_records(df)
+        elif market == "CN_HK":
+            df = fetcher.fetch_hk_spot()
+            records = transform_hk_spot_to_records(df)
+        else:
+            logger.error("不支持的市场: %s", market)
+            return 0
+
+        if not records:
+            logger.warning("日线行情: market=%s 无数据", market)
+            return 0
+
+        # 过滤掉停牌/无效数据（close 为 None 的）
+        valid = [r for r in records if r.get("close") is not None]
+        logger.info("日线行情: market=%s 原始=%d 有效=%d", market, len(records), len(valid))
+
+        if not valid:
+            logger.warning("日线行情: market=%s 无有效数据", market)
+            return 0
+
+        # 过滤掉 stock_info 中不存在的股票（外键约束）
+        known_codes = execute(
+            "SELECT stock_code FROM stock_info WHERE market = %s", (market,),
+            fetch=True,
+        )
+        known_set = {r[0] for r in known_codes}
+        before_filter = len(valid)
+        valid = [r for r in valid if r["stock_code"] in known_set]
+        filtered = before_filter - len(valid)
+        if filtered > 0:
+            logger.info("日线行情: 过滤 %d 只不在 stock_info 中的股票", filtered)
+
+        count = upsert("daily_quote", valid, ["stock_code", "trade_date"])
+        return count
+
+    def _backfill_hist(self, fetcher: "DailyQuoteFetcher", market: str) -> int:
+        """全量回填历史日线（逐只拉取）。"""
+        from fetchers.daily_quote import (
+            transform_a_hist_to_records,
+            transform_hk_hist_to_records,
+        )
+
+        # 获取该市场的股票列表
+        stock_rows = execute(
+            "SELECT stock_code FROM stock_info WHERE market = %s", (market,),
+            fetch=True,
+        )
+        stocks = [r[0] for r in stock_rows]
+        total = len(stocks)
+        logger.info("历史日线回填: market=%s 共 %d 只股票", market, total)
+
+        success = 0
+        failed = 0
+
+        for i, code in enumerate(stocks, 1):
+            try:
+                # 判断已有数据的最新日期
+                existing = execute(
+                    "SELECT MAX(trade_date) FROM daily_quote WHERE stock_code = %s",
+                    (code,),
+                    fetch=True,
+                )
+                last_date = existing[0][0] if existing and existing[0][0] else None
+
+                if last_date:
+                    # 增量：只拉最新日期之后的数据
+                    start_str = (last_date + timedelta(days=1)).strftime("%Y%m%d")
+                else:
+                    # 全量：从上市日开始
+                    start_str = "20200101"  # 默认从 2020 年开始
+
+                end_str = datetime.now().strftime("%Y%m%d")
+                if start_str > end_str:
+                    # 已经是最新的
+                    continue
+
+                if market == "CN_A":
+                    df = fetcher.fetch_a_hist(code, start_date=start_str, end_date=end_str)
+                    records = transform_a_hist_to_records(df, market)
+                else:
+                    df = fetcher.fetch_hk_hist(code, start_date=start_str, end_date=end_str)
+                    records = transform_hk_hist_to_records(df, code, market)
+
+                if records:
+                    upsert("daily_quote", records, ["stock_code", "trade_date"])
+                    success += 1
+
+            except Exception as exc:
+                failed += 1
+                logger.debug("日线回填失败: %s %s", code, exc)
+                continue
+
+            if i % 100 == 0 or i == total:
+                elapsed = time.time()  # rough
+                logger.info(
+                    "回填进度: %d/%d (%.0f%%) 成功=%d 失败=%d",
+                    i, total, i / total * 100, success, failed,
+                )
+
+        logger.info("历史日线回填完成: market=%s 成功=%d 失败=%d", market, success, failed)
+        return success
+
 
 # ── 美股同步 ───────────────────────────────────────────────
 
@@ -669,7 +832,7 @@ def sync_us_market(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend"],
+    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily"],
                         help="同步类型")
     parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
@@ -712,6 +875,10 @@ def main():
         result = manager.sync_index()
     elif args.type == "dividend":
         result = manager.sync_dividend(market=args.market)
+    elif args.type == "daily":
+        if not args.market:
+            parser.error("daily 类型需要指定 --market (CN_A/CN_HK/all)")
+        result = manager.sync_daily_quote(market=args.market)
 
     print("\n" + "=" * 50)
     for k, v in result.items():

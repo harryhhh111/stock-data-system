@@ -19,7 +19,7 @@ def main():
     start = datetime.now()
     
     conn = sqlite3.connect(DB)
-    stock_list = conn.execute("SELECT stock_code FROM stock_info WHERE market='HK' ORDER BY stock_code").fetchall()
+    stock_list = conn.execute("SELECT stock_code FROM stock_info WHERE market='CN_HK' ORDER BY stock_code").fetchall()
     conn.close()
     
     total = len(stock_list)

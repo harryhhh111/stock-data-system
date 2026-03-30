@@ -8,6 +8,7 @@ from .stock_list import fetch_a_stock_list, fetch_hk_stock_list
 from .a_financial import AFinancialFetcher, fetch_a_income, fetch_a_balance, fetch_a_cashflow, fetch_a_indicator_ths
 from .hk_financial import HkFinancialFetcher, fetch_hk_income, fetch_hk_balance, fetch_hk_cashflow, fetch_hk_indicator
 from .dividend import DividendFetcher, fetch_a_dividend, fetch_hk_dividend
+from .daily_quote import DailyQuoteFetcher
 
 __all__ = [
     # 基类与工具
@@ -34,4 +35,6 @@ __all__ = [
     "DividendFetcher",
     "fetch_a_dividend",
     "fetch_hk_dividend",
+    # 日线行情
+    "DailyQuoteFetcher",
 ]
