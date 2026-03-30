@@ -9,6 +9,7 @@ sync.py — 股票基本面数据同步调度器
     python sync.py --type financial --market all --workers 4
     python sync.py --type index
     python sync.py --type dividend [--market CN_A|HK]
+    python sync.py --type industry
 """
 from __future__ import annotations
 
@@ -459,6 +460,113 @@ class SyncManager:
 
         return {"total": total, "success": success, "failed": failed}
 
+    # ── 行业分类同步 ──────────────────────────────────────
+
+    def sync_industry(self) -> dict:
+        """同步申万一级行业分类数据到 stock_info.industry。
+
+        流程：
+          1. 通过 akshare 拉取 31 个申万一级行业的成分股
+          2. UPDATE stock_info SET industry = ? WHERE stock_code = ?
+
+        Returns:
+            统计结果字典
+        """
+        from fetchers.industry import fetch_sw_industry, get_industry_distribution
+
+        logger.info("开始同步行业分类数据...")
+
+        # 拉取数据
+        results = fetch_sw_industry()
+        if not results:
+            logger.warning("行业分类数据为空")
+            return {"total": 0, "updated": 0, "industry_count": 0}
+
+        # 批量 UPDATE stock_info.industry
+        updated = 0
+        not_found = 0
+        t0 = time.time()
+
+        # 先获取 stock_info 中已有的 A 股代码集合
+        existing_rows = execute(
+            "SELECT stock_code FROM stock_info WHERE market = 'CN_A'",
+            fetch=True,
+        )
+        existing_codes = {r[0] for r in existing_rows}
+        logger.info("stock_info 中 A 股: %d 只", len(existing_codes))
+
+        # 构建 code → industry 映射
+        code_industry = {}
+        for item in results:
+            code = item["stock_code"]
+            if code in existing_codes:
+                code_industry[code] = item["industry_name"]
+            else:
+                not_found += 1
+
+        logger.info(
+            "行业数据: %d 只, 在 stock_info 中: %d 只, 未找到: %d 只",
+            len(results), len(code_industry), not_found,
+        )
+
+        # 批量 UPDATE（每 500 只一批）
+        batch_size = 500
+        codes_list = list(code_industry.keys())
+
+        for i in range(0, len(codes_list), batch_size):
+            batch = codes_list[i:i + batch_size]
+            # 使用 CASE WHEN 批量更新
+            case_parts = []
+            codes_str = []
+            for code in batch:
+                industry = code_industry[code].replace("'", "''")
+                case_parts.append(f"WHEN '{code}' THEN '{industry}'")
+                codes_str.append(f"'{code}'")
+
+            sql = f"""
+                UPDATE stock_info
+                SET industry = CASE stock_code
+                    {' '.join(case_parts)}
+                END,
+                updated_at = NOW()
+                WHERE stock_code IN ({', '.join(codes_str)})
+                AND market = 'CN_A'
+            """
+            execute(sql, commit=True)
+            updated += len(batch)
+
+            if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
+                logger.info(
+                    "行业写入进度: %d/%d (%.0f%%)",
+                    min(i + batch_size, len(codes_list)), len(codes_list),
+                    min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
+                )
+
+        elapsed = time.time() - t0
+
+        # 统计行业分布
+        dist_df = get_industry_distribution(results)
+
+        result = {
+            "total": len(results),
+            "updated": updated,
+            "not_in_stock_info": not_found,
+            "industry_count": len(dist_df),
+            "elapsed": elapsed,
+        }
+
+        logger.info(
+            "行业分类同步完成: 总计=%d, 更新=%d, 不在stock_info=%d, 行业数=%d, 耗时=%.1fs",
+            len(results), updated, not_found, len(dist_df), elapsed,
+        )
+
+        # 打印行业分布
+        logger.info("行业分布:")
+        for _, row in dist_df.iterrows():
+            logger.info("  %s: %d 只", row["industry_name"], row["stock_count"])
+
+        return result
+
     def shutdown(self):
         """标记关闭，让正在运行的同步优雅退出。"""
         self._shutdown = True
@@ -832,7 +940,7 @@ def sync_us_market(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily"],
+    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "industry"],
                         help="同步类型")
     parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
@@ -875,6 +983,8 @@ def main():
         result = manager.sync_index()
     elif args.type == "dividend":
         result = manager.sync_dividend(market=args.market)
+    elif args.type == "industry":
+        result = manager.sync_industry()
     elif args.type == "daily":
         if not args.market:
             parser.error("daily 类型需要指定 --market (CN_A/CN_HK/all)")
