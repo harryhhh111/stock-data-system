@@ -93,6 +93,7 @@ def hk_spot_df():
         "总市值": [4.5e+12, 2.0e+12],
         "市盈率-动态": [18.5, 22.0],
         "市净率": [4.2, 1.9],
+        "行业": ["互联网服务", "电子商务"],
     })
 
 
@@ -170,7 +171,7 @@ class TestTransformHkHist:
 class TestTransformHkSpot:
     def test_basic_conversion(self, hk_spot_df):
         from fetchers.daily_quote import transform_hk_spot_to_records
-        records = transform_hk_spot_to_records(hk_spot_df)
+        records, industry_map = transform_hk_spot_to_records(hk_spot_df)
         assert len(records) == 2
         r = records[0]
         assert r["stock_code"] == "00700"
@@ -180,10 +181,12 @@ class TestTransformHkSpot:
         assert r["pb"] == pytest.approx(4.2)
         assert r["market"] == "CN_HK"
         assert r["currency"] == "HKD"
+        # 行业映射
+        assert industry_map == {"00700": "互联网服务", "09988": "电子商务"}
 
     def test_market_cap_fields(self, hk_spot_df):
         from fetchers.daily_quote import transform_hk_spot_to_records
-        records = transform_hk_spot_to_records(hk_spot_df)
+        records, industry_map = transform_hk_spot_to_records(hk_spot_df)
         r1 = records[1]  # 阿里巴巴
         assert r1["stock_code"] == "09988"
         assert r1["market_cap"] == pytest.approx(2.0e+12)
@@ -206,13 +209,14 @@ class TestTransformHkSpot:
             "成交量": [20000000],
             "成交额": [9.56e+09],
         })
-        records = transform_hk_spot_to_records(old_df)
+        records, industry_map = transform_hk_spot_to_records(old_df)
         assert len(records) == 1
         r = records[0]
         assert r["close"] == 480.0
         assert r["market_cap"] is None  # 旧格式无市值
         assert r["pe_ttm"] is None
         assert r["pb"] is None
+        assert industry_map == {}  # 旧格式无行业
 
 
 # ── 辅助函数测试 ────────────────────────────────────────

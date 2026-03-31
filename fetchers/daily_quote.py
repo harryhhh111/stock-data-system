@@ -125,7 +125,7 @@ class DailyQuoteFetcher(BaseFetcher):
         ak.stock_hk_spot_em() 在输出时丢弃了这些字段，因此绕过 akshare。
 
         返回字段：代码, 名称, 最新价, 涨跌额, 涨跌幅, 今开, 最高, 最低, 昨收,
-                  成交量, 成交额, 总市值, 市盈率-动态, 市净率
+                  成交量, 成交额, 总市值, 市盈率-动态, 市净率, 行业
         """
         logger.info("开始拉取港股实时行情（含市值）...")
         t0 = time.time()
@@ -173,7 +173,7 @@ class DailyQuoteFetcher(BaseFetcher):
             return pd.DataFrame(columns=[
                 "代码", "名称", "最新价", "涨跌额", "涨跌幅",
                 "今开", "最高", "最低", "昨收",
-                "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+                "成交量", "成交额", "总市值", "市盈率-动态", "市净率", "行业",
             ])
 
         df = df.rename(columns={
@@ -198,7 +198,7 @@ class DailyQuoteFetcher(BaseFetcher):
         keep_cols = [
             "代码", "名称", "最新价", "涨跌额", "涨跌幅",
             "今开", "最高", "最低", "昨收",
-            "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+            "成交量", "成交额", "总市值", "市盈率-动态", "市净率", "行业",
         ]
         for col in keep_cols:
             if col not in df.columns:
@@ -407,9 +407,9 @@ if __name__ == "__main__":
             for _, row in has_cap.head(3).iterrows():
                 print(f"  {row['代码']} {row['名称']} close={row['最新价']} cap={row['总市值']} pe={row['市盈率-动态']} pb={row['市净率']}")
 
-        records = transform_hk_spot_to_records(df)
+        records, industry_map = transform_hk_spot_to_records(df)
         cap_records = [r for r in records if r["market_cap"] is not None]
-        print(f"\n转换后记录数: {len(records)}, 有市值: {len(cap_records)}")
+        print(f"\n转换后记录数: {len(records)}, 有市值: {len(cap_records)}, 行业映射: {len(industry_map)} 只")
         if cap_records:
             for r in cap_records[:3]:
                 print(f"  {r['stock_code']} cap={r['market_cap']} pe={r['pe_ttm']} pb={r['pb']}")
