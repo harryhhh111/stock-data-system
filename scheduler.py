@@ -5,6 +5,10 @@ scheduler.py — 定时任务调度器
 使用 APScheduler 定时触发 sync.py 的增量同步任务。
 支持三个市场独立调度规则（A股/港股/美股），失败重试，通知预留。
 
+任务分两套：
+  - 行情同步：A 股 16:37、港股 17:12，同步 daily_quote + 刷 mv_fcf_yield
+  - 财务同步：A 股 17:07、港股 17:37、美股 06:12，同步财务报表 + 刷全部物化视图
+
 用法:
     python scheduler.py                # 启动调度器
     python scheduler.py --dry-run      # 预览调度计划，不实际执行
@@ -25,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 import config
-from db import health_check, close_pool
+from db import health_check, close_pool, execute
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,16 +97,42 @@ def _notify(message: str, level: str = "info") -> None:
             logger.warning("通知发送失败: %s", exc)
 
 
+# ── 物化视图刷新 ────────────────────────────────────────────
 
+def _refresh_materialized_views(job_type: str) -> None:
+    """根据任务类型刷新物化视图。
+
+    行情同步后只刷新 mv_fcf_yield（因为只有市值变了）。
+    财务同步后按依赖顺序刷新全部三层物化视图。
+
+    刷新失败只记 warning，不影响同步结果。
+    """
+    views = []
+    if job_type == "daily_quote":
+        views = ["mv_fcf_yield"]
+    elif job_type == "financial":
+        # 严格按依赖顺序：indicator → ttm → fcf_yield
+        views = ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"]
+
+    for view in views:
+        try:
+            execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")
+            logger.info("物化视图刷新完成: %s", view)
+        except Exception as exc:
+            logger.warning("物化视图刷新失败（不影响同步结果）: %s → %s", view, exc)
+
+    if views:
+        logger.info("物化视图刷新完成: %s", " → ".join(views))
 
 
 # ── 同步任务执行器（带重试）────────────────────────────────
 
-def _run_sync_job(market: str) -> dict:
-    """执行单市场增量同步，带重试机制。
+def _run_sync_job(market: str, job_type: str = "financial") -> dict:
+    """执行单市场同步任务，带重试机制。
 
     Args:
         market: "CN_A" | "CN_HK" | "US"
+        job_type: "financial" | "daily_quote"
 
     Returns:
         {"success": bool, "attempt": int, "elapsed": float, "error": str|None}
@@ -113,52 +143,74 @@ def _run_sync_job(market: str) -> dict:
     for attempt in range(1, max_retries + 1):
         t0 = time.time()
         try:
-            logger.info("[%s] 同步开始（第 %d/%d 次尝试）", market, attempt, max_retries)
+            logger.info("[%s/%s] 同步开始（第 %d/%d 次尝试）",
+                        market, job_type, attempt, max_retries)
 
-            if market == "US":
+            if job_type == "daily_quote":
+                result = _sync_daily_quote(market)
+            elif market == "US":
                 result = _sync_us()
             else:
                 result = _sync_financial(market)
 
             elapsed = time.time() - t0
-            logger.info("[%s] 同步完成: 成功=%d, 失败=%d, 耗时=%.1fs",
-                        market, result.get("success", 0),
+            logger.info("[%s/%s] 同步完成: 成功=%d, 失败=%d, 耗时=%.1fs",
+                        market, job_type, result.get("success", 0),
                         result.get("failed", 0), elapsed)
 
-            _notify(f"{market} 同步完成: 成功={result.get('success', 0)}, "
+            # 同步完成后刷新物化视图
+            _refresh_materialized_views(job_type)
+
+            _notify(f"{market}/{job_type} 同步完成: 成功={result.get('success', 0)}, "
                     f"失败={result.get('failed', 0)}, 耗时={elapsed:.0f}s")
 
-            # 同步完成后自动触发数据校验
-            try:
-                from validate import run_after_sync
-                val_market = {"CN_A": "A", "CN_HK": "HK", "US": "US"}.get(market, "")
-                val_result = run_after_sync(market=val_market)
-                if val_result.get("success"):
-                    logger.info("[%s] 校验完成: errors=%d, warnings=%d",
-                                market, val_result.get("errors", 0), val_result.get("warnings", 0))
-                    _notify(f"{market} 校验: errors={val_result.get('errors', 0)}, "
-                            f"warnings={val_result.get('warnings', 0)}")
-                else:
-                    logger.warning("[%s] 校验失败: %s", market, val_result.get("error"))
-            except Exception as val_exc:
-                logger.warning("[%s] 校验异常（不影响同步结果）: %s", market, val_exc)
+            # 财务同步完成后自动触发数据校验
+            if job_type == "financial":
+                try:
+                    from validate import run_after_sync
+                    val_market = {"CN_A": "A", "CN_HK": "HK", "US": "US"}.get(market, "")
+                    val_result = run_after_sync(market=val_market)
+                    if val_result.get("success"):
+                        logger.info("[%s] 校验完成: errors=%d, warnings=%d",
+                                    market, val_result.get("errors", 0), val_result.get("warnings", 0))
+                        _notify(f"{market} 校验: errors={val_result.get('errors', 0)}, "
+                                f"warnings={val_result.get('warnings', 0)}")
+                    else:
+                        logger.warning("[%s] 校验失败: %s", market, val_result.get("error"))
+                except Exception as val_exc:
+                    logger.warning("[%s] 校验异常（不影响同步结果）: %s", market, val_exc)
 
             return {"success": True, "attempt": attempt, "elapsed": elapsed, "error": None}
 
         except Exception as exc:
             elapsed = time.time() - t0
             error_msg = f"{type(exc).__name__}: {exc}"
-            logger.error("[%s] 第 %d 次尝试失败: %s (耗时=%.1fs)",
-                         market, attempt, error_msg, elapsed)
+            logger.error("[%s/%s] 第 %d 次尝试失败: %s (耗时=%.1fs)",
+                         market, job_type, attempt, error_msg, elapsed)
 
             if attempt < max_retries:
                 delay = base_delay * (2 ** (attempt - 1))
-                logger.info("[%s] 等待 %.0f 秒后重试...", market, delay)
+                logger.info("[%s/%s] 等待 %.0f 秒后重试...", market, job_type, delay)
                 time.sleep(delay)
             else:
-                _notify(f"{market} 同步最终失败（重试 {attempt} 次）: {error_msg}",
+                _notify(f"{market}/{job_type} 同步最终失败（重试 {attempt} 次）: {error_msg}",
                         level="error")
                 return {"success": False, "attempt": attempt, "elapsed": elapsed, "error": error_msg}
+
+
+def _sync_daily_quote(market: str) -> dict:
+    """执行行情同步。
+
+    通过调用 sync.py 的 SyncManager.sync_daily_quote() 来完成。
+    market 为规范名（CN_A / CN_HK）。
+    """
+    from sync import SyncManager
+
+    manager = SyncManager(
+        max_workers=config.scheduler.sync_workers,
+        force=config.scheduler.force_sync,
+    )
+    return manager.sync_daily_quote(market)
 
 
 def _sync_financial(market: str) -> dict:
@@ -193,21 +245,43 @@ def _sync_us() -> dict:
 
 # ── 调度任务定义 ────────────────────────────────────────────
 
-MARKET_JOBS: dict[str, dict] = {
-    "CN_A": {
-        "cron": None,  # 运行时从 config 填充
+JOB_DEFS: dict[str, dict] = {
+    # ── 行情同步 ──
+    "CN_A_daily_quote": {
+        "cron_key": "cn_a_daily_quote_cron",
+        "market": "CN_A",
+        "job_type": "daily_quote",
         "check_trading_day": _is_china_trading_day,
-        "description": "A股增量同步",
+        "description": "A股行情同步",
     },
-    "CN_HK": {
-        "cron": None,
+    "CN_HK_daily_quote": {
+        "cron_key": "hk_daily_quote_cron",
+        "market": "CN_HK",
+        "job_type": "daily_quote",
         "check_trading_day": _is_china_trading_day,
-        "description": "港股增量同步",
+        "description": "港股行情同步",
     },
-    "US": {
-        "cron": None,
+    # ── 财务同步 ──
+    "CN_A_financial": {
+        "cron_key": "cn_a_cron",
+        "market": "CN_A",
+        "job_type": "financial",
+        "check_trading_day": _is_china_trading_day,
+        "description": "A股财务同步",
+    },
+    "CN_HK_financial": {
+        "cron_key": "hk_cron",
+        "market": "CN_HK",
+        "job_type": "financial",
+        "check_trading_day": _is_china_trading_day,
+        "description": "港股财务同步",
+    },
+    "US_financial": {
+        "cron_key": "us_cron",
+        "market": "US",
+        "job_type": "financial",
         "check_trading_day": _is_us_trading_day,
-        "description": "美股增量同步",
+        "description": "美股财务同步",
     },
 }
 
@@ -234,18 +308,20 @@ def _get_cron_parts(cron_expr: str) -> dict:
     }
 
 
-def _make_job_wrapper(market: str):
+def _make_job_wrapper(job_id: str):
     """创建带交易日检查的任务包装器。"""
-    job = MARKET_JOBS[market]
+    job_def = JOB_DEFS[job_id]
+    market = job_def["market"]
+    job_type = job_def["job_type"]
 
     def wrapper():
         # 检查是否为交易日
-        if not job["check_trading_day"]():
-            logger.info("[%s] 今日非交易日，跳过同步", market)
+        if not job_def["check_trading_day"]():
+            logger.info("[%s/%s] 今日非交易日，跳过同步", market, job_type)
             return
-        _run_sync_job(market)
+        _run_sync_job(market, job_type=job_type)
 
-    wrapper.__name__ = f"sync_{market.lower()}"
+    wrapper.__name__ = f"sync_{job_id.lower()}"
     return wrapper
 
 
@@ -253,28 +329,50 @@ def _make_job_wrapper(market: str):
 
 def dry_run() -> None:
     """预览调度计划，不实际执行。"""
-    print("=" * 60)
+    print("=" * 70)
     print("  Stock Data Scheduler — 调度计划预览（--dry-run）")
-    print("=" * 60)
-    print(f"\n  {'市场':<8} {'cron 表达式':<25} {'说明':<20}")
-    print(f"  {'─' * 8} {'─' * 25} {'─' * 20}")
+    print("=" * 70)
 
-    # A 股
-    print(f"  {'CN_A':<8} {config.scheduler.cn_a_cron:<25} A股增量同步（交易日 16:30）")
+    # ── 行情同步 ──
+    print(f"\n  {'─' * 66}")
+    print(f"  行情同步（daily_quote）")
+    print(f"  {'─' * 66}")
+    print(f"  {'任务 ID':<24} {'cron 表达式':<25} {'说明':<16}")
+    print(f"  {'─' * 24} {'─' * 25} {'─' * 16}")
 
-    # 港股
-    print(f"  {'CN_HK':<8} {config.scheduler.hk_cron:<25} 港股增量同步（交易日 17:00）")
+    if config.scheduler.daily_quote_enabled:
+        print(f"  {'CN_A_daily_quote':<24} {config.scheduler.cn_a_daily_quote_cron:<25} A股行情同步")
+        print(f"  {'CN_HK_daily_quote':<24} {config.scheduler.hk_daily_quote_cron:<25} 港股行情同步")
+    else:
+        print(f"  （行情同步已禁用: daily_quote_enabled=false）")
 
-    # 美股
-    print(f"  {'US':<8} {config.scheduler.us_cron:<25} 美股增量同步（交易日 06:00）")
+    # ── 财务同步 ──
+    print(f"\n  {'─' * 66}")
+    print(f"  财务同步（financial）")
+    print(f"  {'─' * 66}")
+    print(f"  {'任务 ID':<24} {'cron 表达式':<25} {'说明':<16}")
+    print(f"  {'─' * 24} {'─' * 25} {'─' * 16}")
 
-    print(f"\n  重试次数: {config.scheduler.max_retries}（间隔递增，基数 {config.scheduler.retry_base_delay}s）")
-    print(f"  并发线程: {config.scheduler.sync_workers}")
-    print(f"  强制全量: {'是' if config.scheduler.force_sync else '否'}")
-    print(f"  通知 URL: {config.scheduler.notify_url or '（未配置，仅日志）'}")
+    print(f"  {'CN_A_financial':<24} {config.scheduler.cn_a_cron:<25} A股财务同步")
+    print(f"  {'CN_HK_financial':<24} {config.scheduler.hk_cron:<25} 港股财务同步")
+    print(f"  {'US_financial':<24} {config.scheduler.us_cron:<25} 美股财务同步")
+
+    # ── 配置概要 ──
+    print(f"\n  {'─' * 66}")
+    print(f"  配置概要")
+    print(f"  {'─' * 66}")
+    print(f"  行情同步开关 : {'开启' if config.scheduler.daily_quote_enabled else '关闭'}")
+    print(f"  重试次数     : {config.scheduler.max_retries}（间隔递增，基数 {config.scheduler.retry_base_delay}s）")
+    print(f"  并发线程     : {config.scheduler.sync_workers}")
+    print(f"  强制全量     : {'是' if config.scheduler.force_sync else '否'}")
+    print(f"  通知 URL     : {config.scheduler.notify_url or '（未配置，仅日志）'}")
+    print()
+    print("  物化视图刷新策略:")
+    print("    行情同步后: mv_fcf_yield")
+    print("    财务同步后: mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield")
     print()
     print("  注: cron 触发时还会二次检查是否为交易日，非交易日自动跳过")
-    print("=" * 60)
+    print("=" * 70)
 
 
 # ── 主调度器 ────────────────────────────────────────────────
@@ -292,62 +390,71 @@ def run_scheduler(once: bool = False) -> None:
         logger.error("数据库连接失败，调度器无法启动")
         sys.exit(1)
 
-    scheduler = BlockingScheduler(timezone="Asia/Shanghai")
+    sched = BlockingScheduler(timezone="Asia/Shanghai")
     logger.info("调度器启动，时区: Asia/Shanghai")
 
-    # ── 注册市场任务 ──
-    market_crons = {
-        "CN_A": config.scheduler.cn_a_cron,
-        "CN_HK": config.scheduler.hk_cron,
-        "US": config.scheduler.us_cron,
-    }
+    # ── 注册任务 ──
+    for job_id, job_def in JOB_DEFS.items():
+        # 跳过禁用的行情同步
+        if job_def["job_type"] == "daily_quote" and not config.scheduler.daily_quote_enabled:
+            logger.info("行情同步已禁用，跳过注册: %s", job_id)
+            continue
 
-    for market, cron_expr in market_crons.items():
-        wrapper = _make_job_wrapper(market)
+        cron_expr = getattr(config.scheduler, job_def["cron_key"])
+        wrapper = _make_job_wrapper(job_id)
         cron_kwargs = _get_cron_parts(cron_expr)
         trigger = CronTrigger(**cron_kwargs, timezone="Asia/Shanghai")
 
-        job_name = f"sync_{market.lower()}"
-        scheduler.add_job(
+        sched.add_job(
             wrapper,
             trigger=trigger,
-            id=job_name,
-            name=MARKET_JOBS[market]["description"],
+            id=f"sync_{job_id.lower()}",
+            name=job_def["description"],
             replace_existing=True,
         )
-        logger.info("注册任务: %s → cron=%s (%s)", job_name, cron_expr,
-                     MARKET_JOBS[market]["description"])
+        logger.info("注册任务: %s → cron=%s (%s, %s)",
+                     job_id, cron_expr, job_def["description"], job_def["job_type"])
 
     if once:
-        # 立即执行一次
-        logger.info("--once 模式：立即执行所有市场同步...")
-        for market in market_crons:
-            if MARKET_JOBS[market]["check_trading_day"]():
-                logger.info("执行 %s 同步...", market)
-                result = _run_sync_job(market)
-                if result["success"]:
-                    logger.info("%s 同步成功", market)
-                else:
-                    logger.error("%s 同步失败: %s", market, result.get("error"))
+        # 立即执行一次，按正确顺序：
+        # 先执行行情同步，再执行财务同步
+        logger.info("--once 模式：立即执行所有任务...")
+        for job_id, job_def in JOB_DEFS.items():
+            if job_def["job_type"] == "daily_quote" and not config.scheduler.daily_quote_enabled:
+                logger.info("行情同步已禁用，跳过: %s", job_id)
+                continue
+
+            market = job_def["market"]
+            job_type = job_def["job_type"]
+
+            if not job_def["check_trading_day"]():
+                logger.info("[%s/%s] 非交易日，跳过", market, job_type)
+                continue
+
+            logger.info("执行 %s (%s)...", job_id, job_def["description"])
+            result = _run_sync_job(market, job_type=job_type)
+            if result["success"]:
+                logger.info("%s 同步成功", job_id)
             else:
-                logger.info("%s 非交易日，跳过", market)
+                logger.error("%s 同步失败: %s", job_id, result.get("error"))
+
         logger.info("一次性执行完成")
         close_pool()
         return
 
     # ── 打印下次执行时间 ──
     print("\n调度器已启动，等待下次触发...")
-    for job in scheduler.get_jobs():
+    for job in sched.get_jobs():
         next_run = job.next_run_time
         if next_run:
             print(f"  {job.name:20s} 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print("按 Ctrl+C 退出\n")
 
     try:
-        scheduler.start()
+        sched.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("调度器收到退出信号，正在关闭...")
-        scheduler.shutdown(wait=False)
+        sched.shutdown(wait=False)
         close_pool()
         logger.info("调度器已停止")
 

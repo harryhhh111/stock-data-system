@@ -1,0 +1,26 @@
+[Unit]
+Description=Stock Data Scheduler (APScheduler)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/projects/stock_data
+ExecStart=/root/projects/stock_data/venv/bin/python scheduler.py
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stock-scheduler
+
+# 环境变量（按需取消注释或使用 EnvironmentFile）
+# EnvironmentFile=/root/projects/stock_data/.env
+
+[Install]
+WantedBy=multi-user.target

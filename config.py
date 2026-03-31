@@ -154,17 +154,34 @@ class SchedulerConfig:
     配置含义：只在对应时间点触发，实际执行时会检查是否为交易日。
     """
 
-    # A 股：每个交易日 16:30 (北京时间) 收盘后触发
+    # ── 财务同步 cron（原有）──
+    # A 股财务：每个交易日 17:07 (北京时间) 收盘后触发
     cn_a_cron: str = field(
-        default_factory=lambda: _env("STOCK_CN_A_CRON", "30 16 * * 1-5")
+        default_factory=lambda: _env("STOCK_CN_A_CRON", "7 17 * * 1-5")
     )
-    # 港股：每个交易日 17:00 (北京时间) 收盘后触发
+    # 港股财务：每个交易日 17:37 (北京时间) 收盘后触发
     hk_cron: str = field(
-        default_factory=lambda: _env("STOCK_HK_CRON", "0 17 * * 1-5")
+        default_factory=lambda: _env("STOCK_HK_CRON", "37 17 * * 1-5")
     )
-    # 美股：每个美股交易日收盘后触发（北京时间 06:00 ≈ 美东 18:00 前一交易日）
+    # 美股财务：每个美股交易日收盘后触发（北京时间 06:12 ≈ 美东 18:12 前一交易日）
     us_cron: str = field(
-        default_factory=lambda: _env("STOCK_US_CRON", "0 6 * * 1-6")
+        default_factory=lambda: _env("STOCK_US_CRON", "12 6 * * 1-6")
+    )
+
+    # ── 行情同步 cron（新增）──
+    # A 股行情：每个交易日 16:37 (北京时间) 收盘后触发
+    cn_a_daily_quote_cron: str = field(
+        default_factory=lambda: _env("STOCK_CN_A_DAILY_QUOTE_CRON", "37 16 * * 1-5")
+    )
+    # 港股行情：每个交易日 17:12 (北京时间) 收盘后触发
+    hk_daily_quote_cron: str = field(
+        default_factory=lambda: _env("STOCK_HK_DAILY_QUOTE_CRON", "12 17 * * 1-5")
+    )
+
+    # 行情同步开关（默认开启）
+    daily_quote_enabled: bool = field(
+        default_factory=lambda: _env("STOCK_DAILY_QUOTE_ENABLED", "true",
+            cast=lambda v: v.lower() in ("1", "true", "yes"))
     )
 
     # 重试配置
@@ -232,6 +249,9 @@ if __name__ == "__main__":
     print(f"CN_A cron     : {scheduler.cn_a_cron}")
     print(f"HK cron       : {scheduler.hk_cron}")
     print(f"US cron       : {scheduler.us_cron}")
+    print(f"CN_A quote cron : {scheduler.cn_a_daily_quote_cron}")
+    print(f"HK quote cron   : {scheduler.hk_daily_quote_cron}")
+    print(f"quote enabled   : {scheduler.daily_quote_enabled}")
     print(f"sched retries : {scheduler.max_retries}")
     print(f"sched workers : {scheduler.sync_workers}")
     print(f"sched force   : {scheduler.force_sync}")
