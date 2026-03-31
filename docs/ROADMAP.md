@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-03-30
+> 最后更新：2026-03-31
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -21,31 +21,41 @@
 - [x] 物化视图 `mv_financial_indicator` + `mv_indicator_ttm`
 - [x] 美股物化视图 `mv_us_financial_indicator` + `mv_us_indicator_ttm`
 - [x] 定时任务调度 `scheduler.py`
-- [ ] API 查询服务
 
 ## Phase 3：增强 ✅ 已完成
 
-- [x] 增量同步优化（只拉新报告期，基于 `sync_progress.last_report_date` 判断）
-- [x] 数据校验 `validate.py`（异常值检测、逻辑一致性、跨源比对记录）
+- [x] 增量同步优化（只拉新报告期，基于 `sync_progress.last_report_date`）
+- [x] 数据校验 `validate.py`（9 条规则：异常值、逻辑一致性、跨源比对）
+- [x] market 标识统一（HK → CN_HK）
 
 ## Phase 4：日线行情 + 估值 🔄 进行中
 
-- [x] 日线行情表 `daily_quote`（A 股 + 港股，OHLCV）
-- [x] A 股实时行情同步（含市值、PE、PB，来自 `stock_zh_a_spot_em`）
-- [x] 港股实时行情同步（来自 `stock_hk_spot_em`）
-- [x] FCF Yield 物化视图 `mv_fcf_yield`（fcf_ttm / market_cap）
-- [x] **港股市值补全** ✅ 2026-03-30
-  - 绕过 akshare 直接调东方财富 API，保留市值(f20)、PE(f9)、PB(f23)
-  - 回填已有港股 daily_quote 的 market_cap（2637/2637，100%）
-  - mv_fcf_yield 港股覆盖率 96.9%（2556 只）
-- [ ] 港股历史日线回填（目前只有增量每日同步）
-- [ ] 筛选器/分析工具
+**目标：** 日线行情覆盖 A/港/美股，基础估值指标可用。
 
-## Phase 5：高级分析（待规划）
+- [x] 日线行情表 `daily_quote`（A 股 + 港股，OHLCV）
+- [x] A 股/港股实时行情同步
+- [x] 港股市值补全（绕过 akshare，直接调东方财富 API）
+- [x] FCF Yield 物化视图 `mv_fcf_yield`
+- [x] 行业分类：A 股申万一级（5188 只已填充）+ 港股东方财富 f100
+- [ ] 每日自动行情同步（配置 cron，`scheduler.py` 已有框架）
+- [ ] 美股日线行情
+- [ ] 港股/美股历史日线回填
+
+## Phase 5：完善
+
+**目标：** 美股对齐 A/港股水平，提供筛选分析能力。
+
+- [ ] 美股行业分类（SEC EDGAR SIC Code）
+- [ ] 美股股票范围扩展（从 S&P 500 扩大）
+- [ ] 筛选器/分析工具（多条件筛选）
+
+## Phase 6：高级分析（待规划）
+
+**目标：** 基于公告和估值数据的深度分析。
 
 - [ ] 公告元数据采集（巨潮资讯 → announcement 表）
 - [ ] PDF 下载 + 存档
-- [ ] LLM/文档理解解析 PDF → 与 akshare 数据交叉验证
-- [ ] 历史估值分位数（PE/PB 分位）
-- [ ] 52 周高低点
+- [ ] LLM 解析 PDF 交叉验证
+- [ ] 历史估值分位数
+- [ ] 52 周高低
 - [ ] 行业估值比较
