@@ -74,15 +74,150 @@ class DailyQuoteFetcher(BaseFetcher):
     def fetch_a_spot(self) -> pd.DataFrame:
         """拉取 A 股全市场实时行情（含市值）。
 
-        返回字段：代码, 名称, 最新价, 涨跌幅, 成交量, 成交额,
+        优先使用东方财富（ak.stock_zh_a_spot_em），失败时 fallback 到腾讯接口。
+        腾讯接口通过 qt.gtimg.cn 批量查询，字段映射与东方财富输出一致。
+
+        返回字段：代码, 名称, 最新价, 涨跌幅, 涨跌额, 成交量, 成交额,
                   换手率, 市盈率-动态, 市净率, 总市值, 流通市值, 今开, 最高, 最低, 昨收 等
         """
-        logger.info("开始拉取 A 股实时行情...")
+        # ── 先尝试东方财富 ──
+        try:
+            logger.info("开始拉取 A 股实时行情（东方财富）...")
+            t0 = time.time()
+            rate_limiter.wait()
+            df = ak.stock_zh_a_spot_em()
+            elapsed = time.time() - t0
+            logger.info("A 股实时行情（东方财富）: %d 只, 耗 %.1fs", len(df), elapsed)
+            return df
+        except Exception as e:
+            logger.warning("东方财富 A 股实时行情失败，fallback 到腾讯: %s", e)
+
+        # ── Fallback: 腾讯接口 ──
+        return self._fetch_a_spot_tencent()
+
+    def _fetch_a_spot_tencent(self) -> pd.DataFrame:
+        """通过腾讯 qt.gtimg.cn 拉取 A 股实时行情。
+
+        腾讯接口字段映射（~分隔，索引从0开始）：
+          [1]=名称, [2]=代码, [3]=最新价, [4]=昨收, [5]=今开,
+          [6]=成交量(手), [31]=涨跌额, [32]=涨跌幅(%),
+          [33]=最高, [34]=最低, [38]=换手率(%),
+          [44]=流通市值(亿), [45]=总市值(亿), [46]=市净率(PB),
+          [52]=市盈率(PE), [57]=成交额(万)
+
+        注意单位转换：
+          - 成交量: 手 → 股 (×100)
+          - 总市值/流通市值: 亿 → 元 (×1e8)
+          - 成交额: 万 → 元 (×1e4)
+        """
+        logger.info("开始拉取 A 股实时行情（腾讯 fallback）...")
         t0 = time.time()
-        rate_limiter.wait()
-        df = ak.stock_zh_a_spot_em()
+
+        # 获取全市场 A 股代码列表
+        stock_list = ak.stock_info_a_code_name()
+        all_codes = stock_list["code"].tolist()
+
+        # 转为腾讯格式
+        def _to_tencent(code: str) -> str | None:
+            if code.startswith(("6", "9")):
+                return f"sh{code}"
+            elif code.startswith(("0", "1", "2", "3", "4")):
+                return f"sz{code}"
+            return None
+
+        tencent_codes = [c for c in (_to_tencent(x) for x in all_codes) if c]
+        logger.info("腾讯 fallback: 共 %d 只 A 股待查询", len(tencent_codes))
+
+        # 批量查询（每批 700，URL 长度不超限）
+        batch_size = 700
+        all_lines: list[str] = []
+        for i in range(0, len(tencent_codes), batch_size):
+            batch = tencent_codes[i : i + batch_size]
+            q = ",".join(batch)
+            url = f"https://qt.gtimg.cn/q={q}"
+            try:
+                rate_limiter.wait()
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                lines = [l for l in resp.text.strip().split(";") if '="' in l]
+                all_lines.extend(lines)
+            except Exception as e:
+                logger.error("腾讯 fallback 批次 %d 失败: %s", i // batch_size + 1, e)
+                continue
+
+        # 解析
+        rows: list[dict] = []
+        for line in all_lines:
+            # 格式: v_sh600000="1~浦发银行~600000~..."
+            try:
+                # 提取引号内的内容
+                idx = line.index('"')
+                content = line[idx + 1 : line.rindex('"')]
+            except (ValueError, IndexError):
+                continue
+
+            parts = content.split("~")
+            if len(parts) < 58:
+                continue
+
+            try:
+                code = parts[2].strip()
+                name = parts[1].strip()
+                price = _safe_float(parts[3])
+                prev_close = _safe_float(parts[4])
+                open_price = _safe_float(parts[5])
+                vol_hand = _safe_float(parts[6])  # 手
+                change_amt = _safe_float(parts[31])
+                change_pct = _safe_float(parts[32])
+                high = _safe_float(parts[33])
+                low = _safe_float(parts[34])
+                turnover_rate = _safe_float(parts[38])
+                float_cap_yi = _safe_float(parts[44])  # 亿
+                total_cap_yi = _safe_float(parts[45])  # 亿
+                pb = _safe_float(parts[46])
+                pe = _safe_float(parts[52])
+                amount_wan = _safe_float(parts[57])  # 万
+
+                # 单位转换
+                volume = int(vol_hand * 100) if vol_hand is not None else None
+                amount = amount_wan * 1e4 if amount_wan is not None else None
+                total_cap = total_cap_yi * 1e8 if total_cap_yi is not None else None
+                float_cap = float_cap_yi * 1e8 if float_cap_yi is not None else None
+
+                # 跳过停牌或无数据的
+                if price is None or price <= 0:
+                    continue
+
+                rows.append({
+                    "代码": code,
+                    "名称": name,
+                    "最新价": price,
+                    "涨跌额": change_amt,
+                    "涨跌幅": change_pct,
+                    "成交量": volume,
+                    "成交额": amount,
+                    "振幅": None,
+                    "最高": high,
+                    "最低": low,
+                    "今开": open_price,
+                    "昨收": prev_close,
+                    "换手率": turnover_rate,
+                    "市盈率-动态": pe,
+                    "市净率": pb,
+                    "总市值": total_cap,
+                    "流通市值": float_cap,
+                })
+            except (IndexError, ValueError, TypeError) as e:
+                logger.debug("腾讯 fallback 解析行失败: %s", e)
+                continue
+
+        df = pd.DataFrame(rows)
         elapsed = time.time() - t0
-        logger.info("A 股实时行情: %d 只, 耗 %.1fs", len(df), elapsed)
+        has_cap = df["总市值"].notna().sum() if not df.empty else 0
+        logger.info(
+            "A 股实时行情（腾讯 fallback）: %d 只, 含市值 %d 只, 耗 %.1fs",
+            len(df), has_cap, elapsed,
+        )
         return df
 
     # ── 港股历史日线（单只股票）──────────────────────────
