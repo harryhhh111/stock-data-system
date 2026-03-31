@@ -24,7 +24,8 @@ data/*.log
 *.log
 
 # Runtime outputs
-data/*.csv
+data/
+!data/.gitkeep
 
 # IDE
 .vscode/
