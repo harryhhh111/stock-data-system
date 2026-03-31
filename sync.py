@@ -635,7 +635,7 @@ class SyncManager:
             records = transform_a_spot_to_records(df)
         elif market == "CN_HK":
             df = fetcher.fetch_hk_spot()
-            records = transform_hk_spot_to_records(df)
+            records, industry_map = transform_hk_spot_to_records(df)
         else:
             logger.error("不支持的市场: %s", market)
             return 0
@@ -665,6 +665,19 @@ class SyncManager:
             logger.info("日线行情: 过滤 %d 只不在 stock_info 中的股票", filtered)
 
         count = upsert("daily_quote", valid, ["stock_code", "trade_date"])
+
+        # 更新港股行业分类
+        if market == "CN_HK" and industry_map:
+            updated = 0
+            for code, ind in industry_map.items():
+                if code in known_set and ind:
+                    execute(
+                        "UPDATE stock_info SET industry = %s WHERE stock_code = %s AND market = 'CN_HK' AND (industry IS NULL OR industry = '')",
+                        (ind, code),
+                    )
+                    updated += 1
+            logger.info("港股行业更新: %d 只", updated)
+
         return count
 
     def _backfill_hist(self, fetcher: "DailyQuoteFetcher", market: str) -> int:

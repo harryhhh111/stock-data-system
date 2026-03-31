@@ -141,7 +141,7 @@ class DailyQuoteFetcher(BaseFetcher):
             "invt": "2",
             "fid": "f12",
             "fs": "m:128 t:3,m:128 t:4,m:128 t:1,m:128 t:2",
-            "fields": "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f14,f15,f16,f17,f18,f20,f23",
+            "fields": "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f14,f15,f16,f17,f18,f20,f23,f100",
         }
 
         all_items = []
@@ -191,6 +191,7 @@ class DailyQuoteFetcher(BaseFetcher):
             "f20": "总市值",
             "f9": "市盈率-动态",
             "f23": "市净率",
+            "f100": "行业",
         })
 
         # 只保留需要的列（存在的才保留）
@@ -310,18 +311,27 @@ def transform_hk_hist_to_records(df: pd.DataFrame, stock_code: str, market: str 
     return records
 
 
-def transform_hk_spot_to_records(df: pd.DataFrame) -> list[dict]:
+def transform_hk_spot_to_records(df: pd.DataFrame) -> tuple[list[dict], dict[str, str]]:
     """将港股实时行情 DataFrame 转为 upsert 记录列表。
 
     支持含市值（总市值、PE、PB）的新格式（来自东方财富 API 直调）
     和不含市值的旧格式（来自 ak.stock_hk_spot_em()，兼容回退）。
+
+    Returns:
+        (records, industry_map): records 为 upsert 记录列表，
+        industry_map 为 {stock_code: industry_name} 映射（用于更新 stock_info）
     """
     today = datetime.now().date()
     records = []
+    industry_map = {}
     for _, row in df.iterrows():
         code = str(row.get("代码", "")).strip()
         if not code:
             continue
+        # 收集行业信息
+        industry = row.get("行业")
+        if pd.notna(industry) and str(industry).strip():
+            industry_map[code] = str(industry).strip()
         records.append({
             "stock_code": code,
             "trade_date": today,
@@ -340,7 +350,7 @@ def transform_hk_spot_to_records(df: pd.DataFrame) -> list[dict]:
             "currency": "HKD",
             "updated_at": datetime.now(),
         })
-    return records
+    return records, industry_map
 
 
 # ── 辅助函数 ──────────────────────────────────────────────
