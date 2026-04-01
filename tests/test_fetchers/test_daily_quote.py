@@ -447,21 +447,26 @@ class TestDailyQuoteFetcherMocked:
         assert row["最高"] == 504.0
         assert row["最低"] == 496.4
         assert row["成交量"] == 5721405  # 港股成交量单位是股
-        assert row["涨跌额"] == pytest.approx(13.0)
+        # 涨跌额: 代码读 [61] = -17.03（注意非 [31]）
+        assert row["涨跌额"] == pytest.approx(-17.03)
         assert row["涨跌幅"] == pytest.approx(2.69)
         assert row["成交额"] == pytest.approx(2862080917.2)  # 港股成交额单位是元
-        # 总市值: 45345.6005亿 → 4.53456e12
+        # 总市值: [44]=45345.6005 亿 → 4.53456e12
         assert row["总市值"] == pytest.approx(45345.6005e8, rel=1e-3)
+        # PE: 代码读 [57]
         assert row["市盈率-动态"] == pytest.approx(18.22)
-        assert row["市净率"] == pytest.approx(2.60)  # [50]
+        # PB: 代码读 [58] = 3.57
+        assert row["市净率"] == pytest.approx(3.57)
         assert row["行业"] is None  # 腾讯接口无行业
 
         # 验证香港交易所
         row2 = df[df["代码"] == "00388"].iloc[0]
         assert row2["最新价"] == 398.2
         assert row2["总市值"] == pytest.approx(5048.5265e8, rel=1e-3)
+        # PE: [57] 对应位置
         assert row2["市盈率-动态"] == pytest.approx(28.44)
-        assert row2["市净率"] == pytest.approx(4.49)
+        # PB: [58] 对应位置
+        assert row2["市净率"] == pytest.approx(8.68)
 
         # 验证阿里巴巴
         row3 = df[df["代码"] == "09988"].iloc[0]
@@ -477,18 +482,32 @@ class TestDailyQuoteFetcherMocked:
             "中文名称": ["腾讯控股"],
         })
 
-        # 腾讯港股实际返回 80 个字段（用腾讯 00700 真实数据精简）
+        # 腾讯港股 mock 数据，字段索引与代码 _fetch_hk_spot_tencent 对齐：
+        #   [1]=名称, [2]=代码, [3]=最新价, [4]=昨收, [5]=今开,
+        #   [6]=成交量(股), [32]=涨跌幅(%), [33]=最高, [34]=最低,
+        #   [37]=成交额(元), [44]=总市值(亿), [57]=PE, [58]=PB, [61]=涨跌额
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        # 构造 65 个字段，关键字段放在代码实际读取的索引位置
+        hk_fields = [""] * 65
+        hk_fields[0] = "100"
+        hk_fields[1] = "腾讯控股"
+        hk_fields[2] = "00700"
+        hk_fields[3] = "500.0"       # 最新价
+        hk_fields[4] = "490.0"       # 昨收
+        hk_fields[5] = "495.0"       # 今开
+        hk_fields[6] = "1000000"     # 成交量(股)
+        hk_fields[32] = "2.04"       # 涨跌幅(%)
+        hk_fields[33] = "504.0"      # 最高
+        hk_fields[34] = "495.8"      # 最低
+        hk_fields[37] = "500000000.0"  # 成交额(元)
+        hk_fields[44] = "45327.35"   # 总市值(亿)
+        hk_fields[57] = "18.21"      # PE
+        hk_fields[58] = "3.57"       # PB
+        hk_fields[61] = "10.0"       # 涨跌额
+        tencent_data = "~".join(hk_fields)
         mock_resp.content = (
-            'v_hk00700="100~腾讯控股~00700~500.0~490.0~495.0~1000000~0~0~500.0'
-            '~0~0~0~0~0~0~0~0~0~0~500.0~0~0~0~0~0~0~0~0~0~0~0'
-            '~1000000~2026/04/01~10:15:34~12.800~2.64~504.0~495.8~496.8'
-            '~1000000~3345727024.9~0~18.21~~0~0~1.69~45327.3528~45327.3528'
-            '~TENCENT~0.91~683.0~414.5~1.82~12.95~0~0~0~0~0~18.21'
-            '~3.57~0.07~100~-17.06~-1.72~GP~19.48~11.27~-9.75~-1.82'
-            '~-20.26~9123863279.0~9123863279.0~18.21~4.532~499.76~0.04'
-            '~HKD~1~30";'
+            f'v_hk00700="{tencent_data}";'
         ).encode("gb18030")
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
@@ -503,11 +522,13 @@ class TestDailyQuoteFetcherMocked:
         row = df.iloc[0]
         # 成交量：港股单位是股，不需 ×100
         assert row["成交量"] == 1000000
-        # 成交额：港股单位是元
-        assert row["成交额"] == pytest.approx(1000000.0)
-        # 总市值：[39]=3345.73 亿 → 元
-        assert row["总市值"] == pytest.approx(3345727024900.0)
-        # PB: [60] = 3.57
+        # 成交额：港股单位是元，不需要转换
+        assert row["成交额"] == pytest.approx(500000000.0)
+        # 总市值：[44]=45327.35 亿 → 4532735000000 元
+        assert row["总市值"] == pytest.approx(45327.35e8)
+        # PB: [58] = 3.57
         assert row["市净率"] == pytest.approx(3.57)
-        # PE: [59] = 18.21
+        # PE: [57] = 18.21
         assert row["市盈率-动态"] == pytest.approx(18.21)
+        # 涨跌额: [61] = 10.0
+        assert row["涨跌额"] == pytest.approx(10.0)
