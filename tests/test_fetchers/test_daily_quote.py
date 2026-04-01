@@ -368,8 +368,8 @@ class TestDailyQuoteFetcherMocked:
         assert row["流通市值"] == pytest.approx(18157.92e8, rel=1e-3)
 
     @patch("fetchers.daily_quote.requests.get")
-    def test_fetch_hk_spot(self, mock_get, hk_spot_df):
-        """测试港股行情拉取（mock requests.get）。"""
+    def test_fetch_hk_spot_eastmoney(self, mock_get, hk_spot_df):
+        """测试港股行情拉取 - 东方财富成功（mock requests.get）。"""
         from fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
@@ -397,3 +397,117 @@ class TestDailyQuoteFetcherMocked:
         assert "市盈率-动态" in df.columns
         assert "市净率" in df.columns
         mock_get.assert_called_once()
+
+    @patch("fetchers.daily_quote.requests.get")
+    @patch("fetchers.daily_quote.ak.stock_hk_spot")
+    def test_fetch_hk_spot_tencent_fallback(self, mock_hk_spot, mock_get):
+        """东方财富失败时 fallback 到腾讯接口。"""
+        # 模拟新浪港股列表（获取代码用）
+        mock_hk_spot.return_value = pd.DataFrame({
+            "代码": ["00700", "00388", "09988"],
+            "中文名称": ["腾讯控股", "香港交易所", "阿里巴巴-W"],
+        })
+
+        # 模拟腾讯港股接口响应（GBK 编码的真实格式）
+        # 字段: [0]=100, [1]=名称, [2]=代码, [3]=最新价, [4]=昨收, [5]=今开,
+        #       [6]=成交量(股), [31]=涨跌额, [32]=涨跌幅(%),
+        #       [33]=最高, [34]=最低, [37]=成交额(HKD),
+        #       [44]=总市值(亿), [45]=流通市值(亿), [50]=PB, [57]=PE
+        tencent_response = (
+            'v_hk00700="100~腾讯控股~00700~497.000~484.000~504.000~5721405.0~0~0~497.000~0~0~0~0~0~0~0~0~0~497.000~0~0~0~0~0~0~0~0~0~5721405.0~2026/04/01 09:57:11~13.000~2.69~504.000~496.400~497.000~5721405.0~2862080917.200~0~18.22~~0~0~1.57~45345.6005~45345.6005~TENCENT~0.91~683.000~414.500~2.60~0.65~0~0~0~0~0~18.22~3.57~0.06~100~-17.03~-1.68~GP~19.48~11.27~-9.72~-1.78~-20.22~9123863279.00~9123863279.00~18.22~4.532~500.241~0.08~HKD~1~30";'
+            'v_hk00388="100~香港交易所~00388~398.200~388.600~398.600~1446300.0~0~0~398.200~0~0~0~0~0~0~0~0~0~398.200~0~0~0~0~0~0~0~0~0~1446300.0~2026/04/01 09:57:10~9.600~2.47~401.400~397.600~398.200~1446300.0~577005014.200~0~28.44~~0~0~0.98~5048.5265~5048.5265~HKEX~3.14~453.680~270.680~4.49~-36.56~0~0~0~0~0~28.44~8.68~0.11~100~-0.72~0.05~GP~30.53~3.07~-1.14~-0.02~-2.71~1267836895.00~1267836895.00~28.44~12.520~398.953~-0.67~HKD~1~30";'
+            'v_hk09988="100~阿里巴巴-W~09988~121.500~119.000~123.300~15222834.0~0~0~121.500~0~0~0~0~0~0~0~0~0~121.500~0~0~0~0~0~0~0~0~0~15222834.0~2026/04/01 09:57:11~2.500~2.10~123.500~121.500~121.500~15222834.0~1864296193.700~0~16.46~~0~0~1.68~23205.6526~23205.6526~BABA-W~1.61~186.200~93.749~2.11~-13.81~0~0~0~0~0~22.58~2.02~0.08~100~-14.92~-5.74~GP~8.73~4.83~-11.76~-6.47~-18.46~19099302523.00~19099302523.00~20.14~1.960~122.467~17.73~HKD~1~30";'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        # 腾讯返回 GBK，模拟解码后的文本
+        mock_resp.content = tencent_response.encode("gb18030")
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        from fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        # Mock 东方财富失败，触发 fallback
+        with patch.object(fetcher, '_fetch_hk_spot_eastmoney', side_effect=ConnectionError("eastmoney unreachable")):
+            df = fetcher.fetch_hk_spot()
+
+        assert len(df) == 3
+        # 验证列与东方财富格式一致
+        for col in ["代码", "名称", "最新价", "今开", "最高", "最低", "昨收",
+                     "成交量", "成交额", "总市值", "市盈率-动态", "市净率", "行业"]:
+            assert col in df.columns, f"缺少列: {col}"
+
+        # 验证腾讯控股
+        row = df[df["代码"] == "00700"].iloc[0]
+        assert row["名称"] == "腾讯控股"
+        assert row["最新价"] == 497.0
+        assert row["昨收"] == 484.0
+        assert row["今开"] == 504.0
+        assert row["最高"] == 504.0
+        assert row["最低"] == 496.4
+        assert row["成交量"] == 5721405  # 港股成交量单位是股
+        assert row["涨跌额"] == pytest.approx(13.0)
+        assert row["涨跌幅"] == pytest.approx(2.69)
+        assert row["成交额"] == pytest.approx(2862080917.2)  # 港股成交额单位是元
+        # 总市值: 45345.6005亿 → 4.53456e12
+        assert row["总市值"] == pytest.approx(45345.6005e8, rel=1e-3)
+        assert row["市盈率-动态"] == pytest.approx(18.22)
+        assert row["市净率"] == pytest.approx(2.60)  # [50]
+        assert row["行业"] is None  # 腾讯接口无行业
+
+        # 验证香港交易所
+        row2 = df[df["代码"] == "00388"].iloc[0]
+        assert row2["最新价"] == 398.2
+        assert row2["总市值"] == pytest.approx(5048.5265e8, rel=1e-3)
+        assert row2["市盈率-动态"] == pytest.approx(28.44)
+        assert row2["市净率"] == pytest.approx(4.49)
+
+        # 验证阿里巴巴
+        row3 = df[df["代码"] == "09988"].iloc[0]
+        assert row3["最新价"] == 121.5
+        assert row3["总市值"] == pytest.approx(23205.6526e8, rel=1e-3)
+
+    @patch("fetchers.daily_quote.requests.get")
+    @patch("fetchers.daily_quote.ak.stock_hk_spot")
+    def test_fetch_hk_spot_tencent_unit_no_conversion_needed(self, mock_hk_spot, mock_get):
+        """测试腾讯港股 fallback 单位不需要额外转换（与 A 股不同）。"""
+        mock_hk_spot.return_value = pd.DataFrame({
+            "代码": ["00700"],
+            "中文名称": ["腾讯控股"],
+        })
+
+        # 腾讯港股实际返回 80 个字段（用腾讯 00700 真实数据精简）
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = (
+            'v_hk00700="100~腾讯控股~00700~500.0~490.0~495.0~1000000~0~0~500.0'
+            '~0~0~0~0~0~0~0~0~0~0~500.0~0~0~0~0~0~0~0~0~0~0~0'
+            '~1000000~2026/04/01~10:15:34~12.800~2.64~504.0~495.8~496.8'
+            '~1000000~3345727024.9~0~18.21~~0~0~1.69~45327.3528~45327.3528'
+            '~TENCENT~0.91~683.0~414.5~1.82~12.95~0~0~0~0~0~18.21'
+            '~3.57~0.07~100~-17.06~-1.72~GP~19.48~11.27~-9.75~-1.82'
+            '~-20.26~9123863279.0~9123863279.0~18.21~4.532~499.76~0.04'
+            '~HKD~1~30";'
+        ).encode("gb18030")
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        from fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        with patch.object(fetcher, '_fetch_hk_spot_eastmoney', side_effect=ConnectionError("fail")):
+            df = fetcher.fetch_hk_spot()
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        # 成交量：港股单位是股，不需 ×100
+        assert row["成交量"] == 1000000
+        # 成交额：港股单位是元
+        assert row["成交额"] == pytest.approx(1000000.0)
+        # 总市值：[39]=3345.73 亿 → 元
+        assert row["总市值"] == pytest.approx(3345727024900.0)
+        # PB: [60] = 3.57
+        assert row["市净率"] == pytest.approx(3.57)
+        # PE: [59] = 18.21
+        assert row["市盈率-动态"] == pytest.approx(18.21)
