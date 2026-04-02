@@ -214,5 +214,197 @@ class TestSyncIndustry:
         result = manager.sync_industry()
 
         assert result["total"] == 2
-        assert result["not_in_stock_info"] == 1  # 999999 不在 stock_info
-        assert result["updated"] == 1
+        assert result["not_in_stock_info"] == 1
+
+
+# ── 美股行业分类测试 ──────────────────────────────────────
+
+
+class TestFetchUsIndustry:
+    """测试 fetch_us_industry 核心逻辑。"""
+
+    @patch("fetchers.industry.requests.Session")
+    def test_basic_fetch(self, mock_session_cls):
+        """测试基本拉取流程：2 只美股。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        def mock_get(url, timeout=10):
+            resp = MagicMock()
+            resp.status_code = 200
+            if "0000320193" in url:  # AAPL
+                resp.json.return_value = {
+                    "sic": "3571",
+                    "sicDescription": "Electronic Computers",
+                }
+            elif "0001067983" in url:  # BRK
+                resp.json.return_value = {
+                    "sic": "6331",
+                    "sicDescription": "Fire, Marine & Casualty Insurance",
+                }
+            else:
+                resp.json.return_value = {"sicDescription": ""}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_session.get.side_effect = mock_get
+
+        from fetchers.industry import fetch_us_industry
+        stocks = [
+            {"stock_code": "AAPL", "cik": "0000320193"},
+            {"stock_code": "BRK.B", "cik": "0001067983"},
+        ]
+        results = fetch_us_industry(stocks, delay=0, max_retries=1)
+
+        assert len(results) == 2
+        assert results[0]["stock_code"] == "AAPL"
+        assert results[0]["industry_name"] == "Electronic Computers"
+        assert results[1]["stock_code"] == "BRK.B"
+        assert results[1]["industry_name"] == "Fire, Marine & Casualty Insurance"
+
+    @patch("fetchers.industry.requests.Session")
+    def test_empty_sic_description(self, mock_session_cls):
+        """测试 sicDescription 为空时仍记录空字符串。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        resp = MagicMock()
+        resp.json.return_value = {"sic": "1234"}  # no sicDescription
+        resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = resp
+
+        from fetchers.industry import fetch_us_industry
+        results = fetch_us_industry(
+            [{"stock_code": "TEST", "cik": "0000000001"}],
+            delay=0, max_retries=1,
+        )
+
+        assert len(results) == 1
+        assert results[0]["industry_name"] == ""
+
+    @patch("fetchers.industry.requests.Session")
+    def test_retry_on_failure(self, mock_session_cls):
+        """测试请求失败时重试。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        call_count = {"n": 0}
+
+        def mock_get(url, timeout=10):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                raise ConnectionError("模拟超时")
+            resp = MagicMock()
+            resp.json.return_value = {"sicDescription": "Software"}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_session.get.side_effect = mock_get
+
+        from fetchers.industry import fetch_us_industry
+        results = fetch_us_industry(
+            [{"stock_code": "MSFT", "cik": "0000789019"}],
+            delay=0, max_retries=3,
+        )
+
+        assert len(results) == 1
+        assert results[0]["industry_name"] == "Software"
+        assert call_count["n"] == 3
+
+    @patch("fetchers.industry.requests.Session")
+    def test_all_retries_fail(self, mock_session_cls):
+        """测试所有重试均失败时跳过该股票。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+        mock_session.get.side_effect = ConnectionError("持续失败")
+
+        from fetchers.industry import fetch_us_industry
+        results = fetch_us_industry(
+            [{"stock_code": "FAIL", "cik": "0000000001"}],
+            delay=0, max_retries=2,
+        )
+
+        assert len(results) == 0
+
+    @patch("fetchers.industry.requests.Session")
+    def test_cik_zero_padding(self, mock_session_cls):
+        """测试 CIK 自动补零到 10 位。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        captured_urls = []
+
+        def mock_get(url, timeout=10):
+            captured_urls.append(url)
+            resp = MagicMock()
+            resp.json.return_value = {"sicDescription": "Test Industry"}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_session.get.side_effect = mock_get
+
+        from fetchers.industry import fetch_us_industry
+        fetch_us_industry(
+            [{"stock_code": "TEST", "cik": "320193"}],
+            delay=0, max_retries=1,
+        )
+
+        assert len(captured_urls) == 1
+        assert "CIK0000320193" in captured_urls[0]
+
+
+class TestSyncUsIndustry:
+    """测试 SyncManager.sync_us_industry 方法。"""
+
+    @patch("sync.execute")
+    @patch("fetchers.industry.requests.Session")
+    def test_sync_us_industry_updates_stock_info(
+        self, mock_session_cls, mock_execute
+    ):
+        """测试 sync_us_industry 正确 UPDATE stock_info。"""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        def mock_get(url, timeout=10):
+            resp = MagicMock()
+            resp.json.return_value = {"sicDescription": "Electronic Computers"}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_session.get.side_effect = mock_get
+
+        # Mock execute: 返回美股列表 + 允许 UPDATE
+        def execute_side_effect(sql, params=None, **kwargs):
+            if "SELECT stock_code, cik FROM stock_info" in sql:
+                return [("AAPL", "0000320193"), ("MSFT", "0000789019")]
+            return None
+
+        mock_execute.side_effect = execute_side_effect
+
+        from sync import SyncManager
+        manager = SyncManager()
+        result = manager.sync_us_industry()
+
+        assert result["total"] == 2
+        assert result["updated"] == 2
+        assert result["empty_industry"] == 0
+        assert result["industry_count"] == 1  # 都是 Electronic Computers
+
+        # 验证 execute 被调用（UPDATE SQL）
+        update_calls = [
+            c for c in mock_execute.call_args_list
+            if c.args and "UPDATE stock_info" in str(c.args[0])
+        ]
+        assert len(update_calls) > 0
+
+    @patch("sync.execute")
+    def test_sync_us_industry_no_stocks(self, mock_execute):
+        """测试没有美股时返回空结果。"""
+        mock_execute.return_value = []
+
+        from sync import SyncManager
+        manager = SyncManager()
+        result = manager.sync_us_industry()
+
+        assert result["total"] == 0
+        assert result["updated"] == 0

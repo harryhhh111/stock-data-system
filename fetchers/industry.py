@@ -1,10 +1,17 @@
 """
-fetchers/industry.py — 申万一级行业分类数据拉取
+fetchers/industry.py — 行业分类数据拉取
 
-数据源：申万宏源研究所 (swsresearch.com)
-接口：
-  - akshare sw_index_first_info()      → 31 个一级行业列表
-  - akshare index_component_sw(code)   → 每个行业的成分股
+A 股：
+  数据源：申万宏源研究所 (swsresearch.com)
+  接口：
+    - akshare sw_index_first_info()      → 31 个一级行业列表
+    - akshare index_component_sw(code)   → 每个行业的成分股
+
+美股：
+  数据源：SEC EDGAR (data.sec.gov)
+  接口：
+    - GET https://data.sec.gov/submissions/CIK{cik}.json
+    - 返回 sicDescription 作为行业名称
 
 产出结构：[{stock_code, industry_name}] → 写入 stock_info.industry
 """
@@ -17,6 +24,7 @@ from typing import Optional
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from .base import retry_with_backoff, rate_limiter
 
@@ -154,6 +162,104 @@ def get_industry_distribution(results: list[dict[str, str]]) -> pd.DataFrame:
     dist = df.groupby("industry_name").size().reset_index(name="stock_count")
     dist = dist.sort_values("stock_count", ascending=False).reset_index(drop=True)
     return dist
+
+
+# ── 美股行业分类（SEC EDGAR SIC Code） ──────────────────────
+
+_SEC_EDGAR_USER_AGENT = "StockDataBot/1.0 (stock-data-sync@example.com)"
+_SEC_EDGAR_BASE_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+
+
+def fetch_us_industry(
+    stocks: list[dict[str, str]],
+    delay: float = 0.1,
+    max_retries: int = 3,
+) -> list[dict[str, str]]:
+    """从 SEC EDGAR 获取美股 SIC 行业分类。
+
+    逐只请求 SEC EDGAR 的 Company Info 接口，获取 sicDescription 字段。
+
+    Args:
+        stocks: [{"stock_code": "AAPL", "cik": "0000320193"}, ...]
+        delay: 请求间隔（秒），SEC 限流 10 req/s
+        max_retries: 单只股票请求失败的最大重试次数
+
+    Returns:
+        [{"stock_code": "AAPL", "industry_name": "Electronic Computers"}, ...]
+    """
+    logger.info("开始拉取美股行业分类: %d 只股票", len(stocks))
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": _SEC_EDGAR_USER_AGENT})
+
+    results: list[dict[str, str]] = []
+    failed: list[str] = []
+
+    for i, item in enumerate(stocks):
+        stock_code = item["stock_code"]
+        cik = item["cik"]
+        # CIK 必须是 10 位零填充
+        cik_padded = str(cik).strip().zfill(10)
+
+        success = False
+        for attempt in range(max_retries):
+            try:
+                url = _SEC_EDGAR_BASE_URL.format(cik=cik_padded)
+                resp = session.get(url, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+
+                sic_desc = data.get("sicDescription", "")
+                if sic_desc:
+                    results.append({
+                        "stock_code": stock_code,
+                        "industry_name": sic_desc,
+                    })
+                    success = True
+                else:
+                    logger.warning(
+                        "%s (CIK %s): sicDescription 为空",
+                        stock_code, cik_padded,
+                    )
+                    # 记录空行业但不视为失败
+                    results.append({
+                        "stock_code": stock_code,
+                        "industry_name": "",
+                    })
+                    success = True
+                break
+
+            except Exception as exc:
+                logger.warning(
+                    "%s (CIK %s) 拉取失败 (attempt %d/%d): %s",
+                    stock_code, cik_padded, attempt + 1, max_retries, exc,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+
+        if not success:
+            failed.append(stock_code)
+            logger.error("  %s: 所有重试均失败，跳过", stock_code)
+
+        # 请求间延迟
+        time.sleep(delay)
+
+        # 进度日志
+        if (i + 1) % 50 == 0 or (i + 1) == len(stocks):
+            logger.info(
+                "美股行业进度: %d/%d (%.0f%%) 成功=%d 失败=%d",
+                i + 1, len(stocks), (i + 1) / len(stocks) * 100,
+                len(results), len(failed),
+            )
+
+    logger.info(
+        "美股行业分类拉取完成: %d/%d 只成功, %d 只失败",
+        len(results), len(stocks), len(failed),
+    )
+    if failed:
+        logger.warning("失败股票: %s", ", ".join(failed[:20]))
+
+    return results
 
 
 if __name__ == "__main__":

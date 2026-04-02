@@ -567,6 +567,113 @@ class SyncManager:
 
         return result
 
+    # ── 美股行业分类同步 ──────────────────────────────────
+
+    def sync_us_industry(self) -> dict:
+        """同步美股行业分类数据（SEC EDGAR SIC Code）到 stock_info.industry。
+
+        流程：
+          1. 查询 stock_info 中 market='US' 且 cik IS NOT NULL 的股票
+          2. 通过 SEC EDGAR 获取 sicDescription
+          3. UPDATE stock_info SET industry = ? WHERE stock_code = ?
+
+        Returns:
+            统计结果字典
+        """
+        from fetchers.industry import fetch_us_industry, get_industry_distribution
+
+        logger.info("开始同步美股行业分类数据...")
+
+        # Step 1: 查询有 CIK 的美股
+        rows = execute(
+            "SELECT stock_code, cik FROM stock_info WHERE market = 'US' AND cik IS NOT NULL",
+            fetch=True,
+        )
+        stocks = [{"stock_code": r[0], "cik": r[1]} for r in rows]
+        logger.info("stock_info 中有 CIK 的美股: %d 只", len(stocks))
+
+        if not stocks:
+            logger.warning("没有找到有 CIK 的美股")
+            return {"total": 0, "updated": 0, "empty_industry": 0, "industry_count": 0}
+
+        # Step 2: 拉取行业数据
+        results = fetch_us_industry(stocks)
+        if not results:
+            logger.warning("美股行业分类数据为空")
+            return {"total": len(stocks), "updated": 0, "empty_industry": 0, "industry_count": 0}
+
+        # Step 3: 批量 UPDATE stock_info.industry
+        updated = 0
+        empty_industry = 0
+        t0 = time.time()
+
+        # 构建 code → industry 映射
+        code_industry = {}
+        for item in results:
+            code_industry[item["stock_code"]] = item["industry_name"]
+            if not item["industry_name"]:
+                empty_industry += 1
+
+        # 批量 UPDATE（每 500 只一批）
+        batch_size = 500
+        codes_list = list(code_industry.keys())
+
+        for i in range(0, len(codes_list), batch_size):
+            batch = codes_list[i:i + batch_size]
+            # 使用 CASE WHEN 批量更新
+            case_parts = []
+            codes_str = []
+            for code in batch:
+                industry = code_industry[code].replace("'", "''")
+                case_parts.append(f"WHEN '{code}' THEN '{industry}'")
+                codes_str.append(f"'{code}'")
+
+            sql = f"""
+                UPDATE stock_info
+                SET industry = CASE stock_code
+                    {' '.join(case_parts)}
+                END,
+                updated_at = NOW()
+                WHERE stock_code IN ({', '.join(codes_str)})
+                AND market = 'US'
+            """
+            execute(sql, commit=True)
+            updated += len(batch)
+
+            if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
+                logger.info(
+                    "美股行业写入进度: %d/%d (%.0f%%)",
+                    min(i + batch_size, len(codes_list)), len(codes_list),
+                    min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
+                )
+
+        elapsed = time.time() - t0
+
+        # 统计行业分布
+        non_empty = [r for r in results if r["industry_name"]]
+        dist_df = get_industry_distribution(non_empty)
+
+        result = {
+            "total": len(stocks),
+            "updated": updated,
+            "empty_industry": empty_industry,
+            "industry_count": len(dist_df),
+            "elapsed": elapsed,
+        }
+
+        logger.info(
+            "美股行业分类同步完成: 总计=%d, 更新=%d, 空行业=%d, 行业数=%d, 耗时=%.1fs",
+            len(stocks), updated, empty_industry, len(dist_df), elapsed,
+        )
+
+        # 打印行业分布（前 20 个）
+        if not dist_df.empty:
+            logger.info("行业分布 (前20):")
+            for _, row in dist_df.head(20).iterrows():
+                logger.info("  %s: %d 只", row["industry_name"], row["stock_count"])
+
+        return result
+
     def shutdown(self):
         """标记关闭，让正在运行的同步优雅退出。"""
         self._shutdown = True
@@ -1003,7 +1110,10 @@ def main():
     elif args.type == "dividend":
         result = manager.sync_dividend(market=args.market)
     elif args.type == "industry":
-        result = manager.sync_industry()
+        if args.market == "US":
+            result = manager.sync_us_industry()
+        else:
+            result = manager.sync_industry()
     elif args.type == "daily":
         if not args.market:
             parser.error("daily 类型需要指定 --market (CN_A/CN_HK/US/all)")
