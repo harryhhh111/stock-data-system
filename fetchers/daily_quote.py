@@ -167,7 +167,7 @@ class DailyQuoteFetcher(BaseFetcher):
                 prev_close = _safe_float(parts[4])
                 open_price = _safe_float(parts[5])
                 vol_hand = _safe_float(parts[6])  # 手
-                change_amt = _safe_float(parts[63])
+                change_amt = _safe_float(parts[31])
                 change_pct = _safe_float(parts[32])
                 high = _safe_float(parts[33])
                 low = _safe_float(parts[34])
