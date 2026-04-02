@@ -297,7 +297,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status);
 CREATE TABLE IF NOT EXISTS daily_quote (
     stock_code      VARCHAR(20) NOT NULL,
     trade_date      DATE NOT NULL,
-    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK'
+    market          VARCHAR(10) NOT NULL,    -- 'CN_A' | 'CN_HK' | 'US'
 
     -- OHLCV
     open            DECIMAL(12,4),
@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS daily_quote (
 
     CONSTRAINT pk_daily_quote PRIMARY KEY (stock_code, trade_date),
     CONSTRAINT fk_quote_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
-    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK'))
+    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK', 'US'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_quote_date ON daily_quote(trade_date);

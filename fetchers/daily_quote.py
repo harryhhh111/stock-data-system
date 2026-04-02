@@ -6,6 +6,7 @@ fetchers/daily_quote.py — 日线行情数据拉取
   - A 股实时行情: ak.stock_zh_a_spot_em（含总市值、流通市值、PE、PB）
   - 港股历史日线: ak.stock_hk_hist（OHLCV + 换手率，无市值）
   - 港股实时行情: 东方财富 API 直调（含总市值、PE、PB）
+  - 美股实时行情: 腾讯 qt.gtimg.cn（含总市值、PE、PB）
 
 策略：
   - 历史回填（全量）：逐只股票拉取历史日线（OHLCV），市值留 NULL
@@ -14,6 +15,10 @@ fetchers/daily_quote.py — 日线行情数据拉取
 港股市值说明（2026-03-30）：
   ak.stock_hk_spot_em() 内部调用东方财富 API 时请求了 f20(总市值)、f9(PE)、f23(PB)，
   但最终输出时丢弃了这些列。因此改用直接调 API 的方式获取完整数据。
+
+美股单位验证（2026-04-02，基于 usAAPL 实际数据）：
+  - 成交额 [37]: 原始 USD（vol*price ≈ amount，比率 ≈ 1.0），无需转换
+  - 总市值 [45]: 单位亿美元（AAPL=37529.40 → ×1e8 = 3.75T USD），需 ×1e8
 """
 from __future__ import annotations
 
@@ -490,6 +495,165 @@ class DailyQuoteFetcher(BaseFetcher):
 
         return df
 
+    # ── 美股实时行情（全市场，含市值）────────────────────
+
+    @staticmethod
+    def _us_spot_columns() -> list[str]:
+        """美股实时行情标准列名。"""
+        return [
+            "代码", "名称", "最新价", "涨跌额", "涨跌幅",
+            "今开", "最高", "最低", "昨收",
+            "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+        ]
+
+    @retry_with_backoff(max_retries=3)
+    def fetch_us_spot(self) -> pd.DataFrame:
+        """通过腾讯 qt.gtimg.cn 拉取美股实时行情。
+
+        腾讯美股接口字段映射（71 字段，~分隔，索引从 0 开始）：
+          [1]=名称, [2]=代码(AAPL.OQ), [3]=最新价, [4]=昨收, [5]=今开,
+          [6]=成交量(股), [31]=涨跌额, [32]=涨跌幅(%),
+          [33]=最高, [34]=最低, [35]=货币(USD),
+          [37]=成交额(USD, 原始), [38]=PB, [39]=PE,
+          [45]=总市值(亿美元)
+
+        单位说明（2026-04-02 交叉验证）：
+          - 成交额 [37]: 原始 USD（vol*price ≈ amount），无需转换
+          - 总市值 [45]: 亿美元，需 ×1e8 转为 USD
+
+        Returns:
+            DataFrame with columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅,
+            今开, 最高, 最低, 昨收, 成交量, 成交额, 总市值, 市盈率-动态, 市净率
+        """
+        logger.info("开始拉取美股实时行情（腾讯）...")
+        t0 = time.time()
+
+        # 从数据库获取美股代码列表
+        from db import execute
+        rows = execute(
+            "SELECT stock_code FROM stock_info WHERE market = 'US'",
+            fetch=True,
+        )
+        all_codes = [r[0] for r in rows]
+        logger.info("美股 stock_info: %d 只", len(all_codes))
+
+        if not all_codes:
+            logger.warning("stock_info 中无美股，请先同步美股列表")
+            return pd.DataFrame(columns=self._us_spot_columns())
+
+        # 转为腾讯格式: AAPL → usAAPL
+        tencent_codes = [f"us{code}" for code in all_codes]
+
+        # 批量查询（每批 300，避免 URL 过长）
+        batch_size = 300
+        all_lines: list[str] = []
+        for i in range(0, len(tencent_codes), batch_size):
+            batch = tencent_codes[i : i + batch_size]
+            q = ",".join(batch)
+            url = f"https://qt.gtimg.cn/q={q}"
+            try:
+                rate_limiter.wait()
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                lines = [l for l in resp.text.strip().split(";") if '="' in l]
+                all_lines.extend(lines)
+            except Exception as e:
+                logger.error("美股腾讯批次 %d 失败: %s", i // batch_size + 1, e)
+                continue
+
+        # 解析
+        rows: list[dict] = []
+        for line in all_lines:
+            try:
+                idx = line.index('"')
+                content = line[idx + 1 : line.rindex('"')]
+            except (ValueError, IndexError):
+                continue
+
+            parts = content.split("~")
+            if len(parts) < 65:
+                continue
+
+            try:
+                # 代码：去掉后缀 AAPL.OQ → AAPL
+                raw_code = parts[2].strip()
+                code = raw_code.split(".")[0]
+                name = parts[1].strip()
+                price = _safe_float(parts[3])
+                prev_close = _safe_float(parts[4])
+                open_price = _safe_float(parts[5])
+                volume = _safe_float(parts[6])  # 股
+                change_amt = _safe_float(parts[31])
+                change_pct = _safe_float(parts[32])
+                high = _safe_float(parts[33])
+                low = _safe_float(parts[34])
+                amount = _safe_float(parts[37])  # USD 原始，无需转换
+                pb = _safe_float(parts[38])
+                pe = _safe_float(parts[39])
+                total_cap_yi = _safe_float(parts[45])  # 亿美元
+
+                # 单位转换：总市值 亿美元 → USD
+                total_cap = total_cap_yi * 1e8 if total_cap_yi is not None else None
+
+                # 成交量直接取整
+                vol_int = int(volume) if volume is not None else None
+
+                # 跳过停牌或无数据的
+                if price is None or price <= 0:
+                    continue
+
+                rows.append({
+                    "代码": code,
+                    "名称": name,
+                    "最新价": price,
+                    "涨跌额": change_amt,
+                    "涨跌幅": change_pct,
+                    "今开": open_price,
+                    "最高": high,
+                    "最低": low,
+                    "昨收": prev_close,
+                    "成交量": vol_int,
+                    "成交额": amount,
+                    "总市值": total_cap,
+                    "市盈率-动态": pe,
+                    "市净率": pb,
+                })
+            except (IndexError, ValueError, TypeError) as e:
+                logger.debug("美股腾讯解析行失败: %s", e)
+                continue
+
+        df = pd.DataFrame(rows)
+        if df.empty:
+            logger.warning("美股实时行情: 无数据")
+            return pd.DataFrame(columns=self._us_spot_columns())
+
+        df = self._finalize_us_spot_df(df)
+        elapsed = time.time() - t0
+        has_cap = df["总市值"].notna().sum() if not df.empty else 0
+        logger.info(
+            "美股实时行情（腾讯）: %d 只, 含市值 %d 只, 耗 %.1fs",
+            len(df), has_cap, elapsed,
+        )
+        return df
+
+    @staticmethod
+    def _finalize_us_spot_df(df: pd.DataFrame) -> pd.DataFrame:
+        """美股 spot DataFrame 的公共后处理：补列、选列、类型转换。"""
+        keep_cols = DailyQuoteFetcher._us_spot_columns()
+        for col in keep_cols:
+            if col not in df.columns:
+                df[col] = None
+        df = df[keep_cols]
+
+        numeric_cols = [
+            "最新价", "涨跌额", "涨跌幅", "今开", "最高", "最低", "昨收",
+            "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
+        ]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        return df
+
 
 # ── 标准化函数 ────────────────────────────────────────────
 
@@ -623,6 +787,39 @@ def transform_hk_spot_to_records(df: pd.DataFrame) -> tuple[list[dict], dict[str
             "updated_at": datetime.now(),
         })
     return records, industry_map
+
+
+def transform_us_spot_to_records(df: pd.DataFrame) -> list[dict]:
+    """将美股实时行情 DataFrame 转为 upsert 记录列表。
+
+    含市值、PE、PB 字段。trade_date 取当前日期。
+    成交额和市值已在 fetch_us_spot() 中转为 USD 原始单位。
+    """
+    today = datetime.now().date()
+    records = []
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).strip()
+        if not code:
+            continue
+        records.append({
+            "stock_code": code,
+            "trade_date": today,
+            "market": "US",
+            "open": _safe_float(row.get("今开")),
+            "high": _safe_float(row.get("最高")),
+            "low": _safe_float(row.get("最低")),
+            "close": _safe_float(row.get("最新价")),
+            "volume": _safe_int(row.get("成交量")),
+            "amount": _safe_float(row.get("成交额")),
+            "turnover_rate": None,
+            "market_cap": _safe_float(row.get("总市值")),
+            "float_market_cap": None,
+            "pe_ttm": _safe_float(row.get("市盈率-动态")),
+            "pb": _safe_float(row.get("市净率")),
+            "currency": "USD",
+            "updated_at": datetime.now(),
+        })
+    return records
 
 
 # ── 辅助函数 ──────────────────────────────────────────────

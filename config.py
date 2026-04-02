@@ -177,6 +177,10 @@ class SchedulerConfig:
     hk_daily_quote_cron: str = field(
         default_factory=lambda: _env("STOCK_HK_DAILY_QUOTE_CRON", "12 17 * * 1-5")
     )
+    # 美股行情：北京时间 05:37 (美东收盘后) 触发
+    us_daily_quote_cron: str = field(
+        default_factory=lambda: _env("STOCK_US_DAILY_QUOTE_CRON", "37 5 * * 2-6")
+    )
 
     # 行情同步开关（默认开启）
     daily_quote_enabled: bool = field(

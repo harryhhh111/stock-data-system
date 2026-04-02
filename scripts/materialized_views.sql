@@ -293,3 +293,70 @@ FROM (
 
 CREATE UNIQUE INDEX idx_mv_us_ttm_pk ON mv_us_indicator_ttm(stock_code, report_date);
 CREATE INDEX idx_mv_us_ttm_fcf ON mv_us_indicator_ttm(fcf_ttm);
+
+
+-- ============================================================
+-- mv_us_fcf_yield: 美股 FCF Yield
+-- 创建时间：2026-04-02
+-- 刷新命令：
+--   REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_fcf_yield;
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_us_fcf_yield CASCADE;
+
+CREATE MATERIALIZED VIEW mv_us_fcf_yield AS
+WITH latest_quote AS (
+    -- 每只美股最新的行情日期
+    SELECT stock_code, MAX(trade_date) AS latest_date
+    FROM daily_quote
+    WHERE market = 'US' AND market_cap IS NOT NULL AND market_cap > 0
+    GROUP BY stock_code
+),
+latest_ttm AS (
+    -- 每只美股最新的 TTM 指标
+    SELECT DISTINCT ON (stock_code)
+        stock_code,
+        report_date AS ttm_report_date,
+        fcf_ttm,
+        revenue_ttm,
+        net_income_ttm AS net_profit_ttm,
+        cfo_ttm
+    FROM mv_us_indicator_ttm
+    WHERE fcf_ttm IS NOT NULL
+    ORDER BY stock_code, report_date DESC
+)
+SELECT
+    q.stock_code,
+    s.stock_name,
+    s.market,
+    s.currency,
+    q.trade_date,
+    q.close,
+    q.market_cap,
+    q.pe_ttm,
+    q.pb,
+    t.fcf_ttm,
+    t.revenue_ttm,
+    t.net_profit_ttm,
+    t.cfo_ttm,
+    t.ttm_report_date,
+    -- FCF Yield = fcf_ttm / market_cap
+    CASE WHEN q.market_cap IS NOT NULL AND q.market_cap > 0
+         THEN t.fcf_ttm / q.market_cap
+    END AS fcf_yield,
+    q.updated_at
+FROM daily_quote q
+JOIN latest_quote lq
+    ON q.stock_code = lq.stock_code
+    AND q.trade_date = lq.latest_date
+JOIN latest_ttm t
+    ON q.stock_code = t.stock_code
+JOIN stock_info s
+    ON q.stock_code = s.stock_code
+WHERE q.market_cap IS NOT NULL
+  AND q.market_cap > 0
+  AND t.fcf_ttm IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_mv_us_fcf_yield_pk ON mv_us_fcf_yield(stock_code);
+CREATE INDEX idx_mv_us_fcf_yield_fcf_yield ON mv_us_fcf_yield(fcf_yield);
+CREATE INDEX idx_mv_us_fcf_yield_market_cap ON mv_us_fcf_yield(market_cap);

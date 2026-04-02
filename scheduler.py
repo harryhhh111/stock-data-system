@@ -103,6 +103,7 @@ def _refresh_materialized_views(job_type: str) -> None:
     """根据任务类型刷新物化视图。
 
     行情同步后只刷新 mv_fcf_yield（因为只有市值变了）。
+    美股行情同步后刷新 mv_us_fcf_yield（美股独立的 FCF yield 视图）。
     财务同步后按依赖顺序刷新全部三层物化视图。
 
     刷新失败只记 warning，不影响同步结果。
@@ -110,6 +111,8 @@ def _refresh_materialized_views(job_type: str) -> None:
     views = []
     if job_type == "daily_quote":
         views = ["mv_fcf_yield"]
+    elif job_type == "daily_quote_us":
+        views = ["mv_us_fcf_yield"]
     elif job_type == "financial":
         # 严格按依赖顺序：indicator → ttm → fcf_yield
         views = ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"]
@@ -146,7 +149,7 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
             logger.info("[%s/%s] 同步开始（第 %d/%d 次尝试）",
                         market, job_type, attempt, max_retries)
 
-            if job_type == "daily_quote":
+            if job_type in ("daily_quote", "daily_quote_us"):
                 result = _sync_daily_quote(market)
             elif market == "US":
                 result = _sync_us()
@@ -202,7 +205,7 @@ def _sync_daily_quote(market: str) -> dict:
     """执行行情同步。
 
     通过调用 sync.py 的 SyncManager.sync_daily_quote() 来完成。
-    market 为规范名（CN_A / CN_HK）。
+    market 为规范名（CN_A / CN_HK / US）。
     """
     from sync import SyncManager
 
@@ -260,6 +263,13 @@ JOB_DEFS: dict[str, dict] = {
         "job_type": "daily_quote",
         "check_trading_day": _is_china_trading_day,
         "description": "港股行情同步",
+    },
+    "US_daily_quote": {
+        "cron_key": "us_daily_quote_cron",
+        "market": "US",
+        "job_type": "daily_quote_us",
+        "check_trading_day": _is_us_trading_day,
+        "description": "美股行情同步",
     },
     # ── 财务同步 ──
     "CN_A_financial": {
@@ -343,6 +353,7 @@ def dry_run() -> None:
     if config.scheduler.daily_quote_enabled:
         print(f"  {'CN_A_daily_quote':<24} {config.scheduler.cn_a_daily_quote_cron:<25} A股行情同步")
         print(f"  {'CN_HK_daily_quote':<24} {config.scheduler.hk_daily_quote_cron:<25} 港股行情同步")
+        print(f"  {'US_daily_quote':<24} {config.scheduler.us_daily_quote_cron:<25} 美股行情同步")
     else:
         print(f"  （行情同步已禁用: daily_quote_enabled=false）")
 

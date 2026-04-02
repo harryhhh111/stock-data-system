@@ -581,12 +581,13 @@ class SyncManager:
           - 全量回填（--force）：逐只股票拉取历史日线
 
         Args:
-            market: "CN_A" | "CN_HK" | "all"
+            market: "CN_A" | "CN_HK" | "US" | "all"
         """
         from fetchers.daily_quote import (
             DailyQuoteFetcher,
             transform_a_spot_to_records,
             transform_hk_spot_to_records,
+            transform_us_spot_to_records,
             transform_a_hist_to_records,
             transform_hk_hist_to_records,
         )
@@ -594,7 +595,7 @@ class SyncManager:
         fetcher = DailyQuoteFetcher()
 
         if market == "all":
-            markets = ["CN_A", "CN_HK"]
+            markets = ["CN_A", "CN_HK", "US"]
         else:
             markets = [market]
 
@@ -628,14 +629,19 @@ class SyncManager:
         from fetchers.daily_quote import (
             transform_a_spot_to_records,
             transform_hk_spot_to_records,
+            transform_us_spot_to_records,
         )
 
+        industry_map: dict[str, str] = {}
         if market == "CN_A":
             df = fetcher.fetch_a_spot()
             records = transform_a_spot_to_records(df)
         elif market == "CN_HK":
             df = fetcher.fetch_hk_spot()
             records, industry_map = transform_hk_spot_to_records(df)
+        elif market == "US":
+            df = fetcher.fetch_us_spot()
+            records = transform_us_spot_to_records(df)
         else:
             logger.error("不支持的市场: %s", market)
             return 0
@@ -1000,7 +1006,7 @@ def main():
         result = manager.sync_industry()
     elif args.type == "daily":
         if not args.market:
-            parser.error("daily 类型需要指定 --market (CN_A/CN_HK/all)")
+            parser.error("daily 类型需要指定 --market (CN_A/CN_HK/US/all)")
         result = manager.sync_daily_quote(market=args.market)
 
     print("\n" + "=" * 50)
