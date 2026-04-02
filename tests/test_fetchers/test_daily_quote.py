@@ -474,6 +474,169 @@ class TestDailyQuoteFetcherMocked:
         assert row3["总市值"] == pytest.approx(23205.6526e8, rel=1e-3)
 
     @patch("fetchers.daily_quote.requests.get")
+    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    def test_fetch_us_spot_tencent(self, mock_em, mock_codes, mock_get):
+        """测试美股腾讯接口字段解析。"""
+        # 东方财富失败触发 fallback 不适用于美股；美股直接走腾讯
+        # 美股 fetch_us_spot 从 DB 读代码，需 mock DB
+        mock_em.side_effect = NotImplementedError("美股不走东财")
+        mock_codes.side_effect = NotImplementedError("美股不走 akshare codes")
+
+        # 模拟腾讯美股接口响应（71 字段，基于 usAAPL 实际数据格式）
+        # 字段: [1]=名称, [2]=代码(AAPL.OQ), [3]=最新价, [4]=昨收, [5]=今开,
+        #       [6]=成交量(股), [31]=涨跌额, [32]=涨跌幅(%),
+        #       [33]=最高, [34]=最低, [35]=货币(USD),
+        #       [37]=成交额(USD), [38]=PB, [39]=PE,
+        #       [45]=总市值(亿美元)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+
+        # 构造 AAPL 数据（71 字段）
+        aapl_fields = [""] * 71
+        aapl_fields[1] = "苹果"            # 名称
+        aapl_fields[2] = "AAPL.OQ"         # 代码（含后缀）
+        aapl_fields[3] = "223.00"          # 最新价
+        aapl_fields[4] = "220.50"          # 昨收
+        aapl_fields[5] = "221.00"          # 今开
+        aapl_fields[6] = "58000000"        # 成交量(股)
+        aapl_fields[31] = "2.50"           # 涨跌额
+        aapl_fields[32] = "1.13"           # 涨跌幅(%)
+        aapl_fields[33] = "225.00"         # 最高
+        aapl_fields[34] = "219.80"         # 最低
+        aapl_fields[35] = "USD"            # 货币
+        aapl_fields[37] = "12906400000.00" # 成交额(USD)
+        aapl_fields[38] = "55.00"          # PB
+        aapl_fields[39] = "36.50"          # PE
+        aapl_fields[45] = "34500.00"       # 总市值(亿美元)
+        aapl_data = "~".join(aapl_fields)
+
+        # 构造 MSFT 数据
+        msft_fields = [""] * 71
+        msft_fields[1] = "微软"
+        msft_fields[2] = "MSFT.OQ"
+        msft_fields[3] = "415.20"
+        msft_fields[4] = "412.00"
+        msft_fields[5] = "413.50"
+        msft_fields[6] = "22000000"
+        msft_fields[31] = "3.20"
+        msft_fields[32] = "0.78"
+        msft_fields[33] = "417.00"
+        msft_fields[34] = "411.50"
+        msft_fields[35] = "USD"
+        msft_fields[37] = "9134400000.00"
+        msft_fields[38] = "12.50"
+        msft_fields[39] = "35.80"
+        msft_fields[45] = "30900.00"
+        msft_data = "~".join(msft_fields)
+
+        mock_resp.text = (
+            f'v_usAAPL="{aapl_data}";\n'
+            f'v_usMSFT="{msft_data}";\n'
+        )
+        mock_get.return_value = mock_resp
+
+        from fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        # Mock DB 查询返回美股代码列表（execute 在 fetch_us_spot 内部 lazy import）
+        with patch("db.execute", return_value=[("AAPL",), ("MSFT",)]):
+            df = fetcher.fetch_us_spot()
+
+        assert len(df) == 2
+        # 验证列完整
+        for col in ["代码", "名称", "最新价", "涨跌额", "涨跌幅", "今开", "最高", "最低",
+                     "昨收", "成交量", "成交额", "总市值", "市盈率-动态", "市净率"]:
+            assert col in df.columns, f"缺少列: {col}"
+
+        # 验证 AAPL 数据
+        row_aapl = df[df["代码"] == "AAPL"].iloc[0]
+        assert row_aapl["名称"] == "苹果"
+        assert row_aapl["最新价"] == pytest.approx(223.00)
+        assert row_aapl["昨收"] == pytest.approx(220.50)
+        assert row_aapl["今开"] == pytest.approx(221.00)
+        assert row_aapl["最高"] == pytest.approx(225.00)
+        assert row_aapl["最低"] == pytest.approx(219.80)
+        assert row_aapl["成交量"] == 58000000
+        assert row_aapl["涨跌额"] == pytest.approx(2.50)
+        assert row_aapl["涨跌幅"] == pytest.approx(1.13)
+        assert row_aapl["成交额"] == pytest.approx(12906400000.00)
+        assert row_aapl["市盈率-动态"] == pytest.approx(36.50)
+        assert row_aapl["市净率"] == pytest.approx(55.00)
+        # 总市值: 34500亿美元 × 1e8 = 3.45e12 USD
+        assert row_aapl["总市值"] == pytest.approx(34500.00 * 1e8)
+
+        # 验证 MSFT 数据
+        row_msft = df[df["代码"] == "MSFT"].iloc[0]
+        assert row_msft["名称"] == "微软"
+        assert row_msft["最新价"] == pytest.approx(415.20)
+        assert row_msft["成交量"] == 22000000
+        assert row_msft["总市值"] == pytest.approx(30900.00 * 1e8)
+        assert row_msft["市盈率-动态"] == pytest.approx(35.80)
+        assert row_msft["市净率"] == pytest.approx(12.50)
+
+    @patch("fetchers.daily_quote.requests.get")
+    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    def test_fetch_us_spot_tencent_unit_conversion(self, mock_em, mock_codes, mock_get):
+        """测试美股腾讯接口市值单位转换（亿美元 → USD）。"""
+        mock_em.side_effect = NotImplementedError("美股不走东财")
+        mock_codes.side_effect = NotImplementedError("美股不走 akshare codes")
+
+        # 只测一只股票的单位转换
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+
+        # 构造 NVDA 数据，关键字段放在实际代码读取的索引位置
+        nvda_fields = [""] * 71
+        nvda_fields[1] = "英伟达"
+        nvda_fields[2] = "NVDA.OQ"
+        nvda_fields[3] = "112.80"          # 最新价
+        nvda_fields[4] = "110.50"          # 昨收
+        nvda_fields[5] = "111.00"          # 今开
+        nvda_fields[6] = "350000000"       # 成交量(股)
+        nvda_fields[31] = "2.30"           # 涨跌额
+        nvda_fields[32] = "2.08"           # 涨跌幅(%)
+        nvda_fields[33] = "114.50"         # 最高
+        nvda_fields[34] = "109.80"         # 最低
+        nvda_fields[35] = "USD"
+        nvda_fields[37] = "39480000000.00" # 成交额(USD, 原始)
+        nvda_fields[38] = "50.20"          # PB
+        nvda_fields[39] = "42.30"          # PE
+        nvda_fields[45] = "27500.00"       # 总市值(亿美元)
+        nvda_data = "~".join(nvda_fields)
+
+        mock_resp.text = f'v_usNVDA="{nvda_data}";\n'
+        mock_get.return_value = mock_resp
+
+        from fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        with patch("db.execute", return_value=[("NVDA",)]):
+            df = fetcher.fetch_us_spot()
+
+        assert len(df) == 1
+        row = df.iloc[0]
+
+        # 成交量：美股单位是股，不需要 ×100
+        assert row["成交量"] == 350000000
+
+        # 成交额：[37] 原始 USD，不需要转换
+        assert row["成交额"] == pytest.approx(39480000000.00)
+
+        # 总市值：[45] 亿美元 → USD（×1e8）
+        # 27500亿美元 = 2.75e12 USD
+        assert row["总市值"] == pytest.approx(27500.00 * 1e8)
+
+        # PE: [39] = 42.30
+        assert row["市盈率-动态"] == pytest.approx(42.30)
+
+        # PB: [38] = 50.20
+        assert row["市净率"] == pytest.approx(50.20)
+
+    @patch("fetchers.daily_quote.requests.get")
     @patch("fetchers.daily_quote.ak.stock_hk_spot")
     def test_fetch_hk_spot_tencent_unit_no_conversion_needed(self, mock_hk_spot, mock_get):
         """测试腾讯港股 fallback 单位不需要额外转换（与 A 股不同）。"""
