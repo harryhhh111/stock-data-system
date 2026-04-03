@@ -6,6 +6,7 @@ fetchers/us_financial.py — 美股 SEC EDGAR 数据拉取
 - USFinancialFetcher: 继承 BaseFetcher，获取 SEC Company Facts 数据
 - fetch_company_list(): 获取 CIK ↔ ticker 映射
 - fetch_sp500_constituents(): 获取 S&P 500 成分股列表
+- fetch_nasdaq100_constituents(): 获取 NASDAQ 100 成分股列表
 """
 from __future__ import annotations
 
@@ -200,6 +201,68 @@ class USFinancialFetcher(BaseFetcher):
         except Exception as e:
             logger.error("所有 S&P 500 数据源均失败: %s", e)
             raise
+
+    def fetch_nasdaq100_constituents(self) -> list[str]:
+        """获取 NASDAQ 100 成分股 ticker 列表。
+
+        数据源优先级：
+        1. Wikipedia NASDAQ-100 页面
+        2. 内置 fallback 列表（data/nasdaq100_tickers.json）
+        本地缓存 7 天过期。
+
+        Returns:
+            ticker 字符串列表，如 ["AAPL", "MSFT", ...]
+        """
+        cache_file = CACHE_DIR / "nasdaq100_tickers.json"
+        if self._load_cache(cache_file):
+            tickers = json.loads(cache_file.read_text())
+            logger.info("NASDAQ 100 从缓存加载: %d 只", len(tickers))
+            return tickers
+
+        # 方法1: Wikipedia
+        try:
+            resp = requests.get(
+                config.sec.nasdaq100_url, headers=HEADERS, timeout=30
+            )
+            resp.raise_for_status()
+            tables = pd.read_html(resp.text)
+            # NASDAQ-100 Wikipedia 有多张表，找包含 "Symbol" 或 "Ticker" 列的
+            for df in tables:
+                ticker_col = None
+                for col in df.columns:
+                    if "symbol" in str(col).lower() or "ticker" in str(col).lower():
+                        ticker_col = col
+                        break
+                if ticker_col is None:
+                    continue
+                tickers = (
+                    df[ticker_col]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"\.", "-", regex=True)
+                    .tolist()
+                )
+                if len(tickers) >= 80:  # 合理的 NASDAQ-100 数量
+                    tickers = list(dict.fromkeys(tickers))
+                    self._save_cache(cache_file, json.dumps(tickers))
+                    logger.info(
+                        "NASDAQ 100 成分股获取完成 (Wikipedia): %d 只", len(tickers)
+                    )
+                    return tickers
+            logger.warning("Wikipedia 表格解析未找到有效数据")
+        except Exception as e:
+            logger.warning("Wikipedia 获取 NASDAQ 100 失败: %s，尝试内置 fallback", e)
+
+        # 方法2: 内置 JSON fallback
+        fallback_path = Path(__file__).resolve().parent.parent / "data" / "nasdaq100_tickers.json"
+        if fallback_path.exists():
+            tickers = json.loads(fallback_path.read_text())
+            self._save_cache(cache_file, json.dumps(tickers))
+            logger.info("NASDAQ 100 从内置列表加载: %d 只", len(tickers))
+            return tickers
+
+        raise RuntimeError("NASDAQ 100 所有数据源均失败，请检查网络或内置 JSON 文件")
 
     def ticker_to_cik(self, ticker: str) -> str:
         """将 ticker 转为 10 位 CIK。"""

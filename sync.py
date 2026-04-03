@@ -31,6 +31,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
+# 加载 .env 文件
+def _load_dotenv(path: str = ".env") -> None:
+    import re
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    if os.path.isfile(p):
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = re.match(r"^([A-Za-z_]\w*)=(.*)$", line)
+                if m:
+                    os.environ.setdefault(m.group(1), m.group(2))
+
+_load_dotenv()
+
 import psycopg2
 import psycopg2.extras
 
@@ -897,9 +913,7 @@ def sync_us_market(args) -> dict:
     elif args.us_index == "SP500":
         tickers = fetcher.fetch_sp500_constituents()
     elif args.us_index == "NASDAQ100":
-        # TODO: 后续扩展
-        logger.error("NASDAQ100 暂未实现")
-        return {"total": 0, "success": 0, "failed": 0, "error": "NASDAQ100 not implemented"}
+        tickers = fetcher.fetch_nasdaq100_constituents()
     elif args.us_index == "ALL":
         # 所有 SEC 申报公司
         company_df = fetcher.fetch_company_list()

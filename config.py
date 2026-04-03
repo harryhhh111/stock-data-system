@@ -130,6 +130,7 @@ class SECConfig:
     base_url: str = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
     ticker_url: str = "https://www.sec.gov/files/company_tickers.json"
     sp500_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    nasdaq100_url: str = "https://en.wikipedia.org/wiki/NASDAQ-100"
 
 
 # ── 熔断配置 ──────────────────────────────────────────────
