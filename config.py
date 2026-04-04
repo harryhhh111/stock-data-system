@@ -7,9 +7,31 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def load_dotenv(path: str = ".env") -> None:
+    """加载项目根目录下的 .env 文件到 os.environ。
+
+    仅设置尚未存在的环境变量（不覆盖已有值）。
+    """
+    p = Path(__file__).parent / path
+    if p.is_file():
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = re.match(r"^([A-Za-z_]\w*)=(.*)$", line)
+                if m:
+                    os.environ.setdefault(m.group(1), m.group(2))
+
+
+# 启动时自动加载 .env
+load_dotenv()
 
 
 def _env(key: str, default: str = "", *, cast: type = str) -> Any:

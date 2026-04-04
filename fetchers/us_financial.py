@@ -240,6 +240,8 @@ class USFinancialFetcher(BaseFetcher):
                     .dropna()
                     .astype(str)
                     .str.strip()
+                    # SEC company_tickers.json 使用 "-" 代替 "." (如 BRK-B 而非 BRK.B)，
+                    # 因此 Wikipedia 中的 "." 需统一替换为 "-" 以匹配 SEC 的 ticker 格式
                     .str.replace(r"\.", "-", regex=True)
                     .tolist()
                 )

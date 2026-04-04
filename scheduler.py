@@ -28,22 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
-# 加载 .env 文件
-def _load_dotenv(path: str = ".env") -> None:
-    import re
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
-    if os.path.isfile(p):
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                m = re.match(r"^([A-Za-z_]\w*)=(.*)$", line)
-                if m:
-                    os.environ.setdefault(m.group(1), m.group(2))
-
-_load_dotenv()
-
 import config
 from db import health_check, close_pool, execute
 
@@ -313,21 +297,20 @@ def _sync_us() -> dict:
 
 JOB_DEFS: dict[str, dict] = {
     # ── 行情同步 ──
-    # [海外部署] 注释掉 A股和港股任务
-    # "CN_A_daily_quote": {
-    #     "cron_key": "cn_a_daily_quote_cron",
-    #     "market": "CN_A",
-    #     "job_type": "daily_quote",
-    #     "check_trading_day": _is_china_trading_day,
-    #     "description": "A股行情同步",
-    # },
-    # "CN_HK_daily_quote": {
-    #     "cron_key": "hk_daily_quote_cron",
-    #     "market": "CN_HK",
-    #     "job_type": "daily_quote",
-    #     "check_trading_day": _is_china_trading_day,
-    #     "description": "港股行情同步",
-    # },
+    "CN_A_daily_quote": {
+        "cron_key": "cn_a_daily_quote_cron",
+        "market": "CN_A",
+        "job_type": "daily_quote",
+        "check_trading_day": _is_china_trading_day,
+        "description": "A股行情同步",
+    },
+    "CN_HK_daily_quote": {
+        "cron_key": "hk_daily_quote_cron",
+        "market": "CN_HK",
+        "job_type": "daily_quote",
+        "check_trading_day": _is_china_trading_day,
+        "description": "港股行情同步",
+    },
     "US_daily_quote": {
         "cron_key": "us_daily_quote_cron",
         "market": "US",
@@ -336,20 +319,20 @@ JOB_DEFS: dict[str, dict] = {
         "description": "美股行情同步",
     },
     # ── 财务同步 ──
-    # "CN_A_financial": {
-    #     "cron_key": "cn_a_cron",
-    #     "market": "CN_A",
-    #     "job_type": "financial",
-    #     "check_trading_day": _is_china_trading_day,
-    #     "description": "A股财务同步",
-    # },
-    # "CN_HK_financial": {
-    #     "cron_key": "hk_cron",
-    #     "market": "CN_HK",
-    #     "job_type": "financial",
-    #     "check_trading_day": _is_china_trading_day,
-    #     "description": "港股财务同步",
-    # },
+    "CN_A_financial": {
+        "cron_key": "cn_a_cron",
+        "market": "CN_A",
+        "job_type": "financial",
+        "check_trading_day": _is_china_trading_day,
+        "description": "A股财务同步",
+    },
+    "CN_HK_financial": {
+        "cron_key": "hk_cron",
+        "market": "CN_HK",
+        "job_type": "financial",
+        "check_trading_day": _is_china_trading_day,
+        "description": "港股财务同步",
+    },
     "US_financial": {
         "cron_key": "us_cron",
         "market": "US",

@@ -31,22 +31,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
-# 加载 .env 文件
-def _load_dotenv(path: str = ".env") -> None:
-    import re
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
-    if os.path.isfile(p):
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                m = re.match(r"^([A-Za-z_]\w*)=(.*)$", line)
-                if m:
-                    os.environ.setdefault(m.group(1), m.group(2))
-
-_load_dotenv()
-
 import psycopg2
 import psycopg2.extras
 
