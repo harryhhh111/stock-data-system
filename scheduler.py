@@ -384,11 +384,29 @@ def _make_job_wrapper(job_id: str):
 
 # ── Dry Run 预览 ────────────────────────────────────────────
 
+def _filter_job_defs() -> dict[str, dict]:
+    """根据 config.scheduler.markets 过滤 JOB_DEFS，只保留允许的市场任务。
+
+    如果 markets 为空，输出警告并返回空字典。
+    """
+    markets = config.scheduler.markets
+    if not markets:
+        return {}
+    return {
+        job_id: job_def
+        for job_id, job_def in JOB_DEFS.items()
+        if job_def["market"] in markets
+    }
+
+
 def dry_run() -> None:
     """预览调度计划，不实际执行。"""
+    active_jobs = _filter_job_defs()
+
     print("=" * 70)
     print("  Stock Data Scheduler — 调度计划预览（--dry-run）")
     print("=" * 70)
+    print(f"\n  STOCK_MARKETS = {','.join(config.scheduler.markets) if config.scheduler.markets else '（未配置）'}")
 
     # ── 行情同步 ──
     print(f"\n  {'─' * 66}")
@@ -398,9 +416,12 @@ def dry_run() -> None:
     print(f"  {'─' * 24} {'─' * 25} {'─' * 16}")
 
     if config.scheduler.daily_quote_enabled:
-        print(f"  {'CN_A_daily_quote':<24} {config.scheduler.cn_a_daily_quote_cron:<25} A股行情同步")
-        print(f"  {'CN_HK_daily_quote':<24} {config.scheduler.hk_daily_quote_cron:<25} 港股行情同步")
-        print(f"  {'US_daily_quote':<24} {config.scheduler.us_daily_quote_cron:<25} 美股行情同步")
+        for job_id, job_def in active_jobs.items():
+            if job_def["job_type"] in ("daily_quote", "daily_quote_us"):
+                cron_expr = getattr(config.scheduler, job_def["cron_key"])
+                print(f"  {job_id:<24} {cron_expr:<25} {job_def['description']}")
+        if not any(jd["job_type"] in ("daily_quote", "daily_quote_us") for jd in active_jobs.values()):
+            print(f"  （无匹配的行情同步任务）")
     else:
         print(f"  （行情同步已禁用: daily_quote_enabled=false）")
 
@@ -411,14 +432,18 @@ def dry_run() -> None:
     print(f"  {'任务 ID':<24} {'cron 表达式':<25} {'说明':<16}")
     print(f"  {'─' * 24} {'─' * 25} {'─' * 16}")
 
-    print(f"  {'CN_A_financial':<24} {config.scheduler.cn_a_cron:<25} A股财务同步")
-    print(f"  {'CN_HK_financial':<24} {config.scheduler.hk_cron:<25} 港股财务同步")
-    print(f"  {'US_financial':<24} {config.scheduler.us_cron:<25} 美股财务同步")
+    for job_id, job_def in active_jobs.items():
+        if job_def["job_type"] == "financial":
+            cron_expr = getattr(config.scheduler, job_def["cron_key"])
+            print(f"  {job_id:<24} {cron_expr:<25} {job_def['description']}")
+    if not any(jd["job_type"] == "financial" for jd in active_jobs.values()):
+        print(f"  （无匹配的财务同步任务）")
 
     # ── 配置概要 ──
     print(f"\n  {'─' * 66}")
     print(f"  配置概要")
     print(f"  {'─' * 66}")
+    print(f"  活跃市场     : {', '.join(config.scheduler.markets) if config.scheduler.markets else '（未配置）'}")
     print(f"  行情同步开关 : {'开启' if config.scheduler.daily_quote_enabled else '关闭'}")
     print(f"  重试次数     : {config.scheduler.max_retries}（间隔递增，基数 {config.scheduler.retry_base_delay}s）")
     print(f"  并发线程     : {config.scheduler.sync_workers}")
@@ -444,15 +469,27 @@ def run_scheduler(once: bool = False) -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
+    # ── 检查 STOCK_MARKETS 配置 ──
+    markets = config.scheduler.markets
+    if not markets:
+        logger.warning(
+            "STOCK_MARKETS 环境变量未配置，没有任务可注册。"
+            "请在 .env 中设置，例如: STOCK_MARKETS=CN_A,CN_HK 或 STOCK_MARKETS=US"
+        )
+        sys.exit(1)
+
     if not health_check():
         logger.error("数据库连接失败，调度器无法启动")
         sys.exit(1)
+
+    active_jobs = _filter_job_defs()
+    logger.info("活跃市场: %s → %d 个任务", ", ".join(markets), len(active_jobs))
 
     sched = BlockingScheduler(timezone="Asia/Shanghai")
     logger.info("调度器启动，时区: Asia/Shanghai")
 
     # ── 注册任务 ──
-    for job_id, job_def in JOB_DEFS.items():
+    for job_id, job_def in active_jobs.items():
         # 跳过禁用的行情同步
         if job_def["job_type"] == "daily_quote" and not config.scheduler.daily_quote_enabled:
             logger.info("行情同步已禁用，跳过注册: %s", job_id)
@@ -477,7 +514,7 @@ def run_scheduler(once: bool = False) -> None:
         # 立即执行一次，按正确顺序：
         # 先执行行情同步，再执行财务同步
         logger.info("--once 模式：立即执行所有任务...")
-        for job_id, job_def in JOB_DEFS.items():
+        for job_id, job_def in active_jobs.items():
             if job_def["job_type"] == "daily_quote" and not config.scheduler.daily_quote_enabled:
                 logger.info("行情同步已禁用，跳过: %s", job_id)
                 continue

@@ -235,6 +235,17 @@ class SchedulerConfig:
         default_factory=lambda: _env("STOCK_SCHEDULER_NOTIFY_URL", "")
     )
 
+    # 允许运行的市场列表（逗号分隔），未配置时为空列表
+    # 国内服务器: STOCK_MARKETS=CN_A,CN_HK
+    # 海外服务器: STOCK_MARKETS=US
+    markets: list[str] = field(
+        default_factory=lambda: [
+            m.strip()
+            for m in os.environ.get("STOCK_MARKETS", "").split(",")
+            if m.strip()
+        ]
+    )
+
 
 # ── 聚合配置对象 ──────────────────────────────────────────
 db: DBConfig = DBConfig()

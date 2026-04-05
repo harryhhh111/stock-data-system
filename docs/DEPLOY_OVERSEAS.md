@@ -64,7 +64,18 @@ DB_PASSWORD=你的密码
 
 # SEC EDGAR
 SEC_USER_AGENT=stock-data-system contact@example.com
+
+# 市场过滤（海外服务器只跑美股）
+STOCK_MARKETS=US
 ```
+
+`STOCK_MARKETS` 是逗号分隔的市场列表，控制 scheduler.py 注册哪些任务：
+
+| 值 | 注册的任务 |
+|----|-----------|
+| `CN_A,CN_HK` | A股 + 港股行情/财务同步 |
+| `US` | 美股行情/财务同步 |
+| 未设置 | 无任务注册，scheduler 启动后警告退出 |
 
 如果 `config.py` 是从环境变量读取的，确认以上变量名与代码一致。如果不是，可能需要改 `config.py`。
 
@@ -132,7 +143,7 @@ python sync.py --type daily --market US --once
 ## 注意事项
 
 - 美股财务数据来自 SEC EDGAR，网络稳定但每次请求间隔需 ≥0.1s
-- **scheduler.py 目前包含所有市场的 cron 任务，海外服务器需要修改代码只保留美股任务。** 具体操作：在 `scheduler.py` 中 `JOB_DEFS` 字典（约第 251 行）注释掉 A 股和港股的条目，只保留 `US_daily_quote` 和 `US_financial`
+- **scheduler.py 通过 `STOCK_MARKETS` 环境变量控制注册哪些任务**，海外服务器只需在 `.env` 中设置 `STOCK_MARKETS=US`，无需注释或修改任何代码
 - 如果后续想更优雅地支持按环境过滤，可以给 scheduler.py 加 `--market US` 参数，但目前注释掉是最简单的做法
 - 美股行情腾讯接口从海外访问延迟会稍高，但可用
 - Git push/pull 在海外服务器应该很稳定
