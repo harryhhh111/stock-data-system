@@ -15,10 +15,10 @@ A 股：
 
 产出结构：[{stock_code, industry_name}] → 写入 stock_info.industry
 """
-from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from typing import Optional
 
@@ -277,3 +277,111 @@ if __name__ == "__main__":
     dist = get_industry_distribution(results)
     print(f"\n行业分布 ({len(dist)} 个行业):")
     print(dist.to_string(index=False))
+
+
+# ── 港股行业分类（东方财富 F10）──────────────────────────────
+
+_EASTMONEY_HKF10_URL = (
+    "https://emweb.securities.eastmoney.com/"
+    "PC_HKF10/CompanyProfile/PageAjax?code={stock_code}"
+)
+
+
+def fetch_hk_industry(
+    stocks: list[dict[str, str]],
+    delay_range: tuple[float, float] = (3.0, 8.0),
+    max_retries: int = 3,
+    on_batch=None,
+    batch_size: int = 50,
+) -> list[dict[str, str]]:
+    """从东方财富 F10 获取港股行业分类（gszl.sshy，港交所官方分类）。
+
+    Args:
+        stocks: [{"stock_code": "00700"}, ...]
+        delay_range: 请求间隔随机抖动范围（秒）
+        max_retries: 单只股票最大重试次数
+        on_batch: 每批回调函数，用于边拉边写数据库
+        batch_size: 每批写入的记录数
+
+    Returns:
+        [{"stock_code": "00700", "industry_name": "软件服务"}, ...]
+    """
+
+    logger.info("开始拉取港股行业分类: %d 只股票", len(stocks))
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://emweb.securities.eastmoney.com/",
+    })
+
+    results: list[dict[str, str]] = []
+    all_results: list[dict[str, str]] = []
+    failed: list[str] = []
+
+    for i, item in enumerate(stocks):
+        stock_code = item["stock_code"]
+        code_clean = stock_code.strip().zfill(5)
+
+        success = False
+        for attempt in range(max_retries):
+            try:
+                url = _EASTMONEY_HKF10_URL.format(stock_code=code_clean)
+                resp = session.get(url, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+
+                gszl = data.get("gszl", {})
+                sshy = ""
+                if isinstance(gszl, dict):
+                    sshy = str(gszl.get("sshy", "") or "").strip()
+
+                results.append({
+                    "stock_code": stock_code,
+                    "industry_name": sshy,
+                })
+                success = True
+
+                if not sshy:
+                    logger.warning("%s: sshy 字段为空 (attempt %d)", stock_code, attempt + 1)
+                break
+
+            except Exception as exc:
+                logger.warning("%s 拉取失败 (attempt %d/%d): %s", stock_code, attempt + 1, max_retries, exc)
+                if attempt < max_retries - 1:
+                    wait = 5 * (2 ** attempt)
+                    logger.info("  等待 %ds 后重试...", wait)
+                    time.sleep(wait)
+
+        if not success:
+            failed.append(stock_code)
+            logger.error("  %s: 所有重试均失败，跳过", stock_code)
+
+        if i < len(stocks) - 1:
+            delay = random.uniform(*delay_range)
+            time.sleep(delay)
+
+        if (i + 1) % batch_size == 0 or (i + 1) == len(stocks):
+            logger.info(
+                "港股行业进度: %d/%d (%.0f%%) 成功=%d 失败=%d",
+                i + 1, len(stocks), (i + 1) / len(stocks) * 100,
+                len(results), len(failed),
+            )
+            if on_batch is not None and results:
+                on_batch(results)
+                all_results.extend(results)
+                results = []
+
+    if on_batch is not None:
+        all_results.extend(results)
+        results = all_results
+
+    logger.info("港股行业分类拉取完成: %d/%d 只成功, %d 只失败", len(results), len(stocks), len(failed))
+    if failed:
+        logger.warning("失败股票: %s", ", ".join(failed[:20]))
+
+    return results

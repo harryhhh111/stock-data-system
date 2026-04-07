@@ -426,3 +426,53 @@ if __name__ == "__main__":
 
     close_pool()
     print("\n✅ 全部测试完成，连接池已关闭。")
+
+
+def update_stock_industry(stock_code: str, market: str, industry: str) -> None:
+    """更新 stock_info.industry 字段。"""
+    sql = (
+        "UPDATE stock_info SET industry = %s, updated_at = NOW() "
+        "WHERE stock_code = %s AND market = %s"
+    )
+    execute(sql, (industry, stock_code, market), commit=True)
+    logger.debug("update_stock_industry: %s (%s) → %s", stock_code, market, industry)
+
+
+def batch_update_industry(
+    code_industry: dict[str, str],
+    market: str,
+    batch_size: int = 500,
+) -> int:
+    """批量更新 stock_info.industry（使用 CASE WHEN 语句）。"""
+    if not code_industry:
+        return 0
+
+    codes = list(code_industry.keys())
+    total_updated = 0
+
+    for offset in range(0, len(codes), batch_size):
+        batch = codes[offset : offset + batch_size]
+        when_clauses = []
+        params = []
+        for code in batch:
+            when_clauses.append("WHEN %s THEN %s")
+            params.extend([code, code_industry[code]])
+        params.extend([market, *batch])
+
+        sql = f"""
+            UPDATE stock_info
+            SET industry = CASE stock_code
+                {' '.join(when_clauses)}
+                ELSE industry END,
+                updated_at = NOW()
+            WHERE market = %s AND stock_code IN ({','.join(['%s'] * len(batch))})
+        """
+
+        rows = execute(sql, params, commit=True)
+        if isinstance(rows, (list, tuple)):
+            total_updated += len(rows)
+        else:
+            total_updated += (rows or 0)
+
+    logger.info("batch_update_industry: %s 市场 %d 只已更新", market, total_updated)
+    return total_updated

@@ -674,6 +674,88 @@ class SyncManager:
 
         return result
 
+    # ── 港股行业分类同步 ─────────────────────────────────────
+
+    def sync_hk_industry(self, force: bool = False) -> dict:
+        """同步港股行业分类数据（东方财富 F10）到 stock_info.industry。
+
+        边拉边写：每 50 只批量写入数据库，防止中断丢数据。
+        断点续传：跳过 industry 已非空的记录（除非 force=True）。
+        """
+        from fetchers.industry import fetch_hk_industry, get_industry_distribution
+        from db import batch_update_industry
+
+        logger.info("开始同步港股行业分类数据 (force=%s)...", force)
+
+        if force:
+            rows = execute(
+                "SELECT stock_code FROM stock_info WHERE market = 'CN_HK'",
+                fetch=True,
+            )
+        else:
+            rows = execute(
+                "SELECT stock_code FROM stock_info "
+                "WHERE market = 'CN_HK' AND (industry IS NULL OR industry = '')",
+                fetch=True,
+            )
+
+        stocks = [{"stock_code": r[0]} for r in rows]
+        total = len(stocks)
+        logger.info("待拉取港股行业: %d 只 (force=%s)", total, force)
+
+        if not stocks:
+            logger.info("所有港股已有行业数据，无需拉取")
+            return {"total": 0, "updated": 0, "empty_industry": 0, "failed": 0}
+
+        t0 = time.time()
+        total_updated = 0
+        empty_industry = 0
+        all_results: list[dict[str, str]] = []
+
+        def on_batch(batch_results: list[dict[str, str]]) -> None:
+            nonlocal total_updated, empty_industry
+            code_ind: dict[str, str] = {}
+            for item in batch_results:
+                ind = item.get("industry_name", "")
+                if ind:
+                    code_ind[item["stock_code"]] = ind
+                else:
+                    empty_industry += 1
+            if code_ind:
+                total_updated += batch_update_industry(code_ind, "CN_HK")
+
+        results = fetch_hk_industry(stocks, on_batch=on_batch)
+        if not results:
+            logger.warning("港股行业分类数据为空")
+            return {"total": total, "updated": 0, "empty_industry": 0, "failed": 0}
+
+        total_failed = total - len(results)
+        elapsed = time.time() - t0
+
+        non_empty = [r for r in results if r.get("industry_name")]
+        dist_df = get_industry_distribution(non_empty)
+
+        result = {
+            "total": total,
+            "updated": total_updated,
+            "empty_industry": empty_industry,
+            "industry_count": len(dist_df),
+            "failed": total_failed,
+            "elapsed": elapsed,
+        }
+
+        logger.info(
+            "港股行业分类同步完成: 总计=%d, 更新=%d, 空行业=%d, 失败=%d, 耗时=%.1fs",
+            total, total_updated, empty_industry, total_failed, elapsed,
+        )
+
+        if not dist_df.empty:
+            logger.info("行业分布 (前20):")
+            for _, row in dist_df.head(20).iterrows():
+                logger.info("  %s: %d 只", row["industry_name"], row["stock_count"])
+
+        return result
+
     def shutdown(self):
         """标记关闭，让正在运行的同步优雅退出。"""
         self._shutdown = True
@@ -1223,7 +1305,7 @@ def sync_us_market_reparse(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "industry"],
+    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "industry", "industry-hk"],
                         help="同步类型")
     parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
@@ -1278,6 +1360,8 @@ def main():
             result = manager.sync_us_industry()
         else:
             result = manager.sync_industry()
+    elif args.type == "industry-hk":
+        result = manager.sync_hk_industry(force=args.force)
     elif args.type == "daily":
         if not args.market:
             parser.error("daily 类型需要指定 --market (CN_A/CN_HK/US/all)")
