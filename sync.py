@@ -35,7 +35,7 @@ import psycopg2
 import psycopg2.extras
 
 from config import DBConfig
-from db import upsert, execute, health_check
+from db import upsert, execute, health_check, save_raw_snapshot, save_raw_snapshot
 from transformers.base import transform_report_type
 from incremental import (
     ensure_last_report_date_column,
@@ -950,6 +950,18 @@ def sync_us_market(args) -> dict:
             facts = fetcher.fetch_company_facts(ticker)
             cik = str(facts.get("cik", "")).strip().zfill(10)
 
+            # 【新增】保存原始 Company Facts JSON 到 raw_snapshot
+            try:
+                save_raw_snapshot(
+                    stock_code=ticker,
+                    data_type="company_facts",
+                    source="sec_edgar",
+                    api_params={"cik": cik},
+                    raw_data=facts,
+                )
+            except Exception as snap_err:
+                logger.warning("%s: raw_snapshot 保存失败: %s", ticker, snap_err)
+
             # 提取三大报表宽表
             income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
             balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
@@ -1060,6 +1072,153 @@ def sync_us_market(args) -> dict:
     return result
 
 
+def sync_us_market_reparse(args) -> dict:
+    """重新解析美股数据：从 raw_snapshot 读取原始 JSON 并重新写入报表。
+
+    用途：当映射规则更新后，无需重新请求 SEC API，只需重新解析即可。
+
+    Args:
+        args: 命令行参数（需包含 us_tickers, force_reparse）
+
+    Returns:
+        统计结果字典
+    """
+    from fetchers.us_financial import USFinancialFetcher
+    from transformers.us_gaap import USGAAPTransformer
+
+    transformer = USGAAPTransformer()
+
+    logger.info("=== 重新解析模式：从 raw_snapshot 读取并重新写入报表 ===")
+
+    # 1. 查询 raw_snapshot 中已有的 Company Facts 数据
+    if args.us_tickers:
+        # 指定 ticker 列表
+        tickers = [t.strip().upper() for t in args.us_tickers.split(",") if t.strip()]
+        placeholders = ", ".join(["%s"] * len(tickers))
+        sql = f"""
+            SELECT DISTINCT stock_code, raw_data
+            FROM raw_snapshot
+            WHERE stock_code IN ({placeholders})
+              AND data_type = 'company_facts'
+              AND source = 'sec_edgar'
+            ORDER BY stock_code
+        """
+        rows = execute(sql, tickers, fetch=True)
+    elif args.force_reparse:
+        # 强制重新解析所有 raw_snapshot 中的美股数据
+        sql = """
+            SELECT DISTINCT stock_code, raw_data
+            FROM raw_snapshot
+            WHERE data_type = 'company_facts'
+              AND source = 'sec_edgar'
+            ORDER BY stock_code
+        """
+        rows = execute(sql, fetch=True)
+    else:
+        # 默认：只重新解析已存在的股票（需要有 stock_info 记录）
+        sql = """
+            SELECT DISTINCT r.stock_code, r.raw_data
+            FROM raw_snapshot r
+            INNER JOIN stock_info s ON r.stock_code = s.stock_code
+            WHERE r.data_type = 'company_facts'
+              AND r.source = 'sec_edgar'
+              AND s.market = 'US'
+            ORDER BY r.stock_code
+        """
+        rows = execute(sql, fetch=True)
+
+    total = len(rows)
+    logger.info("待重新解析: %d 只美股", total)
+
+    if total == 0:
+        logger.warning("raw_snapshot 中没有可重新解析的数据")
+        return {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
+
+    # 2. 重新解析并写入
+    from fetchers.us_financial import USFinancialFetcher
+    from transformers.us_gaap import USGAAPTransformer
+    
+    fetcher = USFinancialFetcher()
+    transformer = USGAAPTransformer()
+    
+    success = 0
+    failed = 0
+    errors: list[str] = []
+    t0 = time.time()
+
+    for i, (ticker, raw_data) in enumerate(rows, 1):
+        try:
+            # raw_data 可能是 dict 或 JSON 字符串
+            if isinstance(raw_data, str):
+                facts = json.loads(raw_data)
+            else:
+                facts = raw_data
+
+            cik = str(facts.get("cik", "")).strip().zfill(10)
+
+            # 使用当前的映射重新提取三大报表
+            income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
+            balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
+            cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+
+            # 转换 + 写入
+            cfg = MARKET_CONFIG["US"]
+            tables_synced = []
+            for table, df, transform_method in zip(
+                cfg["tables"],
+                [income_df, balance_df, cashflow_df],
+                cfg["transform_methods"],
+            ):
+                records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+                if records:
+                    upsert(table, records, cfg["conflict_keys"])
+                    tables_synced.append(table)
+
+            if tables_synced:
+                success += 1
+                logger.debug("%s: 重新解析成功，写入 %d 张表", ticker, len(tables_synced))
+            else:
+                logger.warning("%s: 无数据写入", ticker)
+
+        except Exception as exc:
+            failed += 1
+            error_msg = f"{type(exc).__name__}: {exc}"
+            errors.append(f"{ticker}: {error_msg}")
+            logger.error("%s 重新解析失败: %s", ticker, exc)
+
+        # 进度日志
+        if i % 10 == 0 or i == total:
+            elapsed = time.time() - t0
+            rate = i / elapsed if elapsed > 0 else 0
+            eta = (total - i) / rate if rate > 0 else 0
+            logger.info(
+                "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%.0fs",
+                i, total, i / total * 100,
+                success, failed, rate * 60, eta,
+            )
+
+    elapsed = time.time() - t0
+
+    result = {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "elapsed": elapsed,
+    }
+
+    logger.info(
+        "重新解析完成: 总计=%d, 成功=%d, 失败=%d, 耗时=%.1fs",
+        total, success, failed, elapsed,
+    )
+
+    if errors:
+        logger.info("错误 (前%d条):", min(len(errors), 20))
+        for e in errors[:20]:
+            logger.info("  - %s", e)
+
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────
 
 def main():
@@ -1075,6 +1234,10 @@ def main():
                         help="美股指数范围（仅 US 市场有效）")
     parser.add_argument("--us-tickers", default=None,
                         help="美股指定 ticker 列表，逗号分隔（覆盖 --us-index）")
+    parser.add_argument("--reparse", action="store_true",
+                        help="重新解析模式：从 raw_snapshot 读取原始数据并重新解析（不请求 API）")
+    parser.add_argument("--force-reparse", action="store_true",
+                        help="强制重新解析所有股票（仅与 --reparse 一起使用）")
 
     args = parser.parse_args()
 
@@ -1100,7 +1263,10 @@ def main():
         if not args.market:
             parser.error("financial 类型需要指定 --market")
         if args.market == "US":
-            result = sync_us_market(args)
+            if args.reparse:
+                result = sync_us_market_reparse(args)
+            else:
+                result = sync_us_market(args)
         else:
             result = manager.sync_financial(args.market)
     elif args.type == "index":

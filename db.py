@@ -140,16 +140,19 @@ def save_raw_snapshot(
     if hasattr(raw_data, "to_dict"):
         data_to_store = raw_data.to_dict(orient="records")
 
+    # raw_snapshot 的唯一索引包含 COALESCE((api_params)::text, ''::text)
+    # 因此 ON CONFLICT 需要包含相同的字段
+    api_params_json = _json.dumps(api_params, default=str)
     sql = """
         INSERT INTO raw_snapshot (stock_code, data_type, source, api_params, raw_data, sync_time)
         VALUES (%s, %s, %s, %s, %s, NOW())
-        ON CONFLICT (stock_code, data_type, source)
+        ON CONFLICT (stock_code, data_type, source, COALESCE((api_params)::text, ''::text))
         DO UPDATE SET raw_data = EXCLUDED.raw_data, sync_time = NOW()
     """
     try:
         execute(
             sql,
-            (stock_code, data_type, source, _json.dumps(api_params, default=str),
+            (stock_code, data_type, source, api_params_json,
              _json.dumps(data_to_store, ensure_ascii=False, default=str)),
         )
         logger.info("raw_snapshot 已保存: stock=%s type=%s source=%s", stock_code, data_type, source)
