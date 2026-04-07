@@ -219,9 +219,9 @@ SELECT
         b.total_equity / i.weighted_avg_shares_basic
     END AS book_value_per_share,
 
-    -- FCF
+    -- FCF（capital_expenditures 为正数，需减去）
     CASE WHEN cf.net_cash_from_operations IS NOT NULL AND cf.capital_expenditures IS NOT NULL THEN
-        cf.net_cash_from_operations + cf.capital_expenditures  -- capex 通常是负数
+        cf.net_cash_from_operations - cf.capital_expenditures
     END AS fcf,
 
     i.filed_date,
@@ -266,13 +266,14 @@ SELECT
         PARTITION BY stock_code ORDER BY report_date
         ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
     ) AS net_income_ttm,
-    SUM(COALESCE(net_cash_from_operations, 0)) OVER (
+    SUM(net_cash_from_operations) OVER (
         PARTITION BY stock_code ORDER BY report_date
         ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
     ) AS cfo_ttm,
     SUM(CASE
         WHEN net_cash_from_operations IS NOT NULL AND capital_expenditures IS NOT NULL
-        THEN net_cash_from_operations + capital_expenditures
+        THEN net_cash_from_operations - capital_expenditures
+        ELSE NULL
     END) OVER (
         PARTITION BY stock_code ORDER BY report_date
         ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
