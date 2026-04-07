@@ -405,26 +405,64 @@ class USFinancialFetcher(BaseFetcher):
         "ShareBasedCompensation": "stock_based_compensation",
         "DeferredIncomeTaxExpenseBenefit": "deferred_income_tax",
         "ChangesInWorkingCapital": "changes_in_working_capital",
+        # Operating cash flow - multiple aliases
         "CashFlowFromContinuingOperatingActivities": "net_cash_from_operations",
         "NetCashProvidedByUsedInOperatingActivities": "net_cash_from_operations",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations": "net_cash_from_operations",
+        "OperatingCashFlow": "net_cash_from_operations",
+        # Capital expenditures - multiple aliases (SEC uses PaymentsToAcquirePropertyPlantAndEquipment most commonly)
         "CapitalExpenditures": "capital_expenditures",
+        "PaymentsToAcquirePropertyPlantAndEquipment": "capital_expenditures",
+        "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization": "capital_expenditures",
+        "CapitalExpendituresIncurredButNotYetPaid": "capital_expenditures",
+        "PaymentsToAcquireProductiveAssets": "capital_expenditures",
+        # Acquisitions
         "PaymentsToAcquireBusinessesNetOfCashAcquired": "acquisitions",
+        # Investments
         "PurchaseOfInvestments": "investment_purchases",
+        "PaymentsToAcquireAvailableForSaleSecurities": "investment_purchases",
+        "PaymentsToAcquireOtherInvestments": "investment_purchases",
         "ProceedsFromMaturitiesOfInvestments": "investment_maturities",
+        "ProceedsFromSaleAndMaturityOfOtherInvestments": "investment_maturities",
+        "ProceedsFromMaturitiesPrepaymentsAndCallsOfAvailableForSaleSecurities": "investment_maturities",
         "OtherCashPaymentsFromInvestingActivities": "other_investing_activities",
+        "PaymentsForProceedsFromOtherInvestingActivities": "other_investing_activities",
+        # Investing cash flow - multiple aliases
         "NetCashProvidedByUsedInInvestingActivities": "net_cash_from_investing",
+        "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations": "net_cash_from_investing",
+        "NetCashUsedInInvestingActivities": "net_cash_from_investing",
+        # Financing - debt
         "ProceedsFromIssuanceOfDebt": "debt_issued",
         "RepaymentsOfDebt": "debt_repaid",
+        "RepaymentsOfLongTermDebt": "debt_repaid",
+        "ProceedsFromRepaymentsOfLongTermDebtAndCapitalSecurities": "debt_repaid",
+        "RepaymentsOfLongTermDebtAndCapitalSecurities": "debt_repaid",
+        # Share buyback - multiple aliases
         "PaymentsForRepurchaseOfCommonStock": "share_buyback",
+        "PaymentsForRepurchaseOfCommonStockNetOfTreasurySharesAcquired": "share_buyback",
+        # Dividends - multiple aliases
         "PaymentsOfDividends": "dividends_paid",
+        "PaymentsOfDividendsCommonStock": "dividends_paid",
+        "DividendsPaid": "dividends_paid",
+        "DividendsDeclaredCash": "dividends_paid",
+        # Other financing
         "OtherCashPaymentsFromFinancingActivities": "other_financing_activities",
+        "ProceedsFromPaymentsForOtherFinancingActivities": "other_financing_activities",
+        # Financing cash flow
         "NetCashProvidedByUsedInFinancingActivities": "net_cash_from_financing",
+        "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations": "net_cash_from_financing",
+        # Exchange rate effects
         "EffectOfExchangeRateOnCashAndCashEquivalents": "effect_of_exchange_rate",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect": "effect_of_exchange_rate",
+        # Net change in cash
         "IncreaseDecreaseInCashAndCashEquivalents": "net_change_in_cash",
         "CashAndCashEquivalentsPeriodIncreaseDecrease": "net_change_in_cash",
+        # Ending cash
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents": "cash_ending",
         "CashAndCashEquivalentsAtCarryingValue": "cash_ending",
+        # Beginning cash
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsBeginningOfPeriod": "cash_beginning",
+        # Free cash flow (rarely reported, usually calculated)
         "FreeCashFlow": "free_cash_flow",
     }
 
@@ -516,6 +554,30 @@ class USFinancialFetcher(BaseFetcher):
         wide["_fp_order"] = wide["fp"].map({"FY": 0, "Q4": 1, "Q3": 2, "Q2": 3, "Q1": 4})
         wide = wide.sort_values(["_date", "_fp_order", "filed"])
         wide = wide.drop_duplicates(subset=["end", "fp"], keep="last")
+
+        # ── 自动计算 free_cash_flow（如果 tag_mapping 是 CASHFLOW_TAGS）──
+        # 如果 free_cash_flow 为空，但有 net_cash_from_operations 和 capital_expenditures，
+        # 则计算 FCF = CFO - CapEx
+        # 注意：CapEx 通常是负数（现金流出），但计算 FCF 时应使用绝对值
+        if "free_cash_flow" in tag_mapping.values():
+            # 确保 free_cash_flow 列存在
+            if "free_cash_flow" not in wide.columns:
+                wide["free_cash_flow"] = pd.Series(dtype=float)
+            
+            # 只在 free_cash_flow 为空的行计算
+            mask = wide["free_cash_flow"].isna()
+            if mask.any():
+                cfo = wide.get("net_cash_from_operations")
+                capex = wide.get("capital_expenditures")
+                
+                if cfo is not None and capex is not None:
+                    # 计算逻辑：FCF = CFO - CapEx（CapEx 通常是负数，所以实际上是加）
+                    # 如果 CapEx 是正数，表示现金流入（出售资产），此时应该用负值
+                    # 但根据 SEC 标准，CapEx 通常是负数（现金流出）
+                    calculated_fcf = cfo - capex
+                    
+                    # 只更新之前为空的值
+                    wide.loc[mask, "free_cash_flow"] = calculated_fcf[mask]
 
         return wide
 

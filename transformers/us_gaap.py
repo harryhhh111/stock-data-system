@@ -115,35 +115,92 @@ CASHFLOW_TAG_PRIORITY: dict[str, list[str]] = {
     "stock_based_compensation": ["ShareBasedCompensation"],
     "deferred_income_tax": ["DeferredIncomeTaxExpenseBenefit"],
     "changes_in_working_capital": ["ChangesInWorkingCapital"],
+    # Operating cash flow - multiple aliases (in priority order)
     "net_cash_from_operations": [
-        "CashFlowFromContinuingOperatingActivities",
         "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+        "CashFlowFromContinuingOperatingActivities",
+        "OperatingCashFlow",
     ],
-    "capital_expenditures": ["CapitalExpenditures"],
+    # Capital expenditures - multiple aliases (SEC most commonly uses PaymentsToAcquirePropertyPlantAndEquipment)
+    "capital_expenditures": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization",
+        "CapitalExpenditures",
+        "CapitalExpendituresIncurredButNotYetPaid",
+        "PaymentsToAcquireProductiveAssets",
+    ],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired"],
-    "investment_purchases": ["PurchaseOfInvestments"],
-    "investment_maturities": ["ProceedsFromMaturitiesOfInvestments"],
-    "other_investing_activities": ["OtherCashPaymentsFromInvestingActivities"],
-    "net_cash_from_investing": ["NetCashProvidedByUsedInInvestingActivities"],
+    "investment_purchases": [
+        "PurchaseOfInvestments",
+        "PaymentsToAcquireAvailableForSaleSecurities",
+        "PaymentsToAcquireOtherInvestments",
+    ],
+    "investment_maturities": [
+        "ProceedsFromMaturitiesOfInvestments",
+        "ProceedsFromSaleAndMaturityOfOtherInvestments",
+        "ProceedsFromMaturitiesPrepaymentsAndCallsOfAvailableForSaleSecurities",
+    ],
+    "other_investing_activities": [
+        "OtherCashPaymentsFromInvestingActivities",
+        "PaymentsForProceedsFromOtherInvestingActivities",
+    ],
+    # Investing cash flow - multiple aliases
+    "net_cash_from_investing": [
+        "NetCashProvidedByUsedInInvestingActivities",
+        "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations",
+        "NetCashUsedInInvestingActivities",
+    ],
     "debt_issued": ["ProceedsFromIssuanceOfDebt"],
-    "debt_repaid": ["RepaymentsOfDebt"],
+    # Debt repayments - multiple aliases
+    "debt_repaid": [
+        "RepaymentsOfDebt",
+        "RepaymentsOfLongTermDebt",
+        "ProceedsFromRepaymentsOfLongTermDebtAndCapitalSecurities",
+        "RepaymentsOfLongTermDebtAndCapitalSecurities",
+    ],
     "equity_issued": ["PaymentsForRepurchaseOfCommonStock"],
-    "share_buyback": ["PaymentsForRepurchaseOfCommonStock"],
-    "dividends_paid": ["PaymentsOfDividends"],
-    "other_financing_activities": ["OtherCashPaymentsFromFinancingActivities"],
-    "net_cash_from_financing": ["NetCashProvidedByUsedInFinancingActivities"],
-    "effect_of_exchange_rate": ["EffectOfExchangeRateOnCashAndCashEquivalents"],
+    # Share buyback - multiple aliases
+    "share_buyback": [
+        "PaymentsForRepurchaseOfCommonStock",
+        "PaymentsForRepurchaseOfCommonStockNetOfTreasurySharesAcquired",
+    ],
+    # Dividends paid - multiple aliases
+    "dividends_paid": [
+        "PaymentsOfDividends",
+        "PaymentsOfDividendsCommonStock",
+        "DividendsPaid",
+        "DividendsDeclaredCash",
+    ],
+    "other_financing_activities": [
+        "OtherCashPaymentsFromFinancingActivities",
+        "ProceedsFromPaymentsForOtherFinancingActivities",
+    ],
+    # Financing cash flow - multiple aliases
+    "net_cash_from_financing": [
+        "NetCashProvidedByUsedInFinancingActivities",
+        "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations",
+    ],
+    # Exchange rate effects
+    "effect_of_exchange_rate": [
+        "EffectOfExchangeRateOnCashAndCashEquivalents",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect",
+    ],
+    # Net change in cash
     "net_change_in_cash": [
         "IncreaseDecreaseInCashAndCashEquivalents",
         "CashAndCashEquivalentsPeriodIncreaseDecrease",
     ],
+    # Beginning cash
     "cash_beginning": [
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsBeginningOfPeriod",
     ],
+    # Ending cash
     "cash_ending": [
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
         "CashAndCashEquivalentsAtCarryingValue",
     ],
+    # Free cash flow (rarely reported by SEC, usually calculated)
     "free_cash_flow": ["FreeCashFlow"],
 }
 

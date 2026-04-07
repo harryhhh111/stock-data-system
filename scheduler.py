@@ -540,9 +540,12 @@ def run_scheduler(once: bool = False) -> None:
     # ── 打印下次执行时间 ──
     print("\n调度器已启动，等待下次触发...")
     for job in sched.get_jobs():
-        next_run = job.next_run_time
-        if next_run:
-            print(f"  {job.name:20s} 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        try:
+            next_run = job.next_run_time
+            if next_run:
+                print(f"  {job.name:20s} 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        except (AttributeError, TypeError):
+            print(f"  {job.name:20s} 下次执行: 计算中...")
     print("按 Ctrl+C 退出\n")
 
     try:
