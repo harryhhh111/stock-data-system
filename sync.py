@@ -22,7 +22,7 @@ import signal
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -943,6 +943,100 @@ class SyncManager:
         return success
 
 
+
+# ── 历史日线回填（腾讯接口）────────────────────────────────
+
+def backfill_daily_hist(market: str) -> dict:
+    """使用腾讯 K 线接口回填历史日线。
+
+    Args:
+        market: "CN_A" / "CN_HK" / "all"
+    """
+    from fetchers.daily_quote import fetch_tencent_hist
+    import random
+
+    markets = ["CN_A", "CN_HK"] if market == "all" else [market]
+    total_result = {"total": 0, "success": 0, "failed": 0, "skipped": 0, "markets": {}}
+
+    for mkt in markets:
+        logger.info("开始回填历史日线: market=%s", mkt)
+
+        # 获取股票列表（断点续传：有最新日期且近期已更新的跳过）
+        rows = execute(
+            "SELECT si.stock_code, MAX(dq.trade_date) "
+            "FROM stock_info si "
+            "LEFT JOIN daily_quote dq ON si.stock_code = dq.stock_code AND si.market = dq.market "
+            "WHERE si.market = %s "
+            "GROUP BY si.stock_code",
+            (mkt,),
+            fetch=True,
+        )
+
+        stocks = []
+        for code, last_date in rows:
+            if last_date:
+                if last_date >= datetime.now().date() - timedelta(days=7):
+                    stocks.append((code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d")))
+                    total_result["skipped"] += 1
+                else:
+                    stocks.append((code, "2021-01-04"))
+            else:
+                stocks.append((code, "2021-01-04"))
+
+        mkt_total = len(stocks)
+        mkt_success = 0
+        mkt_failed = 0
+        mkt_updated = 0
+        t0 = time.time()
+
+        logger.info("待回填: %d 只 (跳过 %d 只)", mkt_total, total_result["skipped"])
+
+        for i, (code, start_date) in enumerate(stocks):
+            try:
+                records = fetch_tencent_hist(code, mkt, start_date=start_date)
+                if records:
+                    upsert("daily_quote", records, ["stock_code", "trade_date"])
+                    mkt_updated += len(records)
+                mkt_success += 1
+            except Exception as exc:
+                mkt_failed += 1
+                logger.warning("历史日线回填失败: %s %s: %s", mkt, code, exc)
+                wait = 10 * (2 ** min(mkt_failed, 3))
+                time.sleep(wait)
+                continue
+
+            # 限流：随机 2~5 秒
+            if i < len(stocks) - 1:
+                time.sleep(random.uniform(2.0, 5.0))
+
+            # 每 50 只输出进度
+            if (i + 1) % 50 == 0 or (i + 1) == mkt_total:
+                elapsed = time.time() - t0
+                rate = (i + 1) / elapsed * 60 if elapsed > 0 else 0
+                eta = (mkt_total - i - 1) / rate * 60 if rate > 0 else 0
+                logger.info(
+                    "回填进度 [%s]: %d/%d (%.0f%%) 成功=%d 失败=%d 新增=%d 速率=%.1f/min ETA=%.0fmin",
+                    mkt, i + 1, mkt_total, (i + 1) / mkt_total * 100,
+                    mkt_success, mkt_failed, mkt_updated, rate, eta,
+                )
+
+        elapsed = time.time() - t0
+        logger.info(
+            "回填完成 [%s]: 成功=%d 失败=%d 新增记录=%d 耗时=%.1fmin",
+            mkt, mkt_success, mkt_failed, mkt_updated, elapsed / 60,
+        )
+
+        total_result["total"] += mkt_total
+        total_result["success"] += mkt_success
+        total_result["failed"] += mkt_failed
+        total_result["markets"][mkt] = {
+            "total": mkt_total, "success": mkt_success,
+            "failed": mkt_failed, "updated": mkt_updated,
+            "elapsed_min": round(elapsed / 60, 1),
+        }
+
+    return total_result
+
 # ── 美股同步 ───────────────────────────────────────────────
 
 def sync_us_market(args) -> dict:
@@ -1305,7 +1399,7 @@ def sync_us_market_reparse(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "industry", "industry-hk"],
+    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "daily-backfill", "industry", "industry-hk"],
                         help="同步类型")
     parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
@@ -1366,6 +1460,10 @@ def main():
         if not args.market:
             parser.error("daily 类型需要指定 --market (CN_A/CN_HK/US/all)")
         result = manager.sync_daily_quote(market=args.market)
+    elif args.type == "daily-backfill":
+        if not args.market:
+            parser.error("daily-backfill 类型需要指定 --market (CN_A/CN_HK/all)")
+        result = backfill_daily_hist(market=args.market)
 
     print("\n" + "=" * 50)
     for k, v in result.items():

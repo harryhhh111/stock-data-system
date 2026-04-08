@@ -850,6 +850,141 @@ def _safe_int(val) -> Optional[int]:
         return None
 
 
+# ── 腾讯历史 K 线接口 ─────────────────────────────────────
+
+_TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def fetch_tencent_hist(
+    stock_code: str,
+    market: str,
+    start_date: str = "2021-01-04",
+    end_date: str | None = None,
+    max_k: int = 800,
+) -> list[dict]:
+    """通过腾讯 K 线接口获取单只股票历史日线（原始数据，不复权）。
+
+    腾讯单次最多返回 ~800 条，超过部分自动分段请求。
+
+    Args:
+        stock_code: 股票代码，如 "000001"、"00700"
+        market: "CN_A" 或 "CN_HK"
+        start_date: 开始日期 YYYY-MM-DD
+        end_date: 结束日期 YYYY-MM-DD，默认今天
+        max_k: 单次请求最大条数（腾讯限制 ~800）
+
+    Returns:
+        daily_quote 格式的记录列表
+    """
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    # 腾讯代码格式：sh/sz + 代码（A股），r_hk + 代码（港股）
+    if market == "CN_A":
+        prefix = "sh" if stock_code.startswith(("6", "9")) else "sz"
+        tencent_code = f"{prefix}{stock_code}"
+    elif market == "CN_HK":
+        tencent_code = f"hk{stock_code}"
+    else:
+        raise ValueError(f"不支持的市场: {market}")
+
+    currency = "CNY" if market == "CN_A" else "HKD"
+    # 腾讯返回数据按日期降序（最新在前），需要分段从 end_date 往前拉
+    # 因为 start_date 参数不一定被遵守
+    all_records: list[dict] = []
+    seg_end = end_date
+    seen_dates = set()
+    max_segments = 10  # 安全阀：最多 10 段
+
+    for _ in range(max_segments):
+        params = {
+            "param": f"{tencent_code},day,{start_date},{seg_end},{max_k},",
+        }
+        resp = requests.get(
+            _TENCENT_KLINE_URL,
+            params=params,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        day_data = []
+        raw_data = data.get("data", {})
+        if isinstance(raw_data, dict):
+            for k, v in raw_data.items():
+                if isinstance(v, dict) and "day" in v and v["day"]:
+                    day_data = v["day"]
+                    break
+
+        if not day_data:
+            break
+
+        # 解析并去重
+        seg_records = []
+        for row in day_data:
+            if len(row) < 6:
+                continue
+            trade_date = row[0]
+            if trade_date in seen_dates:
+                continue
+            seen_dates.add(trade_date)
+            seg_records.append({
+                "stock_code": stock_code,
+                "trade_date": trade_date,
+                "market": market,
+                "open": _safe_float(row[1]),
+                "high": _safe_float(row[3]),
+                "low": _safe_float(row[4]),
+                "close": _safe_float(row[2]),
+                "volume": _safe_int(row[5]),
+                "amount": None,
+                "turnover_rate": None,
+                "market_cap": None,
+                "float_market_cap": None,
+                "pe_ttm": None,
+                "pb": None,
+                "currency": currency,
+                "updated_at": datetime.now(),
+            })
+
+        if not seg_records:
+            break
+
+        all_records.extend(seg_records)
+
+        # 如果返回数量 < max_k，说明已到最早
+        if len(day_data) < max_k:
+            break
+
+        # 最早日期已经早于 start_date
+        earliest = seg_records[0]["trade_date"]
+        if isinstance(earliest, str):
+            earliest_dt = pd.to_datetime(earliest).date()
+        else:
+            earliest_dt = earliest
+        start_dt = pd.to_datetime(start_date).date()
+        if earliest_dt <= start_dt:
+            break
+
+        # 下一段的 end_date = 本段最早日期的前一天
+        seg_end = (earliest_dt - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # 按日期排序
+    all_records.sort(key=lambda r: r["trade_date"] if isinstance(r["trade_date"], str) else str(r["trade_date"]))
+
+    # 过滤早于 start_date 的记录
+    start_dt = pd.to_datetime(start_date).date()
+    filtered = []
+    for r in all_records:
+        d = pd.to_datetime(r["trade_date"]).date() if isinstance(r["trade_date"], str) else r["trade_date"]
+        if d >= start_dt:
+            filtered.append(r)
+
+    logger.debug("腾讯 K 线 %s: %d 条", tencent_code, len(filtered))
+    return filtered
+
+
 if __name__ == "__main__":
     import os
     os.environ["TQDM_DISABLE"] = "1"

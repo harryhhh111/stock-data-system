@@ -116,6 +116,37 @@ _table_columns_cache: dict[str, set[str]] = {}
 _table_columns_lock = threading.Lock()
 
 
+# ── NaN / NaT 清洗 ───────────────────────────────────────
+def _sanitize_records(records: list[dict]) -> list[dict]:
+    """将 records 中的 NaN / NaT / numpy 数值替换为 JSON 安全值。
+
+    - float('nan') / numpy.nan → None  (JSON null)
+    - pandas.NaT               → None  (JSON null)
+    - numpy.int64/float64      → Python 原生 int/float
+    """
+    import math as _math
+    import numpy as _np
+    import pandas as _pd
+
+    cleaned: list[dict] = []
+    for row in records:
+        new_row: dict = {}
+        for k, v in row.items():
+            if isinstance(v, float) and _math.isnan(v):
+                new_row[k] = None
+            elif isinstance(v, _np.integer):
+                new_row[k] = int(v)
+            elif isinstance(v, _np.floating):
+                new_row[k] = None if _np.isnan(v) else float(v)
+            elif _pd.isna(v):
+                # 捕获 NaT、pd.NA、None（已经是 None 的不会有害）
+                new_row[k] = None
+            else:
+                new_row[k] = v
+        cleaned.append(new_row)
+    return cleaned
+
+
 # ── 保存原始快照 ──────────────────────────────────────────
 def save_raw_snapshot(
     stock_code: str,
@@ -138,7 +169,13 @@ def save_raw_snapshot(
     # 处理 DataFrame
     data_to_store = raw_data
     if hasattr(raw_data, "to_dict"):
+        import pandas as _pd
+
         data_to_store = raw_data.to_dict(orient="records")
+
+        # 将 NaN / NaT 替换为 None，否则 json.dumps 会产生 NaN / NaT 文本，
+        # 导致 PostgreSQL JSONB 列拒绝插入（NaN / NaT 不是合法 JSON 值）。
+        data_to_store = _sanitize_records(data_to_store)
 
     # raw_snapshot 的唯一索引包含 COALESCE((api_params)::text, ''::text)
     # 因此 ON CONFLICT 需要包含相同的字段
