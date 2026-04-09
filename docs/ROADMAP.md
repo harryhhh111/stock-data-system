@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-03-31
+> 最后更新：2026-04-09
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -38,16 +38,35 @@
 - [x] FCF Yield 物化视图 `mv_fcf_yield`
 - [x] 行业分类：A 股申万一级（5188 只已填充）+ 港股东方财富 f100
 - [x] 每日自动行情同步（cron 分开调度：行情 16:37/17:12，财务 17:07/17:37/06:12）
-- [ ] 美股日线行情
-- [ ] 港股/美股历史日线回填
+- [x] 美股实时行情（腾讯接口，S&P 500 + 纳斯达克 100）
+- [x] 美股行业分类（SEC EDGAR SIC Code）
+- [x] A股/港股历史日线回填（腾讯 K 线，从 2021-01-04 起）
+- [x] NaN/NaT JSON 序列化修复
+- [x] 股本数据同步（腾讯接口，A 股 [72][73]、港股 [69][70]，7936 只已入库）
+- [ ] 历史市值回算（`close × total_shares`，补全 daily_quote 历史 market_cap）
+- [ ] 美股历史日线回填
+- [ ] daily_quote 市值数据修复（历史回填覆盖导致市值丢失）
+- [ ] `db.py` upsert None 保护改造
+
+## Phase 4.5：基建补强 🔄 进行中
+
+**目标：** 补齐系统设计规范，修复已知数据质量问题。
+
+- [x] 系统架构设计文档 `ARCHITECTURE.md`
+- [x] 开发规范文档 `DEV_GUIDELINES.md`
+- [x] `mv_indicator_ttm` TTM 计算修复（annual + quarterly 混合 bug）
+- [ ] `db.py` upsert None 保护实现
+- [ ] 实时行情同步补跑（恢复 daily_quote 市值/PE/PB）
+- [ ] `mv_fcf_yield` 物化视图数据验证
+- [ ] `scripts/materialized_views.sql` 收录所有物化视图
 
 ## Phase 5：完善
 
-**目标：** 美股对齐 A/港股水平，提供筛选分析能力。
+**目标：** 筛选分析能力，数据完整性提升。
 
-- [ ] 美股行业分类（SEC EDGAR SIC Code）
-- [ ] 美股股票范围扩展（从 S&P 500 扩大）
 - [ ] 筛选器/分析工具（多条件筛选）
+- [ ] A股/港股 2025 年报补齐（等 5 月出完）
+- [ ] FCF Yield 数据差异根因确认（3/23 文件 239 只 vs 修复后数量）
 
 ## Phase 6：高级分析（待规划）
 

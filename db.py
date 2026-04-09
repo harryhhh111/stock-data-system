@@ -201,14 +201,19 @@ def upsert(
     table: str,
     data: list[dict[str, Any]],
     conflict_keys: list[str],
+    force_null_cols: list[str] | None = None,
 ) -> int:
     """批量 UPSERT（INSERT ... ON CONFLICT DO UPDATE）。
+
+    默认行为：值为 None 的字段不会覆盖数据库已有值（COALESCE 保护）。
+    force_null_cols 中的列除外，允许 None 覆盖（用于显式清空场景）。
 
     Args:
         table: 目标表名。
         data: 字典列表，每个字典代表一行。键 = 列名，值 = 数据值。
               所有字典应具有相同的键集合。
         conflict_keys: 冲突键列表（如 ['stock_code', 'report_date', 'report_type']）。
+        force_null_cols: 允许 None 覆盖的列名列表。默认 None（全部保护）。
 
     Returns:
         成功插入/更新的行数。
@@ -236,17 +241,37 @@ def upsert(
     placeholders = ", ".join(f"%({c})s" for c in columns)
 
     # ON CONFLICT DO UPDATE SET
-    update_parts = ", ".join(
-        f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_keys
-    )
+    # 默认 COALESCE 保护：None 不覆盖已有值
+    # force_null_cols 中的列允许 None 覆盖
+    _force = set(force_null_cols or [])
+    _overlap = _force & set(conflict_keys)
+    if _overlap:
+        logger.warning("upsert(%s): force_null_cols 含冲突键 %s，已忽略", table, _overlap)
+    update_parts = []
+    for c in columns:
+        if c in conflict_keys:
+            continue
+        if c in _force:
+            update_parts.append(f"{c} = EXCLUDED.{c}")
+        else:
+            update_parts.append(f"{c} = COALESCE(EXCLUDED.{c}, {table}.{c})")
     conflict_expr = ", ".join(conflict_keys)
 
-    sql = (
-        f"INSERT INTO {table} ({col_names}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT ({conflict_expr}) "
-        f"DO UPDATE SET {update_parts}"
-    )
+    if not update_parts:
+        # 全是冲突键，无字段需要更新，退化为 DO NOTHING
+        sql = (
+            f"INSERT INTO {table} ({col_names}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT ({conflict_expr}) DO NOTHING"
+        )
+    else:
+        update_str = ", ".join(update_parts)
+        sql = (
+            f"INSERT INTO {table} ({col_names}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT ({conflict_expr}) "
+            f"DO UPDATE SET {update_str}"
+        )
 
     row_count = 0
     with Connection() as conn:

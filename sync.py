@@ -1039,6 +1039,63 @@ def backfill_daily_hist(market: str) -> dict:
 
 # ── 美股同步 ───────────────────────────────────────────────
 
+
+# ── 股本数据同步 ─────────────────────────────────────────
+
+def sync_share(market: str = None) -> dict:
+    """同步 A 股/港股股本数据（腾讯接口）。
+
+    Args:
+        market: CN_A, CN_HK, 或 all
+
+    Returns:
+        统计结果字典
+    """
+    from fetchers.share import fetch_share_tencent, get_a_share_codes, get_hk_share_codes
+    from db import upsert
+    from fetchers.base import rate_limiter
+
+    # 腾讯公开接口，按规范限流 2-5s
+    rate_limiter._base_delay = 2.0
+
+    result = {"total": 0, "success": 0, "failed": 0, "updated": 0}
+    markets = ["CN_A", "CN_HK"] if market in ("all", None) else [market]
+
+    for mkt in markets:
+        t0 = time.time()
+        logger.info("开始同步 %s 股本数据...", mkt)
+
+        if mkt == "CN_A":
+            codes = get_a_share_codes()
+        elif mkt == "CN_HK":
+            codes = get_hk_share_codes()
+        else:
+            logger.warning("不支持的市场: %s", mkt)
+            continue
+
+        if not codes:
+            logger.warning("%s 无股票代码，跳过", mkt)
+            continue
+
+        records = fetch_share_tencent(codes, mkt)
+
+        if not records:
+            logger.warning("%s 股本数据为空", mkt)
+            continue
+
+        written = upsert("stock_share", records, ["stock_code", "trade_date", "market"])
+        elapsed = time.time() - t0
+
+        result["total"] += len(records)
+        result["success"] += written
+        result["updated"] += written
+        logger.info(
+            "%s 股本同步完成: %d 条, 耗 %.1fs",
+            mkt, written, elapsed,
+        )
+
+    return result
+
 def sync_us_market(args) -> dict:
     """美股 SEC EDGAR 财务数据同步（串行执行）。
 
@@ -1399,7 +1456,7 @@ def sync_us_market_reparse(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "daily-backfill", "industry", "industry-hk"],
+    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "daily-backfill", "share", "industry", "industry-hk"],
                         help="同步类型")
     parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
                         help="市场（仅 financial 类型需要）")
@@ -1449,6 +1506,8 @@ def main():
         result = manager.sync_index()
     elif args.type == "dividend":
         result = manager.sync_dividend(market=args.market)
+    elif args.type == "share":
+        result = sync_share(market=args.market)
     elif args.type == "industry":
         if args.market == "US":
             result = manager.sync_us_industry()
