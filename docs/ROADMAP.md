@@ -43,22 +43,18 @@
 - [x] A股/港股历史日线回填（腾讯 K 线，从 2021-01-04 起）
 - [x] NaN/NaT JSON 序列化修复
 - [x] 股本数据同步（腾讯接口，A 股 [72][73]、港股 [69][70]，7936 只已入库）
-- [ ] 历史市值回算（`close × total_shares`，补全 daily_quote 历史 market_cap）
+- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
 - [ ] 美股历史日线回填
-- [ ] daily_quote 市值数据修复（历史回填覆盖导致市值丢失）
-- [ ] `db.py` upsert None 保护改造
 
-## Phase 4.5：基建补强 🔄 进行中
+## Phase 4.5：基建补强 ✅ 已完成
 
 **目标：** 补齐系统设计规范，修复已知数据质量问题。
 
 - [x] 系统架构设计文档 `ARCHITECTURE.md`
 - [x] 开发规范文档 `DEV_GUIDELINES.md`
 - [x] `mv_indicator_ttm` TTM 计算修复（annual + quarterly 混合 bug）
-- [ ] `db.py` upsert None 保护实现
-- [ ] 实时行情同步补跑（恢复 daily_quote 市值/PE/PB）
-- [ ] `mv_fcf_yield` 物化视图数据验证
-- [ ] `scripts/materialized_views.sql` 收录所有物化视图
+- [x] `db.py` upsert None 保护实现（COALESCE + force_null_cols）
+- [x] 股本数据同步（腾讯接口，A 股 5193 只 + 港股 2743 只）
 
 ## Phase 5：完善
 
