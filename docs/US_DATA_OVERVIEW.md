@@ -4,7 +4,7 @@
 
 ## 一、数据来源
 
-美股同步共涉及 **4 个外部数据源**：
+美股同步共涉及 **5 个外部数据源**：
 
 ### 1. SEC EDGAR — 财务报表 + 公司信息
 - **URL**: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-K&dateb=&owner=include&count=100&search_text=&output=atom`
@@ -12,11 +12,18 @@
 - **用途**: 
   - 公司 CIK ↔ Ticker 映射（`company_tickers.json`）
   - 三大财务报表（利润表、资产负债表、现金流量表）
-  - SIC 行业分类（`sicDescription`）
   - Company Facts 原始 JSON（`raw_snapshot` 表）
+  - ⚠️ SIC 行业分类不在 Company Facts 中，需单独请求 Submissions API（见下方第 5 节）
 - **限速**: 10 次/秒，需带 User-Agent
 - **频率**: 本地缓存 7 天过期
 - **数据粒度**: Annual (FY) + Quarterly (Q1-Q4)
+
+### 5. SEC EDGAR Submissions API — 公司行业分类
+- **URL**: `https://data.sec.gov/submissions/CIK{cik10}.json`
+- **用途**: 获取 `sic`（SIC 代码）和 `sicDescription`（行业描述）
+- **说明**: Company Facts JSON 不包含 SIC 信息，需要通过此接口单独获取
+- **限速**: 10 次/秒，需带 User-Agent
+- **缓存**: 当前未缓存，每次请求实时获取
 
 ### 2. 腾讯财经 (qt.gtimg.cn) — 美股实时行情
 - **URL**: `https://qt.gtimg.cn/q=us{ticker}`

@@ -172,7 +172,7 @@ _SEC_EDGAR_BASE_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
 def fetch_us_industry(
     stocks: list[dict[str, str]],
-    delay: float = 0.1,
+    delay: float = 0.5,
     max_retries: int = 3,
 ) -> list[dict[str, str]]:
     """从 SEC EDGAR 获取美股 SIC 行业分类。
