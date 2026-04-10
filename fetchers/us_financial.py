@@ -519,21 +519,27 @@ class USFinancialFetcher(BaseFetcher):
         df = pd.DataFrame(records)
 
         # ── 关键去重：修正 fp=FY 但实际是季度数据的情况 ──
-        # 策略：对同一 (tag, end)，如果存在 _frame_has_q=True 的条目，
-        # 则将 fp=FY 且 _frame_has_q=False 的条目的 fp 修正为对应季度
+        # 某些公司（如 MELI）改财年后，SEC 把季度数据的 fp 标为 FY，
+        # 但 frame 字段（如 CY2017Q1）能正确标识。
+        # 两种情况：
+        #   A) 同一 (tag, end) 有 frame=CY20xx（年度）也有 CY20xxQ4（季度）
+        #      → 保留 FY 和 Q4 各自独立
+        #   B) 同一 (tag, end) 只有 frame=CY20xxQ?（季度），没有纯年度 frame
+        #      → 所有 FY 条目修正为对应季度
         for (tag_key, end_key), grp in df.groupby(["tag", "end"]):
-            # 找到有明确 frame 季度的条目
             frame_q_rows = grp[grp["_frame_has_q"]]
-            if not frame_q_rows.empty:
-                # 获取这些条目的 fp 值
-                correct_fps = set(frame_q_rows["fp"])
-                if correct_fps:
-                    # 将同 (tag, end) 下 fp=FY 且无 frame 季度指示的条目标记
-                    mask = (df["tag"] == tag_key) & (df["end"] == end_key) & \
-                           (df["fp"] == "FY") & (~df["_frame_has_q"])
-                    # 用 frame_q 的 fp 值修正（取第一个）
-                    correct_fp = list(correct_fps)[0]
-                    df.loc[mask, "fp"] = correct_fp
+            # 检查是否有纯年度 frame（含 CY 但不含 Q）
+            has_annual_frame = grp["frame"].apply(
+                lambda f: bool(f) and "CY" in str(f) and "Q" not in str(f)
+            ).any()
+            if frame_q_rows.empty or has_annual_frame:
+                # 情况 A：有独立的年度 frame，不修改
+                continue
+            correct_fps = set(frame_q_rows["fp"])
+            if correct_fps:
+                correct_fp = list(correct_fps)[0]
+                mask = (df["tag"] == tag_key) & (df["end"] == end_key) & (df["fp"] == "FY")
+                df.loc[mask, "fp"] = correct_fp
 
         # 当同一 (tag, end, fp) 有多个条目时，取最新 filed 的
         df = df.sort_values("filed").drop_duplicates(
