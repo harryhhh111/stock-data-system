@@ -256,6 +256,12 @@ class USGAAPTransformer(BaseTransformer):
                 all_keys.update(r.keys())
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
+        # net_income_common fallback: 优先用原始 tag，取不到则用 net_income - preferred_dividends
+        for r in records:
+            if r.get("net_income_common") is None and r.get("net_income") is not None:
+                pref = r.get("preferred_dividends")
+                r["net_income_common"] = r["net_income"] - pref if pref else r["net_income"]
+
         logger.debug("利润表转换: %s, %d 条记录", stock_code, len(records))
         return records
 
