@@ -13,6 +13,38 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from fetchers.us_financial import USFinancialFetcher
+
+# 数据库列名常量（用于 all_keys 补全）
+_INCOME_DB_COLS = {
+    "stock_code", "cik", "report_date", "report_type", "filed_date",
+    "accession_no", "currency", "revenues", "cost_of_goods_sold", "gross_profit",
+    "operating_expenses", "selling_general_admin", "research_and_development",
+    "depreciation_amortization", "operating_income", "interest_expense",
+    "interest_income", "other_income_expense", "income_before_tax",
+    "income_tax_expense", "net_income", "net_income_common", "preferred_dividends",
+    "eps_basic", "eps_diluted", "weighted_avg_shares_basic",
+    "weighted_avg_shares_diluted", "other_comprehensive_income",
+    "comprehensive_income", "edgar_tags", "extra_items", "updated_at",
+}
+_BALANCE_DB_COLS = {
+    "stock_code", "cik", "report_date", "report_type", "filed_date",
+    "accession_no", "currency", "cash_and_equivalents", "short_term_investments",
+    "total_current_assets", "total_assets", "total_current_liabilities",
+    "total_liabilities", "total_equity", "retained_earnings",
+    "total_debt", "long_term_debt", "short_term_debt",
+    "goodwill", "intangible_assets", "edgar_tags", "extra_items", "updated_at",
+}
+_CASHFLOW_DB_COLS = {
+    "stock_code", "cik", "report_date", "report_type", "filed_date",
+    "accession_no", "currency", "operating_cashflow", "depreciation_amortization",
+    "capital_expenditure", "free_cashflow", "acquisitions",
+    "investing_cashflow", "dividends_paid", "share_buyback",
+    "debt_issued", "debt_repaid", "financing_cashflow",
+    "net_change_cash", "stock_based_compensation",
+    "equity_issued", "edgar_tags", "extra_items", "updated_at",
+}
+
 from .base import BaseTransformer, parse_report_date
 
 logger = logging.getLogger(__name__)
@@ -250,10 +282,12 @@ class USGAAPTransformer(BaseTransformer):
             records.append(record)
 
         # 确保所有记录有相同的 key（补 None）
+        # 加入 tag_map 所有 key，避免某些公司缺少 tag 导致 upsert KeyError
         if records:
             all_keys = set()
             for r in records:
                 all_keys.update(r.keys())
+            all_keys.update(_INCOME_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
         # net_income_common fallback: 优先用原始 tag，取不到则用 net_income - preferred_dividends
@@ -282,6 +316,7 @@ class USGAAPTransformer(BaseTransformer):
             all_keys = set()
             for r in records:
                 all_keys.update(r.keys())
+            all_keys.update(_BALANCE_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
         logger.debug("资产负债表转换: %s, %d 条记录", stock_code, len(records))
@@ -304,6 +339,7 @@ class USGAAPTransformer(BaseTransformer):
             all_keys = set()
             for r in records:
                 all_keys.update(r.keys())
+            all_keys.update(_CASHFLOW_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
         logger.debug("现金流量表转换: %s, %d 条记录", stock_code, len(records))

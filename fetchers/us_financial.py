@@ -541,10 +541,14 @@ class USFinancialFetcher(BaseFetcher):
                 mask = (df["tag"] == tag_key) & (df["end"] == end_key) & (df["fp"] == "FY")
                 df.loc[mask, "fp"] = correct_fp
 
-        # 当同一 (tag, end, fp) 有多个条目时，取最新 filed 的
-        df = df.sort_values("filed").drop_duplicates(
+        # 当同一 (tag, end, fp) 有多个条目时，优先保留有 frame 的记录，再取最新 filed
+        df["_has_frame"] = df["frame"].astype(bool)
+        df = df.sort_values(
+            ["filed", "_has_frame", "accn"], ascending=[True, True, True]
+        ).drop_duplicates(
             subset=["tag", "end", "fp"], keep="last"
         )
+        df = df.drop(columns=["_has_frame"])
 
         df = df.dropna(subset=["val"])
 
@@ -555,11 +559,18 @@ class USFinancialFetcher(BaseFetcher):
             aggfunc="first",
         ).reset_index()
 
-        # FY/Q4 去重：同一 end 日期，保留 FY（而非 Q4）
+        # FY/Q4 去重 + 合并：同一 (end, fp) 可能有多个 filed/accn 的行（不同 tag 去重后 filed 不同）
+        # 对每个字段取第一个非空值，而不是简单丢弃
         wide["_date"] = pd.to_datetime(wide["end"])
         wide["_fp_order"] = wide["fp"].map({"FY": 0, "Q4": 1, "Q3": 2, "Q2": 3, "Q1": 4})
         wide = wide.sort_values(["_date", "_fp_order", "filed"])
-        wide = wide.drop_duplicates(subset=["end", "fp"], keep="last")
+
+        # groupby (end, fp) 合并：每个字段取第一个非空值
+        val_cols = [c for c in wide.columns if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order"]]
+        agg_dict = {c: lambda x: x.dropna().iloc[0] if x.dropna().any() else None for c in val_cols}
+        agg_dict["filed"] = "last"  # 保留最新 filed
+        agg_dict["accn"] = "last"
+        wide = wide.groupby(["end", "fp"], sort=False).agg(agg_dict).reset_index()
 
         # ── 自动计算 free_cash_flow（如果 tag_mapping 是 CASHFLOW_TAGS）──
         # 如果 free_cash_flow 为空，但有 net_cash_from_operations 和 capital_expenditures，
