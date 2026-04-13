@@ -329,6 +329,8 @@ class USFinancialFetcher(BaseFetcher):
         "SellingGeneralAndAdministrativeExpenses": "selling_general_admin",
         "ResearchAndDevelopmentExpense": "research_and_development",
         "DepreciationAndAmortization": "depreciation_amortization",
+        "DepreciationDepletionAndAmortization": "depreciation_amortization",
+        "Depreciation": "depreciation_amortization",
         "OperatingIncomeLoss": "operating_income",
         "InterestExpense": "interest_expense",
         "InterestExpenseDebt": "interest_expense",
@@ -375,11 +377,12 @@ class USFinancialFetcher(BaseFetcher):
         "AccountsPayableCurrent": "accounts_payable",
         "AccruedLiabilitiesCurrent": "accrued_liabilities",
         "ShortTermBorrowings": "short_term_debt",
+        "CommercialPaper": "short_term_debt",
         "CurrentOperatingLeaseLiability": "current_operating_lease",
         "OtherLiabilitiesCurrent": "other_current_liabilities",
         "LiabilitiesCurrent": "total_current_liabilities",
-        "LongTermDebt": "long_term_debt",
         "LongTermDebtNoncurrent": "long_term_debt",
+        "LongTermDebt": "long_term_debt",
         "DebtNoncurrent": "long_term_debt",
         "NoncurrentOperatingLeaseLiability": "non_current_operating_lease",
         "DeferredTaxLiabilitiesNet": "deferred_tax_liabilities",
@@ -402,6 +405,8 @@ class USFinancialFetcher(BaseFetcher):
     CASHFLOW_TAGS: dict[str, str] = {
         "NetIncomeLoss": "net_income_cf",
         "DepreciationAndAmortization": "depreciation_amortization",
+        "DepreciationDepletionAndAmortization": "depreciation_amortization",
+        "Depreciation": "depreciation_amortization",
         "ShareBasedCompensation": "stock_based_compensation",
         "DeferredIncomeTaxExpenseBenefit": "deferred_income_tax",
         "ChangesInWorkingCapital": "changes_in_working_capital",
@@ -485,33 +490,39 @@ class USFinancialFetcher(BaseFetcher):
             return pd.DataFrame()
 
         # 收集所有标签的数据
+        # SEC Company Facts 的单位不只是 USD：
+        #   - 金额: "USD"
+        #   - 每股: "USD/shares"（EPS）
+        #   - 股数: "shares"（加权平均股数）
+        # 必须遍历所有单位类型，否则 EPS 和 Shares 字段会全量缺失
         records = []
         for tag, field_name in tag_mapping.items():
             if tag in usgaap:
-                for entry in usgaap[tag].get("units", {}).get("USD", []):
-                    fp = entry.get("fp", "")
-                    frame = str(entry.get("frame", ""))
+                for unit_name, entries in usgaap[tag].get("units", {}).items():
+                    for entry in entries:
+                        fp = entry.get("fp", "")
+                        frame = str(entry.get("frame", ""))
 
-                    # 优先使用 frame 修正 fp
-                    if frame:
-                        frame_match = _re.search(r"Q(\d)$", frame)
-                        if frame_match:
-                            fp = f"Q{frame_match.group(1)}"
-                        elif "CY" in frame and "Q" not in frame:
-                            fp = "FY"
-                    # 记录是否 frame 有明确的季度指示
-                    records.append({
-                        "tag": tag,
-                        "field": field_name,
-                        "val": entry.get("val"),
-                        "fy": entry.get("fy"),
-                        "fp": fp,
-                        "end": entry.get("end"),
-                        "filed": entry.get("filed"),
-                        "accn": entry.get("accn"),
-                        "frame": frame,
-                        "_frame_has_q": "Q" in frame,
-                    })
+                        # 优先使用 frame 修正 fp
+                        if frame:
+                            frame_match = _re.search(r"Q(\d)$", frame)
+                            if frame_match:
+                                fp = f"Q{frame_match.group(1)}"
+                            elif "CY" in frame and "Q" not in frame:
+                                fp = "FY"
+                        # 记录是否 frame 有明确的季度指示
+                        records.append({
+                            "tag": tag,
+                            "field": field_name,
+                            "val": entry.get("val"),
+                            "fy": entry.get("fy"),
+                            "fp": fp,
+                            "end": entry.get("end"),
+                            "filed": entry.get("filed"),
+                            "accn": entry.get("accn"),
+                            "frame": frame,
+                            "_frame_has_q": "Q" in frame,
+                        })
 
         if not records:
             return pd.DataFrame()
