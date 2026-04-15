@@ -241,7 +241,7 @@ D&A 差异分析：DB 取到的是 MSFT 的 `Depreciation` tag（~15.2B），SA 
 
 ### 不可信字段（需修复后使用）
 
-- **Gross Profit** — 覆盖率 39%，tag 映射不完整
+- **Gross Profit** — ~~覆盖率 39%，tag 映射不完整~~ ✅ 已修复：无 GP tag 时自动计算 Rev - COGS，覆盖率提升至 46.2%（行级）/ 70.9%（股票级）
 - **Operating Income** — 21% 缺失，JNJ 等全空
 - **D&A（现金流量表）** — 可能只取了 depreciation，不含 amortization
 - **total_equity（资产负债表）** — 部分股票全空
@@ -257,6 +257,6 @@ D&A 差异分析：DB 取到的是 MSFT 的 `Depreciation` tag（~15.2B），SA 
 ## 6. 下一步建议
 
 1. **P0-1 修复年报去重**：年度 BS/CF 在 FY 结束日的空行问题，影响 565+850 = 1,415 行
-2. **P0-2 修复 Gross Profit**：调查 XOM 等公司为何 COGS/GP 为空，补充 tag 映射
+2. ~~**P0-2 修复 Gross Profit**~~ ✅ 已完成（2026-04-15）：GP 覆盖率 36.9% → 46.2%（行级），50.2% → 70.9%（股票级）。修复方式：当 GrossProfit tag 缺失但 Revenues + COGS 都有时，自动计算 GP = Rev - COGS。剩余 146 股无 GP 属正常（银行/保险/公用事业/能源/REIT 等不适用 GP 的行业）。详见 `fetchers/us_financial.py` extract_table 方法。
 3. **P0-3 修复 total_equity**：调查 JNJ 等公司 StockholdersEquity tag 缺失原因
 4. **P1-4 修复 D&A**：MSFT 的 D&A 应含 amortization 部分

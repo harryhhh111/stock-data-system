@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-04-15
+> 最后更新：2026-04-15（P0-2 GP 修复完成）
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -64,6 +64,9 @@
 
 **目标：** 筛选分析能力，数据完整性提升。
 
+- [x] P0-2 Gross Profit 修复（GP 覆盖率 36.9% → 46.2% 行级，50.2% → 70.9% 股票级，自动计算 Rev-COGS）
+- [ ] P0-3 total_equity 修复（JNJ 等公司 StockholdersEquity tag 缺失）
+- [ ] P1-4 D&A 修复（MSFT 的 D&A 应含 amortization）
 - [ ] 筛选器/分析工具（多条件筛选）
 - [ ] A股/港股 2025 年报补齐（等 5 月出完）
 - [ ] FCF Yield 数据差异根因确认（3/23 文件 239 只 vs 修复后数量）

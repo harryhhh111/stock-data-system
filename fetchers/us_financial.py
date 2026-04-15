@@ -645,6 +645,26 @@ class USFinancialFetcher(BaseFetcher):
                     # 只更新之前为空的值
                     wide.loc[mask, "free_cash_flow"] = calculated_fcf[mask]
 
+        # ── 自动计算 gross_profit（如果 tag_mapping 是 INCOME_TAGS）──
+        # 如果 gross_profit 为空，但有 revenues 和 cost_of_goods_sold，
+        # 则计算 GP = Revenue - COGS
+        # 说明：部分公司（如 PG、WMT）不直接报告 GrossProfit tag，但有 COGS
+        # 银行/金融/部分能源公司无标准 COGS，GP 保持为空（这是正常的）
+        if "gross_profit" in tag_mapping.values():
+            if "gross_profit" not in wide.columns:
+                wide["gross_profit"] = pd.Series(dtype=float)
+
+            mask = wide["gross_profit"].isna()
+            if mask.any():
+                rev = wide.get("revenues")
+                cogs = wide.get("cost_of_goods_sold")
+
+                if rev is not None and cogs is not None:
+                    calculated_gp = rev - cogs
+                    # 只在 revenues 和 cogs 都有值时计算
+                    both_present = mask & rev.notna() & cogs.notna()
+                    wide.loc[both_present, "gross_profit"] = calculated_gp[both_present]
+
         return wide
 
     def fetch_income(self, ticker: str) -> pd.DataFrame:

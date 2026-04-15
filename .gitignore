@@ -46,3 +46,6 @@ Thumbs.db
 data/sec_cache/
 
 data/raw_snapshots/*.json
+
+# MCP config
+.mcp.json
