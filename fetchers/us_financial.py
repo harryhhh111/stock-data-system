@@ -8,6 +8,7 @@ fetchers/us_financial.py — 美股 SEC EDGAR 数据拉取
 - fetch_sp500_constituents(): 获取 S&P 500 成分股列表
 - fetch_nasdaq100_constituents(): 获取 NASDAQ 100 成分股列表
 """
+
 from __future__ import annotations
 
 import json
@@ -166,9 +167,14 @@ class USFinancialFetcher(BaseFetcher):
                     break
             if ticker_col is None:
                 ticker_col = df.columns[0]
-            tickers = df[ticker_col].dropna().astype(str).str.strip().str.replace(
-                r"\.", "-", regex=True
-            ).tolist()
+            tickers = (
+                df[ticker_col]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.replace(r"\.", "-", regex=True)
+                .tolist()
+            )
             tickers = list(dict.fromkeys(tickers))
             self._save_cache(cache_file, json.dumps(tickers))
             logger.info("S&P 500 成分股获取完成 (Wikipedia): %d 只", len(tickers))
@@ -182,6 +188,7 @@ class USFinancialFetcher(BaseFetcher):
             resp = requests.get(csv_url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
             from io import StringIO
+
             df = pd.read_csv(StringIO(resp.text))
             # 列名通常是 "Symbol"
             ticker_col = None
@@ -191,9 +198,14 @@ class USFinancialFetcher(BaseFetcher):
                     break
             if ticker_col is None:
                 ticker_col = df.columns[0]
-            tickers = df[ticker_col].dropna().astype(str).str.strip().str.replace(
-                r"\.", "-", regex=True
-            ).tolist()
+            tickers = (
+                df[ticker_col]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.replace(r"\.", "-", regex=True)
+                .tolist()
+            )
             tickers = list(dict.fromkeys(tickers))
             self._save_cache(cache_file, json.dumps(tickers))
             logger.info("S&P 500 成分股获取完成 (GitHub): %d 只", len(tickers))
@@ -221,9 +233,7 @@ class USFinancialFetcher(BaseFetcher):
 
         # 方法1: Wikipedia
         try:
-            resp = requests.get(
-                config.sec.nasdaq100_url, headers=HEADERS, timeout=30
-            )
+            resp = requests.get(config.sec.nasdaq100_url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
             tables = pd.read_html(resp.text)
             # NASDAQ-100 Wikipedia 有多张表，找包含 "Symbol" 或 "Ticker" 列的
@@ -257,7 +267,9 @@ class USFinancialFetcher(BaseFetcher):
             logger.warning("Wikipedia 获取 NASDAQ 100 失败: %s，尝试内置 fallback", e)
 
         # 方法2: 内置 JSON fallback
-        fallback_path = Path(__file__).resolve().parent.parent / "data" / "nasdaq100_tickers.json"
+        fallback_path = (
+            Path(__file__).resolve().parent.parent / "data" / "nasdaq100_tickers.json"
+        )
         if fallback_path.exists():
             tickers = json.loads(fallback_path.read_text())
             self._save_cache(cache_file, json.dumps(tickers))
@@ -508,24 +520,26 @@ class USFinancialFetcher(BaseFetcher):
 
                         # 优先使用 frame 修正 fp
                         if frame:
-                            frame_match = _re.search(r"Q(\d)$", frame)
+                            frame_match = _re.search(r"Q(\d+)(?:I)?$", frame)
                             if frame_match:
                                 fp = f"Q{frame_match.group(1)}"
                             elif "CY" in frame and "Q" not in frame:
                                 fp = "FY"
                         # 记录是否 frame 有明确的季度指示
-                        records.append({
-                            "tag": tag,
-                            "field": field_name,
-                            "val": entry.get("val"),
-                            "fy": entry.get("fy"),
-                            "fp": fp,
-                            "end": entry.get("end"),
-                            "filed": entry.get("filed"),
-                            "accn": entry.get("accn"),
-                            "frame": frame,
-                            "_frame_has_q": "Q" in frame,
-                        })
+                        records.append(
+                            {
+                                "tag": tag,
+                                "field": field_name,
+                                "val": entry.get("val"),
+                                "fy": entry.get("fy"),
+                                "fp": fp,
+                                "end": entry.get("end"),
+                                "filed": entry.get("filed"),
+                                "accn": entry.get("accn"),
+                                "frame": frame,
+                                "_frame_has_q": "Q" in frame,
+                            }
+                        )
 
         if not records:
             return pd.DataFrame()
@@ -539,29 +553,38 @@ class USFinancialFetcher(BaseFetcher):
         #   A) 同一 (tag, end) 有 frame=CY20xx（年度）也有 CY20xxQ4（季度）
         #      → 保留 FY 和 Q4 各自独立
         #   B) 同一 (tag, end) 只有 frame=CY20xxQ?（季度），没有纯年度 frame
-        #      → 所有 FY 条目修正为对应季度
-        for (tag_key, end_key), grp in df.groupby(["tag", "end"]):
-            frame_q_rows = grp[grp["_frame_has_q"]]
-            # 检查是否有纯年度 frame（含 CY 但不含 Q）
-            has_annual_frame = grp["frame"].apply(
-                lambda f: bool(f) and "CY" in str(f) and "Q" not in str(f)
-            ).any()
-            if frame_q_rows.empty or has_annual_frame:
-                # 情况 A：有独立的年度 frame，不修改
-                continue
-            correct_fps = set(frame_q_rows["fp"])
-            if correct_fps:
-                correct_fp = list(correct_fps)[0]
-                mask = (df["tag"] == tag_key) & (df["end"] == end_key) & (df["fp"] == "FY")
-                df.loc[mask, "fp"] = correct_fp
+        #      → 只修正 frame 含 Q 的 FY 条目为对应季度（保留 frame=None 的真正年报）
+        #   C) frame 含 QxI 后缀（如 CY2025Q3I）表示 interim，正则需匹配
+        fy_needs_fix = (df["fp"] == "FY") & (df["_frame_has_q"])
+        if fy_needs_fix.any():
+            tags_with_fix = df.loc[fy_needs_fix, ["tag", "end"]].drop_duplicates()
+            for _, row in tags_with_fix.iterrows():
+                tag_key, end_key = row["tag"], row["end"]
+                grp = df[(df["tag"] == tag_key) & (df["end"] == end_key)]
+                frame_q_rows = grp[grp["_frame_has_q"]]
+                has_annual_frame = (
+                    grp["frame"]
+                    .apply(lambda f: bool(f) and "CY" in str(f) and "Q" not in str(f))
+                    .any()
+                )
+                if frame_q_rows.empty or has_annual_frame:
+                    continue
+                correct_fps = set(frame_q_rows["fp"])
+                if correct_fps:
+                    correct_fp = list(correct_fps)[0]
+                    mask = (
+                        (df["tag"] == tag_key)
+                        & (df["end"] == end_key)
+                        & (df["fp"] == "FY")
+                        & (df["_frame_has_q"])
+                    )
+                    df.loc[mask, "fp"] = correct_fp
 
         # 当同一 (tag, end, fp) 有多个条目时，优先保留有 frame 的记录，再取最新 filed
         df["_has_frame"] = df["frame"].astype(bool)
         df = df.sort_values(
             ["filed", "_has_frame", "accn"], ascending=[True, True, True]
-        ).drop_duplicates(
-            subset=["tag", "end", "fp"], keep="last"
-        )
+        ).drop_duplicates(subset=["tag", "end", "fp"], keep="last")
         df = df.drop(columns=["_has_frame"])
 
         df = df.dropna(subset=["val"])
@@ -576,15 +599,27 @@ class USFinancialFetcher(BaseFetcher):
         # FY/Q4 去重 + 合并：同一 (end, fp) 可能有多个 filed/accn 的行（不同 tag 去重后 filed 不同）
         # 对每个字段取第一个非空值，而不是简单丢弃
         wide["_date"] = pd.to_datetime(wide["end"])
-        wide["_fp_order"] = wide["fp"].map({"FY": 0, "Q4": 1, "Q3": 2, "Q2": 3, "Q1": 4})
+        wide["_fp_order"] = wide["fp"].map(
+            {"FY": 0, "Q4": 1, "Q3": 2, "Q2": 3, "Q1": 4}
+        )
         wide = wide.sort_values(["_date", "_fp_order", "filed"])
 
         # groupby (end, fp) 合并：每个字段取第一个非空值
-        val_cols = [c for c in wide.columns if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order"]]
-        agg_dict = {c: lambda x: x.dropna().iloc[0] if x.dropna().any() else None for c in val_cols}
-        agg_dict["filed"] = "last"  # 保留最新 filed
+        # 策略：把 NaN 替换为占位值 → first() → 换回 NaN，比逐列 lambda 快 100x+
+        val_cols = [
+            c
+            for c in wide.columns
+            if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order"]
+        ]
+        _FILLNA_SENTINEL = -999999999999
+        for c in val_cols:
+            wide[c] = wide[c].fillna(_FILLNA_SENTINEL)
+        agg_dict = {c: "first" for c in val_cols}
+        agg_dict["filed"] = "last"
         agg_dict["accn"] = "last"
         wide = wide.groupby(["end", "fp"], sort=False).agg(agg_dict).reset_index()
+        for c in val_cols:
+            wide[c] = wide[c].replace(_FILLNA_SENTINEL, float("nan"))
 
         # ── 自动计算 free_cash_flow（如果 tag_mapping 是 CASHFLOW_TAGS）──
         # 如果 free_cash_flow 为空，但有 net_cash_from_operations 和 capital_expenditures，
@@ -594,19 +629,19 @@ class USFinancialFetcher(BaseFetcher):
             # 确保 free_cash_flow 列存在
             if "free_cash_flow" not in wide.columns:
                 wide["free_cash_flow"] = pd.Series(dtype=float)
-            
+
             # 只在 free_cash_flow 为空的行计算
             mask = wide["free_cash_flow"].isna()
             if mask.any():
                 cfo = wide.get("net_cash_from_operations")
                 capex = wide.get("capital_expenditures")
-                
+
                 if cfo is not None and capex is not None:
                     # 计算逻辑：FCF = CFO - CapEx（CapEx 通常是负数，所以实际上是加）
                     # 如果 CapEx 是正数，表示现金流入（出售资产），此时应该用负值
                     # 但根据 SEC 标准，CapEx 通常是负数（现金流出）
                     calculated_fcf = cfo - capex
-                    
+
                     # 只更新之前为空的值
                     wide.loc[mask, "free_cash_flow"] = calculated_fcf[mask]
 
@@ -667,8 +702,11 @@ class USFinancialFetcher(BaseFetcher):
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import os
+
     os.environ["TQDM_DISABLE"] = "1"
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     fetcher = USFinancialFetcher()
 
@@ -678,8 +716,8 @@ if __name__ == "__main__":
     t0 = time.time()
     for i in range(12):
         rl.wait()
-        print(f"  请求 {i+1}: {time.time()-t0:.3f}s")
-    print(f"12 次请求耗时: {time.time()-t0:.2f}s（应 >1s）")
+        print(f"  请求 {i + 1}: {time.time() - t0:.3f}s")
+    print(f"12 次请求耗时: {time.time() - t0:.2f}s（应 >1s）")
 
     # 测试公司列表
     print("\n=== 测试公司列表 ===")
