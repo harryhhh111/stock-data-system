@@ -73,7 +73,10 @@ INCOME_TAG_PRIORITY: dict[str, list[str]] = {
     "cost_of_goods_sold": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
     "gross_profit": ["GrossProfit"],
     "operating_expenses": ["OperatingExpenses"],
-    "selling_general_admin": ["SellingGeneralAndAdministrativeExpenses"],
+    "operating_income": ["OperatingIncomeLoss",
+                          "ProfitLoss"],
+    "selling_general_admin": ["SellingGeneralAndAdministrativeExpenses",
+                               "SellingGeneralAndAdministrativeExpense"],
     "research_and_development": ["ResearchAndDevelopmentExpense"],
     "depreciation_amortization": ["DepreciationAndAmortization",
                                    "DepreciationDepletionAndAmortization",
@@ -135,7 +138,8 @@ BALANCE_TAG_PRIORITY: dict[str, list[str]] = {
     "accumulated_other_ci": ["AccumulatedOtherComprehensiveIncomeLossNetOfTax"],
     "treasury_stock": ["TreasuryStockValue"],
     "noncontrolling_interest": ["NoncontrollingInterest"],
-    "total_equity": ["StockholdersEquity"],
+    "total_equity": ["StockholdersEquity",
+                      "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
     "total_equity_including_nci": [
         "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
     ],
@@ -206,6 +210,7 @@ CASHFLOW_TAG_PRIORITY: dict[str, list[str]] = {
         "PaymentsOfDividendsCommonStock",
         "DividendsPaid",
         "DividendsDeclaredCash",
+        "PaymentsOfOrdinaryDividends",
     ],
     "other_financing_activities": [
         "OtherCashPaymentsFromFinancingActivities",
@@ -321,6 +326,12 @@ class USGAAPTransformer(BaseTransformer):
                 all_keys.update(r.keys())
             all_keys.update(_BALANCE_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
+
+        # total_equity fallback: 优先用 StockholdersEquity，取不到则用 total_equity_including_nci
+        # 部分公司（如 JNJ）只在 10-Q 报 StockholdersEquity，年报中只有含 NCI 的权益
+        for r in records:
+            if r.get("total_equity") is None and r.get("total_equity_including_nci") is not None:
+                r["total_equity"] = r["total_equity_including_nci"]
 
         logger.debug("资产负债表转换: %s, %d 条记录", stock_code, len(records))
         return records

@@ -129,6 +129,12 @@
 - COALESCE 保护下，如果先写了有值的，再写 None 的不会覆盖；反过来则 None 会先写入后被覆盖
 - **解决**：先清空再写入，避免新旧数据交叉
 
+### reparse 全量加载 raw_snapshot 导致 OOM（2026-04-15 实战教训）
+- `sync_us_market_reparse()` 一次性 `SELECT stock_code, raw_data FROM raw_snapshot` 把 504 只股票的 JSONB 全部加载到内存
+- 316MB JSONB → Python dict 后膨胀数倍，3.6GB 内存机器直接 OOM 被杀
+- **解决**：先只查 `stock_code` 列表，再逐只 `SELECT raw_data WHERE stock_code=%s`，用完即释放
+- **教训**：JSONB 列不要批量加载到 Python，单条处理即可
+
 ### 列被过滤的警告
 - `_BALANCE_DB_COLS` 里的 `intangible_assets`、`total_debt` 和 `_CASHFLOW_DB_COLS` 里的 6 个计算列在数据库表中不存在
 - 这些是待建的字段，不影响核心数据，但日志会刷大量警告

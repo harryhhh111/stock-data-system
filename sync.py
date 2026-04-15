@@ -11,6 +11,7 @@ sync.py — 股票基本面数据同步调度器
     python sync.py --type dividend [--market CN_A|HK]
     python sync.py --type industry
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,9 +53,11 @@ logger = logging.getLogger("sync")
 
 # ── sync_progress 表 ──────────────────────────────────────────
 
+
 def ensure_sync_progress_table():
     """确保 sync_progress 表存在（含增量同步字段）。"""
     from config import DBConfig
+
     # DDL 已统一到 scripts/init_pg.sql，此处做兼容确保
     with psycopg2.connect(DBConfig().dsn) as conn:
         with conn.cursor() as cur:
@@ -68,11 +71,19 @@ def ensure_sync_progress_table():
                     error_detail TEXT
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status)"
+            )
             # 增量同步：添加 last_report_date 列
-            cur.execute("ALTER TABLE sync_progress ADD COLUMN IF NOT EXISTS last_report_date DATE")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_progress_last_report ON sync_progress(last_report_date)")
+            cur.execute(
+                "ALTER TABLE sync_progress ADD COLUMN IF NOT EXISTS last_report_date DATE"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_last_report ON sync_progress(last_report_date)"
+            )
         conn.commit()
 
 
@@ -95,7 +106,11 @@ MARKET_CONFIG: dict[str, dict] = {
         "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
-        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
         "fetch_kwargs_builder": lambda stock_code, fetcher: {
             "symbol": stock_code,
             "em_code": _em_code(stock_code),
@@ -107,7 +122,11 @@ MARKET_CONFIG: dict[str, dict] = {
         "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
-        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
         "fetch_kwargs_builder": lambda stock_code, fetcher: {"stock_code": stock_code},
     },
     "US": {
@@ -116,13 +135,18 @@ MARKET_CONFIG: dict[str, dict] = {
         "tables": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
-        "transform_methods": ["transform_income", "transform_balance", "transform_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
         "special": "us",
     },
 }
 
 
 # ── 同步单只股票（核心函数）─────────────────────────────────
+
 
 def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str | None]:
     """同步单只股票的三大报表（通用版）。
@@ -153,8 +177,10 @@ def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str |
 
         # Fetch + Transform + Upsert 三步走
         for fetch_method, transform_method, table, conflict_keys in zip(
-            cfg["fetch_methods"], cfg["transform_methods"],
-            cfg["tables"], [cfg["conflict_keys"]] * len(cfg["tables"]),
+            cfg["fetch_methods"],
+            cfg["transform_methods"],
+            cfg["tables"],
+            [cfg["conflict_keys"]] * len(cfg["tables"]),
         ):
             try:
                 raw_df = getattr(fetcher, fetch_method)(**fetch_kwargs)
@@ -176,6 +202,7 @@ def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str |
 
 
 # ── 同步管理器 ───────────────────────────────────────────────
+
 
 class SyncManager:
     def __init__(self, max_workers: int = 4, force: bool = False):
@@ -199,14 +226,16 @@ class SyncManager:
             results["a_total"] = len(a_df)
             rows = []
             for _, r in a_df.iterrows():
-                rows.append({
-                    "stock_code": str(r["stock_code"]).strip(),
-                    "stock_name": str(r["stock_name"]).strip(),
-                    "market": str(r["market"]).strip(),
-                    "exchange": str(r["exchange"]).strip(),
-                    "list_date": r.get("list_date"),
-                    "updated_at": datetime.now(),
-                })
+                rows.append(
+                    {
+                        "stock_code": str(r["stock_code"]).strip(),
+                        "stock_name": str(r["stock_name"]).strip(),
+                        "market": str(r["market"]).strip(),
+                        "exchange": str(r["exchange"]).strip(),
+                        "list_date": r.get("list_date"),
+                        "updated_at": datetime.now(),
+                    }
+                )
             upsert("stock_info", rows, ["stock_code"])
             results["upserted"] += len(rows)
             logger.info("A 股列表: %d 只", results["a_total"])
@@ -219,15 +248,17 @@ class SyncManager:
             results["hk_total"] = len(hk_df)
             rows = []
             for _, r in hk_df.iterrows():
-                rows.append({
-                    "stock_code": str(r["stock_code"]).strip(),
-                    "stock_name": str(r["stock_name"]).strip(),
-                    "market": "CN_HK",
-                    "exchange": "HKEX",
-                    "list_date": r.get("list_date"),
-                    "currency": "HKD",
-                    "updated_at": datetime.now(),
-                })
+                rows.append(
+                    {
+                        "stock_code": str(r["stock_code"]).strip(),
+                        "stock_name": str(r["stock_name"]).strip(),
+                        "market": "CN_HK",
+                        "exchange": "HKEX",
+                        "list_date": r.get("list_date"),
+                        "currency": "HKD",
+                        "updated_at": datetime.now(),
+                    }
+                )
             upsert("stock_info", rows, ["stock_code"])
             results["upserted"] += len(rows)
             logger.info("港股列表: %d 只", results["hk_total"])
@@ -236,7 +267,9 @@ class SyncManager:
 
         logger.info(
             "股票列表同步完成: A股=%d, 港股=%d, UPSERT=%d",
-            results["a_total"], results["hk_total"], results["upserted"],
+            results["a_total"],
+            results["hk_total"],
+            results["upserted"],
         )
         return results
 
@@ -259,7 +292,8 @@ class SyncManager:
         all_stocks = []
         for m in markets:
             rows = execute(
-                "SELECT stock_code FROM stock_info WHERE market = %s", (m,),
+                "SELECT stock_code FROM stock_info WHERE market = %s",
+                (m,),
                 fetch=True,
             )
             for r in rows:
@@ -272,7 +306,8 @@ class SyncManager:
 
         # 增量同步判断：确定哪些股票需要拉取
         pending, incremental_skipped = determine_stocks_to_sync(
-            all_stocks, force=self.force,
+            all_stocks,
+            force=self.force,
         )
 
         # 兼容旧的断点续传逻辑（sync_progress.status = 'success' 的跳过）
@@ -286,7 +321,12 @@ class SyncManager:
         skipped = incremental_skipped + legacy_skipped
         logger.info(
             "SyncManager 初始化: workers=%d, force=%s, 总计=%d, 待同步=%d, 跳过=%d (增量跳过=%d)",
-            self.max_workers, self.force, total, len(pending), skipped, incremental_skipped,
+            self.max_workers,
+            self.force,
+            total,
+            len(pending),
+            skipped,
+            incremental_skipped,
         )
 
         # 并发执行
@@ -297,8 +337,7 @@ class SyncManager:
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(sync_one_stock, code, m): (code, m)
-                for code, m in pending
+                pool.submit(sync_one_stock, code, m): (code, m) for code, m in pending
             }
 
             for i, future in enumerate(as_completed(futures), 1):
@@ -323,7 +362,9 @@ class SyncManager:
                         try:
                             update_last_report_date(code, tables)
                         except Exception as uerr:
-                            logger.debug("更新 last_report_date 失败: %s %s", code, uerr)
+                            logger.debug(
+                                "更新 last_report_date 失败: %s %s", code, uerr
+                            )
                     else:
                         failed += 1
                         if err and len(errors) < 20:
@@ -343,11 +384,18 @@ class SyncManager:
                 if i % 50 == 0 or i == len(pending):
                     elapsed = time.time() - t0
                     rate = i / elapsed if elapsed > 0 else 0
-                    eta = (len(pending) - i) / rate / self.max_workers if rate > 0 else 0
+                    eta = (
+                        (len(pending) - i) / rate / self.max_workers if rate > 0 else 0
+                    )
                     logger.info(
                         "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%dmin",
-                        i, len(pending), i / len(pending) * 100,
-                        success, failed, rate * 60, int(eta / 60),
+                        i,
+                        len(pending),
+                        i / len(pending) * 100,
+                        success,
+                        failed,
+                        rate * 60,
+                        int(eta / 60),
                     )
 
         elapsed = time.time() - t0
@@ -361,7 +409,11 @@ class SyncManager:
 
         logger.info(
             "财务数据同步完成: 总计=%d, 成功=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
-            total, success, failed, skipped, elapsed,
+            total,
+            success,
+            failed,
+            skipped,
+            elapsed,
         )
 
         if errors:
@@ -386,16 +438,39 @@ class SyncManager:
                 rows = fetch_index_constituents(idx_code)
                 if rows:
                     # 写入 index_info
-                    upsert("index_info", [{"index_code": idx_code, "index_name": index_names.get(idx_code, idx_code), "updated_at": datetime.now()}], ["index_code"])
+                    upsert(
+                        "index_info",
+                        [
+                            {
+                                "index_code": idx_code,
+                                "index_name": index_names.get(idx_code, idx_code),
+                                "updated_at": datetime.now(),
+                            }
+                        ],
+                        ["index_code"],
+                    )
                     # 写入 index_constituent
-                    upsert("index_constituent", rows, ["index_code", "stock_code", "effective_date"])
+                    upsert(
+                        "index_constituent",
+                        rows,
+                        ["index_code", "stock_code", "effective_date"],
+                    )
                     results["success"].append(idx_code)
-                    logger.info("指数 %s (%s): %d 只成分股", idx_code, index_names.get(idx_code, ""), len(rows))
+                    logger.info(
+                        "指数 %s (%s): %d 只成分股",
+                        idx_code,
+                        index_names.get(idx_code, ""),
+                        len(rows),
+                    )
             except Exception as e:
                 results["failed"].append(idx_code)
                 logger.error("指数 %s 失败: %s", idx_code, e)
 
-        logger.info("指数成分同步完成: 成功=%d, 失败=%d", len(results["success"]), len(results["failed"]))
+        logger.info(
+            "指数成分同步完成: 成功=%d, 失败=%d",
+            len(results["success"]),
+            len(results["failed"]),
+        )
         return results
 
     # ── 分红数据同步 ────────────────────────────────────
@@ -426,7 +501,8 @@ class SyncManager:
 
         for m in markets:
             rows = execute(
-                "SELECT stock_code FROM stock_info WHERE market = %s", (m,),
+                "SELECT stock_code FROM stock_info WHERE market = %s",
+                (m,),
                 fetch=True,
             )
             stocks = [r[0] for r in rows]
@@ -443,7 +519,17 @@ class SyncManager:
                         records = transform_hk_dividend(df, code)
 
                     if records:
-                        upsert("dividend_split", records, ["stock_code", "announce_date", "dividend_per_share", "bonus_share", "convert_share"])
+                        upsert(
+                            "dividend_split",
+                            records,
+                            [
+                                "stock_code",
+                                "announce_date",
+                                "dividend_per_share",
+                                "bonus_share",
+                                "convert_share",
+                            ],
+                        )
                         success += 1
                     else:
                         logger.debug("%s 无分红数据", code)
@@ -506,7 +592,9 @@ class SyncManager:
 
         logger.info(
             "行业数据: %d 只, 在 stock_info 中: %d 只, 未找到: %d 只",
-            len(results), len(code_industry), not_found,
+            len(results),
+            len(code_industry),
+            not_found,
         )
 
         # 批量 UPDATE（每 500 只一批）
@@ -514,7 +602,7 @@ class SyncManager:
         codes_list = list(code_industry.keys())
 
         for i in range(0, len(codes_list), batch_size):
-            batch = codes_list[i:i + batch_size]
+            batch = codes_list[i : i + batch_size]
             # 使用 CASE WHEN 批量更新
             case_parts = []
             codes_str = []
@@ -526,10 +614,10 @@ class SyncManager:
             sql = f"""
                 UPDATE stock_info
                 SET industry = CASE stock_code
-                    {' '.join(case_parts)}
+                    {" ".join(case_parts)}
                 END,
                 updated_at = NOW()
-                WHERE stock_code IN ({', '.join(codes_str)})
+                WHERE stock_code IN ({", ".join(codes_str)})
                 AND market = 'CN_A'
             """
             execute(sql, commit=True)
@@ -538,7 +626,8 @@ class SyncManager:
             if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
                 logger.info(
                     "行业写入进度: %d/%d (%.0f%%)",
-                    min(i + batch_size, len(codes_list)), len(codes_list),
+                    min(i + batch_size, len(codes_list)),
+                    len(codes_list),
                     min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
                 )
 
@@ -557,7 +646,11 @@ class SyncManager:
 
         logger.info(
             "行业分类同步完成: 总计=%d, 更新=%d, 不在stock_info=%d, 行业数=%d, 耗时=%.1fs",
-            len(results), updated, not_found, len(dist_df), elapsed,
+            len(results),
+            updated,
+            not_found,
+            len(dist_df),
+            elapsed,
         )
 
         # 打印行业分布
@@ -600,7 +693,12 @@ class SyncManager:
         results = fetch_us_industry(stocks)
         if not results:
             logger.warning("美股行业分类数据为空")
-            return {"total": len(stocks), "updated": 0, "empty_industry": 0, "industry_count": 0}
+            return {
+                "total": len(stocks),
+                "updated": 0,
+                "empty_industry": 0,
+                "industry_count": 0,
+            }
 
         # Step 3: 批量 UPDATE stock_info.industry
         updated = 0
@@ -619,7 +717,7 @@ class SyncManager:
         codes_list = list(code_industry.keys())
 
         for i in range(0, len(codes_list), batch_size):
-            batch = codes_list[i:i + batch_size]
+            batch = codes_list[i : i + batch_size]
             # 使用 CASE WHEN 批量更新
             case_parts = []
             codes_str = []
@@ -631,10 +729,10 @@ class SyncManager:
             sql = f"""
                 UPDATE stock_info
                 SET industry = CASE stock_code
-                    {' '.join(case_parts)}
+                    {" ".join(case_parts)}
                 END,
                 updated_at = NOW()
-                WHERE stock_code IN ({', '.join(codes_str)})
+                WHERE stock_code IN ({", ".join(codes_str)})
                 AND market = 'US'
             """
             execute(sql, commit=True)
@@ -643,7 +741,8 @@ class SyncManager:
             if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
                 logger.info(
                     "美股行业写入进度: %d/%d (%.0f%%)",
-                    min(i + batch_size, len(codes_list)), len(codes_list),
+                    min(i + batch_size, len(codes_list)),
+                    len(codes_list),
                     min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
                 )
 
@@ -663,7 +762,11 @@ class SyncManager:
 
         logger.info(
             "美股行业分类同步完成: 总计=%d, 更新=%d, 空行业=%d, 行业数=%d, 耗时=%.1fs",
-            len(stocks), updated, empty_industry, len(dist_df), elapsed,
+            len(stocks),
+            updated,
+            empty_industry,
+            len(dist_df),
+            elapsed,
         )
 
         # 打印行业分布（前 20 个）
@@ -746,7 +849,11 @@ class SyncManager:
 
         logger.info(
             "港股行业分类同步完成: 总计=%d, 更新=%d, 空行业=%d, 失败=%d, 耗时=%.1fs",
-            total, total_updated, empty_industry, total_failed, elapsed,
+            total,
+            total_updated,
+            empty_industry,
+            total_failed,
+            elapsed,
         )
 
         if not dist_df.empty:
@@ -809,7 +916,9 @@ class SyncManager:
         results["elapsed"] = time.time() - t0
         logger.info(
             "日线行情同步完成: 成功=%d 失败=%d 耗时=%.1fs",
-            results["success"], results["failed"], results["elapsed"],
+            results["success"],
+            results["failed"],
+            results["elapsed"],
         )
         return results
 
@@ -841,7 +950,9 @@ class SyncManager:
 
         # 过滤掉停牌/无效数据（close 为 None 的）
         valid = [r for r in records if r.get("close") is not None]
-        logger.info("日线行情: market=%s 原始=%d 有效=%d", market, len(records), len(valid))
+        logger.info(
+            "日线行情: market=%s 原始=%d 有效=%d", market, len(records), len(valid)
+        )
 
         if not valid:
             logger.warning("日线行情: market=%s 无有效数据", market)
@@ -849,7 +960,8 @@ class SyncManager:
 
         # 过滤掉 stock_info 中不存在的股票（外键约束）
         known_codes = execute(
-            "SELECT stock_code FROM stock_info WHERE market = %s", (market,),
+            "SELECT stock_code FROM stock_info WHERE market = %s",
+            (market,),
             fetch=True,
         )
         known_set = {r[0] for r in known_codes}
@@ -884,7 +996,8 @@ class SyncManager:
 
         # 获取该市场的股票列表
         stock_rows = execute(
-            "SELECT stock_code FROM stock_info WHERE market = %s", (market,),
+            "SELECT stock_code FROM stock_info WHERE market = %s",
+            (market,),
             fetch=True,
         )
         stocks = [r[0] for r in stock_rows]
@@ -917,10 +1030,14 @@ class SyncManager:
                     continue
 
                 if market == "CN_A":
-                    df = fetcher.fetch_a_hist(code, start_date=start_str, end_date=end_str)
+                    df = fetcher.fetch_a_hist(
+                        code, start_date=start_str, end_date=end_str
+                    )
                     records = transform_a_hist_to_records(df, market)
                 else:
-                    df = fetcher.fetch_hk_hist(code, start_date=start_str, end_date=end_str)
+                    df = fetcher.fetch_hk_hist(
+                        code, start_date=start_str, end_date=end_str
+                    )
                     records = transform_hk_hist_to_records(df, code, market)
 
                 if records:
@@ -936,15 +1053,21 @@ class SyncManager:
                 elapsed = time.time()  # rough
                 logger.info(
                     "回填进度: %d/%d (%.0f%%) 成功=%d 失败=%d",
-                    i, total, i / total * 100, success, failed,
+                    i,
+                    total,
+                    i / total * 100,
+                    success,
+                    failed,
                 )
 
-        logger.info("历史日线回填完成: market=%s 成功=%d 失败=%d", market, success, failed)
+        logger.info(
+            "历史日线回填完成: market=%s 成功=%d 失败=%d", market, success, failed
+        )
         return success
 
 
-
 # ── 历史日线回填（腾讯接口）────────────────────────────────
+
 
 def backfill_daily_hist(market: str) -> dict:
     """使用腾讯 K 线接口回填历史日线。
@@ -976,7 +1099,9 @@ def backfill_daily_hist(market: str) -> dict:
         for code, last_date in rows:
             if last_date:
                 if last_date >= datetime.now().date() - timedelta(days=7):
-                    stocks.append((code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d")))
+                    stocks.append(
+                        (code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"))
+                    )
                     total_result["skipped"] += 1
                 else:
                     stocks.append((code, "2021-01-04"))
@@ -1016,31 +1141,46 @@ def backfill_daily_hist(market: str) -> dict:
                 eta = (mkt_total - i - 1) / rate * 60 if rate > 0 else 0
                 logger.info(
                     "回填进度 [%s]: %d/%d (%.0f%%) 成功=%d 失败=%d 新增=%d 速率=%.1f/min ETA=%.0fmin",
-                    mkt, i + 1, mkt_total, (i + 1) / mkt_total * 100,
-                    mkt_success, mkt_failed, mkt_updated, rate, eta,
+                    mkt,
+                    i + 1,
+                    mkt_total,
+                    (i + 1) / mkt_total * 100,
+                    mkt_success,
+                    mkt_failed,
+                    mkt_updated,
+                    rate,
+                    eta,
                 )
 
         elapsed = time.time() - t0
         logger.info(
             "回填完成 [%s]: 成功=%d 失败=%d 新增记录=%d 耗时=%.1fmin",
-            mkt, mkt_success, mkt_failed, mkt_updated, elapsed / 60,
+            mkt,
+            mkt_success,
+            mkt_failed,
+            mkt_updated,
+            elapsed / 60,
         )
 
         total_result["total"] += mkt_total
         total_result["success"] += mkt_success
         total_result["failed"] += mkt_failed
         total_result["markets"][mkt] = {
-            "total": mkt_total, "success": mkt_success,
-            "failed": mkt_failed, "updated": mkt_updated,
+            "total": mkt_total,
+            "success": mkt_success,
+            "failed": mkt_failed,
+            "updated": mkt_updated,
             "elapsed_min": round(elapsed / 60, 1),
         }
 
     return total_result
 
+
 # ── 美股同步 ───────────────────────────────────────────────
 
 
 # ── 股本数据同步 ─────────────────────────────────────────
+
 
 def sync_share(market: str = None) -> dict:
     """同步 A 股/港股股本数据（腾讯接口）。
@@ -1051,7 +1191,11 @@ def sync_share(market: str = None) -> dict:
     Returns:
         统计结果字典
     """
-    from fetchers.share import fetch_share_tencent, get_a_share_codes, get_hk_share_codes
+    from fetchers.share import (
+        fetch_share_tencent,
+        get_a_share_codes,
+        get_hk_share_codes,
+    )
     from db import upsert
     from fetchers.base import rate_limiter
 
@@ -1091,10 +1235,13 @@ def sync_share(market: str = None) -> dict:
         result["updated"] += written
         logger.info(
             "%s 股本同步完成: %d 条, 耗 %.1fs",
-            mkt, written, elapsed,
+            mkt,
+            written,
+            elapsed,
         )
 
     return result
+
 
 def sync_us_market(args) -> dict:
     """美股 SEC EDGAR 财务数据同步（串行执行）。
@@ -1162,7 +1309,8 @@ def sync_us_market(args) -> dict:
     all_us_stocks = [(t, "US") for t in valid_tickers]
 
     pending_stocks, incremental_skipped = determine_stocks_to_sync(
-        all_us_stocks, force=args.force,
+        all_us_stocks,
+        force=args.force,
     )
 
     pending = [code for code, m in pending_stocks]
@@ -1208,7 +1356,9 @@ def sync_us_market(args) -> dict:
                 [income_df, balance_df, cashflow_df],
                 cfg["transform_methods"],
             ):
-                records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+                records = getattr(transformer, transform_method)(
+                    df, stock_code=ticker, cik=cik
+                )
                 if records:
                     upsert(table, records, cfg["conflict_keys"])
                     tables_synced.append(table)
@@ -1254,8 +1404,13 @@ def sync_us_market(args) -> dict:
             eta = (len(pending) - i) / rate if rate > 0 else 0
             logger.info(
                 "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%.0fs",
-                i, len(pending), i / len(pending) * 100,
-                success, failed, rate * 60, eta,
+                i,
+                len(pending),
+                i / len(pending) * 100,
+                success,
+                failed,
+                rate * 60,
+                eta,
             )
 
     elapsed = time.time() - t0
@@ -1268,15 +1423,17 @@ def sync_us_market(args) -> dict:
         for _, r in company_df.iterrows():
             ticker_val = str(r["ticker"]).strip()
             if ticker_val in {t.upper() for t in valid_tickers}:
-                stock_rows.append({
-                    "stock_code": ticker_val,
-                    "stock_name": str(r.get("title", "")).strip(),
-                    "cik": str(r["cik"]).strip().zfill(10),
-                    "market": "US",
-                    "exchange": "NYSE/NASDAQ/AMEX",
-                    "currency": "USD",
-                    "updated_at": datetime.now(),
-                })
+                stock_rows.append(
+                    {
+                        "stock_code": ticker_val,
+                        "stock_name": str(r.get("title", "")).strip(),
+                        "cik": str(r["cik"]).strip().zfill(10),
+                        "market": "US",
+                        "exchange": "NYSE/NASDAQ/AMEX",
+                        "currency": "USD",
+                        "updated_at": datetime.now(),
+                    }
+                )
         if stock_rows:
             # stock_info 的 upsert 以 stock_code 为冲突键
             upsert("stock_info", stock_rows, ["stock_code"])
@@ -1294,7 +1451,11 @@ def sync_us_market(args) -> dict:
 
     logger.info(
         "美股同步完成: 总计=%d, 成功=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
-        total, success, failed, skipped, elapsed,
+        total,
+        success,
+        failed,
+        skipped,
+        elapsed,
     )
 
     if errors:
@@ -1323,34 +1484,31 @@ def sync_us_market_reparse(args) -> dict:
 
     logger.info("=== 重新解析模式：从 raw_snapshot 读取并重新写入报表 ===")
 
-    # 1. 查询 raw_snapshot 中已有的 Company Facts 数据
+    # 1. 查询待重新解析的 ticker 列表（只取 stock_code，不加载 raw_data）
     if args.us_tickers:
-        # 指定 ticker 列表
         tickers = [t.strip().upper() for t in args.us_tickers.split(",") if t.strip()]
         placeholders = ", ".join(["%s"] * len(tickers))
         sql = f"""
-            SELECT DISTINCT stock_code, raw_data
+            SELECT DISTINCT stock_code
             FROM raw_snapshot
             WHERE stock_code IN ({placeholders})
               AND data_type = 'company_facts'
               AND source = 'sec_edgar'
             ORDER BY stock_code
         """
-        rows = execute(sql, tickers, fetch=True)
+        tickers_to_reparse = [r[0] for r in execute(sql, tickers, fetch=True)]
     elif args.force_reparse:
-        # 强制重新解析所有 raw_snapshot 中的美股数据
         sql = """
-            SELECT DISTINCT stock_code, raw_data
+            SELECT DISTINCT stock_code
             FROM raw_snapshot
             WHERE data_type = 'company_facts'
               AND source = 'sec_edgar'
             ORDER BY stock_code
         """
-        rows = execute(sql, fetch=True)
+        tickers_to_reparse = [r[0] for r in execute(sql, fetch=True)]
     else:
-        # 默认：只重新解析已存在的股票（需要有 stock_info 记录）
         sql = """
-            SELECT DISTINCT r.stock_code, r.raw_data
+            SELECT DISTINCT r.stock_code
             FROM raw_snapshot r
             INNER JOIN stock_info s ON r.stock_code = s.stock_code
             WHERE r.data_type = 'company_facts'
@@ -1358,30 +1516,41 @@ def sync_us_market_reparse(args) -> dict:
               AND s.market = 'US'
             ORDER BY r.stock_code
         """
-        rows = execute(sql, fetch=True)
+        tickers_to_reparse = [r[0] for r in execute(sql, fetch=True)]
 
-    total = len(rows)
+    total = len(tickers_to_reparse)
     logger.info("待重新解析: %d 只美股", total)
 
     if total == 0:
         logger.warning("raw_snapshot 中没有可重新解析的数据")
         return {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
 
-    # 2. 重新解析并写入
+    # 2. 重新解析并写入（逐只从数据库读取 raw_data，避免 OOM）
     from fetchers.us_financial import USFinancialFetcher
     from transformers.us_gaap import USGAAPTransformer
-    
+
     fetcher = USFinancialFetcher()
     transformer = USGAAPTransformer()
-    
+
     success = 0
     failed = 0
     errors: list[str] = []
     t0 = time.time()
 
-    for i, (ticker, raw_data) in enumerate(rows, 1):
+    for i, ticker in enumerate(tickers_to_reparse, 1):
         try:
-            # raw_data 可能是 dict 或 JSON 字符串
+            raw_row = execute(
+                "SELECT raw_data FROM raw_snapshot "
+                "WHERE stock_code = %s AND data_type = 'company_facts' AND source = 'sec_edgar' "
+                "LIMIT 1",
+                (ticker,),
+                fetch=True,
+            )
+            if not raw_row:
+                logger.warning("%s: raw_snapshot 中无数据，跳过", ticker)
+                continue
+
+            raw_data = raw_row[0][0]
             if isinstance(raw_data, str):
                 facts = json.loads(raw_data)
             else:
@@ -1402,14 +1571,18 @@ def sync_us_market_reparse(args) -> dict:
                 [income_df, balance_df, cashflow_df],
                 cfg["transform_methods"],
             ):
-                records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+                records = getattr(transformer, transform_method)(
+                    df, stock_code=ticker, cik=cik
+                )
                 if records:
                     upsert(table, records, cfg["conflict_keys"])
                     tables_synced.append(table)
 
             if tables_synced:
                 success += 1
-                logger.debug("%s: 重新解析成功，写入 %d 张表", ticker, len(tables_synced))
+                logger.debug(
+                    "%s: 重新解析成功，写入 %d 张表", ticker, len(tables_synced)
+                )
             else:
                 logger.warning("%s: 无数据写入", ticker)
 
@@ -1426,8 +1599,13 @@ def sync_us_market_reparse(args) -> dict:
             eta = (total - i) / rate if rate > 0 else 0
             logger.info(
                 "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%.0fs",
-                i, total, i / total * 100,
-                success, failed, rate * 60, eta,
+                i,
+                total,
+                i / total * 100,
+                success,
+                failed,
+                rate * 60,
+                eta,
             )
 
     elapsed = time.time() - t0
@@ -1441,7 +1619,10 @@ def sync_us_market_reparse(args) -> dict:
 
     logger.info(
         "重新解析完成: 总计=%d, 成功=%d, 失败=%d, 耗时=%.1fs",
-        total, success, failed, elapsed,
+        total,
+        success,
+        failed,
+        elapsed,
     )
 
     if errors:
@@ -1454,23 +1635,56 @@ def sync_us_market_reparse(args) -> dict:
 
 # ── CLI ───────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="股票基本面数据同步")
-    parser.add_argument("--type", required=True, choices=["stock_list", "financial", "index", "dividend", "daily", "daily-backfill", "share", "industry", "industry-hk"],
-                        help="同步类型")
-    parser.add_argument("--market", default=None, choices=["CN_A", "CN_HK", "US", "all"],
-                        help="市场（仅 financial 类型需要）")
+    parser.add_argument(
+        "--type",
+        required=True,
+        choices=[
+            "stock_list",
+            "financial",
+            "index",
+            "dividend",
+            "daily",
+            "daily-backfill",
+            "share",
+            "industry",
+            "industry-hk",
+        ],
+        help="同步类型",
+    )
+    parser.add_argument(
+        "--market",
+        default=None,
+        choices=["CN_A", "CN_HK", "US", "all"],
+        help="市场（仅 financial 类型需要）",
+    )
     parser.add_argument("--workers", type=int, default=4, help="并发线程数")
-    parser.add_argument("--force", action="store_true", help="强制全量同步（忽略断点续传）")
-    parser.add_argument("--us-index", default="SP500",
-                        choices=["SP500", "NASDAQ100", "ALL"],
-                        help="美股指数范围（仅 US 市场有效）")
-    parser.add_argument("--us-tickers", default=None,
-                        help="美股指定 ticker 列表，逗号分隔（覆盖 --us-index）")
-    parser.add_argument("--reparse", action="store_true",
-                        help="重新解析模式：从 raw_snapshot 读取原始数据并重新解析（不请求 API）")
-    parser.add_argument("--force-reparse", action="store_true",
-                        help="强制重新解析所有股票（仅与 --reparse 一起使用）")
+    parser.add_argument(
+        "--force", action="store_true", help="强制全量同步（忽略断点续传）"
+    )
+    parser.add_argument(
+        "--us-index",
+        default="SP500",
+        choices=["SP500", "NASDAQ100", "ALL"],
+        help="美股指数范围（仅 US 市场有效）",
+    )
+    parser.add_argument(
+        "--us-tickers",
+        default=None,
+        help="美股指定 ticker 列表，逗号分隔（覆盖 --us-index）",
+    )
+    parser.add_argument(
+        "--reparse",
+        action="store_true",
+        help="重新解析模式：从 raw_snapshot 读取原始数据并重新解析（不请求 API）",
+    )
+    parser.add_argument(
+        "--force-reparse",
+        action="store_true",
+        help="强制重新解析所有股票（仅与 --reparse 一起使用）",
+    )
 
     args = parser.parse_args()
 
