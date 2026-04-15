@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-04-09
+> 最后更新：2026-04-15
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -43,6 +43,9 @@
 - [x] A股/港股历史日线回填（腾讯 K 线，从 2021-01-04 起）
 - [x] NaN/NaT JSON 序列化修复
 - [x] 股本数据同步（腾讯接口，A 股 [72][73]、港股 [69][70]，7936 只已入库）
+- [x] SEC tag 映射补全（ProfitLoss、SG&A 单数、PaymentsOfOrdinaryDividends、total_equity NCI fallback）
+- [x] annual BS/CF 全空行修复（FY 修正逻辑 + Q3I 正则 + 性能优化 45x）
+- [x] reparse OOM 修复（逐只查询 raw_data，避免全量加载）
 - [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
 - [ ] 美股历史日线回填
 
@@ -55,6 +58,7 @@
 - [x] `mv_indicator_ttm` TTM 计算修复（annual + quarterly 混合 bug）
 - [x] `db.py` upsert None 保护实现（COALESCE + force_null_cols）
 - [x] 股本数据同步（腾讯接口，A 股 5193 只 + 港股 2743 只）
+- [x] SEC 数据质量修复（FIX_B: EPS/股数/折旧/短期借款; FIX_C: operating_income/dividends_paid/total_equity/SG&A）
 
 ## Phase 5：完善
 
