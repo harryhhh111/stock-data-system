@@ -46,3 +46,7 @@ Thumbs.db
 data/sec_cache/
 
 data/raw_snapshots/*.json
+
+# Backup files
+sync.py.bak
+*.bak

@@ -23,6 +23,7 @@ fetchers/daily_quote.py — 日线行情数据拉取
 from __future__ import annotations
 
 import logging
+import random
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -848,6 +849,215 @@ def _safe_int(val) -> Optional[int]:
         return int(f)
     except (ValueError, TypeError):
         return None
+
+
+# ── 腾讯历史 K 线接口 ─────────────────────────────────────
+
+_TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def _tencent_code(stock_code: str, market: str) -> str:
+    """将股票代码转为腾讯格式。
+
+    A 股: 6/9 开头 → sh 前缀，其余 → sz 前缀
+    港股: hk 前缀
+    """
+    if market == "CN_A":
+        if stock_code.startswith(("6", "9")):
+            return f"sh{stock_code}"
+        else:
+            return f"sz{stock_code}"
+    elif market == "CN_HK":
+        return f"hk{stock_code}"
+    else:
+        raise ValueError(f"不支持的市场: {market}")
+
+
+def _fetch_tencent_hist_one_request(
+    tencent_code: str,
+    start_date: str,
+    end_date: str,
+    max_k: int = 800,
+) -> list[list[str]]:
+    """单次请求腾讯历史 K 线接口，返回原始行数据列表。
+
+    参数格式: {code},day,{start},{end},{k},
+    （trailing comma = qfq 不填，表示不复权，存原始数据）
+
+    Returns:
+        [[date, open, close, high, low, volume], ...] 原始字符串列表
+
+    Raises:
+        requests.HTTPError: 响应状态码非 200
+        ValueError: 解析失败或数据为空
+    """
+    params = {
+        "param": f"{tencent_code},day,{start_date},{end_date},{max_k},",
+    }
+    resp = requests.get(
+        _TENCENT_KLINE_URL,
+        params=params,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    raw = data.get("data", {})
+    # data 格式: {"hk00700": {"day": [[...], [...]], ...},
+    #            "qfqHtml": "...", ...}
+    if isinstance(raw, dict):
+        for v in raw.values():
+            if isinstance(v, dict) and v.get("day"):
+                return v["day"]
+    elif isinstance(raw, list):
+        return raw
+
+    raise ValueError(f"腾讯 K 线返回数据格式异常: {raw}")
+
+
+def _fetch_tencent_hist_with_retry(
+    tencent_code: str,
+    start_date: str,
+    end_date: str,
+    max_k: int = 800,
+) -> list[list[str]]:
+    """带指数退避重试的腾讯历史 K 线请求（3 次：10s → 20s → 40s）。"""
+    for attempt in range(4):  # 0=首次, 1=10s, 2=20s, 3=40s
+        try:
+            return _fetch_tencent_hist_one_request(
+                tencent_code, start_date, end_date, max_k
+            )
+        except Exception as exc:
+            if attempt < 3:
+                wait = 10 * (2 ** attempt) + random.uniform(0, 2)
+                logger.warning(
+                    "腾讯 K 线请求失败 (attempt %d/%d): %s %s, %.1fs 后重试...",
+                    attempt + 1, 4, tencent_code, exc, wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "腾讯 K 线请求最终失败: %s %s", tencent_code, exc,
+                )
+                raise
+
+
+def _tencent_hist_to_records(
+    raw_rows: list[list[str]],
+    stock_code: str,
+    market: str,
+) -> list[dict]:
+    """将腾讯原始 K 线行数据转换为 daily_quote 记录格式。
+
+    腾讯返回格式 (6 列):
+        [date, open, close, high, low, volume]
+        索引:         0     1      2      3     4      5
+
+    注意：无成交额(amount) 和换手率(turnover_rate)，留 NULL。
+    市值相关字段均留 NULL（历史数据无市值）。
+    """
+    currency = "CNY" if market == "CN_A" else "HKD"
+    records = []
+    for row in raw_rows:
+        if len(row) < 6:
+            continue
+        records.append({
+            "stock_code": stock_code,
+            "trade_date": row[0],  # "YYYY-MM-DD" 字符串
+            "market": market,
+            "open": _safe_float(row[1]),
+            "high": _safe_float(row[3]),
+            "low": _safe_float(row[4]),
+            "close": _safe_float(row[2]),
+            "volume": _safe_int(row[5]),
+            "amount": None,
+            "turnover_rate": None,
+            "market_cap": None,
+            "float_market_cap": None,
+            "pe_ttm": None,
+            "pb": None,
+            "currency": currency,
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
+def fetch_tencent_hist(
+    stock_code: str,
+    market: str,
+    start_date: str = "2021-01-04",
+    end_date: str | None = None,
+    max_k: int = 800,
+) -> list[dict]:
+    """通过腾讯 K 线接口获取单只股票历史日线（原始数据，不复权）。
+
+    腾讯单次最多返回 ~800 条（约 3.2 年），超过时自动分段请求。
+
+    Args:
+        stock_code: 股票代码，如 "000001"、"00700"
+        market: "CN_A" 或 "CN_HK"
+        start_date: 开始日期 YYYY-MM-DD
+        end_date: 结束日期 YYYY-MM-DD，默认今天
+        max_k: 单次请求最大条数（腾讯限制约 800）
+
+    Returns:
+        daily_quote 格式的记录列表（含 stock_code, trade_date, open, high,
+        low, close, volume 等字段；amount/turnover_rate/market_cap 等为 NULL）
+    """
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    tencent_code = _tencent_code(stock_code, market)
+
+    # 分段请求：腾讯返回按日期降序（最新在前），从 end_date 往 start_date 方向拉
+    all_raw_rows: list[list[str]] = []
+    seen_dates: set[str] = set()
+    seg_end = end_date
+    max_segments = 10  # 安全阀
+
+    for _ in range(max_segments):
+        raw_rows = _fetch_tencent_hist_with_retry(
+            tencent_code,
+            start_date,
+            seg_end,
+            max_k,
+        )
+
+        if not raw_rows:
+            break
+
+        # 去重（段间可能有重叠）
+        seg_new = [r for r in raw_rows if r[0] not in seen_dates]
+        for r in seg_new:
+            seen_dates.add(r[0])
+        all_raw_rows.extend(reversed(seg_new))  # 转升序
+
+        # 数据量少于 max_k，说明已到最早
+        if len(raw_rows) < max_k:
+            break
+
+        # 最早日期已早于 start_date，无需继续
+        earliest = raw_rows[-1][0]  # 最后一条是最早的（降序）
+        if pd.to_datetime(earliest).date() <= pd.to_datetime(start_date).date():
+            break
+
+        # 下一段：end = 最早日期的前一天
+        seg_end = (pd.to_datetime(earliest).date() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # 转换为记录格式
+    records = _tencent_hist_to_records(all_raw_rows, stock_code, market)
+
+    # 过滤早于 start_date 的记录（防御）
+    start_dt = pd.to_datetime(start_date).date()
+    filtered = []
+    for r in records:
+        d = pd.to_datetime(r["trade_date"]).date()
+        if d >= start_dt:
+            filtered.append(r)
+
+    logger.debug("腾讯 K 线 %s (%s): %d 条记录", stock_code, market, len(filtered))
+    return filtered
 
 
 if __name__ == "__main__":
