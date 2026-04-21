@@ -214,7 +214,111 @@ python validate.py
 
 ---
 
-## 七、数据量汇总
+## 七、美股数据源详解
+
+美股同步涉及 5 个外部数据源：
+
+### 7.1 SEC EDGAR — 财务报表 + 公司信息
+
+- **Company Facts API**: `https://data.sec.gov/submissions/CIK{cik}.json`
+- **Submissions API**: 获取 SIC 行业分类（Company Facts 不含 SIC）
+- **限速**: 10 次/秒，需带 User-Agent
+- **本地缓存**: `data/sec_cache/{TICKER}.json`（7 天过期）
+
+### 7.2 腾讯财经 (qt.gtimg.cn) — 美股实时行情
+
+- `https://qt.gtimg.cn/q=us{ticker}`
+- 批量请求，每批 300 只，约 30ms/批
+- 单位：成交额 USD 原始值，总市值 亿美元（代码中 ×1e8）
+
+### 7.3 Wikipedia / GitHub — 指数成分股
+
+- SP500、NASDAQ100、Russell1000 成分股列表
+- 本地缓存 7 天，也可存为 `data/*.json`
+
+### 7.4 SEC XBRL Tag → 数据库字段映射流程
+
+```
+SEC Company Facts JSON
+  └── facts.us-gaap.{TAG}.units.USD[]
+        ├── Step 1: extract_table() 提取宽表
+        │     按 (end=report_date, fp=report_type) 为 index
+        │     多个 SEC tag 可映射到同一 DB 字段（取第一个非空）
+        ├── Step 2: transformer 转换
+        │     us_gaap.py 中 TAG_PRIORITY 定义优先级
+        └── Step 3: upsert 写入
+              冲突键: (stock_code, report_date, report_type)
+```
+
+详见 `docs/SEC_DATA_PITFALLS.md`。
+
+### 7.5 report_type 映射
+
+| SEC fp | DB report_type | 说明 |
+|--------|---------------|------|
+| FY | annual | 年度报告 |
+| Q4 | quarterly | 第四季度（可能和 FY 重复） |
+| Q1-Q3 | quarterly | 季度报告 |
+| H1 | semi | 半年度 |
+
+---
+
+## 八、筛选能力
+
+系统支持以下筛选维度：
+
+### 8.1 价值筛选
+
+| 指标 | 数据来源 | 说明 |
+|------|---------|------|
+| PE（TTM） | 行情 / TTM 视图 | 市盈率 |
+| PB | 行情 | 市净率 |
+| FCF Yield | `mv_fcf_yield` | 自由现金流收益率 = FCF / 市值 |
+| 股息率 | ❌ 暂无 | 分红数据尚未同步 |
+
+### 8.2 质量筛选
+
+| 指标 | 计算方式 |
+|------|---------|
+| ROE | 归母净利润 / 归母净资产 |
+| 毛利率 | 毛利润 / 营收 |
+| 净利率 | 净利润 / 营收 |
+| 营收增速 | 同比对比 |
+
+### 8.3 成长筛选
+
+| 指标 | 计算方式 |
+|------|---------|
+| 营收/净利润 YoY | (本期 - 去年同期) / 去年同期 |
+| CFO / 净利润 | 经营现金流 / 净利润 |
+| FCF / 净利润 | 自由现金流 / 净利润 |
+
+### 8.4 组合筛选示例
+
+```
+市场 = A股
+行业 ≠ 银行、证券、保险、地产、ST
+市值 > 500 亿
+PE（TTM）> 0 且 < 30
+ROE 连续 3 年 > 15%
+FCF Yield > 5%
+```
+
+---
+
+## 九、已知限制与问题
+
+| 限制 | 说明 |
+|------|------|
+| 美股日线行情未同步 | daily_quote 尚无美股数据 |
+| 分红数据为空 | dividend_split 表为空，代码已写待执行 |
+| 美股行业 0 只 | 需逐只请求 SEC SIC Code |
+| 港股行业 49 只缺失 | 等东方财富恢复 |
+| `equity_issued` 映射可能有误 | 映射到了回购而非发行，需验证 |
+
+---
+
+## 十、数据量汇总
 
 | 类别 | 记录数 |
 |------|--------|
