@@ -1,0 +1,166 @@
+"""sync/_utils.py — 通用工具函数 + 市场配置 + 核心同步逻辑。"""
+
+from __future__ import annotations
+
+import logging
+
+import psycopg2
+import psycopg2.extras
+
+from config import DBConfig
+from db import upsert, execute
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("sync")
+
+
+# ── sync_progress 表 ──────────────────────────────────────────
+
+
+def ensure_sync_progress_table():
+    """确保 sync_progress 表存在（含增量同步字段）。"""
+    from config import DBConfig
+
+    with psycopg2.connect(DBConfig().dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sync_progress (
+                    stock_code VARCHAR(20) PRIMARY KEY,
+                    market VARCHAR(10),
+                    last_sync_time TIMESTAMPTZ,
+                    tables_synced TEXT[],
+                    status VARCHAR(20),
+                    error_detail TEXT
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_market ON sync_progress(market)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_status ON sync_progress(status)"
+            )
+            cur.execute(
+                "ALTER TABLE sync_progress ADD COLUMN IF NOT EXISTS last_report_date DATE"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_progress_last_report ON sync_progress(last_report_date)"
+            )
+        conn.commit()
+
+
+def _em_code(stock_code: str) -> str:
+    """根据 A 股代码推导东方财富代码（如 SH600519）。"""
+    if stock_code.startswith("6"):
+        return f"SH{stock_code}"
+    elif stock_code.startswith(("0", "3")):
+        return f"SZ{stock_code}"
+    elif stock_code.startswith(("4", "8")):
+        return f"BJ{stock_code}"
+    return f"SZ{stock_code}"
+
+
+# ── 市场配置注册 ──────────────────────────────────────────
+MARKET_CONFIG: dict[str, dict] = {
+    "CN_A": {
+        "fetcher_cls": "fetchers.a_financial.AFinancialFetcher",
+        "transformer_cls": "transformers.eastmoney.EastmoneyTransformer",
+        "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
+        "fetch_kwargs_builder": lambda stock_code, fetcher: {
+            "symbol": stock_code,
+            "em_code": _em_code(stock_code),
+        },
+    },
+    "CN_HK": {
+        "fetcher_cls": "fetchers.hk_financial.HkFinancialFetcher",
+        "transformer_cls": "transformers.eastmoney_hk.EastmoneyHkTransformer",
+        "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
+        "fetch_kwargs_builder": lambda stock_code, fetcher: {"stock_code": stock_code},
+    },
+    "US": {
+        "fetcher_cls": "fetchers.us_financial.USFinancialFetcher",
+        "transformer_cls": "transformers.us_gaap.USGAAPTransformer",
+        "tables": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
+        "conflict_keys": ["stock_code", "report_date", "report_type"],
+        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
+        "transform_methods": [
+            "transform_income",
+            "transform_balance",
+            "transform_cashflow",
+        ],
+        "special": "us",
+    },
+}
+
+
+# ── 同步单只股票（核心函数）─────────────────────────────────
+
+
+def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str | None]:
+    """同步单只股票的三大报表（通用版）。
+
+    支持 CN_A、CN_HK 市场。US 市场走 sync_us_market 特殊路径。
+    """
+    cfg = MARKET_CONFIG.get(market)
+    if cfg is None:
+        return False, [], f"不支持的市场: {market}"
+    if cfg.get("special"):
+        return False, [], f"市场 {market} 需要走专用同步路径"
+
+    tables_synced: list[str] = []
+
+    try:
+        # 动态导入
+        parts = cfg["fetcher_cls"].rsplit(".", 1)
+        module = __import__(parts[0], fromlist=[parts[1]])
+        fetcher_cls = getattr(module, parts[1])
+        fetcher = fetcher_cls()
+
+        parts = cfg["transformer_cls"].rsplit(".", 1)
+        module = __import__(parts[0], fromlist=[parts[1]])
+        transformer_cls = getattr(module, parts[1])
+        transformer = transformer_cls()
+
+        fetch_kwargs = cfg["fetch_kwargs_builder"](stock_code, fetcher)
+
+        # Fetch + Transform + Upsert 三步走
+        for fetch_method, transform_method, table, conflict_keys in zip(
+            cfg["fetch_methods"],
+            cfg["transform_methods"],
+            cfg["tables"],
+            [cfg["conflict_keys"]] * len(cfg["tables"]),
+        ):
+            try:
+                raw_df = getattr(fetcher, fetch_method)(**fetch_kwargs)
+                if raw_df is None or raw_df.empty:
+                    continue
+                records = getattr(transformer, transform_method)(raw_df)
+                if records:
+                    upsert(table, records, conflict_keys)
+                    tables_synced.append(table)
+            except Exception as exc:
+                logger.warning("%s %s 失败: %s", stock_code, table, exc)
+
+        return (len(tables_synced) > 0, tables_synced, None)
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.error("%s (%s) 同步失败: %s", stock_code, market, error_msg)
+        return False, tables_synced, error_msg
