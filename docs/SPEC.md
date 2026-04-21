@@ -250,7 +250,7 @@ SEC Company Facts JSON
               冲突键: (stock_code, report_date, report_type)
 ```
 
-详见 `docs/SEC_DATA_PITFALLS.md`。
+详见 `docs/[US] SEC_DATA_PITFALLS.md`。
 
 ### 7.5 report_type 映射
 
