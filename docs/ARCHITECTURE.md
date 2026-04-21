@@ -77,8 +77,15 @@
 | `fetchers/` | 从外部 API 拉取原始数据，负责限流、重试、熔断 | 不做字段标准化，不做计算 |
 | `transformers/` | 将原始数据映射为标准字段，处理不同数据源的格式差异 | 不直接操作数据库 |
 | `db.py` | PostgreSQL 连接管理、upsert、查询、raw_snapshot 存储 | 不包含业务逻辑 |
-| `sync.py` | CLI 入口，编排 fetch → transform → write 流程 | 不包含具体的拉取逻辑 |
-| `scheduler.py` | 定时任务调度，调用 sync.py 的各个子命令 | 不直接调用 fetchers |
+| `sync/` | CLI 入口 + 同步调度，编排 fetch → transform → write 流程 | 不包含具体的拉取逻辑 |
+|   ├ `_utils.py` | 公共工具：日志、DB表初始化、MARKET_CONFIG、sync_one_stock | |
+|   ├ `manager.py` | SyncManager 类：财务/行业/日线/分红同步调度 | |
+|   ├ `daily_quote.py` | 腾讯 K 线历史日线回填 | |
+|   ├ `share.py` | 股本数据同步 | |
+|   ├ `us_market.py` | 美股 SEC EDGAR 财务同步 + 重新解析 | |
+|   ├ `__init__.py` | CLI main() + 对外接口（from sync import SyncManager） | |
+|   └ `__main__.py` | python -m sync 支持 | |
+| `scheduler.py` | 定时任务调度，调用 sync 包的各个子命令 | 不直接调用 fetchers |
 | `validate.py` | 数据质量校验，检测异常值和逻辑不一致 | 不修改数据 |
 
 ### 3.2 表分层设计

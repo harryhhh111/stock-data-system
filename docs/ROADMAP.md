@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-04-15（P0-2 GP 修复完成）
+> 最后更新：2026-04-22（sync.py 重构为 sync/ 包 + 文档整理）
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -9,7 +9,7 @@
 - [x] 字段映射 `transformers/`（东方财富 → 标准字段）
 - [x] 拉取层 `fetchers/`（按职责拆分，熔断器+限流+重试）
 - [x] 标准化层 `transformers/`（A 股宽格式、港股长格式 pivot）
-- [x] 同步调度 `sync.py`（线程池并发、断点续传）
+- [x] 同步调度 `sync/` 包（从 sync.py 拆分为 8 个模块，保留兼容）
 - [x] 全量同步测试（A 股 + 港股）
 - [x] 美股 SEC EDGAR 接入
 - [x] pytest 测试框架
@@ -53,8 +53,10 @@
 
 **目标：** 补齐系统设计规范，修复已知数据质量问题。
 
-- [x] 系统架构设计文档 `ARCHITECTURE.md`
+- [x] 系统架构设计文档 `ARCHITECTURE.md`（已更新 sync/ 包结构）
 - [x] 开发规范文档 `DEV_GUIDELINES.md`
+- [x] `sync.py` 重构为 `sync/` 包（1751 行 → 8 个模块，CLI 改为 `python -m sync`）
+- [x] 文档整理（完成/过时的归档到 archive/，核心文档更新数据）
 - [x] `mv_indicator_ttm` TTM 计算修复（annual + quarterly 混合 bug）
 - [x] `db.py` upsert None 保护实现（COALESCE + force_null_cols）
 - [x] 股本数据同步（腾讯接口，A 股 5193 只 + 港股 2743 只）

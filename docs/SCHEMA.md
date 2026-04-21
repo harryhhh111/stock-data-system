@@ -632,7 +632,7 @@ CREATE TABLE daily_quote (
 
     CONSTRAINT pk_daily_quote PRIMARY KEY (stock_code, trade_date),
     CONSTRAINT fk_quote_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
-    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK'))
+    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK', 'US'))
 );
 
 CREATE INDEX idx_quote_date ON daily_quote(trade_date);
@@ -658,13 +658,13 @@ CREATE INDEX idx_quote_cap ON daily_quote(market_cap) WHERE market_cap IS NOT NU
 
 ```bash
 # 每日增量（A 股 + 港股）
-python sync.py --type daily --market all
+python -m sync --type daily --market all
 
 # 只同步 A 股
-python sync.py --type daily --market CN_A
+python -m sync --type daily --market CN_A
 
 # 全量历史回填（从 2020 年开始）
-python sync.py --type daily --market CN_A --force
+python -m sync --type daily --market CN_A --force
 ```
 
 ---

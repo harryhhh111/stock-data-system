@@ -1,6 +1,6 @@
 # Stock Data System — 开发规范
 
-> 最后更新：2026-04-09
+> 最后更新：2026-04-22
 
 ---
 
@@ -188,6 +188,30 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 - 新增 fetcher 函数必须用单只股票做验证测试（不实际跑全量）
 - 测试脚本临时文件（如 `test_*.py`）不要入库，验证完删除
 - 正式测试用例放在 `tests/` 目录
+
+### 6.5 sync/ 包规范
+
+`sync/` 包从 `sync.py`（1751 行）拆分而来，CLI 入口为 `python -m sync`。
+
+**模块职责：**
+
+| 模块 | 职责 | 谁调用 |
+|------|------|--------|
+| `_utils.py` | 日志、`ensure_sync_progress_table`、`MARKET_CONFIG`、`sync_one_stock` | 其他模块内部使用 |
+| `manager.py` | `SyncManager` 类，调度所有同步任务 | `__init__.py`、`scheduler.py` |
+| `daily_quote.py` | 腾讯 K 线历史日线回填 | `__init__.py` CLI |
+| `share.py` | 股本数据同步 | `__init__.py` CLI |
+| `us_market.py` | 美股 SEC EDGAR 同步 + 重解析 | `__init__.py` CLI、`scheduler.py` |
+| `__init__.py` | CLI `main()` + 对外接口导出 | 直接调用、`python -m sync` |
+| `__main__.py` | `python -m sync` 支持 | 用户 CLI |
+
+**新增同步任务规则：**
+
+1. 独立的同步函数放在新文件（如 `sync/my_task.py`）
+2. SyncManager 方法（依赖 `self.force`）留在 `manager.py`
+3. CLI 参数在 `__init__.py` 的 `main()` 中注册
+4. 外部导入通过 `__init__.py` 的 `__all__` 导出（如 `from sync import sync_us_market`）
+5. `scheduler.py` 通过 `from sync import SyncManager` 使用
 
 ---
 
