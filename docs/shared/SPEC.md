@@ -46,13 +46,13 @@ A股覆盖 3,620 只，港股覆盖 2,662 只。
 
 ### 2.3 每日行情（daily_quote）
 
-| 市场 | 记录数 | 日期范围 |
-|------|--------|---------|
-| CN_A | 5,479 | 2025-03-03 ~ 2026-03-30 |
-| CN_HK | 2,642 | 2025-03-03 ~ 2026-03-30 |
-| US | 暂无 | — |
+| 市场 | 记录数 | 股票数 | 日期范围 |
+|------|--------|--------|---------|
+| CN_A | 6,119,247 | 5,493 | 2021-01-04 ~ 2026-04-21 |
+| CN_HK | 3,147,613 | 2,743 | 2021-01-04 ~ 2026-04-21 |
+| US | 暂无 | — | — |
 
-**注意**：行情数据并非每日全覆盖，只有部分交易日被拉取。当前 CHECK 约束只允许 CN_A 和 CN_HK，美股行情表结构待调整。
+A 股和港股通过调度器每日自动同步（A 股 16:37、港股 17:12），增量模式写入当日快照。历史日线（2021 起）已通过腾讯 K 线接口回填完成。
 
 ### 2.4 指数成分（index_constituent）
 
@@ -71,7 +71,7 @@ A股覆盖 3,620 只，港股覆盖 2,662 只。
 
 ## 三、数据库表结构
 
-共 16 张表：
+共 16 张表 + 6 个物化视图：
 
 ```
 核心数据表
@@ -87,14 +87,22 @@ A股覆盖 3,620 只，港股覆盖 2,662 只。
 辅助/元数据表
 ├── index_info          — 指数基本信息（2条：沪深300、中证500）
 ├── index_constituent   — 指数成分股（800条）
-├── stock_share         — 股本数据（空）
+├── stock_share         — 股本数据（15,872条）
 ├── dividend_split      — 分红送转（空）
-├── raw_snapshot        — 数据源原始快照（空）
+├── raw_snapshot        — 数据源原始快照（5,483条）
 
 运维表
 ├── sync_log            — 同步日志（21条）
 ├── sync_progress       — 同步进度（8,739条）
-└── validation_results  — 数据质量校验结果（73,877条）
+└── validation_results  — 数据质量校验结果（658,301条）
+
+物化视图
+├── mv_financial_indicator    — 单期财务指标（A股/港股）
+├── mv_indicator_ttm          — TTM 滚动指标（A股/港股）
+├── mv_fcf_yield              — FCF Yield（A股/港股）
+├── mv_us_financial_indicator — 单期财务指标（美股）
+├── mv_us_indicator_ttm       — TTM 滚动指标（美股）
+└── mv_us_fcf_yield           — FCF Yield（美股）
 ```
 
 ---
@@ -122,9 +130,21 @@ transformers/           → 字段标准化
 核心模块
 ├── config.py           — 配置（DB/SEC/调度/限流，支持环境变量）
 ├── db.py               — PostgreSQL 连接池、UPSERT、查询
-├── sync.py             — 同步 CLI 入口（39KB，主力文件）
-├── scheduler.py        — APScheduler 定时调度（已编写，待集成）
-├── validate.py         — 数据质量校验引擎（32KB）
+├── sync.py             — 兼容旧入口（9 行，仅转发到 sync/ 包）
+├── sync/               — 同步逻辑包（已从 sync.py 拆分）
+│   ├── __init__.py     — CLI 入口 + 符号导出
+│   ├── manager.py      — SyncManager 轻量协调器
+│   ├── _utils.py       — 共享工具（MARKET_CONFIG、logger、upsert）
+│   ├── daily_quote.py  — 日线行情同步（增量 + 历史回填）
+│   ├── financial.py    — 财务报表同步
+│   ├── industry.py     — 行业分类同步
+│   ├── stock_list.py   — 股票列表同步
+│   ├── share.py        — 股本数据同步
+│   ├── dividend.py     — 分红送转同步
+│   ├── index_constituent.py — 指数成分同步
+│   └── us_market.py    — 美股市场同步
+├── scheduler.py        — APScheduler 定时调度（已部署运行）
+├── validate.py         — 数据质量校验引擎
 ├── incremental.py      — 增量同步判断
 
 scripts/
@@ -167,24 +187,26 @@ python validate.py
 - A股/港股/美股股票列表同步
 - A股/港股财务报表全量同步（利润表+资产负债表+现金流量表）
 - 美股财务报表同步（SEC EDGAR Company Facts）
-- 每日行情快照（A股+港股，部分交易日）
+- 每日行情快照（A股+港股，2021 起历史回填 + 每日增量同步）
+- 港股市值补全（绕过 akshare，直接调东方财富 API）
 - 指数成分同步（沪深300 + 中证500）
-- 模块化重构（fetchers → transformers → db → sync）
+- sync.py 重构拆分为 sync/ 包（10 个模块，保留兼容旧入口）
 - 熔断器 + 自适应限流 + 指数退避重试
 - market CHECK 约束（CN_A / CN_HK / US）
 - 增量同步逻辑（incremental.py）
 - 数据质量校验引擎（validate.py）
-- scheduler.py 代码编写
-- 两轮代码审查（评分 7.5/10）
+- 调度器部署（scheduler.py，systemd 服务运行中）
+- 行情/财务分开调度，物化视图自动刷新
+- 行业分类（A 股申万一级 5,188 只 + 港股东方财富 2,694 只）
+- FCF Yield 物化视图（A 股/港股/美股三套）
+- 股本数据同步（stock_share，15,872 条）
+- 历史日线回填（腾讯 K 线接口 + akshare fallback）
 
 ### 🚧 待完成
 
-1. **scheduler.py 集成**：代码已写，未实际部署运行
-2. **每日行情全覆盖**：目前只有零星交易日数据，需要 cron 调度每天自动拉
-3. **美股行情**：daily_quote 表 CHECK 约束目前只有 CN_A/CN_HK，需加上 US
-4. **分红送转数据同步**：dividend_split 表为空
-5. **API 层**：未开发，供外部查询数据
-6. **物化视图维护**：SQL 已写，未定期刷新
+1. **美股日线行情**：在海外服务器部署，daily_quote 尚无美股数据
+2. **分红送转数据同步**：dividend_split 表为空，代码已写待执行
+3. **美股行业分类**（SEC EDGAR SIC Code）
 
 ---
 
@@ -195,7 +217,9 @@ python validate.py
 | 股票列表 | 8,739 |
 | 财务报表（A股/港股） | ~106 万 |
 | 财务报表（美股） | ~12 万 |
-| 每日行情 | 8,121 |
+| 每日行情 | 9,266,860 |
+| 股本数据 | 15,872 |
 | 指数成分 | 800 |
-| 校验结果 | 73,877 |
-| **合计** | **~120 万+** |
+| 原始快照 | 5,483 |
+| 校验结果 | 658,301 |
+| **合计** | **~1,100 万+** |
