@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-04-22（sync.py 重构为 sync/ 包 + 文档整理）
+> 最后更新：2026-04-23（价值投资选股系统方向确认）
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -46,8 +46,8 @@
 - [x] SEC tag 映射补全（ProfitLoss、SG&A 单数、PaymentsOfOrdinaryDividends、total_equity NCI fallback）
 - [x] annual BS/CF 全空行修复（FY 修正逻辑 + Q3I 正则 + 性能优化 45x）
 - [x] reparse OOM 修复（逐只查询 raw_data，避免全量加载）
-- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
-- [ ] 美股历史日线回填
+- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）→ 移至 Phase 5.5
+- [ ] 美股历史日线回填 → 移至 Phase 5.5
 
 ## Phase 4.5：基建补强 ✅ 已完成
 
@@ -62,16 +62,29 @@
 - [x] 股本数据同步（腾讯接口，A 股 5193 只 + 港股 2743 只）
 - [x] SEC 数据质量修复（FIX_B: EPS/股数/折旧/短期借款; FIX_C: operating_income/dividends_paid/total_equity/SG&A）
 
-## Phase 5：完善
+## Phase 5：价值投资选股系统 🔄 进行中
 
-**目标：** 筛选分析能力，数据完整性提升。
+**目标：** 选股筛选 + 个股分析，详见 `docs/QUANT_SYSTEM_PLAN.md`。
 
 - [x] P0-2 Gross Profit 修复（GP 覆盖率 36.9% → 46.2% 行级，50.2% → 70.9% 股票级，自动计算 Rev-COGS）
+- [ ] ROE 修复（parent_equity 缺失时 fallback 到 total_equity，提升 CN_HK ROE 覆盖率）
+- [ ] 物化视图刷新 + 数据质量验证
+- [ ] 选股筛选器 `screener/`（硬过滤 + 多因子打分 + 预设策略）
+- [ ] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析）
 - [ ] P0-3 total_equity 修复（JNJ 等公司 StockholdersEquity tag 缺失）
 - [ ] P1-4 D&A 修复（MSFT 的 D&A 应含 amortization）
-- [ ] 筛选器/分析工具（多条件筛选）
 - [ ] A股/港股 2025 年报补齐（等 5 月出完）
-- [ ] FCF Yield 数据差异根因确认（3/23 文件 239 只 vs 修复后数量）
+
+## Phase 5.5：数据补全（后期）
+
+**目标：** 补齐美股日线行情和分红数据。
+
+- [ ] 美股日线行情同步（腾讯接口，S&P 500 + 纳斯达克 100）
+- [ ] 美股历史日线回填
+- [ ] A 股分红数据同步（东方财富/巨潮资讯）
+- [ ] 港股分红数据同步
+- [ ] 分红策略预设（高股息筛选）
+- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
 
 ## Phase 6：高级分析（待规划）
 

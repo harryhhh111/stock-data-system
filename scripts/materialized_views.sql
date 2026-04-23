@@ -60,13 +60,29 @@ SELECT
     b.parent_equity,
 
     -- ROE
+    -- parent_equity 优先；缺失时 fallback 到 total_equity；
+    -- total_equity 也缺失时（如银行股）用 total_assets - total_liab 计算
     CASE
-        WHEN i.report_type = 'annual' AND b.parent_equity IS NOT NULL AND b.parent_equity != 0 THEN
-            i.parent_net_profit / b.parent_equity
-        WHEN i.report_type IN ('semi', 'quarterly')
-            AND b.parent_equity IS NOT NULL AND b.parent_equity != 0
-            AND prev_a.parent_equity IS NOT NULL AND prev_a.parent_equity != 0 THEN
-            i.parent_net_profit / ((b.parent_equity + prev_a.parent_equity) / 2)
+        WHEN i.report_type = 'annual' THEN
+            CASE
+                WHEN b.parent_equity IS NOT NULL AND b.parent_equity != 0
+                    THEN i.parent_net_profit / b.parent_equity
+                WHEN COALESCE(b.total_equity, b.total_assets - b.total_liab) IS NOT NULL
+                    AND COALESCE(b.total_equity, b.total_assets - b.total_liab) != 0
+                    THEN i.parent_net_profit / COALESCE(b.total_equity, b.total_assets - b.total_liab)
+            END
+        WHEN i.report_type IN ('semi', 'quarterly') THEN
+            CASE
+                WHEN b.parent_equity IS NOT NULL AND b.parent_equity != 0
+                    AND prev_a.parent_equity IS NOT NULL AND prev_a.parent_equity != 0
+                    THEN i.parent_net_profit / ((b.parent_equity + prev_a.parent_equity) / 2)
+                WHEN COALESCE(b.total_equity, b.total_assets - b.total_liab) IS NOT NULL
+                    AND COALESCE(b.total_equity, b.total_assets - b.total_liab) != 0
+                    AND COALESCE(prev_a.total_equity, prev_a.total_assets - prev_a.total_liab) IS NOT NULL
+                    AND COALESCE(prev_a.total_equity, prev_a.total_assets - prev_a.total_liab) != 0
+                    THEN i.parent_net_profit / ((COALESCE(b.total_equity, b.total_assets - b.total_liab)
+                        + COALESCE(prev_a.total_equity, prev_a.total_assets - prev_a.total_liab)) / 2)
+            END
     END AS roe,
 
     -- ROA
