@@ -211,6 +211,14 @@ class EastmoneyHkTransformer(BaseTransformer):
             for cn_name, std_field in mapped.items():
                 record[std_field] = _safe_float(row.get(cn_name))
 
+            # CAPEX = 购建固定资产 + 购建无形资产及其他资产
+            capex_fa = record.get("capex")
+            capex_int = record.pop("capex_intangible", None)
+            if capex_fa is not None and capex_int is not None:
+                record["capex"] = capex_fa + capex_int
+            elif capex_fa is None and capex_int is not None:
+                record["capex"] = capex_int
+
             results.append(record)
         return results
 

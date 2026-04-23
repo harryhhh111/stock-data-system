@@ -113,135 +113,53 @@ CREATE INDEX idx_mv_indicator_fcf ON mv_financial_indicator(fcf);
 
 
 -- ============================================================
--- mv_indicator_ttm: 滚动 TTM 财务指标
---
--- TTM = 最近四个季度单季值之和
--- 计算方法：
---   若最新为年报 → TTM = 年报值（本身就是12个月）
---   若最新为季报/中报 → TTM = 最新累计 + 上年年报 - 上年同期累计
---   若缺少上年同期或上年年报 → fallback 到最近一期年报
+-- mv_indicator_ttm: TTM（滚动十二个月）指标
 -- ============================================================
 
 DROP MATERIALIZED VIEW IF EXISTS mv_indicator_ttm CASCADE;
 
 CREATE MATERIALIZED VIEW mv_indicator_ttm AS
-WITH report_data AS (
-    SELECT
-        i.stock_code,
-        i.report_date,
-        i.report_type,
-        i.notice_date,
-        i.operating_revenue,
-        i.parent_net_profit,
-        i.net_profit_excl,
-        cf.cfo_net,
-        cf.capex,
-        i.updated_at
+SELECT
+    stock_code,
+    report_date,
+    report_type,
+    notice_date,
+    SUM(operating_revenue) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS revenue_ttm,
+    SUM(parent_net_profit) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS net_profit_ttm,
+    SUM(net_profit_excl) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS net_profit_excl_ttm,
+    SUM(cfo_net) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS cfo_ttm,
+    SUM(CASE WHEN cfo_net IS NOT NULL AND capex IS NOT NULL THEN cfo_net - capex END) OVER (
+        PARTITION BY stock_code ORDER BY report_date
+        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+    ) AS fcf_ttm,
+    updated_at
+FROM (
+    SELECT DISTINCT ON (stock_code, report_date)
+        i.stock_code, i.report_date, i.report_type,
+        i.operating_revenue, i.parent_net_profit, i.net_profit_excl,
+        cf.cfo_net, cf.capex,
+        i.notice_date, i.updated_at
     FROM income_statement i
     LEFT JOIN cash_flow_statement cf
-        USING (stock_code, report_date, report_type)
-),
--- 每只股票最新一期报告（不限类型）
-latest AS (
-    SELECT DISTINCT ON (stock_code) *
-    FROM report_data
-    ORDER BY stock_code, report_date DESC
-),
--- 同比上一期（report_date - 1 year，同 report_type）
-prev_year AS (
-    SELECT
-        l.stock_code,
-        p.operating_revenue  AS py_revenue,
-        p.parent_net_profit  AS py_net_profit,
-        p.net_profit_excl    AS py_net_profit_excl,
-        p.cfo_net            AS py_cfo,
-        p.capex              AS py_capex
-    FROM latest l
-    JOIN report_data p
-        ON  p.stock_code  = l.stock_code
-        AND p.report_date = l.report_date - INTERVAL '1 year'
-        AND p.report_type = l.report_type
-),
--- 最近一期年报（在最新报告之前）
-last_annual AS (
-    SELECT DISTINCT ON (l.stock_code)
-        l.stock_code,
-        a.operating_revenue  AS la_revenue,
-        a.parent_net_profit  AS la_net_profit,
-        a.net_profit_excl    AS la_net_profit_excl,
-        a.cfo_net            AS la_cfo,
-        a.capex              AS la_capex
-    FROM latest l
-    JOIN report_data a
-        ON  a.stock_code  = l.stock_code
-        AND a.report_type = 'annual'
-        AND a.report_date < l.report_date
-    ORDER BY l.stock_code, a.report_date DESC
-)
-SELECT
-    l.stock_code,
-    l.report_date,
-    l.report_type,
-    l.notice_date,
-    l.updated_at,
+        ON i.stock_code = cf.stock_code AND i.report_date = cf.report_date AND i.report_type = cf.report_type
+    WHERE i.report_type IN ('quarterly', 'annual')
+    ORDER BY stock_code, report_date
+) t;
 
-    -- Revenue TTM
-    CASE WHEN l.report_type = 'annual'
-         THEN l.operating_revenue
-         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-         THEN l.operating_revenue + la.la_revenue - py.py_revenue
-         WHEN la.stock_code IS NOT NULL
-         THEN la.la_revenue
-         ELSE l.operating_revenue
-    END AS revenue_ttm,
-
-    -- Net profit TTM
-    CASE WHEN l.report_type = 'annual'
-         THEN l.parent_net_profit
-         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-         THEN l.parent_net_profit + la.la_net_profit - py.py_net_profit
-         WHEN la.stock_code IS NOT NULL
-         THEN la.la_net_profit
-         ELSE l.parent_net_profit
-    END AS net_profit_ttm,
-
-    -- Net profit excl TTM
-    CASE WHEN l.report_type = 'annual'
-         THEN l.net_profit_excl
-         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-         THEN l.net_profit_excl + la.la_net_profit_excl - py.py_net_profit_excl
-         WHEN la.stock_code IS NOT NULL
-         THEN la.la_net_profit_excl
-         ELSE l.net_profit_excl
-    END AS net_profit_excl_ttm,
-
-    -- CFO TTM
-    CASE WHEN l.report_type = 'annual'
-         THEN l.cfo_net
-         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-         THEN l.cfo_net + la.la_cfo - py.py_cfo
-         WHEN la.stock_code IS NOT NULL
-         THEN la.la_cfo
-         ELSE l.cfo_net
-    END AS cfo_ttm,
-
-    -- Capex TTM
-    CASE WHEN l.report_type = 'annual'
-         THEN l.capex
-         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-         THEN l.capex + la.la_capex - py.py_capex
-         WHEN la.stock_code IS NOT NULL
-         THEN la.la_capex
-         ELSE l.capex
-    END AS capex_ttm
-
-FROM latest l
-LEFT JOIN prev_year py  ON py.stock_code  = l.stock_code
-LEFT JOIN last_annual la ON la.stock_code = l.stock_code;
-
--- FCF TTM 由 cfo_ttm - capex_ttm 在查询层计算，不在此冗余存储
-CREATE UNIQUE INDEX idx_mv_ttm_pk ON mv_indicator_ttm(stock_code);
-CREATE INDEX idx_mv_ttm_cfo ON mv_indicator_ttm(cfo_ttm);
+CREATE UNIQUE INDEX idx_mv_ttm_pk ON mv_indicator_ttm(stock_code, report_date);
+CREATE INDEX idx_mv_ttm_fcf ON mv_indicator_ttm(fcf_ttm);
 
 
 -- ============================================================

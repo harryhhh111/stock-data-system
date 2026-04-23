@@ -6,7 +6,7 @@
 -- ============================================================
 
 -- mv_fcf_yield: FCF Yield = fcf_ttm / market_cap
--- 连接最新日线行情（含市值）+ 最新 TTM 指标（含 fcf_ttm）
+-- 连接最新日线行情（含市值）+ TTM 指标（含 cfo_ttm / capex_ttm）
 -- A 股和港股分开查询时自动独立
 
 DROP MATERIALIZED VIEW IF EXISTS mv_fcf_yield CASCADE;
@@ -24,12 +24,13 @@ latest_ttm AS (
     SELECT DISTINCT ON (stock_code)
         stock_code,
         report_date AS ttm_report_date,
-        fcf_ttm,
         revenue_ttm,
         net_profit_ttm,
-        cfo_ttm
+        cfo_ttm,
+        capex_ttm,
+        cfo_ttm - capex_ttm AS fcf_ttm
     FROM mv_indicator_ttm
-    WHERE fcf_ttm IS NOT NULL
+    WHERE cfo_ttm IS NOT NULL AND capex_ttm IS NOT NULL
     ORDER BY stock_code, report_date DESC
 )
 SELECT
@@ -47,6 +48,7 @@ SELECT
     t.revenue_ttm,
     t.net_profit_ttm,
     t.cfo_ttm,
+    t.capex_ttm,
     t.ttm_report_date,
     -- FCF Yield = fcf_ttm / market_cap
     CASE WHEN q.market_cap IS NOT NULL AND q.market_cap > 0

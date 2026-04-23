@@ -2,7 +2,7 @@
 
 腾讯接口返回字段：
   A 股：[72]=流通股(股), [73]=总股本(股)
-  港股：[69]=流通股(股), [70]=总股本(股)
+  港股：[69]=总股本(股), [70]=流通股(股)
 
 接口地址：https://qt.gtimg.cn/q={codes}
 编码：GBK（A 股） / GB18030（港股）
@@ -73,9 +73,9 @@ def fetch_share_tencent(codes: list[str], market: str) -> list[dict]:
                     float_s = _safe_int(fields[72])
                 elif market == "CN_HK":
                     code_raw = fields[2]  # 纯代码，如 00700
-                    # 港股: [69]=流通股, [70]=总股本
-                    total = _safe_int(fields[70])
-                    float_s = _safe_int(fields[69])
+                    # 港股: [69]=总股本, [70]=流通股
+                    total = _safe_int(fields[69])
+                    float_s = _safe_int(fields[70])
                 else:
                     continue
 
