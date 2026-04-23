@@ -49,3 +49,7 @@ data/raw_snapshots/*.json
 
 # MCP config
 .mcp.json
+
+# Archive & old files
+archive/
+sync.py.old
