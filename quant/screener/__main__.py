@@ -10,13 +10,17 @@
 """
 
 import argparse
+import os
 import sys
 
-from screener.query import get_universe
-from screener.filters import apply_hard_filters
-from screener.scorer import rank_factors
-from screener.report import format_results, format_summary
-from screener.presets import PRESETS, FACTOR_LABELS
+# 确保项目根目录在 path 中
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from quant.screener.query import get_universe
+from quant.screener.filters import apply_hard_filters
+from quant.screener.scorer import rank_factors
+from quant.screener.report import format_results, format_summary
+from quant.screener.presets import PRESETS, FACTOR_LABELS
 
 
 def list_presets():

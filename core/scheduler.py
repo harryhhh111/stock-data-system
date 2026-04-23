@@ -24,7 +24,8 @@ import time
 from datetime import datetime, timedelta
 
 # 确保项目根目录在 path 中
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 确保项目根目录在 path 中（scheduler.py 现在位于 core/ 下）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 

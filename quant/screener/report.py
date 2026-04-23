@@ -5,7 +5,7 @@
 import json
 import pandas as pd
 
-from screener.presets import OUTPUT_COLUMNS, FACTOR_LABELS
+from quant.screener.presets import OUTPUT_COLUMNS, FACTOR_LABELS
 
 
 try:

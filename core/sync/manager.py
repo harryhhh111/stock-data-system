@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from db import upsert, execute
-from incremental import (
+from core.incremental import (
     determine_stocks_to_sync,
     update_last_report_date,
 )

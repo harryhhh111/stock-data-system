@@ -3,7 +3,7 @@
 """
 
 import pandas as pd
-from screener.presets import FilterConfig
+from quant.screener.presets import FilterConfig
 
 
 def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:

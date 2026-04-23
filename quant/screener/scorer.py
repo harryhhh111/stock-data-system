@@ -4,7 +4,7 @@
 
 import pandas as pd
 import numpy as np
-from screener.presets import FactorWeight
+from quant.screener.presets import FactorWeight
 
 
 def compute_derived_factors(df: pd.DataFrame) -> pd.DataFrame:

@@ -19,28 +19,33 @@ python -m pytest tests/ -v                    # all tests
 python -m pytest tests/test_transformers/ -v  # single directory
 python -m pytest tests/test_fetchers/test_base.py -v  # single file
 
-# Sync operations
-python sync.py --type stock_list              # sync stock lists (A + HK)
-python sync.py --type financial --market CN_A --workers 4   # A-share financials
-python sync.py --type financial --market CN_HK --workers 4  # HK financials
-python sync.py --type financial --market US --us-tickers AAPL,MSFT  # specific US tickers
-python sync.py --type financial --market US --us-index SP500  # US S&P 500
-python sync.py --type financial --market all   # all markets
-python sync.py --type index                    # index constituents (CSI 300 + 500)
-python sync.py --type dividend                 # dividends (A + HK)
-python sync.py --type industry                 # industry classification
+# Sync operations (core layer)
+python -m core.sync --type stock_list              # sync stock lists (A + HK)
+python -m core.sync --type financial --market CN_A --workers 4   # A-share financials
+python -m core.sync --type financial --market CN_HK --workers 4  # HK financials
+python -m core.sync --type financial --market US --us-tickers AAPL,MSFT  # specific US tickers
+python -m core.sync --type financial --market US --us-index SP500  # US S&P 500
+python -m core.sync --type financial --market all   # all markets
+python -m core.sync --type index                    # index constituents (CSI 300 + 500)
+python -m core.sync --type dividend                 # dividends (A + HK)
+python -m core.sync --type industry                 # industry classification
 
 # Incremental sync (default) vs full sync
-python sync.py --type financial --market CN_A --force   # force full sync
+python -m core.sync --type financial --market CN_A --force   # force full sync
 
 # Scheduler
-python scheduler.py           # start APScheduler daemon
-python scheduler.py --dry-run # preview schedule
-python scheduler.py --once    # run once and exit
+python core/scheduler.py           # start APScheduler daemon
+python core/scheduler.py --dry-run # preview schedule
+python core/scheduler.py --once    # run once and exit
 
 # Validation
-python validate.py            # validate all markets
-python validate.py --market A --output json  # A-share with JSON output
+python core/validate.py            # validate all markets
+python core/validate.py --market A --output json  # A-share with JSON output
+
+# Screener (quant layer)
+python -m quant.screener --preset classic_value --market CN_A
+python -m quant.screener --preset quality --market all --top 50
+python -m quant.screener --list-presets
 
 # Config self-check
 python config.py
@@ -102,19 +107,30 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 
 ## Key Files
 
+### Infrastructure (root)
 - `config.py` — Config dataclasses with env var override support
 - `db.py` — Connection pool, upsert with COALESCE, raw_snapshot, column filtering
-- `sync.py` — Main CLI, multi-threaded A/HK sync, serial US sync
-- `scheduler.py` — APScheduler with cron per market, trading-day checks, retry logic
-- `validate.py` — Data quality engine: anomaly detection, accounting identity checks
-- `incremental.py` — Incremental sync via MAX(report_date) comparison
-- `fetchers/base.py` — BaseFetcher, SourceCircuitBreaker, AdaptiveRateLimiter, retry_with_backoff
-- `transformers/base.py` — BaseTransformer ABC, parse_report_date, transform_report_type
-- `transformers/field_mappings.py` — All field mapping dicts (EastMoney A-share, HK)
-- `transformers/us_gaap.py` — SEC US-GAAP XBRL tag to DB field mapping
+
+### Data Layer (`core/`)
+- `core/sync/` — Main CLI (`python -m core.sync`), multi-threaded A/HK sync, serial US sync
+- `core/scheduler.py` — APScheduler with cron per market, trading-day checks, retry logic
+- `core/validate.py` — Data quality engine: anomaly detection, accounting identity checks
+- `core/incremental.py` — Incremental sync via MAX(report_date) comparison
+- `core/fetchers/base.py` — BaseFetcher, SourceCircuitBreaker, AdaptiveRateLimiter, retry_with_backoff
+- `core/transformers/base.py` — BaseTransformer ABC, parse_report_date, transform_report_type
+- `core/transformers/field_mappings.py` — All field mapping dicts (EastMoney A-share, HK)
+- `core/transformers/us_gaap.py` — SEC US-GAAP XBRL tag to DB field mapping
+
+### Quant Layer (`quant/`)
+- `quant/screener/` — Multi-factor stock screener: hard filters + weighted scoring + preset strategies
+
+### Database
 - `scripts/init_pg.sql` — DDL for A-share/HK tables
 - `scripts/us_tables.sql` — DDL for US tables
 - `scripts/materialized_views.sql` — Materialized view definitions
-- `docs/SEC_DATA_PITFALLS.md` — Critical SEC data quirks and solutions
-- `docs/DEV_GUIDELINES.md` — Full development guidelines and lessons learned
-- `docs/ARCHITECTURE.md` — System architecture, data source matrix, deployment design
+
+### Documentation
+- `docs/core/SEC_DATA_PITFALLS.md` — Critical SEC data quirks and solutions
+- `docs/core/DEV_GUIDELINES.md` — Full development guidelines and lessons learned
+- `docs/core/ARCHITECTURE.md` — System architecture, data source matrix, deployment design
+- `docs/quant/QUANT_SYSTEM_PLAN.md` — Quant system roadmap (Phase 1~5)
