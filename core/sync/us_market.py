@@ -21,8 +21,8 @@ def sync_us_market(args) -> dict:
     Returns:
         统计结果字典
     """
-    from fetchers.us_financial import USFinancialFetcher
-    from transformers.us_gaap import USGAAPTransformer
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
 
     fetcher = USFinancialFetcher()
     transformer = USGAAPTransformer()
@@ -168,8 +168,8 @@ def sync_us_market_reparse(args) -> dict:
     Returns:
         统计结果字典
     """
-    from fetchers.us_financial import USFinancialFetcher
-    from transformers.us_gaap import USGAAPTransformer
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
 
     transformer = USGAAPTransformer()
 
@@ -215,8 +215,8 @@ def sync_us_market_reparse(args) -> dict:
         logger.warning("raw_snapshot 中没有可重新解析的数据")
         return {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
 
-    from fetchers.us_financial import USFinancialFetcher
-    from transformers.us_gaap import USGAAPTransformer
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
 
     fetcher = USFinancialFetcher()
     transformer = USGAAPTransformer()

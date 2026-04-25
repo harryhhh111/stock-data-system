@@ -16,7 +16,7 @@ class TestDetermineStocksToSync:
 
     def test_force_mode_returns_all(self):
         """force=True 时返回全部股票。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A"), ("00700", "CN_HK")]
         pending, skipped = determine_stocks_to_sync(stocks, force=True)
@@ -24,11 +24,11 @@ class TestDetermineStocksToSync:
         assert len(pending) == 3
         assert skipped == 0
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_all_stocks_have_same_dates_are_skipped(self, mock_db_max, mock_progress):
         """DB 中最新报告期 = sync_progress 记录 → 跳过。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
             "000001": date(2024, 9, 30),
@@ -45,11 +45,11 @@ class TestDetermineStocksToSync:
         assert len(pending) == 0
         assert skipped == 2
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_new_report_date_triggers_sync(self, mock_db_max, mock_progress):
         """DB 中有更新的报告期 → 需要同步。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
             "000001": date(2024, 12, 31),
@@ -67,11 +67,11 @@ class TestDetermineStocksToSync:
         assert pending[0] == ("000001", "CN_A")
         assert skipped == 1
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_no_db_data_means_new_stock(self, mock_db_max, mock_progress):
         """财务表中无数据 → 新股票，必须同步。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {}  # 无数据
         mock_progress.return_value = {}
@@ -82,11 +82,11 @@ class TestDetermineStocksToSync:
         assert len(pending) == 1
         assert skipped == 0
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_no_progress_record_means_first_sync(self, mock_db_max, mock_progress):
         """sync_progress 无记录 → 首次同步。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {"000001": date(2024, 9, 30)}
         mock_progress.return_value = {}  # 无记录
@@ -97,11 +97,11 @@ class TestDetermineStocksToSync:
         assert len(pending) == 1
         assert skipped == 0
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_multi_market(self, mock_db_max, mock_progress):
         """多市场混合判断。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         def db_max_side_effect(market):
             if market == "CN_A":
@@ -141,11 +141,11 @@ class TestDetermineStocksToSync:
         assert pending[0] == ("000002", "CN_A")
         assert skipped == 2
 
-    @patch("incremental.get_sync_progress_report_dates")
-    @patch("incremental.get_stocks_max_report_date")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
     def test_us_market(self, mock_db_max, mock_progress):
         """美股增量判断。"""
-        from incremental import determine_stocks_to_sync
+        from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
             "AAPL": date(2024, 9, 30),
@@ -169,10 +169,10 @@ class TestDetermineStocksToSync:
 class TestGetStocksMaxReportDate:
     """get_stocks_max_report_date 测试。"""
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_returns_dict_of_dates(self, mock_execute):
         """正确解析查询结果为 {code: date} 字典。"""
-        from incremental import get_stocks_max_report_date
+        from core.incremental import get_stocks_max_report_date
 
         mock_execute.return_value = [
             ("000001", date(2024, 9, 30)),
@@ -186,19 +186,19 @@ class TestGetStocksMaxReportDate:
             "000002": date(2024, 6, 30),
         }
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_empty_result(self, mock_execute):
         """空查询结果返回空字典。"""
-        from incremental import get_stocks_max_report_date
+        from core.incremental import get_stocks_max_report_date
 
         mock_execute.return_value = []
         result = get_stocks_max_report_date("CN_A")
         assert result == {}
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_unknown_market(self, mock_execute):
         """未知市场返回空字典。"""
-        from incremental import get_stocks_max_report_date
+        from core.incremental import get_stocks_max_report_date
 
         result = get_stocks_max_report_date("UNKNOWN")
         assert result == {}
@@ -208,10 +208,10 @@ class TestGetStocksMaxReportDate:
 class TestGetSyncProgressReportDates:
     """get_sync_progress_report_dates 测试。"""
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_returns_dict(self, mock_execute):
         """正确返回 progress 记录。"""
-        from incremental import get_sync_progress_report_dates
+        from core.incremental import get_sync_progress_report_dates
 
         mock_execute.return_value = [
             ("000001", date(2024, 9, 30)),
@@ -224,10 +224,10 @@ class TestGetSyncProgressReportDates:
             "000002": date(2024, 6, 30),
         }
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_empty_result(self, mock_execute):
         """空结果返回空字典。"""
-        from incremental import get_sync_progress_report_dates
+        from core.incremental import get_sync_progress_report_dates
 
         mock_execute.return_value = []
         result = get_sync_progress_report_dates("CN_A")
@@ -237,10 +237,10 @@ class TestGetSyncProgressReportDates:
 class TestUpdateLastReportDate:
     """update_last_report_date 测试。"""
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_updates_with_max_date(self, mock_execute):
         """从财务表中取最大日期并更新。"""
-        from incremental import update_last_report_date
+        from core.incremental import update_last_report_date
 
         # 第一次调用: UNION ALL 查询
         # 第二次调用: UPDATE sync_progress
@@ -253,19 +253,19 @@ class TestUpdateLastReportDate:
         assert result == date(2024, 9, 30)
         assert mock_execute.call_count == 2
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_empty_tables_returns_none(self, mock_execute):
         """无表则返回 None。"""
-        from incremental import update_last_report_date
+        from core.incremental import update_last_report_date
 
         result = update_last_report_date("000001", [])
         assert result is None
         mock_execute.assert_not_called()
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_no_data_returns_none(self, mock_execute):
         """查询无结果返回 None。"""
-        from incremental import update_last_report_date
+        from core.incremental import update_last_report_date
 
         mock_execute.return_value = [(None,)]
         result = update_last_report_date("000001", ["income_statement"])
@@ -275,10 +275,10 @@ class TestUpdateLastReportDate:
 class TestEnsureLastReportDateColumn:
     """ensure_last_report_date_column 测试。"""
 
-    @patch("incremental.execute")
+    @patch("core.incremental.execute")
     def test_executes_alter_and_index(self, mock_execute):
         """执行 ALTER TABLE 和 CREATE INDEX。"""
-        from incremental import ensure_last_report_date_column
+        from core.incremental import ensure_last_report_date_column
 
         ensure_last_report_date_column()
 

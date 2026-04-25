@@ -33,8 +33,8 @@
 | 文档 | 内容 |
 |------|------|
 | [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（Phase 1~5） |
-| [quant/SCREENER.md](quant/SCREENER.md) | 选股筛选器设计、预设策略说明 |
-| [quant/ANALYZER.md](quant/ANALYZER.md) | 个股深度分析报告（待补充） |
+| `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 3 个预设策略） |
+| `quant/analyzer/`（待建） | 个股深度分析报告（Phase 1.2） |
 
 ---
 

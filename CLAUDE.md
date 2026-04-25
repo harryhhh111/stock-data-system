@@ -34,13 +34,13 @@ python -m core.sync --type industry                 # industry classification
 python -m core.sync --type financial --market CN_A --force   # force full sync
 
 # Scheduler
-python core/scheduler.py           # start APScheduler daemon
-python core/scheduler.py --dry-run # preview schedule
-python core/scheduler.py --once    # run once and exit
+python -m core.scheduler           # start APScheduler daemon
+python -m core.scheduler --dry-run # preview schedule
+python -m core.scheduler --once    # run once and exit
 
 # Validation
-python core/validate.py            # validate all markets
-python core/validate.py --market A --output json  # A-share with JSON output
+python -m core.validate            # validate all markets
+python -m core.validate --market A --output json  # A-share with JSON output
 
 # Screener (quant layer)
 python -m quant.screener --preset classic_value --market CN_A

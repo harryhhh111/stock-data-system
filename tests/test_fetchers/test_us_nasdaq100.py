@@ -20,7 +20,7 @@ class TestFetchNasdaq100Constituents:
     @pytest.fixture
     def fetcher(self):
         """创建 USFinancialFetcher 实例。"""
-        from fetchers.us_financial import USFinancialFetcher
+        from core.fetchers.us_financial import USFinancialFetcher
         return USFinancialFetcher()
 
     @pytest.fixture
@@ -49,8 +49,8 @@ class TestFetchNasdaq100Constituents:
             }),
         ]
 
-    @patch("fetchers.us_financial.pd.read_html")
-    @patch("fetchers.us_financial.requests.get")
+    @patch("core.fetchers.us_financial.pd.read_html")
+    @patch("core.fetchers.us_financial.requests.get")
     def test_wikipedia_success(self, mock_get, mock_read_html, fetcher, mock_wikipedia_df):
         """测试从 Wikipedia 成功获取 NASDAQ 100 成分股。"""
         mock_resp = MagicMock()
@@ -75,7 +75,7 @@ class TestFetchNasdaq100Constituents:
     def test_fallback_json_file(self, fetcher):
         """测试 Wikipedia 失败且无缓存时，从内置 fallback JSON 加载。"""
         with patch.object(fetcher, "_load_cache", return_value=False):
-            with patch("fetchers.us_financial.requests.get", side_effect=Exception("network error")):
+            with patch("core.fetchers.us_financial.requests.get", side_effect=Exception("network error")):
                 # fallback 文件存在，应该能加载
                 tickers = fetcher.fetch_nasdaq100_constituents()
                 assert isinstance(tickers, list)
@@ -84,7 +84,7 @@ class TestFetchNasdaq100Constituents:
     def test_fallback_file_not_found_raises(self, fetcher):
         """测试所有数据源都失败时抛出 RuntimeError。"""
         with patch.object(fetcher, "_load_cache", return_value=False):
-            with patch("fetchers.us_financial.requests.get", side_effect=Exception("network error")):
+            with patch("core.fetchers.us_financial.requests.get", side_effect=Exception("network error")):
                 # Patch Path.exists to simulate missing fallback file
                 real_exists = Path.exists
                 def patched_exists(self_path):
@@ -101,15 +101,15 @@ class TestFetchNasdaq100Constituents:
         cache_file = tmp_path / "nasdaq100_tickers.json"
         cache_file.write_text(json.dumps(cached_tickers))
 
-        with patch("fetchers.us_financial.CACHE_DIR", tmp_path):
+        with patch("core.fetchers.us_financial.CACHE_DIR", tmp_path):
             with patch.object(fetcher, "_load_cache", return_value=True):
                 # _load_cache 返回 True 后，函数直接读 cache_file.read_text()
                 tickers = fetcher.fetch_nasdaq100_constituents()
 
         assert tickers == cached_tickers
 
-    @patch("fetchers.us_financial.pd.read_html")
-    @patch("fetchers.us_financial.requests.get")
+    @patch("core.fetchers.us_financial.pd.read_html")
+    @patch("core.fetchers.us_financial.requests.get")
     def test_dot_to_dash_replacement(self, mock_get, mock_read_html, fetcher):
         """测试 ticker 中的 . 被替换为 -（如 BRK.B → BRK-B）。"""
         # 生成 101 只以确保通过 >=80 阈值
@@ -134,8 +134,8 @@ class TestFetchNasdaq100Constituents:
         assert "BF-B" in tickers
         assert "BRK.B" not in tickers
 
-    @patch("fetchers.us_financial.pd.read_html")
-    @patch("fetchers.us_financial.requests.get")
+    @patch("core.fetchers.us_financial.pd.read_html")
+    @patch("core.fetchers.us_financial.requests.get")
     def test_deduplication(self, mock_get, mock_read_html, fetcher):
         """测试重复的 ticker 会被去重。"""
         # 用重复项构建足够多的 ticker

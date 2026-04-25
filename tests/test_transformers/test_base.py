@@ -2,7 +2,7 @@ import pytest
 from datetime import date, datetime
 import numpy as np
 import pandas as pd
-from transformers.base import parse_report_date, transform_report_type, REPORT_TYPE_MAP
+from core.transformers.base import parse_report_date, transform_report_type, REPORT_TYPE_MAP
 
 
 class TestParseReportDate:

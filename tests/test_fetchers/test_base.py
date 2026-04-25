@@ -1,6 +1,6 @@
 import pytest
 import time
-from fetchers.base import SourceCircuitBreaker, AdaptiveRateLimiter
+from core.fetchers.base import SourceCircuitBreaker, AdaptiveRateLimiter
 
 
 class TestSourceCircuitBreaker:

@@ -15,7 +15,7 @@ def sync_stock_list(self=None) -> dict:
     注意：此函数可作为独立函数调用（传 self=None），
     但推荐通过 SyncManager.sync_stock_list() 调用。
     """
-    from fetchers.stock_list import fetch_a_stock_list, fetch_hk_stock_list
+    from core.fetchers.stock_list import fetch_a_stock_list, fetch_hk_stock_list
 
     logger.info("开始同步股票列表...")
 

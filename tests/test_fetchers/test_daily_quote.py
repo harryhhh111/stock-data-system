@@ -101,7 +101,7 @@ def hk_spot_df():
 
 class TestTransformAHist:
     def test_basic_conversion(self, a_hist_df):
-        from fetchers.daily_quote import transform_a_hist_to_records
+        from core.fetchers.daily_quote import transform_a_hist_to_records
         records = transform_a_hist_to_records(a_hist_df)
         assert len(records) == 2
         r = records[0]
@@ -119,7 +119,7 @@ class TestTransformAHist:
         assert r["currency"] == "CNY"
 
     def test_empty_df(self):
-        from fetchers.daily_quote import transform_a_hist_to_records
+        from core.fetchers.daily_quote import transform_a_hist_to_records
         df = pd.DataFrame()
         records = transform_a_hist_to_records(df)
         assert records == []
@@ -127,7 +127,7 @@ class TestTransformAHist:
 
 class TestTransformASpot:
     def test_basic_conversion(self, a_spot_df):
-        from fetchers.daily_quote import transform_a_spot_to_records
+        from core.fetchers.daily_quote import transform_a_spot_to_records
         records = transform_a_spot_to_records(a_spot_df)
         assert len(records) == 2
         r0 = records[0]
@@ -141,7 +141,7 @@ class TestTransformASpot:
         assert r0["trade_date"] == datetime.now().date()
 
     def test_market_cap_fields(self, a_spot_df):
-        from fetchers.daily_quote import transform_a_spot_to_records
+        from core.fetchers.daily_quote import transform_a_spot_to_records
         records = transform_a_spot_to_records(a_spot_df)
         r1 = records[1]  # 贵州茅台
         assert r1["stock_code"] == "600519"
@@ -150,7 +150,7 @@ class TestTransformASpot:
 
 class TestTransformHkHist:
     def test_basic_conversion(self, hk_hist_df):
-        from fetchers.daily_quote import transform_hk_hist_to_records
+        from core.fetchers.daily_quote import transform_hk_hist_to_records
         records = transform_hk_hist_to_records(hk_hist_df, "00700")
         assert len(records) == 2
         r = records[0]
@@ -162,7 +162,7 @@ class TestTransformHkHist:
         assert r["currency"] == "HKD"
 
     def test_empty_df(self):
-        from fetchers.daily_quote import transform_hk_hist_to_records
+        from core.fetchers.daily_quote import transform_hk_hist_to_records
         df = pd.DataFrame()
         records = transform_hk_hist_to_records(df, "00700")
         assert records == []
@@ -170,7 +170,7 @@ class TestTransformHkHist:
 
 class TestTransformHkSpot:
     def test_basic_conversion(self, hk_spot_df):
-        from fetchers.daily_quote import transform_hk_spot_to_records
+        from core.fetchers.daily_quote import transform_hk_spot_to_records
         records, industry_map = transform_hk_spot_to_records(hk_spot_df)
         assert len(records) == 2
         r = records[0]
@@ -185,7 +185,7 @@ class TestTransformHkSpot:
         assert industry_map == {"00700": "互联网服务", "09988": "电子商务"}
 
     def test_market_cap_fields(self, hk_spot_df):
-        from fetchers.daily_quote import transform_hk_spot_to_records
+        from core.fetchers.daily_quote import transform_hk_spot_to_records
         records, industry_map = transform_hk_spot_to_records(hk_spot_df)
         r1 = records[1]  # 阿里巴巴
         assert r1["stock_code"] == "09988"
@@ -195,7 +195,7 @@ class TestTransformHkSpot:
 
     def test_backward_compat_no_cap(self):
         """旧格式（不含市值列）兼容测试。"""
-        from fetchers.daily_quote import transform_hk_spot_to_records
+        from core.fetchers.daily_quote import transform_hk_spot_to_records
         old_df = pd.DataFrame({
             "代码": ["00700"],
             "名称": ["腾讯控股"],
@@ -223,22 +223,22 @@ class TestTransformHkSpot:
 
 class TestSafeConversions:
     def test_safe_float_normal(self):
-        from fetchers.daily_quote import _safe_float
+        from core.fetchers.daily_quote import _safe_float
         assert _safe_float(11.5) == 11.5
         assert _safe_float("3.14") == 3.14
 
     def test_safe_float_nan(self):
-        from fetchers.daily_quote import _safe_float
+        from core.fetchers.daily_quote import _safe_float
         assert _safe_float(float("nan")) is None
         assert _safe_float(None) is None
 
     def test_safe_int_normal(self):
-        from fetchers.daily_quote import _safe_int
+        from core.fetchers.daily_quote import _safe_int
         assert _safe_int(100) == 100
         assert _safe_int("200") == 200
 
     def test_safe_int_nan(self):
-        from fetchers.daily_quote import _safe_int
+        from core.fetchers.daily_quote import _safe_int
         assert _safe_int(float("nan")) is None
         assert _safe_int(None) is None
 
@@ -248,37 +248,37 @@ class TestSafeConversions:
 class TestDailyQuoteFetcherMocked:
     """测试 fetcher 的 API 调用逻辑（mock akshare）。"""
 
-    @patch("fetchers.daily_quote.ak.stock_zh_a_hist")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_hist")
     def test_fetch_a_hist(self, mock_hist, a_hist_df):
         mock_hist.return_value = a_hist_df
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
         df = fetcher.fetch_a_hist("000001", start_date="20250101", end_date="20250110")
         assert len(df) == 2
         mock_hist.assert_called_once()
 
-    @patch("fetchers.daily_quote.ak.stock_hk_hist")
+    @patch("core.fetchers.daily_quote.ak.stock_hk_hist")
     def test_fetch_hk_hist(self, mock_hist, hk_hist_df):
         mock_hist.return_value = hk_hist_df
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
         df = fetcher.fetch_hk_hist("00700", start_date="20250101", end_date="20250110")
         assert len(df) == 2
         mock_hist.assert_called_once()
 
-    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_spot_em")
     def test_fetch_a_spot_eastmoney(self, mock_spot, a_spot_df):
         """东方财富正常时直接返回。"""
         mock_spot.return_value = a_spot_df
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
         df = fetcher.fetch_a_spot()
         assert len(df) == 2
         mock_spot.assert_called_once()
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
-    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_spot_em")
     def test_fetch_a_spot_tencent_fallback(self, mock_em, mock_codes, mock_get):
         """东方财富失败时 fallback 到腾讯接口。"""
         mock_em.side_effect = ConnectionError("eastmoney unreachable")
@@ -300,7 +300,7 @@ class TestDailyQuoteFetcherMocked:
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
         df = fetcher.fetch_a_spot()
 
@@ -332,9 +332,9 @@ class TestDailyQuoteFetcherMocked:
         # 129467.5716万 = 1294675716 元
         assert row["成交额"] == pytest.approx(129467.5716e4, rel=1e-3)
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
-    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_spot_em")
     def test_fetch_a_spot_tencent_unit_conversion(self, mock_em, mock_codes, mock_get):
         """测试腾讯 fallback 的单位转换。"""
         mock_em.side_effect = ConnectionError("fail")
@@ -352,7 +352,7 @@ class TestDailyQuoteFetcherMocked:
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
         df = fetcher.fetch_a_spot()
 
@@ -367,10 +367,10 @@ class TestDailyQuoteFetcherMocked:
         # 流通市值: 18157.92亿
         assert row["流通市值"] == pytest.approx(18157.92e8, rel=1e-3)
 
-    @patch("fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.requests.get")
     def test_fetch_hk_spot_eastmoney(self, mock_get, hk_spot_df):
         """测试港股行情拉取 - 东方财富成功（mock requests.get）。"""
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
         # 模拟东方财富 API 响应
@@ -398,8 +398,8 @@ class TestDailyQuoteFetcherMocked:
         assert "市净率" in df.columns
         mock_get.assert_called_once()
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_hk_spot")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_hk_spot")
     def test_fetch_hk_spot_tencent_fallback(self, mock_hk_spot, mock_get):
         """东方财富失败时 fallback 到腾讯接口。"""
         # 模拟新浪港股列表（获取代码用）
@@ -425,7 +425,7 @@ class TestDailyQuoteFetcherMocked:
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
         # Mock 东方财富失败，触发 fallback
@@ -473,9 +473,9 @@ class TestDailyQuoteFetcherMocked:
         assert row3["最新价"] == 121.5
         assert row3["总市值"] == pytest.approx(23205.6526e8, rel=1e-3)
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
-    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_spot_em")
     def test_fetch_us_spot_tencent(self, mock_em, mock_codes, mock_get):
         """测试美股腾讯接口字段解析。"""
         # 东方财富失败触发 fallback 不适用于美股；美股直接走腾讯
@@ -537,7 +537,7 @@ class TestDailyQuoteFetcherMocked:
         )
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
         # Mock DB 查询返回美股代码列表（execute 在 fetch_us_spot 内部 lazy import）
@@ -576,9 +576,9 @@ class TestDailyQuoteFetcherMocked:
         assert row_msft["市盈率-动态"] == pytest.approx(35.80)
         assert row_msft["市净率"] == pytest.approx(12.50)
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_info_a_code_name")
-    @patch("fetchers.daily_quote.ak.stock_zh_a_spot_em")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_info_a_code_name")
+    @patch("core.fetchers.daily_quote.ak.stock_zh_a_spot_em")
     def test_fetch_us_spot_tencent_unit_conversion(self, mock_em, mock_codes, mock_get):
         """测试美股腾讯接口市值单位转换（亿美元 → USD）。"""
         mock_em.side_effect = NotImplementedError("美股不走东财")
@@ -611,7 +611,7 @@ class TestDailyQuoteFetcherMocked:
         mock_resp.text = f'v_usNVDA="{nvda_data}";\n'
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
         with patch("db.execute", return_value=[("NVDA",)]):
@@ -636,8 +636,8 @@ class TestDailyQuoteFetcherMocked:
         # PB: [38] = 50.20
         assert row["市净率"] == pytest.approx(50.20)
 
-    @patch("fetchers.daily_quote.requests.get")
-    @patch("fetchers.daily_quote.ak.stock_hk_spot")
+    @patch("core.fetchers.daily_quote.requests.get")
+    @patch("core.fetchers.daily_quote.ak.stock_hk_spot")
     def test_fetch_hk_spot_tencent_unit_no_conversion_needed(self, mock_hk_spot, mock_get):
         """测试腾讯港股 fallback 单位不需要额外转换（与 A 股不同）。"""
         mock_hk_spot.return_value = pd.DataFrame({
@@ -675,7 +675,7 @@ class TestDailyQuoteFetcherMocked:
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
 
-        from fetchers.daily_quote import DailyQuoteFetcher
+        from core.fetchers.daily_quote import DailyQuoteFetcher
         fetcher = DailyQuoteFetcher()
 
         with patch.object(fetcher, '_fetch_hk_spot_eastmoney', side_effect=ConnectionError("fail")):

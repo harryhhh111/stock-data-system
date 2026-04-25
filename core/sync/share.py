@@ -18,13 +18,13 @@ def sync_share(market: str = None) -> dict:
     Returns:
         统计结果字典
     """
-    from fetchers.share import (
+    from core.fetchers.share import (
         fetch_share_tencent,
         get_a_share_codes,
         get_hk_share_codes,
     )
     from db import upsert
-    from fetchers.base import rate_limiter
+    from core.fetchers.base import rate_limiter
 
     rate_limiter._base_delay = 2.0
 

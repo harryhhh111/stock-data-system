@@ -13,7 +13,7 @@ from decimal import Decimal
 
 def _make_validation_issue(**overrides):
     """创建 ValidationIssue 的快捷方法。"""
-    from validate import ValidationIssue
+    from core.validate import ValidationIssue
     defaults = dict(
         stock_code="000001",
         market="CN_A",
@@ -34,7 +34,7 @@ def _make_validation_issue(**overrides):
 
 class TestValidationReport:
     def test_counts(self):
-        from validate import ValidationReport, ValidationIssue
+        from core.validate import ValidationReport, ValidationIssue
         report = ValidationReport(started_at="2026-01-01T00:00:00")
         report.issues = [
             ValidationIssue("A", "CN_A", "2024-01-01", "c1", "error", "f1"),
@@ -47,7 +47,7 @@ class TestValidationReport:
         assert report.info_count == 1
 
     def test_empty_report(self):
-        from validate import ValidationReport
+        from core.validate import ValidationReport
         report = ValidationReport(started_at="2026-01-01T00:00:00")
         assert report.error_count == 0
         assert report.warning_count == 0
@@ -58,23 +58,23 @@ class TestValidationReport:
 
 class TestDHelper:
     def test_none(self):
-        from validate import _d
+        from core.validate import _d
         assert _d(None) is None
 
     def test_decimal(self):
-        from validate import _d
+        from core.validate import _d
         assert _d(Decimal("123.45")) == 123.45
 
     def test_float(self):
-        from validate import _d
+        from core.validate import _d
         assert _d(42.0) == 42.0
 
     def test_string(self):
-        from validate import _d
+        from core.validate import _d
         assert _d("abc") is None
 
     def test_int(self):
-        from validate import _d
+        from core.validate import _d
         assert _d(100) == 100.0
 
 
@@ -114,9 +114,9 @@ class TestCheckAnomaliesCNHK:
                 row[idx] = v
         return tuple(row)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_negative_assets(self, mock_exec):
-        from validate import check_anomalies_cn_hk, ValidationIssue
+        from core.validate import check_anomalies_cn_hk, ValidationIssue
         mock_exec.return_value = [self._mock_row(total_assets=Decimal("-1000"))]
         issues = []
         check_anomalies_cn_hk("A", issues)
@@ -124,9 +124,9 @@ class TestCheckAnomaliesCNHK:
         assert issues[0].check_name == "negative_total_assets"
         assert issues[0].severity == "error"
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_high_debt_ratio(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         # liab=300亿, assets=100亿 → ratio=300%
         mock_exec.return_value = [self._mock_row(
             total_assets=Decimal("10000000000"),
@@ -137,9 +137,9 @@ class TestCheckAnomaliesCNHK:
         names = [i.check_name for i in issues]
         assert "debt_ratio_extreme" in names
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_net_profit_exceeds_revenue(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         mock_exec.return_value = [self._mock_row(
             total_revenue=Decimal("1000000000"),
             net_profit=Decimal("2000000000"),
@@ -149,9 +149,9 @@ class TestCheckAnomaliesCNHK:
         names = [i.check_name for i in issues]
         assert "net_profit_exceeds_revenue" in names
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_cfo_negative_profit_positive(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         mock_exec.return_value = [self._mock_row(
             parent_net_profit=Decimal("1000000000"),
             cfo_net=Decimal("-500000000"),
@@ -161,9 +161,9 @@ class TestCheckAnomaliesCNHK:
         names = [i.check_name for i in issues]
         assert "cfo_negative_profit_positive" in names
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_zero_revenue_annual(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         mock_exec.return_value = [self._mock_row(
             total_revenue=Decimal("0"),
         )]
@@ -172,18 +172,18 @@ class TestCheckAnomaliesCNHK:
         names = [i.check_name for i in issues]
         assert "zero_revenue_annual" in names
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_normal_data_no_issues(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         # 正常数据，不应产生异常
         mock_exec.return_value = [self._mock_row()]
         issues = []
         check_anomalies_cn_hk("A", issues)
         assert len(issues) == 0
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_null_values_handled(self, mock_exec):
-        from validate import check_anomalies_cn_hk
+        from core.validate import check_anomalies_cn_hk
         # 很多字段为 NULL
         row = (
             "000001", "CN_A", date(2024, 12, 31), "annual",
@@ -227,17 +227,17 @@ class TestCheckAnomaliesUS:
                 row[idx] = v
         return tuple(row)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_negative_assets_us(self, mock_exec):
-        from validate import check_anomalies_us
+        from core.validate import check_anomalies_us
         mock_exec.return_value = [self._mock_row(total_assets=Decimal("-1000"))]
         issues = []
         check_anomalies_us(issues)
         assert any(i.check_name == "negative_total_assets" for i in issues)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_normal_us_data(self, mock_exec):
-        from validate import check_anomalies_us
+        from core.validate import check_anomalies_us
         mock_exec.return_value = [self._mock_row()]
         issues = []
         check_anomalies_us(issues)
@@ -269,18 +269,18 @@ class TestCheckLogicCNHK:
                 row[idx] = v
         return tuple(row)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_balance_equation_ok(self, mock_exec):
-        from validate import check_logic_cn_hk
+        from core.validate import check_logic_cn_hk
         # 100 = 60 + 40 ✓
         mock_exec.return_value = [self._mock_row()]
         issues = []
         check_logic_cn_hk("A", issues)
         assert not any(i.check_name == "balance_equation" for i in issues)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_balance_equation_broken(self, mock_exec):
-        from validate import check_logic_cn_hk
+        from core.validate import check_logic_cn_hk
         # assets=100, liab=60, equity=50 → 60+50=110 ≠ 100
         mock_exec.return_value = [self._mock_row(
             total_assets=Decimal("100000000"),
@@ -293,9 +293,9 @@ class TestCheckLogicCNHK:
         assert len(balance_issues) == 1
         assert balance_issues[0].severity == "error"
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_balance_equation_minor_tolerance(self, mock_exec):
-        from validate import check_logic_cn_hk
+        from core.validate import check_logic_cn_hk
         # 100 = 60 + 39.5 → 0.5% deviation, within 1% tolerance
         mock_exec.return_value = [self._mock_row(
             total_assets=Decimal("100000000"),
@@ -306,9 +306,9 @@ class TestCheckLogicCNHK:
         check_logic_cn_hk("A", issues)
         assert not any(i.check_name == "balance_equation" for i in issues)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_cash_exceeds_current_assets(self, mock_exec):
-        from validate import check_logic_cn_hk
+        from core.validate import check_logic_cn_hk
         mock_exec.return_value = [self._mock_row(
             current_assets=Decimal("10000000"),
             cash_equivalents=Decimal("20000000"),
@@ -346,18 +346,18 @@ class TestCheckLogicUS:
                 row[idx] = v
         return tuple(row)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_balance_equation_us_ok(self, mock_exec):
-        from validate import check_logic_us
+        from core.validate import check_logic_us
         # 350 = 290 + 60 ✓
         mock_exec.return_value = [self._mock_row()]
         issues = []
         check_logic_us(issues)
         assert not any(i.check_name == "balance_equation" for i in issues)
 
-    @patch("validate.db.execute")
+    @patch("core.validate.db.execute")
     def test_balance_equation_us_nci_fix(self, mock_exec):
-        from validate import check_logic_us
+        from core.validate import check_logic_us
         # 350 = 290 + 58, but 350 = 290 + 60(NCI) → should pass
         mock_exec.return_value = [self._mock_row(
             total_equity=Decimal("58000000000"),
@@ -372,13 +372,13 @@ class TestCheckLogicUS:
 
 class TestCrossSource:
     def test_records_limitation(self):
-        from validate import check_cross_source, ValidationIssue
+        from core.validate import check_cross_source, ValidationIssue
         issues = []
         check_cross_source("A", issues)
         assert any(i.check_name == "single_source_limitation" for i in issues)
 
     def test_us_limitation(self):
-        from validate import check_cross_source
+        from core.validate import check_cross_source
         issues = []
         check_cross_source("US", issues)
         assert any(i.check_name == "single_source_limitation" and i.market == "US" for i in issues)
@@ -387,16 +387,16 @@ class TestCrossSource:
 # ── Integration: run_validation ─────────────────────────
 
 class TestRunValidation:
-    @patch("validate.save_results")
-    @patch("validate.check_cross_source")
-    @patch("validate.check_logic_us")
-    @patch("validate.check_logic_cn_hk")
-    @patch("validate.check_anomalies_us")
-    @patch("validate.check_anomalies_cn_hk")
-    @patch("validate.ensure_table")
+    @patch("core.validate.save_results")
+    @patch("core.validate.check_cross_source")
+    @patch("core.validate.check_logic_us")
+    @patch("core.validate.check_logic_cn_hk")
+    @patch("core.validate.check_anomalies_us")
+    @patch("core.validate.check_anomalies_cn_hk")
+    @patch("core.validate.ensure_table")
     def test_run_validation_market_a(self, mock_ensure, mock_anomalies, mock_anomalies_us,
                                       mock_logic, mock_logic_us, mock_cross, mock_save):
-        from validate import run_validation, ValidationIssue
+        from core.validate import run_validation, ValidationIssue
 
         mock_anomalies.return_value = 100
         mock_logic.return_value = 100
@@ -410,14 +410,14 @@ class TestRunValidation:
         mock_logic.assert_called_once()
         mock_anomalies_us.assert_not_called()
 
-    @patch("validate.save_results")
-    @patch("validate.check_cross_source")
-    @patch("validate.check_logic_us")
-    @patch("validate.check_anomalies_us")
-    @patch("validate.ensure_table")
+    @patch("core.validate.save_results")
+    @patch("core.validate.check_cross_source")
+    @patch("core.validate.check_logic_us")
+    @patch("core.validate.check_anomalies_us")
+    @patch("core.validate.ensure_table")
     def test_run_validation_market_us(self, mock_ensure, mock_anomalies_us, mock_logic_us,
                                        mock_cross, mock_save):
-        from validate import run_validation
+        from core.validate import run_validation
 
         mock_anomalies_us.return_value = 50
         mock_logic_us.return_value = 50
@@ -433,7 +433,7 @@ class TestRunValidation:
 
 class TestOutput:
     def test_output_json(self, tmp_path):
-        from validate import ValidationReport, ValidationIssue, output_json
+        from core.validate import ValidationReport, ValidationIssue, output_json
         report = ValidationReport(started_at="2026-01-01")
         report.issues = [ValidationIssue("000001", "CN_A", "2024-12-31",
                                           "test", "error", "field")]
@@ -447,7 +447,7 @@ class TestOutput:
         assert len(data["issues"]) == 1
 
     def test_output_csv(self, tmp_path):
-        from validate import ValidationReport, ValidationIssue, output_csv
+        from core.validate import ValidationReport, ValidationIssue, output_csv
         report = ValidationReport(started_at="2026-01-01")
         report.issues = [ValidationIssue("000001", "CN_A", "2024-12-31",
                                           "test", "warning", "field")]

@@ -18,7 +18,7 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
         market: "CN_A" / "CN_HK" / "all"
         source: 数据源（"tencent" / "akshare" / "auto"，默认 auto）
     """
-    from fetchers.daily_quote import fetch_tencent_hist
+    from core.fetchers.daily_quote import fetch_tencent_hist
 
     markets = ["CN_A", "CN_HK"] if market == "all" else [market]
     total_result = {"total": 0, "success": 0, "failed": 0, "skipped": 0, "markets": {}}

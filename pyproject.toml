@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock_data"
+version = "0.1.0"
+description = "Multi-market stock fundamental data sync system (A-share / HK / US)"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "psycopg2-binary",
+    "requests",
+    "akshare",
+    "apscheduler",
+    "tabulate",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "quant*", "config", "db"]
+exclude = ["tests*", "scripts*", "docs*", "archive*"]
+
+[project.optional-dependencies]
+dev = ["pytest"]

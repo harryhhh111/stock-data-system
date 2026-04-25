@@ -2,19 +2,14 @@
 选股筛选器 CLI 入口
 
 用法：
-    python -m screener --preset classic_value --market CN_A
-    python -m screener --preset classic_value --market all --top 50
-    python -m screener --market CN_A --min-mcap 10e9 --max-pe 15 --exclude-st
-    python -m screener --list-presets
-    python -m screener --list-factors
+    python -m quant.screener --preset classic_value --market CN_A
+    python -m quant.screener --preset classic_value --market all --top 50
+    python -m quant.screener --market CN_A --min-mcap 10e9 --max-pe 15 --exclude-st
+    python -m quant.screener --list-presets
+    python -m quant.screener --list-factors
 """
 
 import argparse
-import os
-import sys
-
-# 确保项目根目录在 path 中
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from quant.screener.query import get_universe
 from quant.screener.filters import apply_hard_filters

@@ -9,12 +9,12 @@ validate.py — 财务数据校验引擎
   4. 结果写入 validation_results 表 + 可选 JSON/CSV 输出
 
 用法:
-    python validate.py                  # 校验全部市场
-    python validate.py --market A       # 仅 A 股
-    python validate.py --market HK      # 仅港股
-    python validate.py --market US      # 仅美股
-    python validate.py --market A --output json   # 额外输出 JSON
-    python validate.py --market A --output csv    # 额外输出 CSV
+    python core/validate.py             # 校验全部市场
+    python core/validate.py --market A  # 仅 A 股
+    python core/validate.py --market HK # 仅港股
+    python core/validate.py --market US # 仅美股
+    python core/validate.py --market A --output json   # 额外输出 JSON
+    python core/validate.py --market A --output csv    # 额外输出 CSV
 """
 from __future__ import annotations
 
@@ -23,16 +23,11 @@ import csv
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, Any
-
-# 确保项目根目录在 path 中
-# 确保项目根目录在 path 中（validate.py 现在位于 core/ 下）
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 

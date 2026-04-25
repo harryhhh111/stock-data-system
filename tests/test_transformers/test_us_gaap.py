@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from transformers.us_gaap import USGAAPTransformer, SEC_FP_MAP
+from core.transformers.us_gaap import USGAAPTransformer, SEC_FP_MAP
 
 
 class TestSEC_FP_MAP:
@@ -28,7 +28,7 @@ class TestUSGAAPTransformer:
 
     def test_transform_income_basic(self, sample_sec_facts):
         """测试从 Company Facts 提取并转换利润表。"""
-        from fetchers.us_financial import USFinancialFetcher
+        from core.fetchers.us_financial import USFinancialFetcher
 
         fetcher = USFinancialFetcher()
         transformer = USGAAPTransformer()
@@ -48,7 +48,7 @@ class TestUSGAAPTransformer:
 
     def test_transform_income_all_keys_equal(self, sample_sec_facts):
         """所有记录应有相同的 key 集合（upsert 要求）。"""
-        from fetchers.us_financial import USFinancialFetcher
+        from core.fetchers.us_financial import USFinancialFetcher
 
         fetcher = USFinancialFetcher()
         transformer = USGAAPTransformer()

@@ -13,7 +13,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from fetchers.us_financial import USFinancialFetcher
+from core.fetchers.us_financial import USFinancialFetcher
 
 # 数据库列名常量（用于 all_keys 补全）
 _INCOME_DB_COLS = {

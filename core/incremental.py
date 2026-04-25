@@ -91,7 +91,7 @@ def get_stocks_max_report_date(market: str) -> dict[str, date]:
         max_dt = row[1]
         if code and max_dt:
             if isinstance(max_dt, str):
-                from transformers.base import parse_report_date
+                from core.transformers.base import parse_report_date
                 max_dt = parse_report_date(max_dt)
             if max_dt:
                 result[code] = max_dt
@@ -230,7 +230,7 @@ def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date
         if row[0]:
             d = row[0]
             if isinstance(d, str):
-                from transformers.base import parse_report_date
+                from core.transformers.base import parse_report_date
                 d = parse_report_date(d)
             if d and (max_date is None or d > max_date):
                 max_date = d

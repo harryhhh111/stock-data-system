@@ -43,14 +43,14 @@ class TestFetchSwIndustry:
             }),
         }
 
-    @patch("fetchers.industry._fetch_index_component")
-    @patch("fetchers.industry._fetch_sw_first_info")
+    @patch("core.fetchers.industry._fetch_index_component")
+    @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_basic_fetch(self, mock_l1, mock_cons, mock_l1_df, mock_cons_dfs):
         """测试基本拉取流程：3 个行业，7 只股票。"""
         mock_l1.return_value = mock_l1_df
         mock_cons.side_effect = lambda symbol: mock_cons_dfs[symbol]
 
-        from fetchers.industry import fetch_sw_industry
+        from core.fetchers.industry import fetch_sw_industry
         results = fetch_sw_industry(delay=0, max_retries=1)
 
         assert len(results) == 7
@@ -63,8 +63,8 @@ class TestFetchSwIndustry:
         assert code_to_industry["000708"] == "钢铁"
         assert code_to_industry["000001"] == "银行"
 
-    @patch("fetchers.industry._fetch_index_component")
-    @patch("fetchers.industry._fetch_sw_first_info")
+    @patch("core.fetchers.industry._fetch_index_component")
+    @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_partial_failure(self, mock_l1, mock_cons, mock_l1_df):
         """测试部分行业拉取失败时不影响其他行业。"""
         mock_l1.return_value = mock_l1_df
@@ -88,7 +88,7 @@ class TestFetchSwIndustry:
 
         mock_cons.side_effect = cons_side_effect
 
-        from fetchers.industry import fetch_sw_industry
+        from core.fetchers.industry import fetch_sw_industry
         results = fetch_sw_industry(delay=0, max_retries=1)
 
         # 钢铁行业失败，但农林牧渔和银行成功
@@ -98,12 +98,12 @@ class TestFetchSwIndustry:
         assert "000001" in codes
         assert "000708" not in codes  # 钢铁行业失败
 
-    @patch("fetchers.industry._fetch_sw_first_info")
+    @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_l1_fetch_failure(self, mock_l1):
         """测试一级行业列表拉取失败时抛出异常。"""
         mock_l1.side_effect = ConnectionError("无法连接")
 
-        from fetchers.industry import fetch_sw_industry
+        from core.fetchers.industry import fetch_sw_industry
         with pytest.raises(ConnectionError):
             fetch_sw_industry(delay=0)
 
@@ -113,7 +113,7 @@ class TestIndustryDistribution:
 
     def test_normal_distribution(self):
         """测试正常分布统计。"""
-        from fetchers.industry import get_industry_distribution
+        from core.fetchers.industry import get_industry_distribution
         results = [
             {"stock_code": "000001", "industry_name": "银行"},
             {"stock_code": "002142", "industry_name": "银行"},
@@ -128,7 +128,7 @@ class TestIndustryDistribution:
 
     def test_empty_results(self):
         """测试空结果。"""
-        from fetchers.industry import get_industry_distribution
+        from core.fetchers.industry import get_industry_distribution
         dist = get_industry_distribution([])
         assert len(dist) == 0
 
@@ -139,9 +139,9 @@ class TestIndustryDistribution:
 class TestSyncIndustry:
     """测试 SyncManager.sync_industry 方法。"""
 
-    @patch("sync.execute")
-    @patch("fetchers.industry._fetch_index_component")
-    @patch("fetchers.industry._fetch_sw_first_info")
+    @patch("core.sync.manager.execute")
+    @patch("core.fetchers.industry._fetch_index_component")
+    @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_sync_industry_updates_stock_info(
         self, mock_l1, mock_cons, mock_execute
     ):
@@ -167,7 +167,7 @@ class TestSyncIndustry:
 
         mock_execute.side_effect = execute_side_effect
 
-        from sync import SyncManager
+        from core.sync import SyncManager
         manager = SyncManager()
         result = manager.sync_industry()
 
@@ -183,9 +183,9 @@ class TestSyncIndustry:
         ]
         assert len(update_calls) > 0
 
-    @patch("sync.execute")
-    @patch("fetchers.industry._fetch_index_component")
-    @patch("fetchers.industry._fetch_sw_first_info")
+    @patch("core.sync.manager.execute")
+    @patch("core.fetchers.industry._fetch_index_component")
+    @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_sync_industry_skips_unknown_stocks(
         self, mock_l1, mock_cons, mock_execute
     ):
@@ -209,7 +209,7 @@ class TestSyncIndustry:
 
         mock_execute.side_effect = execute_side_effect
 
-        from sync import SyncManager
+        from core.sync import SyncManager
         manager = SyncManager()
         result = manager.sync_industry()
 
@@ -223,7 +223,7 @@ class TestSyncIndustry:
 class TestFetchUsIndustry:
     """测试 fetch_us_industry 核心逻辑。"""
 
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.fetchers.industry.requests.Session")
     def test_basic_fetch(self, mock_session_cls):
         """测试基本拉取流程：2 只美股。"""
         mock_session = MagicMock()
@@ -249,7 +249,7 @@ class TestFetchUsIndustry:
 
         mock_session.get.side_effect = mock_get
 
-        from fetchers.industry import fetch_us_industry
+        from core.fetchers.industry import fetch_us_industry
         stocks = [
             {"stock_code": "AAPL", "cik": "0000320193"},
             {"stock_code": "BRK.B", "cik": "0001067983"},
@@ -262,7 +262,7 @@ class TestFetchUsIndustry:
         assert results[1]["stock_code"] == "BRK.B"
         assert results[1]["industry_name"] == "Fire, Marine & Casualty Insurance"
 
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.fetchers.industry.requests.Session")
     def test_empty_sic_description(self, mock_session_cls):
         """测试 sicDescription 为空时仍记录空字符串。"""
         mock_session = MagicMock()
@@ -273,7 +273,7 @@ class TestFetchUsIndustry:
         resp.raise_for_status = MagicMock()
         mock_session.get.return_value = resp
 
-        from fetchers.industry import fetch_us_industry
+        from core.fetchers.industry import fetch_us_industry
         results = fetch_us_industry(
             [{"stock_code": "TEST", "cik": "0000000001"}],
             delay=0, max_retries=1,
@@ -282,7 +282,7 @@ class TestFetchUsIndustry:
         assert len(results) == 1
         assert results[0]["industry_name"] == ""
 
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.fetchers.industry.requests.Session")
     def test_retry_on_failure(self, mock_session_cls):
         """测试请求失败时重试。"""
         mock_session = MagicMock()
@@ -301,7 +301,7 @@ class TestFetchUsIndustry:
 
         mock_session.get.side_effect = mock_get
 
-        from fetchers.industry import fetch_us_industry
+        from core.fetchers.industry import fetch_us_industry
         results = fetch_us_industry(
             [{"stock_code": "MSFT", "cik": "0000789019"}],
             delay=0, max_retries=3,
@@ -311,14 +311,14 @@ class TestFetchUsIndustry:
         assert results[0]["industry_name"] == "Software"
         assert call_count["n"] == 3
 
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.fetchers.industry.requests.Session")
     def test_all_retries_fail(self, mock_session_cls):
         """测试所有重试均失败时跳过该股票。"""
         mock_session = MagicMock()
         mock_session_cls.return_value = mock_session
         mock_session.get.side_effect = ConnectionError("持续失败")
 
-        from fetchers.industry import fetch_us_industry
+        from core.fetchers.industry import fetch_us_industry
         results = fetch_us_industry(
             [{"stock_code": "FAIL", "cik": "0000000001"}],
             delay=0, max_retries=2,
@@ -326,7 +326,7 @@ class TestFetchUsIndustry:
 
         assert len(results) == 0
 
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.fetchers.industry.requests.Session")
     def test_cik_zero_padding(self, mock_session_cls):
         """测试 CIK 自动补零到 10 位。"""
         mock_session = MagicMock()
@@ -343,7 +343,7 @@ class TestFetchUsIndustry:
 
         mock_session.get.side_effect = mock_get
 
-        from fetchers.industry import fetch_us_industry
+        from core.fetchers.industry import fetch_us_industry
         fetch_us_industry(
             [{"stock_code": "TEST", "cik": "320193"}],
             delay=0, max_retries=1,
@@ -356,8 +356,8 @@ class TestFetchUsIndustry:
 class TestSyncUsIndustry:
     """测试 SyncManager.sync_us_industry 方法。"""
 
-    @patch("sync.execute")
-    @patch("fetchers.industry.requests.Session")
+    @patch("core.sync.manager.execute")
+    @patch("core.fetchers.industry.requests.Session")
     def test_sync_us_industry_updates_stock_info(
         self, mock_session_cls, mock_execute
     ):
@@ -381,7 +381,7 @@ class TestSyncUsIndustry:
 
         mock_execute.side_effect = execute_side_effect
 
-        from sync import SyncManager
+        from core.sync import SyncManager
         manager = SyncManager()
         result = manager.sync_us_industry()
 
@@ -397,12 +397,12 @@ class TestSyncUsIndustry:
         ]
         assert len(update_calls) > 0
 
-    @patch("sync.execute")
+    @patch("core.sync.manager.execute")
     def test_sync_us_industry_no_stocks(self, mock_execute):
         """测试没有美股时返回空结果。"""
         mock_execute.return_value = []
 
-        from sync import SyncManager
+        from core.sync import SyncManager
         manager = SyncManager()
         result = manager.sync_us_industry()
 

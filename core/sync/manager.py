@@ -26,7 +26,7 @@ class SyncManager:
 
     def sync_stock_list(self) -> dict:
         """同步 A 股 + 港股列表。"""
-        from fetchers.stock_list import fetch_a_stock_list, fetch_hk_stock_list
+        from core.fetchers.stock_list import fetch_a_stock_list, fetch_hk_stock_list
 
         logger.info("开始同步股票列表...")
 
@@ -234,7 +234,7 @@ class SyncManager:
 
     def sync_index(self) -> dict:
         """同步指数成分股。"""
-        from fetchers.index_constituent import fetch_index_constituents
+        from core.fetchers.index_constituent import fetch_index_constituents
 
         index_codes = ["000300", "000905"]
         index_names = {"000300": "沪深300", "000905": "中证500"}
@@ -286,8 +286,8 @@ class SyncManager:
         Args:
             market: "CN_A" | "CN_HK" | None (全部)
         """
-        from fetchers.dividend import DividendFetcher
-        from transformers.dividend import transform_a_dividend, transform_hk_dividend
+        from core.fetchers.dividend import DividendFetcher
+        from core.transformers.dividend import transform_a_dividend, transform_hk_dividend
 
         logger.info("开始同步分红数据...")
 
@@ -362,7 +362,7 @@ class SyncManager:
         Returns:
             统计结果字典
         """
-        from fetchers.industry import fetch_sw_industry, get_industry_distribution
+        from core.fetchers.industry import fetch_sw_industry, get_industry_distribution
 
         logger.info("开始同步行业分类数据...")
 
@@ -469,7 +469,7 @@ class SyncManager:
         Returns:
             统计结果字典
         """
-        from fetchers.industry import fetch_us_industry, get_industry_distribution
+        from core.fetchers.industry import fetch_us_industry, get_industry_distribution
 
         logger.info("开始同步美股行业分类数据...")
 
@@ -573,7 +573,7 @@ class SyncManager:
         边拉边写：每 50 只批量写入数据库，防止中断丢数据。
         断点续传：跳过 industry 已非空的记录（除非 force=True）。
         """
-        from fetchers.industry import fetch_hk_industry, get_industry_distribution
+        from core.fetchers.industry import fetch_hk_industry, get_industry_distribution
         from db import batch_update_industry
 
         logger.info("开始同步港股行业分类数据 (force=%s)...", force)
@@ -667,7 +667,7 @@ class SyncManager:
         Args:
             market: "CN_A" | "CN_HK" | "US" | "all"
         """
-        from fetchers.daily_quote import (
+        from core.fetchers.daily_quote import (
             DailyQuoteFetcher,
             transform_a_spot_to_records,
             transform_hk_spot_to_records,
@@ -710,7 +710,7 @@ class SyncManager:
 
     def _sync_spot(self, fetcher, market: str) -> int:
         """同步当日实时行情快照（含市值）。"""
-        from fetchers.daily_quote import (
+        from core.fetchers.daily_quote import (
             transform_a_spot_to_records,
             transform_hk_spot_to_records,
             transform_us_spot_to_records,
@@ -772,7 +772,7 @@ class SyncManager:
 
     def _backfill_hist(self, fetcher, market: str) -> int:
         """全量回填历史日线（逐只拉取）。"""
-        from fetchers.daily_quote import (
+        from core.fetchers.daily_quote import (
             transform_a_hist_to_records,
             transform_hk_hist_to_records,
         )

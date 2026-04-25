@@ -5,7 +5,7 @@
 依赖 akshare 的 index_stock_cons_csindex 接口。
 
 Usage:
-    >>> from fetchers.index_constituent import fetch_index_constituents
+    >>> from core.fetchers.index_constituent import fetch_index_constituents
     >>> df = fetch_index_constituents("000300")
     >>> print(df.columns.tolist())
     ['index_code', 'stock_code', 'effective_date', 'index_name', 'stock_name', 'exchange']

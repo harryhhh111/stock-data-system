@@ -1,4 +1,4 @@
-"""允许 python -m sync 执行。"""
+"""允许 python -m core.sync 执行。"""
 
 from core.sync import main
 

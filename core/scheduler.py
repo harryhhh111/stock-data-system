@@ -10,9 +10,9 @@ scheduler.py — 定时任务调度器
   - 财务同步：A 股 17:07、港股 17:37、美股 06:12，同步财务报表 + 刷全部物化视图
 
 用法:
-    python scheduler.py                # 启动调度器
-    python scheduler.py --dry-run      # 预览调度计划，不实际执行
-    python scheduler.py --once         # 立即执行一次所有任务后退出
+    python core/scheduler.py           # 启动调度器
+    python core/scheduler.py --dry-run # 预览调度计划，不实际执行
+    python core/scheduler.py --once    # 立即执行一次所有任务后退出
 """
 from __future__ import annotations
 
@@ -22,10 +22,6 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-
-# 确保项目根目录在 path 中
-# 确保项目根目录在 path 中（scheduler.py 现在位于 core/ 下）
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 

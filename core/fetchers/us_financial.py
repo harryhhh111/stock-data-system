@@ -268,7 +268,7 @@ class USFinancialFetcher(BaseFetcher):
 
         # 方法2: 内置 JSON fallback
         fallback_path = (
-            Path(__file__).resolve().parent.parent / "data" / "nasdaq100_tickers.json"
+            Path(__file__).resolve().parent.parent.parent / "data" / "nasdaq100_tickers.json"
         )
         if fallback_path.exists():
             tickers = json.loads(fallback_path.read_text())

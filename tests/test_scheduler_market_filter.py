@@ -68,7 +68,7 @@ class TestFilterJobDefs:
 
     def test_filter_cn_only(self):
         """测试只保留 CN_A 市场。"""
-        from scheduler import _filter_job_defs, JOB_DEFS
+        from core.scheduler import _filter_job_defs, JOB_DEFS
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["CN_A"]
             filtered = _filter_job_defs()
@@ -77,7 +77,7 @@ class TestFilterJobDefs:
 
     def test_filter_cn_hk(self):
         """测试保留 CN_A 和 CN_HK 市场。"""
-        from scheduler import _filter_job_defs
+        from core.scheduler import _filter_job_defs
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["CN_A", "CN_HK"]
             filtered = _filter_job_defs()
@@ -87,7 +87,7 @@ class TestFilterJobDefs:
 
     def test_filter_us_only_jobs(self):
         """测试只保留 US 市场。"""
-        from scheduler import _filter_job_defs
+        from core.scheduler import _filter_job_defs
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["US"]
             filtered = _filter_job_defs()
@@ -97,7 +97,7 @@ class TestFilterJobDefs:
 
     def test_filter_empty_markets(self):
         """测试未配置 markets 时返回空。"""
-        from scheduler import _filter_job_defs
+        from core.scheduler import _filter_job_defs
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = []
             filtered = _filter_job_defs()
@@ -105,7 +105,7 @@ class TestFilterJobDefs:
 
     def test_filter_all_markets(self):
         """测试所有市场都配置时返回全部任务。"""
-        from scheduler import _filter_job_defs, JOB_DEFS
+        from core.scheduler import _filter_job_defs, JOB_DEFS
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["CN_A", "CN_HK", "US"]
             filtered = _filter_job_defs()
@@ -113,7 +113,7 @@ class TestFilterJobDefs:
 
     def test_filter_unknown_market(self):
         """测试配置了不存在的市场时返回空。"""
-        from scheduler import _filter_job_defs
+        from core.scheduler import _filter_job_defs
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["UNKNOWN"]
             filtered = _filter_job_defs()
@@ -125,10 +125,10 @@ class TestFilterJobDefs:
 class TestSchedulerExitOnEmptyMarkets:
     """测试 scheduler 启动时未配置 markets 会警告退出。"""
 
-    @patch("scheduler.health_check", return_value=True)
+    @patch("core.scheduler.health_check", return_value=True)
     def test_exit_when_no_markets(self, mock_health):
         """未配置 STOCK_MARKETS 时，scheduler 应 sys.exit(1)。"""
-        from scheduler import run_scheduler
+        from core.scheduler import run_scheduler
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = []
             with pytest.raises(SystemExit) as exc_info:
@@ -142,7 +142,7 @@ class TestDryRunMarketDisplay:
     """测试 dry-run 模式显示市场信息。"""
 
     def test_dry_run_shows_markets(self, capsys):
-        from scheduler import dry_run
+        from core.scheduler import dry_run
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = ["US"]
             mock_sched.daily_quote_enabled = True
@@ -167,7 +167,7 @@ class TestDryRunMarketDisplay:
             assert "CN_HK_financial" not in output
 
     def test_dry_run_no_markets_configured(self, capsys):
-        from scheduler import dry_run
+        from core.scheduler import dry_run
         with patch("config.scheduler") as mock_sched:
             mock_sched.markets = []
             mock_sched.daily_quote_enabled = True

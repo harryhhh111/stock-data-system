@@ -78,7 +78,7 @@ python -m quant.screener --preset classic_value --market CN_A
 python -m quant.screener --preset quality --market all --top 50
 
 # 6. 定时调度
-python core/scheduler.py
+python -m core.scheduler
 ```
 
 ## 文档
