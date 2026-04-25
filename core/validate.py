@@ -9,13 +9,14 @@ validate.py — 财务数据校验引擎
   4. 结果写入 validation_results 表 + 可选 JSON/CSV 输出
 
 用法:
-    python core/validate.py             # 校验全部市场
-    python core/validate.py --market A  # 仅 A 股
-    python core/validate.py --market HK # 仅港股
-    python core/validate.py --market US # 仅美股
-    python core/validate.py --market A --output json   # 额外输出 JSON
-    python core/validate.py --market A --output csv    # 额外输出 CSV
+    python -m core.validate             # 校验全部市场
+    python -m core.validate --market A  # 仅 A 股
+    python -m core.validate --market HK # 仅港股
+    python -m core.validate --market US # 仅美股
+    python -m core.validate --market A --output json   # 额外输出 JSON
+    python -m core.validate --market A --output csv    # 额外输出 CSV
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,15 +44,17 @@ logger = logging.getLogger("validate")
 #  数据结构
 # ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class ValidationIssue:
     """一条校验异常。"""
+
     stock_code: str
     market: str
     report_date: str
     check_name: str
-    severity: str          # "error" | "warning" | "info"
-    field_name: str        # 触发的字段或关系
+    severity: str  # "error" | "warning" | "info"
+    field_name: str  # 触发的字段或关系
     actual_value: Optional[str] = None
     expected_value: Optional[str] = None
     message: str = ""
@@ -61,6 +64,7 @@ class ValidationIssue:
 @dataclass
 class ValidationReport:
     """一次校验运行的汇总。"""
+
     started_at: str
     finished_at: str = ""
     market: str = ""
@@ -118,6 +122,7 @@ def ensure_table() -> None:
 #  辅助函数
 # ──────────────────────────────────────────────────────────
 
+
 def _d(val: Any) -> Optional[float]:
     """把 Decimal / None / float 统一转为 float 或 None。"""
     if val is None:
@@ -144,6 +149,7 @@ def _market_filter(market: str, table_alias: str = "s") -> tuple[str, tuple]:
 # ──────────────────────────────────────────────────────────
 #  1. 异常值检测 — A 股 / 港股
 # ──────────────────────────────────────────────────────────
+
 
 def check_anomalies_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
     """对 A 股/港股做异常值检测。返回扫描行数。"""
@@ -189,65 +195,90 @@ def check_anomalies_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
 
         # 1a. 负资产
         if total_assets is not None and total_assets < 0:
-            issues.append(ValidationIssue(
-                stock_code=stock_code, market=mkt, report_date=rd,
-                check_name="negative_total_assets",
-                severity="error", field_name="total_assets",
-                actual_value=str(total_assets),
-                message=f"总资产为负数: {total_assets:,.0f}",
-                suggestion="数据录入错误或持续经营问题，需核实"
-            ))
+            issues.append(
+                ValidationIssue(
+                    stock_code=stock_code,
+                    market=mkt,
+                    report_date=rd,
+                    check_name="negative_total_assets",
+                    severity="error",
+                    field_name="total_assets",
+                    actual_value=str(total_assets),
+                    message=f"总资产为负数: {total_assets:,.0f}",
+                    suggestion="数据录入错误或持续经营问题，需核实",
+                )
+            )
 
         # 1b. 资产负债率 > 200%
         if total_assets and total_liab:
             ratio = total_liab / total_assets
             if ratio > 2.0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market=mkt, report_date=rd,
-                    check_name="debt_ratio_extreme",
-                    severity="warning", field_name="total_liab/total_assets",
-                    actual_value=f"{ratio:.2%}",
-                    expected_value="< 200%",
-                    message=f"资产负债率 {ratio:.1%} 超过 200%",
-                    suggestion="可能资不抵债，检查数据准确性"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market=mkt,
+                        report_date=rd,
+                        check_name="debt_ratio_extreme",
+                        severity="warning",
+                        field_name="total_liab/total_assets",
+                        actual_value=f"{ratio:.2%}",
+                        expected_value="< 200%",
+                        message=f"资产负债率 {ratio:.1%} 超过 200%",
+                        suggestion="可能资不抵债，检查数据准确性",
+                    )
+                )
 
         # 1c. 净利润超过营收（绝对值）
         if net_profit is not None and total_revenue is not None:
             if total_revenue > 0 and net_profit > total_revenue * 1.5:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market=mkt, report_date=rd,
-                    check_name="net_profit_exceeds_revenue",
-                    severity="warning", field_name="net_profit/total_revenue",
-                    actual_value=f"净利润={net_profit:,.0f}, 营收={total_revenue:,.0f}",
-                    expected_value="净利润通常不超过营收的 1.5 倍",
-                    message=f"净利润({net_profit:,.0f})远超营收({total_revenue:,.0f})",
-                    suggestion="可能有大额投资收益/营业外收入，需核实利润构成"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market=mkt,
+                        report_date=rd,
+                        check_name="net_profit_exceeds_revenue",
+                        severity="warning",
+                        field_name="net_profit/total_revenue",
+                        actual_value=f"净利润={net_profit:,.0f}, 营收={total_revenue:,.0f}",
+                        expected_value="净利润通常不超过营收的 1.5 倍",
+                        message=f"净利润({net_profit:,.0f})远超营收({total_revenue:,.0f})",
+                        suggestion="可能有大额投资收益/营业外收入，需核实利润构成",
+                    )
+                )
 
         # 1d. 经营现金流与净利润严重背离
         if cfo is not None and parent_net_profit is not None:
             if parent_net_profit > 0 and cfo < 0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market=mkt, report_date=rd,
-                    check_name="cfo_negative_profit_positive",
-                    severity="warning", field_name="cfo_net/parent_net_profit",
-                    actual_value=f"CFO={cfo:,.0f}, 净利润={parent_net_profit:,.0f}",
-                    message="净利润为正但经营现金流为负",
-                    suggestion="盈利质量存疑，检查应收/存货变化"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market=mkt,
+                        report_date=rd,
+                        check_name="cfo_negative_profit_positive",
+                        severity="warning",
+                        field_name="cfo_net/parent_net_profit",
+                        actual_value=f"CFO={cfo:,.0f}, 净利润={parent_net_profit:,.0f}",
+                        message="净利润为正但经营现金流为负",
+                        suggestion="盈利质量存疑，检查应收/存货变化",
+                    )
+                )
 
         # 1e. 关键指标为零（可能缺失）
         if rtype == "annual":
             if total_revenue is not None and total_revenue == 0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market=mkt, report_date=rd,
-                    check_name="zero_revenue_annual",
-                    severity="warning", field_name="total_revenue",
-                    actual_value="0",
-                    message="年报营收为零",
-                    suggestion="可能已停业/退市，或数据缺失"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market=mkt,
+                        report_date=rd,
+                        check_name="zero_revenue_annual",
+                        severity="warning",
+                        field_name="total_revenue",
+                        actual_value="0",
+                        message="年报营收为零",
+                        suggestion="可能已停业/退市，或数据缺失",
+                    )
+                )
 
     return scanned
 
@@ -255,6 +286,7 @@ def check_anomalies_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
 # ──────────────────────────────────────────────────────────
 #  1b. 异常值检测 — 美股
 # ──────────────────────────────────────────────────────────
+
 
 def check_anomalies_us(issues: list[ValidationIssue]) -> int:
     """对美股做异常值检测。返回扫描行数。"""
@@ -294,52 +326,72 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
 
         # 负资产
         if total_assets is not None and total_assets < 0:
-            issues.append(ValidationIssue(
-                stock_code=stock_code, market="US", report_date=rd,
-                check_name="negative_total_assets",
-                severity="error", field_name="total_assets",
-                actual_value=str(total_assets),
-                message=f"总资产为负数: {total_assets:,.0f}",
-                suggestion="数据录入错误或持续经营问题"
-            ))
+            issues.append(
+                ValidationIssue(
+                    stock_code=stock_code,
+                    market="US",
+                    report_date=rd,
+                    check_name="negative_total_assets",
+                    severity="error",
+                    field_name="total_assets",
+                    actual_value=str(total_assets),
+                    message=f"总资产为负数: {total_assets:,.0f}",
+                    suggestion="数据录入错误或持续经营问题",
+                )
+            )
 
         # 资产负债率 > 200%
         if total_assets and total_liabilities:
             ratio = total_liabilities / total_assets
             if ratio > 2.0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market="US", report_date=rd,
-                    check_name="debt_ratio_extreme",
-                    severity="warning", field_name="total_liabilities/total_assets",
-                    actual_value=f"{ratio:.2%}",
-                    expected_value="< 200%",
-                    message=f"资产负债率 {ratio:.1%} 超过 200%",
-                    suggestion="可能资不抵债"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market="US",
+                        report_date=rd,
+                        check_name="debt_ratio_extreme",
+                        severity="warning",
+                        field_name="total_liabilities/total_assets",
+                        actual_value=f"{ratio:.2%}",
+                        expected_value="< 200%",
+                        message=f"资产负债率 {ratio:.1%} 超过 200%",
+                        suggestion="可能资不抵债",
+                    )
+                )
 
         # 净利润超过营收
         if net_income is not None and revenues is not None:
             if revenues > 0 and net_income > revenues * 1.5:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market="US", report_date=rd,
-                    check_name="net_income_exceeds_revenue",
-                    severity="warning", field_name="net_income/revenues",
-                    actual_value=f"净利润={net_income:,.0f}, 营收={revenues:,.0f}",
-                    message=f"净利润({net_income:,.0f})远超营收({revenues:,.0f})",
-                    suggestion="可能有大额非经常性收益"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market="US",
+                        report_date=rd,
+                        check_name="net_income_exceeds_revenue",
+                        severity="warning",
+                        field_name="net_income/revenues",
+                        actual_value=f"净利润={net_income:,.0f}, 营收={revenues:,.0f}",
+                        message=f"净利润({net_income:,.0f})远超营收({revenues:,.0f})",
+                        suggestion="可能有大额非经常性收益",
+                    )
+                )
 
         # CFO 与净利润背离
         if cfo is not None and net_income is not None:
             if net_income > 0 and cfo < 0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market="US", report_date=rd,
-                    check_name="cfo_negative_income_positive",
-                    severity="warning", field_name="net_cash_from_operations/net_income",
-                    actual_value=f"CFO={cfo:,.0f}, 净利润={net_income:,.0f}",
-                    message="净利润为正但经营现金流为负",
-                    suggestion="盈利质量存疑"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market="US",
+                        report_date=rd,
+                        check_name="cfo_negative_income_positive",
+                        severity="warning",
+                        field_name="net_cash_from_operations/net_income",
+                        actual_value=f"CFO={cfo:,.0f}, 净利润={net_income:,.0f}",
+                        message="净利润为正但经营现金流为负",
+                        suggestion="盈利质量存疑",
+                    )
+                )
 
     return scanned
 
@@ -347,6 +399,7 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
 # ──────────────────────────────────────────────────────────
 #  2. 逻辑一致性检查 — A 股 / 港股
 # ──────────────────────────────────────────────────────────
+
 
 def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
     """A 股/港股逻辑一致性检查。返回扫描行数。"""
@@ -391,30 +444,38 @@ def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
             if total_assets != 0:
                 diff_ratio = abs(total_assets - rhs) / abs(total_assets)
                 if diff_ratio > tolerance_ratio:
-                    issues.append(ValidationIssue(
-                        stock_code=stock_code, market=mkt, report_date=rd,
-                        check_name="balance_equation",
-                        severity="error",
-                        field_name="total_assets vs total_liab + total_equity",
-                        actual_value=f"资产={total_assets:,.0f}, 负债+权益={rhs:,.0f}, 偏差={diff_ratio:.2%}",
-                        expected_value="偏差 < 1%",
-                        message=f"会计等式不平：资产({total_assets:,.0f}) ≠ 负债({total_liab:,.0f}) + 权益({total_equity:,.0f})，偏差 {diff_ratio:.2%}",
-                        suggestion="检查数据源是否有遗漏科目（如少数股东权益未计入）"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            stock_code=stock_code,
+                            market=mkt,
+                            report_date=rd,
+                            check_name="balance_equation",
+                            severity="error",
+                            field_name="total_assets vs total_liab + total_equity",
+                            actual_value=f"资产={total_assets:,.0f}, 负债+权益={rhs:,.0f}, 偏差={diff_ratio:.2%}",
+                            expected_value="偏差 < 1%",
+                            message=f"会计等式不平：资产({total_assets:,.0f}) ≠ 负债({total_liab:,.0f}) + 权益({total_equity:,.0f})，偏差 {diff_ratio:.2%}",
+                            suggestion="检查数据源是否有遗漏科目（如少数股东权益未计入）",
+                        )
+                    )
 
         # 2b. 流动资产 >= 现金及等价物
         if current_assets is not None and cash_equiv is not None:
             if cash_equiv > current_assets and current_assets >= 0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market=mkt, report_date=rd,
-                    check_name="cash_exceeds_current_assets",
-                    severity="error",
-                    field_name="cash_equivalents vs current_assets",
-                    actual_value=f"现金={cash_equiv:,.0f}, 流动资产={current_assets:,.0f}",
-                    expected_value="现金 <= 流动资产",
-                    message=f"货币资金({cash_equiv:,.0f}) > 流动资产({current_assets:,.0f})，不合逻辑",
-                    suggestion="数据可能存在错误，或货币资金口径问题"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market=mkt,
+                        report_date=rd,
+                        check_name="cash_exceeds_current_assets",
+                        severity="error",
+                        field_name="cash_equivalents vs current_assets",
+                        actual_value=f"现金={cash_equiv:,.0f}, 流动资产={current_assets:,.0f}",
+                        expected_value="现金 <= 流动资产",
+                        message=f"货币资金({cash_equiv:,.0f}) > 流动资产({current_assets:,.0f})，不合逻辑",
+                        suggestion="数据可能存在错误，或货币资金口径问题",
+                    )
+                )
 
     return scanned
 
@@ -422,6 +483,7 @@ def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
 # ──────────────────────────────────────────────────────────
 #  2b. 逻辑一致性检查 — 美股
 # ──────────────────────────────────────────────────────────
+
 
 def check_logic_us(issues: list[ValidationIssue]) -> int:
     """美股逻辑一致性检查。返回扫描行数。"""
@@ -462,30 +524,38 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
                         diff2 = abs(total_assets - rhs2) / abs(total_assets)
                         if diff2 <= tolerance_ratio:
                             continue  # 用含 NCI 的权益就平了，跳过
-                    issues.append(ValidationIssue(
-                        stock_code=stock_code, market="US", report_date=rd,
-                        check_name="balance_equation",
-                        severity="error",
-                        field_name="total_assets vs total_liabilities + total_equity",
-                        actual_value=f"资产={total_assets:,.0f}, 负债+权益={rhs:,.0f}, 偏差={diff_ratio:.2%}",
-                        expected_value="偏差 < 1%",
-                        message=f"会计等式不平：偏差 {diff_ratio:.2%}",
-                        suggestion="检查少数股东权益是否单独记录"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            stock_code=stock_code,
+                            market="US",
+                            report_date=rd,
+                            check_name="balance_equation",
+                            severity="error",
+                            field_name="total_assets vs total_liabilities + total_equity",
+                            actual_value=f"资产={total_assets:,.0f}, 负债+权益={rhs:,.0f}, 偏差={diff_ratio:.2%}",
+                            expected_value="偏差 < 1%",
+                            message=f"会计等式不平：偏差 {diff_ratio:.2%}",
+                            suggestion="检查少数股东权益是否单独记录",
+                        )
+                    )
 
         # 流动资产 >= 现金
         if current_assets is not None and cash_equiv is not None:
             if cash_equiv > current_assets and current_assets >= 0:
-                issues.append(ValidationIssue(
-                    stock_code=stock_code, market="US", report_date=rd,
-                    check_name="cash_exceeds_current_assets",
-                    severity="error",
-                    field_name="cash_and_equivalents vs total_current_assets",
-                    actual_value=f"现金={cash_equiv:,.0f}, 流动资产={current_assets:,.0f}",
-                    expected_value="现金 <= 流动资产",
-                    message=f"现金({cash_equiv:,.0f}) > 流动资产({current_assets:,.0f})",
-                    suggestion="数据可能存在错误"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        stock_code=stock_code,
+                        market="US",
+                        report_date=rd,
+                        check_name="cash_exceeds_current_assets",
+                        severity="error",
+                        field_name="cash_and_equivalents vs total_current_assets",
+                        actual_value=f"现金={cash_equiv:,.0f}, 流动资产={current_assets:,.0f}",
+                        expected_value="现金 <= 流动资产",
+                        message=f"现金({cash_equiv:,.0f}) > 流动资产({current_assets:,.0f})",
+                        suggestion="数据可能存在错误",
+                    )
+                )
 
     return scanned
 
@@ -494,6 +564,7 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
 #  3. 跨源比对（当前状态记录）
 # ──────────────────────────────────────────────────────────
 
+
 def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
     """检查数据源多样性，记录为已知限制。
 
@@ -501,34 +572,42 @@ def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
     将此记录为 info 级别，方便未来扩展跨源比对时追溯。
     """
     if market in ("A", "HK", ""):
-        issues.append(ValidationIssue(
-            stock_code="*", market="CN_A" if market == "A" else "CN_HK",
-            report_date="*",
-            check_name="single_source_limitation",
-            severity="info",
-            field_name="source",
-            actual_value="eastmoney / eastmoney_hk",
-            expected_value="多源交叉验证",
-            message="A 股/港股数据仅来自东方财富单一源，暂无跨源比对能力",
-            suggestion="未来可接入 akshare/同花顺作为第二数据源进行交叉验证"
-        ))
+        issues.append(
+            ValidationIssue(
+                stock_code="*",
+                market="CN_A" if market == "A" else "CN_HK",
+                report_date="*",
+                check_name="single_source_limitation",
+                severity="info",
+                field_name="source",
+                actual_value="eastmoney / eastmoney_hk",
+                expected_value="多源交叉验证",
+                message="A 股/港股数据仅来自东方财富单一源，暂无跨源比对能力",
+                suggestion="未来可接入 akshare/同花顺作为第二数据源进行交叉验证",
+            )
+        )
     if market in ("US", ""):
-        issues.append(ValidationIssue(
-            stock_code="*", market="US", report_date="*",
-            check_name="single_source_limitation",
-            severity="info",
-            field_name="source",
-            actual_value="SEC EDGAR",
-            expected_value="多源交叉验证",
-            message="美股数据仅来自 SEC EDGAR 单一源",
-            suggestion="未来可接入 Yahoo Finance / Financial Modeling Prep 作为第二数据源"
-        ))
+        issues.append(
+            ValidationIssue(
+                stock_code="*",
+                market="US",
+                report_date="*",
+                check_name="single_source_limitation",
+                severity="info",
+                field_name="source",
+                actual_value="SEC EDGAR",
+                expected_value="多源交叉验证",
+                message="美股数据仅来自 SEC EDGAR 单一源",
+                suggestion="未来可接入 Yahoo Finance / Financial Modeling Prep 作为第二数据源",
+            )
+        )
     return 0
 
 
 # ──────────────────────────────────────────────────────────
 #  4. 结果持久化
 # ──────────────────────────────────────────────────────────
+
 
 def save_results(report: ValidationReport, batch_id: str) -> int:
     """将校验结果写入 validation_results 表。
@@ -556,19 +635,23 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
     """
     rows = []
     for issue in report.issues:
-        rows.append({
-            "batch_id": batch_id,
-            "stock_code": issue.stock_code,
-            "market": issue.market,
-            "report_date": issue.report_date if issue.report_date != "*" else "1970-01-01",
-            "check_name": issue.check_name,
-            "severity": issue.severity,
-            "field_name": issue.field_name,
-            "actual_value": issue.actual_value,
-            "expected_value": issue.expected_value,
-            "message": issue.message,
-            "suggestion": issue.suggestion,
-        })
+        rows.append(
+            {
+                "batch_id": batch_id,
+                "stock_code": issue.stock_code,
+                "market": issue.market,
+                "report_date": issue.report_date
+                if issue.report_date != "*"
+                else "1970-01-01",
+                "check_name": issue.check_name,
+                "severity": issue.severity,
+                "field_name": issue.field_name,
+                "actual_value": issue.actual_value,
+                "expected_value": issue.expected_value,
+                "message": issue.message,
+                "suggestion": issue.suggestion,
+            }
+        )
 
     count = 0
     with db.Connection() as conn:
@@ -604,8 +687,18 @@ def output_csv(report: ValidationReport, filepath: str) -> None:
     """输出 CSV 文件。"""
     if not report.issues:
         return
-    fieldnames = ["stock_code", "market", "report_date", "check_name", "severity",
-                  "field_name", "actual_value", "expected_value", "message", "suggestion"]
+    fieldnames = [
+        "stock_code",
+        "market",
+        "report_date",
+        "check_name",
+        "severity",
+        "field_name",
+        "actual_value",
+        "expected_value",
+        "message",
+        "suggestion",
+    ]
     with open(filepath, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -617,6 +710,7 @@ def output_csv(report: ValidationReport, filepath: str) -> None:
 # ──────────────────────────────────────────────────────────
 #  5. 主入口
 # ──────────────────────────────────────────────────────────
+
 
 def run_validation(market: str = "", output: str = "") -> ValidationReport:
     """执行数据校验。
@@ -677,8 +771,12 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
     report.finished_at = datetime.now().isoformat()
     logger.info("=== 校验完成 ===")
     logger.info("  扫描行数: %d", report.total_rows_scanned)
-    logger.info("  错误: %d, 警告: %d, 信息: %d",
-                report.error_count, report.warning_count, report.info_count)
+    logger.info(
+        "  错误: %d, 警告: %d, 信息: %d",
+        report.error_count,
+        report.warning_count,
+        report.info_count,
+    )
 
     # 持久化
     save_results(report, batch_id)
@@ -695,6 +793,7 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
 
 
 # ── scheduler 集成入口 ────────────────────────────────────
+
 
 def run_after_sync(market: str = "") -> dict:
     """供 scheduler.py 同步完成后调用的入口。
@@ -717,15 +816,20 @@ def run_after_sync(market: str = "") -> dict:
 
 # ── CLI ────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="财务数据校验引擎")
     parser.add_argument(
-        "--market", choices=["A", "HK", "US"], default="",
-        help="按市场筛选: A(A股), HK(港股), US(美股)，默认全部"
+        "--market",
+        choices=["A", "HK", "US"],
+        default="",
+        help="按市场筛选: A(A股), HK(港股), US(美股)，默认全部",
     )
     parser.add_argument(
-        "--output", choices=["json", "csv"], default="",
-        help="额外输出格式: json 或 csv"
+        "--output",
+        choices=["json", "csv"],
+        default="",
+        help="额外输出格式: json 或 csv",
     )
     args = parser.parse_args()
 
@@ -743,7 +847,10 @@ def main():
     if report.error_count > 0 or report.warning_count > 0:
         print(f"\n  TOP 问题:")
         from collections import Counter
-        check_counts = Counter(i.check_name for i in report.issues if i.severity in ("error", "warning"))
+
+        check_counts = Counter(
+            i.check_name for i in report.issues if i.severity in ("error", "warning")
+        )
         for name, cnt in check_counts.most_common(10):
             print(f"    {name}: {cnt} 条")
 

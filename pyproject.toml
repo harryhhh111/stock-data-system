@@ -15,6 +15,7 @@ dependencies = [
     "akshare",
     "apscheduler",
     "tabulate",
+    "tenacity",
 ]
 
 [tool.setuptools.packages.find]

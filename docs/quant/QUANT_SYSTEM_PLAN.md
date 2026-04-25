@@ -1,7 +1,8 @@
 # 价值投资选股系统 — 规划方案
 
 > 创建时间：2026-04-23（v2）
-> 状态：规划中
+> 更新时间：2026-04-25（v3）
+> 状态：Phase 1.1 已完成，待改进
 
 ## 一、定位
 
@@ -49,25 +50,37 @@
 
 ```
 stock_data/
-├── screener/                    # 选股筛选器（新模块）
-│   ├── __init__.py
-│   ├── __main__.py              # CLI 入口
-│   ├── query.py                 # SQL 查询层（从 DB 取数据）
-│   ├── filters.py               # 硬过滤条件
-│   ├── scorer.py                # 多因子打分
-│   ├── presets.py               # 预设策略
-│   └── report.py                # 输出格式化
-├── analyzer/                    # 个股分析（新模块）
-│   ├── __init__.py
-│   ├── __main__.py              # CLI 入口
-│   ├── financial.py             # 财务健康度分析
-│   ├── valuation.py             # 估值分析
-│   ├── trend.py                 # 历史趋势
-│   └── report.py                # 输出格式化
-└── ...existing modules...
+├── core/                          # 数据基础设施层
+│   ├── fetchers/                  # 数据拉取
+│   ├── transformers/              # 字段映射
+│   ├── sync/                      # 同步调度
+│   ├── scheduler.py               # 定时任务
+│   ├── validate.py                # 数据校验
+│   └── incremental.py             # 增量同步
+│
+├── quant/                         # 量化分析层
+│   ├── screener/                  # 选股筛选器（Phase 1.1 ✅）
+│   │   ├── __init__.py
+│   │   ├── __main__.py            # CLI 入口
+│   │   ├── query.py               # SQL 查询层（从 DB 取数据）
+│   │   ├── filters.py             # 硬过滤条件
+│   │   ├── scorer.py              # 多因子打分
+│   │   ├── presets.py             # 预设策略
+│   │   └── report.py              # 输出格式化
+│   └── analyzer/                  # 个股分析（Phase 1.2 待开发）
+│       ├── __init__.py
+│       ├── __main__.py            # CLI 入口
+│       ├── financial.py           # 财务健康度分析
+│       ├── valuation.py           # 估值分析
+│       ├── trend.py               # 历史趋势
+│       └── report.py              # 输出格式化
+│
+├── config.py                      # 全局配置（被两层共享）
+├── db.py                          # 数据库连接池（被两层共享）
+└── scripts/                       # SQL DDL
 ```
 
-### 3.2 选股筛选器 `screener/`
+### 3.2 选股筛选器 `quant/screener/`
 
 #### 设计原则
 
@@ -188,46 +201,51 @@ PRESETS = {
 
 ```bash
 # 运行预设策略
-python -m screener --preset classic_value --market CN_A
-python -m screener --preset classic_value --market CN_HK
-python -m screener --preset classic_value --market all
+python -m quant.screener --preset classic_value --market CN_A
+python -m quant.screener --preset classic_value --market CN_HK
+python -m quant.screener --preset classic_value --market all
 
 # 自定义过滤条件
-python -m screener --market CN_A \
+python -m quant.screener --market CN_A \
     --min-mcap 10e9 --max-pe 15 --max-debt 0.5 \
     --min-gm 0.25 --exclude-st
 
 # 查看所有预设策略
-python -m screener --list-presets
+python -m quant.screener --list-presets
 
 # 查看所有可用因子
-python -m screener --list-factors
+python -m quant.screener --list-factors
 
 # 输出格式
-python -m screener --preset classic_value --format table   # 终端表格（默认）
-python -m screener --preset classic_value --format csv      # CSV 导出
-python -m screener --preset classic_value --format json     # JSON
+python -m quant.screener --preset classic_value --format table   # 终端表格（默认）
+python -m quant.screener --preset classic_value --format csv     # CSV 导出
+python -m quant.screener --preset classic_value --format json    # JSON
 ```
 
 #### 输出示例
 
 ```
-═══════════════════════════════════════════════════════════════
-  经典价值策略 — CN_A Top 30
-  运行时间：2026-04-23 | 候选池：5,493 → 硬过滤后：1,203 → Top 30
-═══════════════════════════════════════════════════════════════
+═════════════════════════════════════════════════════════════════
+  选股筛选器 — 经典价值
+  市场: CN_A | 候选池: 5,493 → 硬过滤后: 1,203 → Top 30
+  运行时间: 2026-04-25 16:30
+═════════════════════════════════════════════════════════════════
 
-排名  代码     名称        行业       市值(亿)  PE    PB   FCF Yield  毛利率  资产负债率  综合分
-────  ───────  ──────────  ────────   ────────  ────  ───  ─────────  ──────  ─────────  ──────
- 1    601169   北京银行    银行        1,159    4.2   0.4    3.36%    52.1%    92.8%     82.3
- 2    601398   工商银行    银行       20,845    5.8   0.6    2.81%    48.3%    91.5%     79.8
- 3    601939   建设银行    银行       17,234    5.5   0.6    2.95%    46.7%    92.1%     78.5
+排名  代码     名称        行业       市值(亿)  PE    PB   FCF Yield  毛利率  负债率  综合分
+────  ───────  ──────────  ────────   ────────  ────  ───  ─────────  ──────  ──────  ──────
+ 1    600519   贵州茅台    食品饮料    23,245   24.8  9.2    2.10%    91.8%   21.3%   82.3
+ 2    000651   格力电器    家用电器     2,456    8.5  2.1    3.85%    27.3%   58.2%   79.8
+ 3    601318   中国平安    保险        8,912    9.2  1.1    2.95%    32.5%   89.1%   78.5
 ...
 ```
 
+> **注意**：银行股（负债率 > 90%）会被 `classic_value` 的 `debt_ratio_max=0.6` 过滤掉。
+> 如需筛选银行股，请使用自定义条件 `--max-debt 1.0` 或使用 `quality` 预设。
+> 这是当前版本的行业盲区问题，详见「已知局限」章节。
+
 ---
 
-### 3.3 个股分析 `analyzer/`
+### 3.3 个股分析 `quant/analyzer/`
 
 对单只股票生成深度分析报告，涵盖五个维度。
 
@@ -272,23 +290,23 @@ python -m screener --preset classic_value --format json     # JSON
 
 ```bash
 # 分析单只股票
-python -m analyzer 600519              # 茅台
-python -m analyzer 00700 --market HK   # 腾讯
-python -m analyzer AAPL --market US    # 苹果
+python -m quant.analyzer 600519              # 茅台
+python -m quant.analyzer 00700 --market HK   # 腾讯
+python -m quant.analyzer AAPL --market US    # 苹果
 
 # 输出格式
-python -m analyzer 600519 --format text   # 终端文本（默认）
-python -m analyzer 600519 --format json   # JSON
-python -m analyzer 600519 --format md     # Markdown
+python -m quant.analyzer 600519 --format text   # 终端文本（默认）
+python -m quant.analyzer 600519 --format json   # JSON
+python -m quant.analyzer 600519 --format md     # Markdown
 ```
 
 #### 输出示例
 
 ```
-═══════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════
   个股分析报告：600519 贵州茅台
   2026-04-23 | CN_A | 食品饮料 | ￥1,850.00 | 市值 23,245 亿
-═══════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════
 
 一、盈利能力                          评级：★★★★★ 优秀
 ─────────────────────────────────────────────────────────────
@@ -367,20 +385,115 @@ END AS roe
 **方案**：A 股用 `ak.stock_dividend_cninfo()` 或东方财富接口；港股用 `ak.stock_dividend_hk()`。
 **优先级**：低（分红策略可以后做）。
 
-## 四、开发顺序
+## 四、已知局限与改进方向
+
+> Phase 1.1 实现了基础的「硬过滤 + 软打分」管道，可用但存在以下设计局限。
+> 按影响程度排序，前 3 项建议在 Phase 1.5 中解决。
+
+### 4.1 行业盲区 — 全市场一刀切排名
+
+**现状**：所有股票放在一起做截面百分位排名。银行负债率 90%+、毛利率 50% 是正常的；科技股负债率 20%、毛利率 70% 也正常。跨行业比毛利率和负债率没有实际意义。
+
+**影响**：银行、保险、地产等高杠杆行业被硬过滤排除（`debt_ratio_max`），或即使进入排名也因负债率排名垫底。低负债行业则获得不成比例的优势。
+
+**改进方案**：
+
+| 方案 | 复杂度 | 效果 |
+|------|--------|------|
+| A. 行业内百分位排名 | 中 | 因子排名只在同行业内计算，跨行业比较用行业排名的排名 |
+| B. 行业中性化（减行业均值） | 中 | 因子值减去行业均值后再排名 |
+| C. 按大类分组（金融/非金融） | 低 | 至少把金融业分开处理 |
+
+**推荐**：先做方案 C（最小改动），再做方案 A。
+
+### 4.2 硬过滤与软打分重叠
+
+**现状**：`classic_value` 预设中，`debt_ratio_max=0.6` 已排除高负债股，但打分阶段又给 `debt_ratio` 分了 15% 权重。过滤后剩余股票的负债率都在 0-60% 之间，区分度极低，等于浪费权重。
+
+**影响**：有效打分因子数减少，排名区分度下降。
+
+**改进方案**：
+- 硬过滤用过的条件不在打分中重复出现
+- 或者硬过滤条件只保留「一票否决」型的（如排除 ST、排除亏损），不设与打分因子重叠的阈值
+- 在预设文档中明确标注哪些条件是硬过滤专用、哪些是打分专用
+
+### 4.3 因子之间高度相关
+
+**现状**：10 个因子中存在明显相关：
+
+| 因子对 | 相关原因 |
+|--------|---------|
+| PE ↔ PB | 都是估值因子，受市场情绪共同驱动 |
+| gross_margin ↔ net_margin | 利润率链条上下游，净利率 = 毛利率 - 费用率 |
+| revenue_yoy ↔ net_profit_yoy | 经营杠杆放大，但方向高度一致 |
+
+6 个打分因子里真正独立的维度大约只有 3-4 个：**估值、盈利质量、增长、杠杆**。
+
+**影响**：估值因子（PE）被重复计算了权重，实际影响比设定的 20% 更大。
+
+**改进方案**：
+- 精简因子：每组相关因子只选一个代表性因子（如毛利率和净利率选其一）
+- 或做正交化处理（因子收益正交化，复杂度较高）
+- 或接受相关性但调整权重（降低同组因子的权重之和）
+
+**推荐**：先精简因子，从 10 个减到 6-7 个不相关因子。
+
+### 4.4 缺少时间维度 — 只有截面快照
+
+**现状**：PE=15 到底便不便宜？取决于这只股票过去 5 年 PE 在什么范围。当前系统只看最新一期的绝对值，没有历史锚点。
+
+**影响**：牛市中 PE=15 可能已经偏贵（该股历史 PE 中位数 12），但系统仍给高分。
+
+**改进方案**：
+
+| 新因子 | 含义 | 数据需求 |
+|--------|------|---------|
+| `pe_pct_5y` | 当前 PE 在自身 5 年 PE 中的百分位 | daily_quote 历史 5 年 |
+| `pb_pct_5y` | 当前 PB 在自身 5 年 PB 中的百分位 | daily_quote 历史 5 年 |
+| `fcf_yield_pct_5y` | FCF Yield 5 年百分位 | mv_fcf_yield + 5 年历史 |
+
+**推荐**：先实现 `pe_pct_5y`，对价值策略意义最大。
+
+### 4.5 NaN 填充中位数掩盖数据稀疏
+
+**现状**：缺失因子排名 fillna(50)。一只股票 6 个因子缺 5 个，填充 5 个 50 分后仍能拿到 ~42 分，可能入选 Top 30。
+
+**影响**：数据稀疏的股票（通常是小盘股、新上市公司）获得不合理的排名。
+
+**改进方案**：
+- 缺失因子超过 50% 时，将综合分设为 NaN（排除出排名）
+- 或按缺失比例降权：有效因子权重按比例放大，但设置最低有效因子数阈值
+- 在输出中标注「数据完整度」，让用户自行判断
+
+**推荐**：设最低有效因子数（如至少 4/6 个因子有值），否则排除。
+
+## 五、开发顺序
 
 ```
-Phase 1.0（1 周）                Phase 1.1（1 周）              Phase 1.2（1 周）
-┌──────────────────┐            ┌──────────────────┐           ┌──────────────────┐
-│ 数据补全          │     →      │ 选股筛选器        │     →      │ 个股分析          │
-│                  │            │                  │           │                  │
-│ • ROE fallback   │            │ • query.py       │           │ • financial.py   │
-│   修复物化视图    │            │ • filters.py     │           │ • valuation.py   │
-│ • 刷新物化视图    │            │ • scorer.py      │           │ • trend.py       │
-│ • 验证数据质量    │            │ • presets.py     │           │ • report.py      │
-│                  │            │ • CLI __main__   │           │ • CLI __main__   │
-└──────────────────┘            └──────────────────┘           └──────────────────┘
-
+Phase 1.0 ✅          Phase 1.1 ✅          Phase 1.2（1 周）
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ 数据补全          │  │ 选股筛选器        │  │ 个股分析          │
+│                  │  │                  │  │                  │
+│ • ROE fallback   │  │ • query.py       │  │ • financial.py   │
+│   修复物化视图    │  │ • filters.py     │  │ • valuation.py   │
+│ • 刷新物化视图    │  │ • scorer.py      │  │ • trend.py       │
+│ • 验证数据质量    │  │ • presets.py     │  │ • report.py      │
+│                  │  │ • CLI __main__   │  │ • CLI __main__   │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
+                            │
+                            ▼
+                    Phase 1.5（筛选器改进）
+                    ┌──────────────────┐
+                    │ 行业感知 + 去相关 │
+                    │                  │
+                    │ • 行业内排名      │
+                    │ • 精简相关因子    │
+                    │ • 硬过滤/打分解耦 │
+                    │ • NaN 降权        │
+                    │ • 历史分位因子    │
+                    └──────────────────┘
+                            │
+                            ▼
 Phase 2.0（后期）
 ┌──────────────────┐
 │ 美股 + 分红       │
@@ -393,11 +506,12 @@ Phase 2.0（后期）
 
 ### 每个 Phase 的验收标准
 
-- Phase 1.0：ROE 覆盖率 CN_A > 3,000，CN_HK > 2,000；物化视图刷新后数据一致
-- Phase 1.1：`python -m screener --preset classic_value --market all` 能跑出 Top 30
-- Phase 1.2：`python -m analyzer 600519` 能输出完整分析报告
+- Phase 1.0 ✅：ROE 覆盖率 CN_A > 3,000，CN_HK > 2,000；物化视图刷新后数据一致
+- Phase 1.1 ✅：`python -m quant.screener --preset classic_value --market all` 能跑出 Top 30
+- Phase 1.2：`python -m quant.analyzer 600519` 能输出完整分析报告
+- Phase 1.5：同一预设下，金融/非金融股分别排名；因子相关系数矩阵中无 > 0.7 的因子对
 
-## 五、依赖
+## 六、依赖
 
 不需要安装新依赖。只用：
 - `psycopg2`（已有）— 直连 PostgreSQL
@@ -408,29 +522,30 @@ Phase 2.0（后期）
 pip install tabulate
 ```
 
-## 六、与现有系统的关系
+## 七、与现有系统的关系
 
 ```
-现有系统                          新增模块
-─────────                        ─────────
-fetchers/ (数据同步)              screener/ (选股筛选)
-transformers/ (字段映射)          analyzer/ (个股分析)
-db.py (数据库操作)
-sync/ (同步调度)
-config.py (配置)                  ← screener/analyzer 直接复用
-scheduler.py (定时任务)
-validate.py (数据校验)
-scripts/materialized_views.sql    ← ROE 修复在此修改
+数据基础设施层 (core/)               量化分析层 (quant/)
+─────────────────                   ─────────────────
+core/fetchers/ (数据同步)            quant/screener/ (选股筛选)
+core/transformers/ (字段映射)        quant/analyzer/ (个股分析)
+core/sync/ (同步调度)
+core/scheduler.py (定时任务)
+core/validate.py (数据校验)
+config.py (全局配置)                 ← quant/ 直接复用
+db.py (数据库连接池)                 ← quant/ 只读访问
+scripts/materialized_views.sql       ← ROE 修复在此修改
 ```
 
-- `screener/` 和 `analyzer/` **只读数据库**，不修改任何数据
+- `quant/screener/` 和 `quant/analyzer/` **只读数据库**，不修改任何数据
 - 复用 `config.py` 的数据库配置
 - 复用现有物化视图作为数据源，不新建表
-- CLI 入口：`python -m screener` / `python -m analyzer`
+- CLI 入口：`python -m quant.screener` / `python -m quant.analyzer`
 
-## 七、ROADMAP 更新
+## 八、ROADMAP 更新
 
 Phase 1 完成后更新 ROADMAP.md：
 - Phase 5 的「筛选器/分析工具」标记完成
 - 新增 Phase 5.5「数据补全：美股日线 + 分红」
 - Phase 6「高级分析」保持不变
+- 新增 Phase 1.5「筛选器改进：行业感知 + 去相关 + 历史分位」
