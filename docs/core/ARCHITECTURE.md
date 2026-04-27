@@ -1,12 +1,14 @@
-# Stock Data System — 系统架构设计
+# Stock Data System — 系统架构与规格
 
-> 最后更新：2026-04-09
+> 最后更新：2026-04-28
 
 ---
 
 ## 一、系统定位与目标
 
 **一句话定位：** A 股 / 港股 / 美股基本面数据同步系统，从多个数据源自动拉取财务报表、行情快照、行业分类等数据，存入 PostgreSQL，支持 CLI 同步和定时调度。
+
+**技术栈:** Python 3.10+ / PostgreSQL 16 / akshare / 东方财富 API / SEC EDGAR
 
 **覆盖范围：**
 
@@ -40,13 +42,10 @@
 ### 2.4 指标查询时计算
 
 - ROE、FCF Yield 等衍生指标通过 SQL / 物化视图按需计算，不在基础表中存储冗余列。
-- 保证指标永远一致：同样的基础数据，计算结果不变。
 
 ### 2.5 一个功能一份文档
 
-- 每个新功能（数据源接入、回填、同步、查询等）必须先出方案文档。
-- 方案文档必须包含：数据源评估、字段映射、风险评估、与现有功能的冲突分析。
-- 方案文档随代码一起 commit。
+- 每个新功能必须先出方案文档（数据源评估、字段映射、风险评估、与现有功能的冲突分析），随代码一起 commit。
 
 ---
 
@@ -70,24 +69,6 @@
                                               └────────────────┘
 ```
 
-**各模块职责：**
-
-| 模块 | 职责 | 禁止事项 |
-|------|------|---------|
-| `fetchers/` | 从外部 API 拉取原始数据，负责限流、重试、熔断 | 不做字段标准化，不做计算 |
-| `transformers/` | 将原始数据映射为标准字段，处理不同数据源的格式差异 | 不直接操作数据库 |
-| `db.py` | PostgreSQL 连接管理、upsert、查询、raw_snapshot 存储 | 不包含业务逻辑 |
-| `sync/` | CLI 入口 + 同步调度，编排 fetch → transform → write 流程 | 不包含具体的拉取逻辑 |
-|   ├ `_utils.py` | 公共工具：日志、DB表初始化、MARKET_CONFIG、sync_one_stock | |
-|   ├ `manager.py` | SyncManager 类：财务/行业/日线/分红同步调度 | |
-|   ├ `daily_quote.py` | 腾讯 K 线历史日线回填 | |
-|   ├ `share.py` | 股本数据同步 | |
-|   ├ `us_market.py` | 美股 SEC EDGAR 财务同步 + 重新解析 | |
-|   ├ `__init__.py` | CLI main() + 对外接口（from sync import SyncManager） | |
-|   └ `__main__.py` | python -m sync 支持 | |
-| `scheduler.py` | 定时任务调度，调用 sync 包的各个子命令 | 不直接调用 fetchers |
-| `validate.py` | 数据质量校验，检测异常值和逻辑不一致 | 不修改数据 |
-
 ### 3.2 表分层设计
 
 | Layer | 用途 | 更新方式 | 示例 |
@@ -101,6 +82,58 @@
 | Layer 6: daily_quote | 日线行情 | Upsert（带字段保护） | OHLCV、市值、PE |
 | Layer 6b: stock_share | 股本数据 | Upsert | 总股本、流通股 |
 | Layer 3b: mv_fcf_yield | FCF Yield 物化视图 | 定时刷新 | FCF Yield |
+
+### 3.3 代码架构
+
+```
+core/                    ←→   量化无关的基础设施
+├── fetchers/              外部 API 拉取（东方财富、腾讯、SEC）
+│   ├── base.py            BaseFetcher（熔断器 + 限流 + 指数退避重试）
+│   ├── a_financial.py     A股财务报表
+│   ├── hk_financial.py    港股财务报表
+│   ├── us_financial.py    美股 SEC EDGAR
+│   ├── stock_list.py      A股/港股列表
+│   ├── index_constituent.py 指数成分
+│   ├── dividend.py        分红送转
+│   ├── daily_quote.py     每日行情
+│   └── industry.py        行业分类（A股/港股/美股）
+├── transformers/          数据标准化、字段映射
+│   ├── eastmoney.py       A股字段映射
+│   ├── eastmoney_hk.py    港股字段映射
+│   ├── us_gaap.py         美股 US-GAAP 标签映射
+│   ├── field_mappings.py  映射定义
+│   └── dividend.py        分红标准化
+├── sync/                  同步编排包（CLI + 调度）
+│   ├── __init__.py        CLI 入口 + 符号导出
+│   ├── __main__.py        python -m core.sync 支持
+│   ├── manager.py         SyncManager 类（所有同步调度方法）
+│   ├── _utils.py          共享工具（MARKET_CONFIG、logger、sync_one_stock）
+│   ├── daily_quote.py     腾讯 K 线历史日线回填
+│   ├── share.py           股本数据同步
+│   ├── stock_list.py      股票列表同步
+│   └── us_market.py       美股市场同步 + 重新解析
+├── scheduler.py           APScheduler 定时调度
+├── validate.py            数据质量校验引擎
+└── incremental.py         增量同步判断
+
+quant/                   ←→   面向用户的分析工具
+├── screener/              多因子选股筛选器
+├── analyzer/              个股深度分析（待建）
+└── report/                报告生成（预留）
+
+根目录保留：config.py, db.py — 全局配置与数据库连接池，被 core/ 和 quant/ 共同依赖。
+```
+
+### 3.4 模块职责
+
+| 模块 | 职责 | 禁止事项 |
+|------|------|---------|
+| `fetchers/` | 从外部 API 拉取原始数据，负责限流、重试、熔断 | 不做字段标准化，不做计算 |
+| `transformers/` | 将原始数据映射为标准字段，处理不同数据源的格式差异 | 不直接操作数据库 |
+| `db.py` | PostgreSQL 连接管理、upsert、查询、raw_snapshot 存储 | 不包含业务逻辑 |
+| `sync/` | CLI 入口 + 同步调度，编排 fetch → transform → write 流程 | 不包含具体的拉取逻辑 |
+| `scheduler.py` | 定时任务调度，调用 sync 包的各个子命令 | 不直接调用 fetchers |
+| `validate.py` | 数据质量校验，检测异常值和逻辑不一致 | 不修改数据 |
 
 ---
 
@@ -124,23 +157,17 @@
 | stock_share | (stock_code, trade_date, market) | 每只股票每天一行，存变动历史 |
 | raw_snapshot | (stock_code, data_type, source, api_params) | 同参数同源不重复 |
 
-**字段覆盖原则：**
-
 > ⚠️ **铁律：upsert 时，值为 None 的字段不得覆盖数据库已有值。**
 >
-> 数据源未提供的字段应保持数据库原值不变。只有显式提供了非 None 值的字段才更新。
-
-`db.py` 的 `upsert` 函数已实现此规则（COALESCE 保护 + `force_null_cols` 显式覆盖参数）。历史回填和实时行情共享 `daily_quote` 表，历史 K 线只有 OHLCV（无市值/PE/PB），不会覆盖实时行情写入的衍生字段。
+> `db.py` 的 `upsert` 函数已实现此规则（COALESCE 保护 + `force_null_cols` 显式覆盖参数）。
 
 ### 4.3 每日数据流
 
-每日定时任务只跑一次 `daily_quote` 同步（`scheduler.py`，A股 16:37 / 港股 17:12），调用实时行情接口获取当天 OHLCV + 市值 + PE/PB。历史日线回填（腾讯 K 线）是独立的一次性任务，只在需要补历史数据时手动执行。
+每日定时任务只跑一次 `daily_quote` 同步（A股 16:37 / 港股 17:12），调用实时行情接口获取当天 OHLCV + 市值 + PE/PB。历史日线回填（腾讯 K 线）是独立的一次性任务。
 
-历史市值通过 `close × total_shares` 回算（数据源：`stock_share` 表），实时行情的市值由接口直接提供，两者不冲突。
+历史市值通过 `close × total_shares` 回算（数据源：`stock_share` 表），实时行情的市值由接口直接提供。
 
 ### 4.4 数据源优先级
-
-**决策：** 每种数据类型确定主源和备选源，主源失败时 fallback 到备选。
 
 | 数据类型 | 主源 | 备选 | 选择标准 |
 |---------|------|------|---------|
@@ -158,13 +185,11 @@
 
 ### 4.5 物化视图刷新策略
 
-**决策：** 物化视图在每日行情同步完成后刷新，不在同步过程中刷新。
-
 - `mv_indicator_ttm`：从 income_statement + cash_flow_statement 计算，用 annual 数据（不含 quarterly，避免重复计算）
 - `mv_fcf_yield`：从 `mv_indicator_ttm` + `daily_quote` 计算，依赖 daily_quote 的 market_cap
 - 刷新顺序：先 `mv_indicator_ttm`，再 `mv_fcf_yield`
 
-**⚠️ 已知陷阱：** `mv_indicator_ttm` 的 TTM 窗口计算中，如果同时包含 annual 和 quarterly 数据，annual 会被当作独立行重复计算，导致 TTM 数值虚高（曾导致 FCF Yield 夸大 3 倍）。修复方案：只使用 annual 数据。
+> ⚠️ **已知陷阱：** TTM 计算如果同时包含 annual 和 quarterly 数据，annual 会被当作独立行重复计算，导致数值虚高（曾导致 FCF Yield 夸大 3 倍）。修复方案：只用 annual 数据。
 
 ---
 
@@ -184,7 +209,7 @@
 | PB | ✅ | ✅ | ❌ | ❌ |
 | 换手率 | ✅ | ✅ | ❌ | ❌ |
 
-**影响：** 历史日线回填（腾讯 K 线）只有 OHLCV + 成交量，没有市值/PE/PB。回填时必须做字段保护，否则会覆盖实时同步写入的市值数据。
+历史日线回填（腾讯 K 线）只有 OHLCV + 成交量，没有市值/PE/PB。回填时必须做字段保护。
 
 ### 5.2 财务数据
 
@@ -202,14 +227,24 @@
 
 ### 6.1 多环境部署
 
-| 环境 | 市场 | 数据库 | 说明 |
-|------|------|--------|------|
-| 国内服务器 | CN_A + CN_HK | 本地 PostgreSQL | A 股、港股 |
-| 海外服务器 | US | 独立 PostgreSQL | 美股 |
+| 服务器 | 环境变量 | 职责 |
+|--------|----------|------|
+| 国内服务器 | `STOCK_MARKETS=CN_A,CN_HK` | A 股 + 港股同步 |
+| 海外服务器 | `STOCK_MARKETS=US` | 美股同步 |
 
-通过 `STOCK_MARKETS` 环境变量控制 scheduler 启用哪些市场的同步任务。未设置则 scheduler 不启动（防止误部署）。
+两台服务器数据库**独立**，代码通过 `STOCK_MARKETS` 环境变量区分任务注册，互不影响。
 
-### 6.2 网络依赖
+### 6.2 如何判断当前机器
+
+```bash
+echo $STOCK_MARKETS
+```
+
+- 输出包含 `CN_A,CN_HK` → **国内服务器**，负责 A 股 + 港股
+- 输出包含 `US` → **海外服务器**，负责美股
+- 为空 → **未配置**，需要检查 `.env` 文件
+
+### 6.3 网络依赖
 
 | 目标 | 国内服务器 | 海外服务器 |
 |------|-----------|-----------|
@@ -221,14 +256,166 @@
 
 ---
 
-## 七、已知限制与风险
+## 七、数据现状（2026-04-22）
+
+### 7.1 股票列表（stock_info）
+
+| 市场 | 股票数 | 有行业 |
+|------|--------|--------|
+| CN_A（A股） | 5,493 | 5,188（申万一级） |
+| CN_HK（港股） | 2,743 | 2,694（东方财富） |
+| US（美股） | 519 | 518（SIC Code） |
+| **合计** | **8,755** | — |
+
+### 7.2 财务报表
+
+A股 + 港股（东方财富）：
+
+| 表 | 记录数 | 覆盖股票数 |
+|----|--------|-----------|
+| income_statement | 299,717 | 6,282 |
+| balance_sheet | 378,526 | — |
+| cash_flow_statement | 380,385 | — |
+
+美股（SEC EDGAR）：
+
+| 表 | 记录数 | 覆盖股票数 |
+|----|--------|-----------|
+| us_income_statement | 48,689 | 517 |
+| us_balance_sheet | 42,779 | — |
+| us_cash_flow_statement | 51,935 | — |
+
+### 7.3 每日行情（daily_quote）
+
+| 市场 | 记录数 | 股票数 | 日期范围 |
+|------|--------|--------|---------|
+| CN_A | 6,119,247 | 5,493 | 2021-01-04 ~ 2026-04-21 |
+| CN_HK | 3,147,613 | 2,743 | 2021-01-04 ~ 2026-04-21 |
+| US | 3,099 | 517 | — |
+
+### 7.4 辅助表
+
+| 表 | 记录数 | 说明 |
+|----|--------|------|
+| stock_share（股本） | 15,872 | 腾讯行情接口 |
+| raw_snapshot（原始快照） | 504 | SEC EDGAR Company Facts |
+| validation_results（校验） | 658,301 | 数据质量校验结果 |
+| index_constituent（指数成分） | 800 | 沪深300 + 中证500 |
+| dividend_split（分红） | 0 | 代码已写，数据未同步 |
+
+### 7.5 物化视图
+
+| 视图 | 市场 | 说明 |
+|------|------|------|
+| mv_financial_indicator | A股/港股 | 单期财务指标 |
+| mv_indicator_ttm | A股/港股 | TTM 滚动指标 |
+| mv_fcf_yield | A股/港股 | FCF Yield（市值+财务） |
+| mv_us_financial_indicator | 美股 | 单期财务指标 |
+| mv_us_indicator_ttm | 美股 | TTM 滚动指标 |
+| mv_us_fcf_yield | 美股 | FCF Yield |
+
+---
+
+## 八、CLI 用法
+
+```bash
+# 同步股票列表
+python -m core.sync --type stock_list
+
+# 同步财务报表
+python -m core.sync --type financial --market CN_A
+python -m core.sync --type financial --market CN_HK
+python -m core.sync --type financial --market US
+
+# 同步每日行情
+python -m core.sync --type daily --market CN_A
+python -m core.sync --type daily --market CN_HK
+
+# 历史日线回填
+python -m core.sync --type daily-backfill --market CN_A --source tencent
+
+# 同步指数成分
+python -m core.sync --type index
+
+# 同步分红
+python -m core.sync --type dividend --market CN_A
+
+# 行业分类
+python -m core.sync --type industry
+
+# 股本数据
+python -m core.sync --type share --market CN_A
+
+# 数据校验
+python -m core.validate
+```
+
+---
+
+## 九、筛选能力
+
+### 9.1 价值筛选
+
+| 指标 | 数据来源 | 说明 |
+|------|---------|------|
+| PE（TTM） | 行情 / TTM 视图 | 市盈率 |
+| PB | 行情 | 市净率 |
+| FCF Yield | `mv_fcf_yield` | 自由现金流收益率 |
+| 股息率 | ❌ 暂无 | 分红数据尚未同步 |
+
+### 9.2 质量筛选
+
+| 指标 | 计算方式 |
+|------|---------|
+| ROE | 归母净利润 / 归母净资产 |
+| 毛利率 | 毛利润 / 营收 |
+| 净利率 | 净利润 / 营收 |
+| 营收增速 | 同比对比 |
+
+### 9.3 成长筛选
+
+| 指标 | 计算方式 |
+|------|---------|
+| 营收/净利润 YoY | (本期 - 去年同期) / 去年同期 |
+| CFO / 净利润 | 经营现金流 / 净利润 |
+| FCF / 净利润 | 自由现金流 / 净利润 |
+
+### 9.4 组合筛选示例
+
+```
+市场 = A股
+行业 ≠ 银行、证券、保险、地产、ST
+市值 > 500 亿
+PE（TTM）> 0 且 < 30
+ROE 连续 3 年 > 15%
+FCF Yield > 5%
+```
+
+---
+
+## 十、已知限制与风险
 
 | 类别 | 描述 | 影响 | 状态 |
 |------|------|------|------|
-| TTM 计算 | annual + quarterly 混合导致 FCF TTM 虚高 3 倍 | FCF Yield 不准确 | ✅ 已修复（只用 annual） |
-| 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE 保护） |
-| 历史市值缺失 | 腾讯 K 线不返回市值，922 万条 daily_quote 无 market_cap | FCF Yield 无法计算历史值 | 🔄 待回算（stock_share 已就绪） |
+| TTM 计算 | annual + quarterly 混合导致数值虚高 3 倍 | FCF Yield 不准确 | ✅ 已修复（只用 annual） |
+| 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE） |
+| 历史市值缺失 | 腾讯 K 线不返回市值，922 万条无 market_cap | FCF Yield 无法计算历史值 | 🔄 待回算 |
 | IP 封禁 | 东方财富行情 API 从国内被封 | 需用腾讯 fallback | ✅ 已有方案 |
 | SEC 限流 | SEC EDGAR 对请求频率有限制 | 美股同步可能失败 | ✅ 已有重试机制 |
+| 美股日线 | 仅 3,099 行，覆盖不全 | 美股估值指标不可用 | 🔄 待扩展 |
+| 分红数据 | dividend_split 表为空 | 股息率筛选不可用 | 🔄 代码已写，待执行 |
+| 港股行业缺失 | 49 只港股无行业 | 行业筛选不完整 | 🔄 等东方财富恢复 |
 | 物化视图 | 刷新不及时导致指标与基础表不一致 | 查询结果滞后 | 🔄 需自动化刷新 |
 | raw_snapshot | 大量原始 JSON 占用磁盘空间 | 12 GB+ | 🔄 可按需清理 |
+| equity_issued | 可能映射到回购而非发行 | 数据偏差 | 🔄 待验证 |
+
+### 当前开发阶段
+
+Phase 4（日线行情+估值）进行中，Phase 5（价值投资选股系统）进行中。详细进度见 [ROADMAP.md](../ROADMAP.md)。
+
+### 重要架构变更记录
+
+1. **sync/ 包拆分**：1751 行 sync.py 拆分为 8 个模块，CLI 入口从 `python sync.py` 改为 `python -m core.sync`
+2. **market 标识统一**：全项目使用 `CN_A` / `CN_HK` / `US`，数据库有 CHECK 约束
+3. **增量同步**：通过 `incremental.py` 的 `last_report_date` 判断，非 force 模式下只拉增量数据
+4. **项目重组为 core/ + quant/**：fetchers/ 和 transformers/ 移入 core/，选股功能独立为 quant/

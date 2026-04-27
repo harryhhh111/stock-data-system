@@ -124,9 +124,8 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 | 文档 | 何时更新 | 更新内容 |
 |------|---------|---------|
 | SCHEMA.md | 新建/修改表 | DDL 变更 |
-| ARCHITECTURE.md | 架构变更、新增数据源 | 设计决策、数据源矩阵 |
+| ARCHITECTURE.md | 架构变更、新增数据源、数据量变化 | 设计决策、数据源矩阵、数据现状 |
 | ROADMAP.md | 功能完成/新增 | 进度标记 |
-| SPEC.md | 数据量变化、功能变更 | 数据现状、已完成/待办 |
 | DEV_GUIDELINES.md | 规范变更 | 新增规则 |
 
 ---

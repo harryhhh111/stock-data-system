@@ -98,6 +98,10 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 
 ## Critical Rules
 
+- **⚠️ SERVER-AWARE RECOMMENDATIONS (最高优先级): 本项目部署在两台独立服务器，数据库不互通。在给出任何任务建议、优先级排序、或推荐下一步操作之前，MUST 先检查当前 `echo $STOCK_MARKETS` 或读取 `.env` 中的 `STOCK_MARKETS`，然后只推荐当前服务器支持的市场任务。**
+  - `STOCK_MARKETS=US` → **海外服务器**，只有美股数据。只能做: US 财务同步、US 日线行情、US 行业分类(SIC)、US 物化视图等。禁止推荐: A股/港股分红、A股/港股行业、沪深指数成分等。
+  - `STOCK_MARKETS=CN_A,CN_HK` → **国内服务器**，只有 A 股+港股数据。只能做: A股/港股财务同步、A股/港股日线行情、A股/港股分红、申万行业分类、沪深指数成分等。禁止推荐: SEC EDGAR 数据拉取、美股日线等。
+  - 不确定时先问用户当前在哪台机器。
 - **Never overwrite existing DB values with None** via upsert unless using `force_null_cols`.
 - **SEC EDGAR rate limit**: 10 req/s official, use 2 req/s in practice. Always set `User-Agent`.
 - **`fp` field in SEC data is unreliable** — use `frame` field to determine annual vs quarterly (see `docs/SEC_DATA_PITFALLS.md`).

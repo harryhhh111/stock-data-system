@@ -15,14 +15,12 @@
 
 | 文档 | 内容 |
 |------|------|
-| [core/ARCHITECTURE.md](core/ARCHITECTURE.md) | 系统架构、数据源矩阵、部署设计 |
+| [core/ARCHITECTURE.md](core/ARCHITECTURE.md) | 系统架构、设计决策、数据现状、CLI 用法 |
 | [core/SCHEMA.md](core/SCHEMA.md) | 数据库表结构、字段定义、物化视图 |
 | [core/DEV_GUIDELINES.md](core/DEV_GUIDELINES.md) | 开发规范、踩坑记录、最佳实践 |
 | [core/SCHEDULER_DESIGN.md](core/SCHEDULER_DESIGN.md) | 定时任务调度设计 |
 | [core/SEC_DATA_PITFALLS.md](core/SEC_DATA_PITFALLS.md) | SEC EDGAR 数据陷阱与解决方案 |
 | [core/[US] DEPLOY_OVERSEAS.md](core/[US] DEPLOY_OVERSEAS.md) | 海外部署指南 |
-| [core/SPEC.md](core/SPEC.md) | 功能规格说明 |
-| [core/PROJECT_MEMORY.md](core/PROJECT_MEMORY.md) | 项目历史决策记录 |
 
 ---
 
