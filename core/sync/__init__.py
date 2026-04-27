@@ -9,8 +9,15 @@ from ._utils import ensure_sync_progress_table, logger, sync_one_stock
 
 def main():
     import argparse
+    import logging
     import signal
     import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     from db import health_check
 

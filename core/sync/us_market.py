@@ -9,6 +9,84 @@ from db import upsert, execute, save_raw_snapshot
 from ._utils import MARKET_CONFIG, logger
 
 
+def _process_us_company_data(fetcher, transformer, ticker: str, cik: str, facts: dict) -> list[str]:
+    """Extract, transform, and upsert 3 financial statements from SEC Company Facts.
+
+    Returns list of table names successfully written.
+    """
+    income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
+    balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
+    cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+
+    cfg = MARKET_CONFIG["US"]
+    tables_synced = []
+    for table, df, transform_method in zip(
+        cfg["tables"],
+        [income_df, balance_df, cashflow_df],
+        cfg["transform_methods"],
+    ):
+        if df is None or df.empty:
+            continue
+        records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+        if records:
+            upsert(table, records, cfg["conflict_keys"])
+            tables_synced.append(table)
+
+    return tables_synced
+
+
+def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[str], int]:
+    """Filter US tickers, skipping those already synced with latest report date.
+
+    Returns (pending_tickers, skipped_count).
+    """
+    if force:
+        logger.info("US增量判断: force=True, 全量 %d 只", len(tickers))
+        return tickers, 0
+
+    # 1. Get sync_progress records for these tickers
+    progress_rows = execute(
+        "SELECT stock_code, last_report_date FROM sync_progress "
+        "WHERE market = 'US' AND status = 'success' AND last_report_date IS NOT NULL",
+        fetch=True,
+    ) or []
+    progress_dates: dict[str, object] = {r[0]: r[1] for r in progress_rows}
+
+    # 2. Get max report_date from US financial tables
+    tables = ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]
+    union_parts = []
+    for table in tables:
+        union_parts.append(
+            f"SELECT stock_code, MAX(report_date) AS max_date FROM {table} "
+            f"WHERE stock_code = ANY(%s) GROUP BY stock_code"
+        )
+    sql = " UNION ALL ".join(union_parts)
+    wrapped = f"SELECT stock_code, MAX(max_date) FROM ({sql}) sub GROUP BY stock_code"
+    db_rows = execute(wrapped, (tickers, tickers, tickers), fetch=True) or []
+    db_max_dates: dict[str, object] = {r[0]: r[1] for r in db_rows}
+
+    pending = []
+    skipped = 0
+    for ticker in tickers:
+        db_max = db_max_dates.get(ticker)
+        progress_max = progress_dates.get(ticker)
+        if db_max is None:
+            pending.append(ticker)
+        elif progress_max is None:
+            pending.append(ticker)
+        elif db_max > progress_max:
+            pending.append(ticker)
+        else:
+            skipped += 1
+
+    logger.info(
+        "US增量判断: 总计=%d, 待同步=%d, 跳过=%d (%.1f%%)",
+        len(tickers), len(pending), skipped,
+        skipped / len(tickers) * 100 if tickers else 0,
+    )
+    return pending, skipped
+
+
 def sync_us_market(args) -> dict:
     """美股 SEC EDGAR 财务数据同步（串行执行）。
 
@@ -48,13 +126,21 @@ def sync_us_market(args) -> dict:
     if total == 0:
         return {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
 
+    # 增量判断 — 跳过已是最新报告期的 ticker
+    pending_tickers, skipped = _filter_pending_us_tickers(tickers, force=getattr(args, "force", False))
+    if not pending_tickers:
+        logger.info("所有美股已是最新，无需同步")
+        return {"total": total, "success": 0, "failed": 0, "skipped": skipped, "elapsed": 0}
+
     # 3. 同步
     success = 0
     failed = 0
     errors: list[str] = []
     t0 = time.time()
 
-    for i, ticker in enumerate(tickers, 1):
+    pending_count = len(pending_tickers)
+
+    for i, ticker in enumerate(pending_tickers, 1):
         try:
             cik = fetcher.resolve_cik(ticker)
             if not cik:
@@ -71,23 +157,7 @@ def sync_us_market(args) -> dict:
             # 保存原始快照
             save_raw_snapshot(ticker, "company_facts", raw_data, source="sec_edgar")
 
-            income_df = fetcher.extract_table(raw_data, fetcher.INCOME_TAGS)
-            balance_df = fetcher.extract_table(raw_data, fetcher.BALANCE_TAGS)
-            cashflow_df = fetcher.extract_table(raw_data, fetcher.CASHFLOW_TAGS)
-
-            cfg = MARKET_CONFIG["US"]
-            tables_synced = []
-            for table, df, transform_method in zip(
-                cfg["tables"],
-                [income_df, balance_df, cashflow_df],
-                cfg["transform_methods"],
-            ):
-                if df is None or df.empty:
-                    continue
-                records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
-                if records:
-                    upsert(table, records, cfg["conflict_keys"])
-                    tables_synced.append(table)
+            tables_synced = _process_us_company_data(fetcher, transformer, ticker, cik, raw_data)
 
             if tables_synced:
                 success += 1
@@ -117,15 +187,15 @@ def sync_us_market(args) -> dict:
             )
 
         # 进度日志
-        if i % 5 == 0 or i == total:
+        if i % 5 == 0 or i == pending_count:
             elapsed = time.time() - t0
             rate = i / elapsed if elapsed > 0 else 0
-            eta = (total - i) / rate if rate > 0 else 0
+            eta = (pending_count - i) / rate if rate > 0 else 0
             logger.info(
                 "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%.0fs",
                 i,
-                total,
-                i / total * 100,
+                pending_count,
+                i / pending_count * 100,
                 success,
                 failed,
                 rate * 60,
@@ -138,14 +208,16 @@ def sync_us_market(args) -> dict:
         "total": total,
         "success": success,
         "failed": failed,
+        "skipped": skipped,
         "elapsed": elapsed,
     }
 
     logger.info(
-        "美股同步完成: 总计=%d, 成功=%d, 失败=%d, 耗时=%.1fs",
+        "美股同步完成: 总计=%d, 成功=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
         total,
         success,
         failed,
+        skipped,
         elapsed,
     )
 
@@ -247,23 +319,7 @@ def sync_us_market_reparse(args) -> dict:
 
             cik = str(facts.get("cik", "")).strip().zfill(10)
 
-            income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
-            balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
-            cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
-
-            cfg = MARKET_CONFIG["US"]
-            tables_synced = []
-            for table, df, transform_method in zip(
-                cfg["tables"],
-                [income_df, balance_df, cashflow_df],
-                cfg["transform_methods"],
-            ):
-                records = getattr(transformer, transform_method)(
-                    df, stock_code=ticker, cik=cik
-                )
-                if records:
-                    upsert(table, records, cfg["conflict_keys"])
-                    tables_synced.append(table)
+            tables_synced = _process_us_company_data(fetcher, transformer, ticker, cik, facts)
 
             if tables_synced:
                 success += 1

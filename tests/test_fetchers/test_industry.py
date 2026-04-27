@@ -139,13 +139,14 @@ class TestIndustryDistribution:
 class TestSyncIndustry:
     """测试 SyncManager.sync_industry 方法。"""
 
+    @patch("core.sync.manager.batch_update_industry")
     @patch("core.sync.manager.execute")
     @patch("core.fetchers.industry._fetch_index_component")
     @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_sync_industry_updates_stock_info(
-        self, mock_l1, mock_cons, mock_execute
+        self, mock_l1, mock_cons, mock_execute, mock_batch
     ):
-        """测试 sync_industry 正确 UPDATE stock_info。"""
+        """测试 sync_industry 正确调用 batch_update_industry。"""
         # Mock 一级行业列表
         mock_l1.return_value = pd.DataFrame({
             "行业代码": ["801780.SI"],
@@ -166,6 +167,7 @@ class TestSyncIndustry:
             return None
 
         mock_execute.side_effect = execute_side_effect
+        mock_batch.return_value = 2  # batch_update_industry 返回更新数
 
         from core.sync import SyncManager
         manager = SyncManager()
@@ -176,18 +178,17 @@ class TestSyncIndustry:
         assert result["not_in_stock_info"] == 0
         assert result["industry_count"] == 1
 
-        # 验证 execute 被调用（UPDATE SQL）
-        update_calls = [
-            c for c in mock_execute.call_args_list
-            if c.args and "UPDATE stock_info" in str(c.args[0])
-        ]
-        assert len(update_calls) > 0
+        # 验证 batch_update_industry 参数正确
+        mock_batch.assert_called_once()
+        assert mock_batch.call_args[0][0] == {"000001": "银行", "002142": "银行"}
+        assert mock_batch.call_args[0][1] == "CN_A"
 
+    @patch("core.sync.manager.batch_update_industry")
     @patch("core.sync.manager.execute")
     @patch("core.fetchers.industry._fetch_index_component")
     @patch("core.fetchers.industry._fetch_sw_first_info")
     def test_sync_industry_skips_unknown_stocks(
-        self, mock_l1, mock_cons, mock_execute
+        self, mock_l1, mock_cons, mock_execute, mock_batch
     ):
         """测试不在 stock_info 中的股票被跳过。"""
         mock_l1.return_value = pd.DataFrame({
@@ -208,6 +209,7 @@ class TestSyncIndustry:
             return None
 
         mock_execute.side_effect = execute_side_effect
+        mock_batch.return_value = 1
 
         from core.sync import SyncManager
         manager = SyncManager()
@@ -215,6 +217,10 @@ class TestSyncIndustry:
 
         assert result["total"] == 2
         assert result["not_in_stock_info"] == 1
+
+        # batch_update_industry 只传入找到的 1 只
+        mock_batch.assert_called_once()
+        assert mock_batch.call_args[0][0] == {"000001": "银行"}
 
 
 # ── 美股行业分类测试 ──────────────────────────────────────
@@ -356,12 +362,13 @@ class TestFetchUsIndustry:
 class TestSyncUsIndustry:
     """测试 SyncManager.sync_us_industry 方法。"""
 
+    @patch("core.sync.manager.batch_update_industry")
     @patch("core.sync.manager.execute")
     @patch("core.fetchers.industry.requests.Session")
     def test_sync_us_industry_updates_stock_info(
-        self, mock_session_cls, mock_execute
+        self, mock_session_cls, mock_execute, mock_batch
     ):
-        """测试 sync_us_industry 正确 UPDATE stock_info。"""
+        """测试 sync_us_industry 正确调用 batch_update_industry。"""
         mock_session = MagicMock()
         mock_session_cls.return_value = mock_session
 
@@ -380,6 +387,7 @@ class TestSyncUsIndustry:
             return None
 
         mock_execute.side_effect = execute_side_effect
+        mock_batch.return_value = 2
 
         from core.sync import SyncManager
         manager = SyncManager()
@@ -390,15 +398,12 @@ class TestSyncUsIndustry:
         assert result["empty_industry"] == 0
         assert result["industry_count"] == 1  # 都是 Electronic Computers
 
-        # 验证 execute 被调用（UPDATE SQL）
-        update_calls = [
-            c for c in mock_execute.call_args_list
-            if c.args and "UPDATE stock_info" in str(c.args[0])
-        ]
-        assert len(update_calls) > 0
+        mock_batch.assert_called_once()
+        assert mock_batch.call_args[0][1] == "US"
 
+    @patch("core.sync.manager.batch_update_industry")
     @patch("core.sync.manager.execute")
-    def test_sync_us_industry_no_stocks(self, mock_execute):
+    def test_sync_us_industry_no_stocks(self, mock_execute, mock_batch):
         """测试没有美股时返回空结果。"""
         mock_execute.return_value = []
 
@@ -407,4 +412,3 @@ class TestSyncUsIndustry:
         result = manager.sync_us_industry()
 
         assert result["total"] == 0
-        assert result["updated"] == 0

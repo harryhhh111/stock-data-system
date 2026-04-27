@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
-from db import upsert, execute
+from db import upsert, execute, batch_update_industry
 from core.incremental import (
     determine_stocks_to_sync,
     update_last_report_date,
@@ -281,74 +281,101 @@ class SyncManager:
     # ── 分红数据同步 ────────────────────────────────────
 
     def sync_dividend(self, market: str | None = None) -> dict:
-        """同步分红数据。
+        """同步分红数据（并发版）。
 
         Args:
             market: "CN_A" | "CN_HK" | None (全部)
         """
+        import threading
+
         from core.fetchers.dividend import DividendFetcher
         from core.transformers.dividend import transform_a_dividend, transform_hk_dividend
 
         logger.info("开始同步分红数据...")
 
-        markets = []
-        if market:
-            markets = [market]
-        else:
-            markets = ["CN_A", "CN_HK"]
+        markets = [market] if market else ["CN_A", "CN_HK"]
 
-        fetcher = DividendFetcher()
-        success = 0
-        failed = 0
-        total = 0
-        errors: list[str] = []
-
+        all_stocks: list[tuple[str, str]] = []
         for m in markets:
             rows = execute(
                 "SELECT stock_code FROM stock_info WHERE market = %s",
                 (m,),
                 fetch=True,
             )
-            stocks = [r[0] for r in rows]
-            total += len(stocks)
-            logger.info("分红同步: %s 市场 %d 只股票", m, len(stocks))
+            for r in rows:
+                all_stocks.append((r[0], m))
+            logger.info("分红同步: %s 市场 %d 只股票", m, len(rows))
 
-            for code in stocks:
-                try:
-                    if m == "CN_A":
-                        df = fetcher.fetch_a_dividend(code)
-                        records = transform_a_dividend(df, code)
-                    else:
-                        df = fetcher.fetch_hk_dividend(code)
-                        records = transform_hk_dividend(df, code)
+        total = len(all_stocks)
+        if total == 0:
+            return {"total": 0, "success": 0, "failed": 0}
 
-                    if records:
-                        upsert(
-                            "dividend_split",
-                            records,
-                            [
-                                "stock_code",
-                                "announce_date",
-                                "dividend_per_share",
-                                "bonus_share",
-                                "convert_share",
-                            ],
-                        )
+        t0 = time.time()
+        success = 0
+        failed = 0
+        errors: list[str] = []
+        lock = threading.Lock()
+
+        def _sync_one(code: str, market: str) -> None:
+            nonlocal success, failed
+            fetcher = DividendFetcher()
+            try:
+                if market == "CN_A":
+                    df = fetcher.fetch_a_dividend(code)
+                    records = transform_a_dividend(df, code)
+                else:
+                    df = fetcher.fetch_hk_dividend(code)
+                    records = transform_hk_dividend(df, code)
+
+                if records:
+                    upsert(
+                        "dividend_split",
+                        records,
+                        [
+                            "stock_code",
+                            "announce_date",
+                            "dividend_per_share",
+                            "bonus_share",
+                            "convert_share",
+                        ],
+                    )
+                    with lock:
                         success += 1
-                    else:
-                        logger.debug("%s 无分红数据", code)
-                except Exception as exc:
+                else:
+                    logger.debug("%s 无分红数据", code)
+            except Exception as exc:
+                with lock:
                     failed += 1
                     if len(errors) < 20:
                         errors.append(f"{code}: {exc}")
 
-        logger.info("分红同步完成: 总计=%d, 成功=%d, 失败=%d", total, success, failed)
+        # 限制并发数防止 IP 被封（限流器保证请求间隔，低并发保底）
+        d_workers = min(self.max_workers, 2)
+        with ThreadPoolExecutor(max_workers=d_workers) as pool:
+            futures = [pool.submit(_sync_one, code, m) for code, m in all_stocks]
+            for i, future in enumerate(as_completed(futures), 1):
+                try:
+                    future.result()
+                except Exception:
+                    pass  # 异常已在 worker 中处理
+                if i % 100 == 0 or i == total:
+                    logger.info(
+                        "分红进度: %d/%d 成功=%d 失败=%d",
+                        i, total, success, failed,
+                    )
+
+        elapsed = time.time() - t0
+        logger.info(
+            "分红同步完成: 总计=%d, 成功=%d, 失败=%d, 耗时=%.1fs",
+            total, success, failed, elapsed,
+        )
         if errors:
-            logger.info("错误 (前%d条):", len(errors))
             for e in errors:
                 logger.info("  - %s", e)
 
-        return {"total": total, "success": success, "failed": failed}
+        return {
+            "total": total, "success": success, "failed": failed, "elapsed": elapsed,
+        }
 
     # ── 行业分类同步 ──────────────────────────────────────
 
@@ -397,37 +424,7 @@ class SyncManager:
             not_found,
         )
 
-        batch_size = 500
-        codes_list = list(code_industry.keys())
-
-        for i in range(0, len(codes_list), batch_size):
-            batch = codes_list[i : i + batch_size]
-            case_parts = []
-            codes_str = []
-            for code in batch:
-                industry = code_industry[code].replace("'", "''")
-                case_parts.append(f"WHEN '{code}' THEN '{industry}'")
-                codes_str.append(f"'{code}'")
-
-            sql = f"""
-                UPDATE stock_info
-                SET industry = CASE stock_code
-                    {" ".join(case_parts)}
-                END,
-                updated_at = NOW()
-                WHERE stock_code IN ({", ".join(codes_str)})
-                AND market = 'CN_A'
-            """
-            execute(sql, commit=True)
-            updated += len(batch)
-
-            if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
-                logger.info(
-                    "行业写入进度: %d/%d (%.0f%%)",
-                    min(i + batch_size, len(codes_list)),
-                    len(codes_list),
-                    min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
-                )
+        updated = batch_update_industry(code_industry, "CN_A")
 
         elapsed = time.time() - t0
 
@@ -504,37 +501,7 @@ class SyncManager:
             if not item["industry_name"]:
                 empty_industry += 1
 
-        batch_size = 500
-        codes_list = list(code_industry.keys())
-
-        for i in range(0, len(codes_list), batch_size):
-            batch = codes_list[i : i + batch_size]
-            case_parts = []
-            codes_str = []
-            for code in batch:
-                industry = code_industry[code].replace("'", "''")
-                case_parts.append(f"WHEN '{code}' THEN '{industry}'")
-                codes_str.append(f"'{code}'")
-
-            sql = f"""
-                UPDATE stock_info
-                SET industry = CASE stock_code
-                    {" ".join(case_parts)}
-                END,
-                updated_at = NOW()
-                WHERE stock_code IN ({", ".join(codes_str)})
-                AND market = 'US'
-            """
-            execute(sql, commit=True)
-            updated += len(batch)
-
-            if (i + batch_size) % 2000 == 0 or i + batch_size >= len(codes_list):
-                logger.info(
-                    "美股行业写入进度: %d/%d (%.0f%%)",
-                    min(i + batch_size, len(codes_list)),
-                    len(codes_list),
-                    min(i + batch_size, len(codes_list)) / len(codes_list) * 100,
-                )
+        updated = batch_update_industry(code_industry, "US")
 
         elapsed = time.time() - t0
 

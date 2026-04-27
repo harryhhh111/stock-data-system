@@ -92,6 +92,7 @@ class AdaptiveRateLimiter:
         self._window = window
         self._results: list[bool] = []  # True = success, False = failure
         self._lock = threading.Lock()
+        self._wait_lock = threading.Lock()  # 保证并发调用也串行等待
         self._last_request_time: float = 0.0
 
     def _current_delay(self) -> float:
@@ -106,13 +107,14 @@ class AdaptiveRateLimiter:
         return delay
 
     def wait(self) -> None:
-        """在发起请求前调用，自动 sleep。"""
-        delay = self._current_delay()
-        now = time.time()
-        elapsed = now - self._last_request_time
-        if elapsed < delay:
-            time.sleep(delay - elapsed)
-        self._last_request_time = time.time()
+        """在发起请求前调用，自动 sleep（线程安全）。"""
+        with self._wait_lock:
+            delay = self._current_delay()
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < delay:
+                time.sleep(delay - elapsed)
+            self._last_request_time = time.time()
 
     def record_success(self) -> None:
         with self._lock:

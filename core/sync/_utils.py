@@ -10,11 +10,6 @@ import psycopg2.extras
 from config import DBConfig
 from db import upsert, execute
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 logger = logging.getLogger("sync")
 
 
