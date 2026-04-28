@@ -345,7 +345,10 @@ CREATE INDEX idx_mv_us_indicator_fcf ON mv_us_financial_indicator(fcf);
 
 
 -- ============================================================
--- mv_us_indicator_ttm: 美股 TTM 指标
+-- mv_us_indicator_ttm: 美股 TTM 指标（仅使用 annual 数据）
+-- ============================================================
+-- SEC 季度数据为累计值（YTD），不能直接窗口求和（会 3x-4x 膨胀）。
+-- US TTM 直接取最新 annual 报表值，annual 本身即代表全年。
 -- ============================================================
 
 DROP MATERIALIZED VIEW IF EXISTS mv_us_indicator_ttm CASCADE;
@@ -356,26 +359,14 @@ SELECT
     report_date,
     report_type,
     filed_date,
-    SUM(revenues) OVER (
-        PARTITION BY stock_code ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS revenue_ttm,
-    SUM(net_income) OVER (
-        PARTITION BY stock_code ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS net_income_ttm,
-    SUM(net_cash_from_operations) OVER (
-        PARTITION BY stock_code ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS cfo_ttm,
-    SUM(CASE
+    revenues AS revenue_ttm,
+    net_income AS net_income_ttm,
+    net_cash_from_operations AS cfo_ttm,
+    CASE
         WHEN net_cash_from_operations IS NOT NULL AND capital_expenditures IS NOT NULL
         THEN net_cash_from_operations - capital_expenditures
         ELSE NULL
-    END) OVER (
-        PARTITION BY stock_code ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS fcf_ttm,
+    END AS fcf_ttm,
     updated_at
 FROM (
     SELECT DISTINCT ON (stock_code, report_date)
@@ -385,8 +376,10 @@ FROM (
         i.filed_date, i.updated_at
     FROM us_income_statement i
     LEFT JOIN us_cash_flow_statement cf
-        ON i.stock_code = cf.stock_code AND i.report_date = cf.report_date AND i.report_type = cf.report_type
-    WHERE i.report_type IN ('quarterly', 'annual')
+        ON i.stock_code = cf.stock_code
+        AND i.report_date = cf.report_date
+        AND i.report_type = cf.report_type
+    WHERE i.report_type = 'annual'
     ORDER BY stock_code, report_date
 ) t;
 
