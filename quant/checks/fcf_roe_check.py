@@ -12,11 +12,14 @@ FCF Yield + ROE 连续 3 年质量把关脚本（支持 US / CN_A / CN_HK / all�
 
 import argparse
 import json
+import logging
 import os
 import sys
 
 import pandas as pd
 from db import Connection
+
+logger = logging.getLogger(__name__)
 
 # ── 市场配置 ──
 
@@ -83,7 +86,7 @@ def _resolve_markets(market: str | None) -> list[str]:
 def get_fcf_screen(market: str, min_yield: float = 0.10) -> pd.DataFrame:
     """获取指定市场 FCF Yield > min_yield 的股票，排除不适用行业。"""
     cfg = MARKET_CONFIG[market]
-    excluded = "', '".join(cfg["excluded_industries"])
+    excluded = tuple(cfg["excluded_industries"])
     sql = f"""
     SELECT
         fy.stock_code,
@@ -96,18 +99,19 @@ def get_fcf_screen(market: str, min_yield: float = 0.10) -> pd.DataFrame:
         fy.pe_ttm,
         fy.pb,
         fy.close,
-        '{market}' AS market
+        %s AS market
     FROM {cfg['fcf_yield_view']} fy
     JOIN stock_info s ON fy.stock_code = s.stock_code
-    WHERE fy.fcf_yield > {min_yield}
+    WHERE fy.fcf_yield > %s
       AND {cfg['market_filter']}
-      AND s.industry NOT IN ('{excluded}')
+      AND s.industry NOT IN %s
     ORDER BY fy.fcf_yield DESC
     """
     try:
         with Connection() as conn:
-            return pd.read_sql(sql, conn)
-    except Exception:
+            return pd.read_sql(sql, conn, params=(market, min_yield, excluded))
+    except Exception as e:
+        logger.error("查询 %s FCF 筛选失败: %s", market, e, exc_info=True)
         return pd.DataFrame()
 
 
@@ -116,7 +120,7 @@ def get_roe_history(market: str, stock_codes: list[str]) -> pd.DataFrame:
     if not stock_codes:
         return pd.DataFrame()
     cfg = MARKET_CONFIG[market]
-    codes = "', '".join(stock_codes)
+    codes = tuple(stock_codes)
     sql = f"""
     SELECT
         stock_code,
@@ -124,14 +128,15 @@ def get_roe_history(market: str, stock_codes: list[str]) -> pd.DataFrame:
         roe,
         ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS roe_rank
     FROM {cfg['indicator_view']}
-    WHERE stock_code IN ('{codes}')
+    WHERE stock_code IN %s
       AND report_type = 'annual'
       AND roe IS NOT NULL
     """
     try:
         with Connection() as conn:
-            return pd.read_sql(sql, conn)
-    except Exception:
+            return pd.read_sql(sql, conn, params=(codes,))
+    except Exception as e:
+        logger.error("查询 %s ROE 历史失败: %s", market, e, exc_info=True)
         return pd.DataFrame()
 
 
