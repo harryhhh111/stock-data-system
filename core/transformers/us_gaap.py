@@ -327,11 +327,16 @@ class USGAAPTransformer(BaseTransformer):
             all_keys.update(_BALANCE_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
-        # total_equity fallback: 优先用 StockholdersEquity，取不到则用 total_equity_including_nci
-        # 部分公司（如 JNJ）只在 10-Q 报 StockholdersEquity，年报中只有含 NCI 的权益
+        # total_equity fallback chain:
+        #   1. StockholdersEquity (priority tag)
+        #   2. StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+        #   3. total_assets - total_liabilities (calculated)
         for r in records:
-            if r.get("total_equity") is None and r.get("total_equity_including_nci") is not None:
-                r["total_equity"] = r["total_equity_including_nci"]
+            if r.get("total_equity") is None:
+                if r.get("total_equity_including_nci") is not None:
+                    r["total_equity"] = r["total_equity_including_nci"]
+                elif r.get("total_assets") is not None and r.get("total_liabilities") is not None:
+                    r["total_equity"] = r["total_assets"] - r["total_liabilities"]
 
         logger.debug("资产负债表转换: %s, %d 条记录", stock_code, len(records))
         return records

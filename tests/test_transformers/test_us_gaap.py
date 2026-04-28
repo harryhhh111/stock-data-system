@@ -46,6 +46,54 @@ class TestUSGAAPTransformer:
         assert record["currency"] == "USD"
         assert "revenues" in record or "Revenues" in record
 
+    def test_transform_balance_equity_fallback_calculated(self):
+        """total_equity = total_assets - total_liabilities 作为第三层 fallback。"""
+        transformer = USGAAPTransformer()
+        df = pd.DataFrame([{
+            "end": "2025-12-31",
+            "fp": "FY",
+            "filed": "2026-02-15",
+            "accn": "0000320193-26-000001",
+            "total_assets": 100000,
+            "total_liabilities": 60000,
+        }])
+        records = transformer.transform_balance(df, stock_code="TEST", cik="0000000001")
+        assert len(records) == 1
+        assert records[0]["total_equity"] == 40000
+
+    def test_transform_balance_nci_fallback_over_calculated(self):
+        """含 NCI 的权益 fallback 优先于计算值。"""
+        transformer = USGAAPTransformer()
+        df = pd.DataFrame([{
+            "end": "2025-12-31",
+            "fp": "FY",
+            "filed": "2026-02-15",
+            "accn": "0000320193-26-000001",
+            "total_assets": 100000,
+            "total_liabilities": 60000,
+            "total_equity_including_nci": 42000,
+        }])
+        records = transformer.transform_balance(df, stock_code="TEST", cik="0000000001")
+        assert len(records) == 1
+        assert records[0]["total_equity"] == 42000  # NCI takes priority
+
+    def test_transform_equity_direct_tag_over_fallbacks(self):
+        """StockholdersEquity 直接标签优先于所有 fallback。"""
+        transformer = USGAAPTransformer()
+        df = pd.DataFrame([{
+            "end": "2025-12-31",
+            "fp": "FY",
+            "filed": "2026-02-15",
+            "accn": "0000320193-26-000001",
+            "total_equity": 38000,
+            "total_equity_including_nci": 42000,
+            "total_assets": 100000,
+            "total_liabilities": 60000,
+        }])
+        records = transformer.transform_balance(df, stock_code="TEST", cik="0000000001")
+        assert len(records) == 1
+        assert records[0]["total_equity"] == 38000  # direct tag wins
+
     def test_transform_income_all_keys_equal(self, sample_sec_facts):
         """所有记录应有相同的 key 集合（upsert 要求）。"""
         from core.fetchers.us_financial import USFinancialFetcher
