@@ -695,3 +695,179 @@ class TestDailyQuoteFetcherMocked:
         assert row["市盈率-动态"] == pytest.approx(18.21)
         # 涨跌额: [61] = 10.0
         assert row["涨跌额"] == pytest.approx(10.0)
+
+
+# ── 美股交易所后缀 ─────────────────────────────────────────
+
+
+class TestFetchUsExchangeSuffixes:
+    """测试 fetch_us_exchange_suffixes 方法。"""
+
+    @patch("core.fetchers.daily_quote.requests.get")
+    def test_basic_suffix_mapping(self, mock_get):
+        """测试基本交易所后缀映射：纳斯达克 (.OQ) 和纽交所 (.N)。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+
+        aapl_fields = [""] * 71
+        aapl_fields[2] = "AAPL.OQ"
+        aapl_data = "~".join(aapl_fields)
+
+        jpm_fields = [""] * 71
+        jpm_fields[2] = "JPM.N"
+        jpm_data = "~".join(jpm_fields)
+
+        mock_resp.text = f'v_usAAPL="{aapl_data}";\nv_usJPM="{jpm_data}";\n'
+        mock_get.return_value = mock_resp
+
+        from core.fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        with patch("db.execute", return_value=[("AAPL",), ("JPM",)]):
+            suffixes = fetcher.fetch_us_exchange_suffixes()
+
+        assert len(suffixes) == 2
+        assert suffixes["AAPL"] == ".OQ"
+        assert suffixes["JPM"] == ".N"
+
+    @patch("core.fetchers.daily_quote.requests.get")
+    def test_brk_b_hyphen_to_dot(self, mock_get):
+        """测试 BRK-B 连字符转点号 + 反向映射回 DB 代码。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+
+        brk_fields = [""] * 71
+        brk_fields[2] = "BRK.B.N"
+        brk_data = "~".join(brk_fields)
+
+        mock_resp.text = f'v_usBRK.B="{brk_data}";\n'
+        mock_get.return_value = mock_resp
+
+        from core.fetchers.daily_quote import DailyQuoteFetcher
+        fetcher = DailyQuoteFetcher()
+
+        with patch("db.execute", return_value=[("BRK-B",)]):
+            suffixes = fetcher.fetch_us_exchange_suffixes()
+
+        assert len(suffixes) == 1
+        # DB 代码 BRK-B 应映射到 .N（纽交所）
+        assert suffixes["BRK-B"] == ".N"
+
+
+# ── 美股 fetch_tencent_hist US 分支 ──────────────────────
+
+
+class TestFetchTencentHistUS:
+    """测试 fetch_tencent_hist 的美股分支。"""
+
+    @patch("core.fetchers.daily_quote.requests.get")
+    def test_us_kline_basic(self, mock_get):
+        """测试美股 K 线基本拉取。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "code": 0,
+            "data": {
+                "usAAPL.OQ": {
+                    "day": [
+                        ["2026-04-24", "260.00", "261.50", "263.00", "259.00", "35000000"],
+                        ["2026-04-25", "261.50", "262.00", "264.00", "260.50", "32000000"],
+                    ]
+                }
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        from core.fetchers.daily_quote import fetch_tencent_hist
+
+        records = fetch_tencent_hist(
+            "AAPL", "US",
+            start_date="2026-04-01",
+            exchange_suffix=".OQ",
+        )
+
+        assert len(records) == 2
+        assert records[0]["stock_code"] == "AAPL"
+        assert records[0]["market"] == "US"
+        assert records[0]["currency"] == "USD"
+        assert records[0]["open"] == pytest.approx(260.00)
+        assert records[0]["close"] == pytest.approx(261.50)
+        assert records[0]["volume"] == 35000000
+
+    def test_us_kline_requires_suffix(self):
+        """测试美股 K 线缺少 exchange_suffix 时抛出 ValueError。"""
+        from core.fetchers.daily_quote import fetch_tencent_hist
+
+        with pytest.raises(ValueError, match="exchange_suffix"):
+            fetch_tencent_hist("AAPL", "US", start_date="2026-04-01")
+
+    @patch("core.fetchers.daily_quote.requests.get")
+    def test_us_kline_brk_b(self, mock_get):
+        """测试 BRK-B 美股 K 线（连字符转点号）。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "code": 0,
+            "data": {
+                "usBRK.B.N": {
+                    "day": [
+                        ["2026-04-24", "480000.00", "485000.00", "486000.00", "479000.00", "500"],
+                    ]
+                }
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        from core.fetchers.daily_quote import fetch_tencent_hist
+
+        records = fetch_tencent_hist(
+            "BRK-B", "US",
+            start_date="2026-04-01",
+            exchange_suffix=".N",
+        )
+
+        assert len(records) == 1
+        assert records[0]["stock_code"] == "BRK-B"
+        assert records[0]["close"] == pytest.approx(485000.00)
+
+
+# ── transform_us_hist_to_records ──────────────────────────
+
+
+class TestTransformUsHistToRecords:
+    """测试 transform_us_hist_to_records。"""
+
+    def test_basic_transform(self):
+        """测试基本字段映射。"""
+        from core.fetchers.daily_quote import transform_us_hist_to_records
+
+        raw = [{
+            "stock_code": "AAPL",
+            "trade_date": "2026-04-24",
+            "market": "US",
+            "open": 260.0,
+            "high": 263.0,
+            "low": 259.0,
+            "close": 261.5,
+            "volume": 35000000,
+        }]
+
+        records = transform_us_hist_to_records(raw)
+        assert len(records) == 1
+        r = records[0]
+        assert r["stock_code"] == "AAPL"
+        assert r["market"] == "US"
+        assert r["currency"] == "USD"
+        assert r["open"] == 260.0
+        assert r["close"] == 261.5
+        assert r["volume"] == 35000000
+        # K 线不应有估值字段
+        assert r["market_cap"] is None
+        assert r["pe_ttm"] is None
+        assert r["pb"] is None
+        assert r["turnover_rate"] is None
+        assert r["amount"] is None

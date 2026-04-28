@@ -541,8 +541,13 @@ class DailyQuoteFetcher(BaseFetcher):
             logger.warning("stock_info 中无美股，请先同步美股列表")
             return pd.DataFrame(columns=self._us_spot_columns())
 
-        # 转为腾讯格式: AAPL → usAAPL
-        tencent_codes = [f"us{code}" for code in all_codes]
+        # 转为腾讯格式: AAPL → usAAPL，BRK-B → usBRK.B（腾讯用点号）
+        tencent_codes = [f"us{code.replace('-', '.')}" for code in all_codes]
+        # 反向映射：腾讯响应中的代码前缀 → DB stock_code（处理 BRK-B 等带连字符的代码）
+        _code_reverse: dict[str, str] = {}
+        for c in all_codes:
+            _prefix = c.replace("-", ".").split(".")[0]
+            _code_reverse[_prefix] = c
 
         # 批量查询（每批 300，避免 URL 过长）
         batch_size = 300
@@ -575,9 +580,9 @@ class DailyQuoteFetcher(BaseFetcher):
                 continue
 
             try:
-                # 代码：去掉后缀 AAPL.OQ → AAPL
+                # 代码：去掉后缀 AAPL.OQ → AAPL，BRK.B.N → BRK → BRK-B
                 raw_code = parts[2].strip()
-                code = raw_code.split(".")[0]
+                code = _code_reverse.get(raw_code.split(".")[0], raw_code.split(".")[0])
                 name = parts[1].strip()
                 price = _safe_float(parts[3])
                 prev_close = _safe_float(parts[4])
@@ -653,6 +658,70 @@ class DailyQuoteFetcher(BaseFetcher):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         return df
+
+    @retry_with_backoff(max_retries=3)
+    def fetch_us_exchange_suffixes(self) -> dict[str, str]:
+        """批量获取美股交易所后缀映射。
+
+        通过腾讯实时行情接口一次获取所有美股的完整代码（含交易所后缀），
+        解析出 {stock_code: exchange_suffix} 映射，供 K 线接口使用。
+
+        Returns:
+            {"AAPL": ".OQ", "JPM": ".N", "BRK-B": ".N", ...}
+            纳斯达克 → .OQ, 纽交所 → .N
+        """
+        from db import execute
+
+        rows = execute(
+            "SELECT stock_code FROM stock_info WHERE market = 'US'",
+            fetch=True,
+        )
+        all_codes = [r[0] for r in rows]
+        if not all_codes:
+            return {}
+
+        # Tencent 格式（BRK-B → usBRK.B）；反向映射
+        tencent_codes = [f"us{code.replace('-', '.')}" for code in all_codes]
+        _code_reverse: dict[str, str] = {}
+        for c in all_codes:
+            _prefix = c.replace("-", ".").split(".")[0]
+            _code_reverse[_prefix] = c
+
+        batch_size = 300
+        result: dict[str, str] = {}
+
+        for i in range(0, len(tencent_codes), batch_size):
+            batch = tencent_codes[i : i + batch_size]
+            q = ",".join(batch)
+            url = f"https://qt.gtimg.cn/q={q}"
+            try:
+                rate_limiter.wait()
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                for line in resp.text.strip().split(";"):
+                    if '="' not in line:
+                        continue
+                    try:
+                        idx = line.index('"')
+                        content = line[idx + 1 : line.rindex('"')]
+                    except (ValueError, IndexError):
+                        continue
+                    parts = content.split("~")
+                    if len(parts) < 65:
+                        continue
+                    raw_code = parts[2].strip()
+                    # BRK.B.N → .N, AAPL.OQ → .OQ
+                    parts_list = raw_code.split(".")
+                    suffix = f".{parts_list[-1]}" if len(parts_list) >= 2 else ""
+                    prefix = parts_list[0]
+                    db_code = _code_reverse.get(prefix, prefix)
+                    result[db_code] = suffix
+            except Exception as e:
+                logger.error("获取美股交易所后缀失败 (batch %d): %s", i // batch_size + 1, e)
+                continue
+
+        logger.info("美股交易所后缀: %d 只", len(result))
+        return result
 
 
 # ── 标准化函数 ────────────────────────────────────────────
@@ -822,6 +891,34 @@ def transform_us_spot_to_records(df: pd.DataFrame) -> list[dict]:
     return records
 
 
+def transform_us_hist_to_records(rows: list[dict]) -> list[dict]:
+    """将腾讯 K 线（美股）返回的记录列表转为 upsert 格式。
+
+    K 线数据只有 OHLCV，无市值/PE/PB/换手率。
+    """
+    records = []
+    for r in rows:
+        records.append({
+            "stock_code": r["stock_code"],
+            "trade_date": r["trade_date"],
+            "market": "US",
+            "open": r.get("open"),
+            "high": r.get("high"),
+            "low": r.get("low"),
+            "close": r.get("close"),
+            "volume": r.get("volume"),
+            "amount": None,
+            "turnover_rate": None,
+            "market_cap": None,
+            "float_market_cap": None,
+            "pe_ttm": None,
+            "pb": None,
+            "currency": "USD",
+            "updated_at": datetime.now(),
+        })
+    return records
+
+
 # ── 辅助函数 ──────────────────────────────────────────────
 
 def _safe_float(val) -> Optional[float]:
@@ -861,17 +958,19 @@ def fetch_tencent_hist(
     start_date: str = "2021-01-04",
     end_date: str | None = None,
     max_k: int = 800,
+    exchange_suffix: str | None = None,
 ) -> list[dict]:
     """通过腾讯 K 线接口获取单只股票历史日线（原始数据，不复权）。
 
     腾讯单次最多返回 ~800 条，超过部分自动分段请求。
 
     Args:
-        stock_code: 股票代码，如 "000001"、"00700"
-        market: "CN_A" 或 "CN_HK"
+        stock_code: 股票代码，如 "000001"、"00700"、"AAPL"
+        market: "CN_A" / "CN_HK" / "US"
         start_date: 开始日期 YYYY-MM-DD
         end_date: 结束日期 YYYY-MM-DD，默认今天
         max_k: 单次请求最大条数（腾讯限制 ~800）
+        exchange_suffix: 美股交易所后缀（如 ".OQ" / ".N"），仅 market="US" 时需要
 
     Returns:
         daily_quote 格式的记录列表
@@ -879,16 +978,21 @@ def fetch_tencent_hist(
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-    # 腾讯代码格式：sh/sz + 代码（A股），r_hk + 代码（港股）
+    # 腾讯代码格式
     if market == "CN_A":
         prefix = "sh" if stock_code.startswith(("6", "9")) else "sz"
         tencent_code = f"{prefix}{stock_code}"
+        currency = "CNY"
     elif market == "CN_HK":
         tencent_code = f"hk{stock_code}"
+        currency = "HKD"
+    elif market == "US":
+        if not exchange_suffix:
+            raise ValueError(f"美股需要提供 exchange_suffix 参数: {stock_code}")
+        tencent_code = f"us{stock_code.replace('-', '.')}{exchange_suffix}"
+        currency = "USD"
     else:
         raise ValueError(f"不支持的市场: {market}")
-
-    currency = "CNY" if market == "CN_A" else "HKD"
     # 腾讯返回数据按日期降序（最新在前），需要分段从 end_date 往前拉
     # 因为 start_date 参数不一定被遵守
     all_records: list[dict] = []

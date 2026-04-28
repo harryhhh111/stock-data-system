@@ -742,6 +742,8 @@ class SyncManager:
         from core.fetchers.daily_quote import (
             transform_a_hist_to_records,
             transform_hk_hist_to_records,
+            transform_us_hist_to_records,
+            fetch_tencent_hist,
         )
 
         stock_rows = execute(
@@ -753,20 +755,32 @@ class SyncManager:
         total = len(stocks)
         logger.info("历史日线回填: market=%s 共 %d 只股票", market, total)
 
+        # 美股需要先获取交易所后缀
+        exchange_suffixes: dict[str, str] = {}
+        if market == "US":
+            exchange_suffixes = fetcher.fetch_us_exchange_suffixes()
+            logger.info("美股交易所后缀: %d 只", len(exchange_suffixes))
+
         success = 0
         failed = 0
 
         for i, code in enumerate(stocks, 1):
             try:
                 existing = execute(
-                    "SELECT MAX(trade_date) FROM daily_quote WHERE stock_code = %s",
+                    "SELECT MAX(trade_date), MIN(trade_date) FROM daily_quote WHERE stock_code = %s",
                     (code,),
                     fetch=True,
                 )
                 last_date = existing[0][0] if existing and existing[0][0] else None
+                first_date = existing[0][1] if existing and existing[0][1] else None
 
                 if last_date:
-                    start_str = (last_date + timedelta(days=1)).strftime("%Y%m%d")
+                    # 如果最近有数据但历史覆盖不足（<30 天跨度），全量回填
+                    data_span = (last_date - first_date).days if first_date else 0
+                    if data_span >= 30:
+                        start_str = (last_date + timedelta(days=1)).strftime("%Y%m%d")
+                    else:
+                        start_str = "20200101"
                 else:
                     start_str = "20200101"
 
@@ -779,6 +793,21 @@ class SyncManager:
                         code, start_date=start_str, end_date=end_str
                     )
                     records = transform_a_hist_to_records(df, market)
+                elif market == "US":
+                    suffix = exchange_suffixes.get(code, "")
+                    if not suffix:
+                        logger.warning("无交易所后缀，跳过: %s", code)
+                        failed += 1
+                        continue
+                    # fetch_tencent_hist 使用 YYYY-MM-DD 格式
+                    start_iso = f"{start_str[:4]}-{start_str[4:6]}-{start_str[6:8]}"
+                    end_iso = f"{end_str[:4]}-{end_str[4:6]}-{end_str[6:8]}"
+                    records = fetch_tencent_hist(
+                        code, "US",
+                        start_date=start_iso, end_date=end_iso,
+                        exchange_suffix=suffix,
+                    )
+                    records = transform_us_hist_to_records(records)
                 else:
                     df = fetcher.fetch_hk_hist(
                         code, start_date=start_str, end_date=end_str

@@ -126,7 +126,7 @@ def main():
         result = manager.sync_daily_quote(market=args.market)
     elif args.type == "daily-backfill":
         if not args.market:
-            parser.error("daily-backfill 类型需要指定 --market (CN_A/CN_HK/all)")
+            parser.error("daily-backfill 类型需要指定 --market (CN_A/CN_HK/US/all)")
         from .daily_quote import backfill_daily_hist
 
         result = backfill_daily_hist(market=args.market, source=args.source)

@@ -15,19 +15,19 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
     """使用腾讯 K 线接口回填历史日线。
 
     Args:
-        market: "CN_A" / "CN_HK" / "all"
+        market: "CN_A" / "CN_HK" / "US" / "all"
         source: 数据源（"tencent" / "akshare" / "auto"，默认 auto）
     """
-    from core.fetchers.daily_quote import fetch_tencent_hist
+    from core.fetchers.daily_quote import fetch_tencent_hist, DailyQuoteFetcher
 
-    markets = ["CN_A", "CN_HK"] if market == "all" else [market]
+    markets = ["CN_A", "CN_HK", "US"] if market == "all" else [market]
     total_result = {"total": 0, "success": 0, "failed": 0, "skipped": 0, "markets": {}}
 
     for mkt in markets:
         logger.info("开始回填历史日线: market=%s (source=%s)", mkt, source)
 
         rows = execute(
-            "SELECT si.stock_code, MAX(dq.trade_date) "
+            "SELECT si.stock_code, MAX(dq.trade_date), MIN(dq.trade_date) "
             "FROM stock_info si "
             "LEFT JOIN daily_quote dq ON si.stock_code = dq.stock_code AND si.market = dq.market "
             "WHERE si.market = %s "
@@ -37,9 +37,12 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
         )
 
         stocks = []
-        for code, last_date in rows:
+        for code, last_date, first_date in rows:
             if last_date:
-                if last_date >= datetime.now().date() - timedelta(days=7):
+                # 如果最近 7 天内有数据但历史覆盖不足（<30 天跨度），
+                # 说明只有 spot 快照而无历史回填，需全量回填
+                data_span = (last_date - first_date).days if first_date else 0
+                if last_date >= datetime.now().date() - timedelta(days=7) and data_span >= 30:
                     stocks.append(
                         (code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"))
                     )
@@ -57,9 +60,24 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
 
         logger.info("待回填: %d 只 (跳过 %d 只)", mkt_total, total_result["skipped"])
 
+        # 美股需要先获取交易所后缀（K 线 API 要求 .OQ/.N 后缀）
+        exchange_suffixes: dict[str, str] = {}
+        if mkt == "US":
+            fetcher = DailyQuoteFetcher()
+            exchange_suffixes = fetcher.fetch_us_exchange_suffixes()
+            logger.info("美股交易所后缀: %d 只", len(exchange_suffixes))
+
         for i, (code, start_date) in enumerate(stocks):
             try:
-                records = fetch_tencent_hist(code, mkt, start_date=start_date)
+                if mkt == "US":
+                    suffix = exchange_suffixes.get(code, "")
+                    if not suffix:
+                        logger.warning("无交易所后缀，跳过: %s", code)
+                        mkt_failed += 1
+                        continue
+                    records = fetch_tencent_hist(code, mkt, start_date=start_date, exchange_suffix=suffix)
+                else:
+                    records = fetch_tencent_hist(code, mkt, start_date=start_date)
                 if records:
                     upsert("daily_quote", records, ["stock_code", "trade_date"])
                     mkt_updated += len(records)
