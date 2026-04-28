@@ -8,7 +8,7 @@
 
 | 市场 | 股票数 | 有行业 | 有 raw_snapshot |
 |------|--------|--------|----------------|
-| US（美股） | 519 | 518（SIC Code） | 504 |
+| US（美股） | 519 | 518（SIC Code） | 504（15 只缺失） |
 
 ---
 
@@ -90,3 +90,30 @@
 - `classic_value` — 低估值 + 高 FCF Yield（519 → 14 通过硬过滤）
 - `quality` — 高 ROE + 高毛利 + 低负债（519 → 36 通过）
 - `growth_value` — 合理估值 + 高增长（US 暂缺 revenue_yoy/net_profit_yoy）
+
+---
+
+## 七、已知问题（未修复）
+
+| 优先级 | 问题 | 影响 | 说明 |
+|--------|------|------|------|
+| **P0** | Annual CF 79% 全空行 | 14,258/18,028 行核心字段全 NULL，FCF 等指标不可靠 | 部分 10-K 的 CF 部分缺 XBRL 标签 |
+| P1 | 15 只无 raw_snapshot | 无法 reparse | 待重新拉取 |
+| P2 | growth_value 预设缺 revenue_yoy / net_profit_yoy | US 选股该策略不可用 | 物化视图未计算同比 |
+| P2 | Total Liabilities 60.9% 行级 | 资产负债率部分缺失 | 部分公司只报 Current + Non-current，不报顶层 |
+| P3 | Gross Profit 40.5% 行级 | 毛利率筛选缺部分公司 | 33% 的公司 SEC 不报此 tag，属于正常 |
+
+---
+
+## 八、近期修复记录
+
+| 时间 | 修复 | 效果 |
+|------|------|------|
+| 2026-04-28 | total_equity 三层 fallback | 行级覆盖率 — + 到 87.7% |
+| 2026-04-28 | D&A 补全（AmortizationOfIntangibleAssets） | MSFT 等公司 D&A 不再低估 |
+| 2026-04-28 | Gross Profit Rev-COGS 自动计算 | 股票级覆盖率 50% → 72.7% |
+| 2026-04-28 | FY/Q4 去重修复 + 性能优化 | Annual BS 全空行 3,000+ → 584 |
+| 2026-04-27 | 美股日线历史回填（腾讯 K 线） | daily_quote 1,548 → 683,497 |
+| 2026-04-27 | 美股日线实时行情接入 | 每日快照（OHLCV + 市值 + PE/PB） |
+| 2026-04-26 | screener 支持美股 | get_us_universe() + 三个预设策略 |
+| 2026-04-26 | B 类数据修复（EPS/股数/折旧/短期借款） | EPS 覆盖率 93% → 98.6% |
