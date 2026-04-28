@@ -344,6 +344,7 @@ class USFinancialFetcher(BaseFetcher):
         "DepreciationAndAmortization": "depreciation_amortization",
         "DepreciationDepletionAndAmortization": "depreciation_amortization",
         "Depreciation": "depreciation_amortization",
+        "AmortizationOfIntangibleAssets": "amortization_of_intangibles",
         "OperatingIncomeLoss": "operating_income",
         "ProfitLoss": "operating_income",
         "InterestExpense": "interest_expense",
@@ -421,6 +422,7 @@ class USFinancialFetcher(BaseFetcher):
         "DepreciationAndAmortization": "depreciation_amortization",
         "DepreciationDepletionAndAmortization": "depreciation_amortization",
         "Depreciation": "depreciation_amortization",
+        "AmortizationOfIntangibleAssets": "amortization_of_intangibles",
         "ShareBasedCompensation": "stock_based_compensation",
         "DeferredIncomeTaxExpenseBenefit": "deferred_income_tax",
         "ChangesInWorkingCapital": "changes_in_working_capital",
@@ -664,6 +666,26 @@ class USFinancialFetcher(BaseFetcher):
                     # 只在 revenues 和 cogs 都有值时计算
                     both_present = mask & rev.notna() & cogs.notna()
                     wide.loc[both_present, "gross_profit"] = calculated_gp[both_present]
+
+        # ── D&A 补齐：Depreciation-only 的公司需加上 AmortizationOfIntangibleAssets ──
+        # DepreciationAndAmortization / DepreciationDepletionAndAmortization 已包含
+        # 摊销，无需额外加。但不少公司（如 MSFT）只报 Depreciation 标签，
+        # AmortizationOfIntangibleAssets 需单独加上才能得到完整 D&A。
+        if "depreciation_amortization" in tag_mapping.values():
+            has_combined_da = (
+                "DepreciationAndAmortization" in usgaap
+                or "DepreciationDepletionAndAmortization" in usgaap
+            )
+            if not has_combined_da and "amortization_of_intangibles" in wide.columns:
+                if "depreciation_amortization" not in wide.columns:
+                    wide["depreciation_amortization"] = pd.Series(dtype=float)
+                mask = wide["amortization_of_intangibles"].notna()
+                if mask.any():
+                    wide.loc[mask, "depreciation_amortization"] = (
+                        wide.loc[mask, "depreciation_amortization"].fillna(0)
+                        + wide.loc[mask, "amortization_of_intangibles"]
+                    )
+                wide = wide.drop(columns=["amortization_of_intangibles"])
 
         return wide
 
