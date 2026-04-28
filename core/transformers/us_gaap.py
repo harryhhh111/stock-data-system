@@ -20,7 +20,7 @@ _INCOME_DB_COLS = {
     "stock_code", "cik", "report_date", "report_type", "filed_date",
     "accession_no", "currency", "revenues", "cost_of_goods_sold", "gross_profit",
     "operating_expenses", "selling_general_admin", "research_and_development",
-    "depreciation_amortization", "amortization_of_intangibles",
+    "depreciation_amortization",
     "operating_income", "interest_expense", "interest_income",
     "other_income_expense", "income_before_tax", "income_tax_expense",
     "net_income", "net_income_common", "preferred_dividends",
@@ -33,18 +33,17 @@ _BALANCE_DB_COLS = {
     "accession_no", "currency", "cash_and_equivalents", "short_term_investments",
     "total_current_assets", "total_assets", "total_current_liabilities",
     "total_liabilities", "total_equity", "retained_earnings",
-    "total_debt", "long_term_debt", "short_term_debt",
-    "goodwill", "intangible_assets", "edgar_tags", "extra_items", "updated_at",
+    "long_term_debt", "short_term_debt",
+    "goodwill", "intangible_assets_net", "edgar_tags", "extra_items", "updated_at",
 }
 _CASHFLOW_DB_COLS = {
     "stock_code", "cik", "report_date", "report_type", "filed_date",
-    "accession_no", "currency", "operating_cashflow", "depreciation_amortization",
-    "amortization_of_intangibles",
-    "capital_expenditure", "free_cashflow", "acquisitions",
-    "investing_cashflow", "dividends_paid", "share_buyback",
-    "debt_issued", "debt_repaid", "financing_cashflow",
-    "net_change_cash", "stock_based_compensation",
-    "equity_issued", "edgar_tags", "extra_items", "updated_at",
+    "accession_no", "currency", "net_cash_from_operations", "depreciation_amortization",
+    "stock_based_compensation",
+    "capital_expenditures", "free_cash_flow", "acquisitions",
+    "net_cash_from_investing", "dividends_paid", "share_buyback",
+    "debt_issued", "debt_repaid", "net_cash_from_financing",
+    "net_change_in_cash", "equity_issued", "edgar_tags", "extra_items", "updated_at",
 }
 
 from .base import BaseTransformer, parse_report_date
