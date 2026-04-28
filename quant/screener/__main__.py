@@ -11,7 +11,7 @@
 
 import argparse
 
-from quant.screener.query import get_universe
+from quant.screener.query import get_universe, get_us_universe
 from quant.screener.filters import apply_hard_filters
 from quant.screener.scorer import rank_factors
 from quant.screener.report import format_results, format_summary
@@ -55,7 +55,7 @@ def build_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--market",
-        choices=["CN_A", "CN_HK", "all"],
+        choices=["CN_A", "CN_HK", "US", "all"],
         default="all",
         help="目标市场 (默认: all)",
     )
@@ -147,7 +147,10 @@ def main():
 
     # 1. 获取数据
     print(f"正在查询 {args.market} 市场数据...")
-    df = get_universe(args.market)
+    if args.market == "US":
+        df = get_us_universe()
+    else:
+        df = get_universe(args.market)
     n_before = len(df)
 
     # 2. 硬过滤
