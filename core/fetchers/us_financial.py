@@ -604,7 +604,6 @@ class USFinancialFetcher(BaseFetcher):
         wide["_fp_order"] = wide["fp"].map(
             {"FY": 0, "Q4": 1, "Q3": 2, "Q2": 3, "Q1": 4}
         )
-        wide = wide.sort_values(["_date", "_fp_order", "filed"])
 
         # groupby (end, fp) 合并：每个字段取第一个非空值
         # 策略：把 NaN 替换为占位值 → first() → 换回 NaN，比逐列 lambda 快 100x+
@@ -613,15 +612,39 @@ class USFinancialFetcher(BaseFetcher):
             for c in wide.columns
             if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order"]
         ]
+        # 优先选非空列最多的行，让 first() 拿到最完整的数据
+        wide["_non_null_count"] = wide[val_cols].notna().sum(axis=1)
+        wide = wide.sort_values(
+            ["_date", "_fp_order", "_non_null_count", "filed"],
+            ascending=[True, True, False, True],
+        )
+
         _FILLNA_SENTINEL = -999999999999
         for c in val_cols:
             wide[c] = wide[c].fillna(_FILLNA_SENTINEL)
         agg_dict = {c: "first" for c in val_cols}
         agg_dict["filed"] = "last"
         agg_dict["accn"] = "last"
+        wide = wide.drop(columns=["_non_null_count"])
         wide = wide.groupby(["end", "fp"], sort=False).agg(agg_dict).reset_index()
         for c in val_cols:
             wide[c] = wide[c].replace(_FILLNA_SENTINEL, float("nan"))
+
+        # ── CF 表过滤空壳行 ──
+        # SEC 10-K 包含对比期和季度分解上下文，这些额外的 (end, fp) 只有
+        # 1-2 个 tag（如 cash_ending），核心 CF 字段全空，需丢弃。
+        if "net_cash_from_operations" in tag_mapping.values():
+            core_cols = [
+                c
+                for c in [
+                    "net_cash_from_operations",
+                    "net_cash_from_investing",
+                    "net_cash_from_financing",
+                ]
+                if c in wide.columns
+            ]
+            if core_cols:
+                wide = wide[~wide[core_cols].isna().all(axis=1)]
 
         # ── 自动计算 free_cash_flow（如果 tag_mapping 是 CASHFLOW_TAGS）──
         # 如果 free_cash_flow 为空，但有 net_cash_from_operations 和 capital_expenditures，
