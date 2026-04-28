@@ -18,7 +18,7 @@
 |----|--------|--------|---------|-----------|
 | us_income_statement | 48,722 | 517 | 2006~2026 | 19,842 / 28,880 |
 | us_balance_sheet | 42,779 | 517 | 2005~2026 | — |
-| us_cash_flow_statement | 51,954 → 17,585（去空壳后） | 517 | 2005~2026 | 3,770 / 13,815 |
+| us_cash_flow_statement | 33,117 | 517 | 2006~2026 | 8,834 / 24,283 |
 
 ### 利润表字段覆盖率
 
@@ -80,7 +80,7 @@
 |------|------|------|
 | mv_us_financial_indicator | 37,079 | 单期指标（毛利率/ROE/ROA/EPS/FCF） |
 | mv_us_indicator_ttm | 33,223 | TTM 滚动指标 |
-| mv_us_fcf_yield | 485 | 最新 FCF Yield（需 market_cap > 0） |
+| mv_us_fcf_yield | 487 | 最新 FCF Yield（需 market_cap > 0） |
 
 ---
 
@@ -108,7 +108,8 @@
 
 | 时间 | 修复 | 效果 |
 |------|------|------|
-| 2026-04-29 | CF 空壳行过滤 + 合并优化 | annual CF 18,028→3,770（空行率 79%→0%），行级覆盖率大幅提升 |
+| 2026-04-29 | Transformer `_DB_COLS` 列名修正 + 物化视图刷新 US 链路修复 | CF/BS/IS upsert 零 warning，US 财务同步后自动刷新 US 物化视图 |
+| 2026-04-29 | CF 空壳行过滤 + 合并优化 + 全量 reparse | CF 17,585→33,117 行，annual CF 3,770→8,834，行级覆盖率大幅提升 |
 | 2026-04-28 | total_equity 三层 fallback | 行级覆盖率 — + 到 87.7% |
 | 2026-04-28 | D&A 补全（AmortizationOfIntangibleAssets） | MSFT 等公司 D&A 不再低估 |
 | 2026-04-28 | Gross Profit Rev-COGS 自动计算 | 股票级覆盖率 50% → 72.7% |
