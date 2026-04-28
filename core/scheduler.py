@@ -101,8 +101,8 @@ def _notify(message: str, level: str = "info") -> None:
 # ── 物化视图刷新 ────────────────────────────────────────────
 
 
-def _refresh_materialized_views(job_type: str) -> None:
-    """根据任务类型刷新物化视图。
+def _refresh_materialized_views(job_type: str, market: str = "") -> None:
+    """根据任务类型和市场刷新物化视图。
 
     行情同步后只刷新 mv_fcf_yield（因为只有市值变了）。
     美股行情同步后刷新 mv_us_fcf_yield（美股独立的 FCF yield 视图）。
@@ -116,8 +116,10 @@ def _refresh_materialized_views(job_type: str) -> None:
     elif job_type == "daily_quote_us":
         views = ["mv_us_fcf_yield"]
     elif job_type == "financial":
-        # 严格按依赖顺序：indicator → ttm → fcf_yield
-        views = ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"]
+        if market == "US":
+            views = ["mv_us_financial_indicator", "mv_us_indicator_ttm", "mv_us_fcf_yield"]
+        else:
+            views = ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"]
 
     for view in views:
         try:
@@ -175,7 +177,7 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
             )
 
             # 同步完成后刷新物化视图
-            _refresh_materialized_views(job_type)
+            _refresh_materialized_views(job_type, market)
 
             _notify(
                 f"{market}/{job_type} 同步完成: 成功={result.get('success', 0)}, "
