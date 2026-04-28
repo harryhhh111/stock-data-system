@@ -28,7 +28,7 @@
 - [x] 数据校验 `validate.py`（9 条规则：异常值、逻辑一致性、跨源比对）
 - [x] market 标识统一（HK → CN_HK）
 
-## Phase 4：日线行情 + 估值 🔄 进行中
+## Phase 4：日线行情 + 估值 ✅ 已完成
 
 **目标：** 日线行情覆盖 A/港/美股，基础估值指标可用。
 
@@ -46,8 +46,8 @@
 - [x] SEC tag 映射补全（ProfitLoss、SG&A 单数、PaymentsOfOrdinaryDividends、total_equity NCI fallback）
 - [x] annual BS/CF 全空行修复（FY 修正逻辑 + Q3I 正则 + 性能优化 45x）
 - [x] reparse OOM 修复（逐只查询 raw_data，避免全量加载）
-- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）→ 移至 Phase 5.5
-- [ ] 美股历史日线回填 → 移至 Phase 5.5
+- [x] 美股历史日线回填（腾讯 K 线，519 只，683K 行，2021~2026）
+- [ ] 历史市值回算（`close × total_shares`）→ 移至 Phase 5.5
 
 ## Phase 4.5：基建补强 ✅ 已完成
 
@@ -67,20 +67,20 @@
 **目标：** 选股筛选 + 个股分析，详见 `docs/QUANT_SYSTEM_PLAN.md`。
 
 - [x] P0-2 Gross Profit 修复（GP 覆盖率 36.9% → 46.2% 行级，50.2% → 70.9% 股票级，自动计算 Rev-COGS）
+- [x] P0-3 total_equity 修复（三层 fallback：NCI → total_assets - total_liabilities，23% → 12.3% NULL）
+- [x] P1-4 D&A 修复（Depreciation + AmortizationOfIntangibleAssets，含 MSFT 等）
+- [x] 物化视图刷新（mv_us_financial_indicator 0 → 37K，mv_us_fcf_yield 485 行）
+- [x] 选股筛选器 `screener/` 支持美股（硬过滤 + 多因子打分 + 三个预设策略）
 - [ ] ROE 修复（parent_equity 缺失时 fallback 到 total_equity，提升 CN_HK ROE 覆盖率）
-- [ ] 物化视图刷新 + 数据质量验证
-- [ ] 选股筛选器 `screener/`（硬过滤 + 多因子打分 + 预设策略）
 - [ ] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析）
-- [ ] P0-3 total_equity 修复（JNJ 等公司 StockholdersEquity tag 缺失）
-- [ ] P1-4 D&A 修复（MSFT 的 D&A 应含 amortization）
 - [ ] A股/港股 2025 年报补齐（等 5 月出完）
 
 ## Phase 5.5：数据补全（后期）
 
 **目标：** 补齐美股日线行情和分红数据。
 
-- [ ] 美股日线行情同步（腾讯接口，S&P 500 + 纳斯达克 100）
-- [ ] 美股历史日线回填
+- [x] 美股日线行情同步（腾讯接口，S&P 500 + 纳斯达克 100）
+- [x] 美股历史日线回填（683K 行，2021~2026）
 - [ ] A 股分红数据同步（东方财富/巨潮资讯）
 - [ ] 港股分红数据同步
 - [ ] 分红策略预设（高股息筛选）

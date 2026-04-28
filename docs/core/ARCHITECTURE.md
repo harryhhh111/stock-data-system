@@ -256,16 +256,18 @@ echo $STOCK_MARKETS
 
 ---
 
-## 七、数据现状（2026-04-22）
+## 七、数据现状（2026-04-28）
+
+> ⚠️ 本文件同时被海外和国内两台服务器引用。美股数据来自海外服务器，A股/港股数据来自国内服务器。两台服务器数据库独立，本节合并展示。
 
 ### 7.1 股票列表（stock_info）
 
-| 市场 | 股票数 | 有行业 |
-|------|--------|--------|
-| CN_A（A股） | 5,493 | 5,188（申万一级） |
-| CN_HK（港股） | 2,743 | 2,694（东方财富） |
-| US（美股） | 519 | 518（SIC Code） |
-| **合计** | **8,755** | — |
+| 市场 | 股票数 | 有行业 | 有 raw_snapshot |
+|------|--------|--------|----------------|
+| CN_A（A股） | 5,493 | 5,188（申万一级） | — |
+| CN_HK（港股） | 2,743 | 2,694（东方财富） | — |
+| US（美股） | 519 | 518（SIC Code） | 504 |
+| **合计** | **8,755** | — | — |
 
 ### 7.2 财务报表
 
@@ -279,11 +281,43 @@ A股 + 港股（东方财富）：
 
 美股（SEC EDGAR）：
 
-| 表 | 记录数 | 覆盖股票数 |
-|----|--------|-----------|
-| us_income_statement | 48,689 | 517 |
-| us_balance_sheet | 42,779 | — |
-| us_cash_flow_statement | 51,935 | — |
+| 表 | 总行数 | 股票数 | 时间范围 | 年度/季度 |
+|----|--------|--------|---------|-----------|
+| us_income_statement | 48,722 | 517 | 2006~2026 | 19,842 / 28,880 |
+| us_balance_sheet | 42,779 | 517 | 2005~2026 | — |
+| us_cash_flow_statement | 51,954 | 517 | 2005~2026 | — |
+
+#### 美股利润表字段覆盖率
+
+| 字段 | 股票级 | 行级 | 说明 |
+|------|--------|------|------|
+| Net Income | 99.0% | 60.1% | 核心字段正常 |
+| Revenue | 97.9% | 63.9% | 核心字段正常 |
+| EPS Basic / Diluted | 98.6% | 62-63% | B 类修复后正常 |
+| Operating Income | 97.5% | 61.7% | 正常 |
+| D&A | 98.6% | 48.1% | 含 AmortizationOfIntangibleAssets fallback |
+| Gross Profit | 72.7% | 40.5% | 偏低，33% 的公司不报此 tag |
+
+#### 美股资产负债表字段覆盖率
+
+| 字段 | 股票级 | 行级 | 说明 |
+|------|--------|------|------|
+| Total Assets | 100% | 82.2% | 正常 |
+| Total Equity | 100% | 87.7% | 含三层 fallback（NCI → total_assets - total_liabilities） |
+| Total Liabilities | 75.2% | 60.9% | 部分公司不报顶层 Liabilities，只报 Current + Non-current |
+| Long-term Debt | 90.7% | 56.1% | 合理（非所有公司有长期借款） |
+
+#### 美股现金流量表字段覆盖率
+
+| 字段 | 股票级 | 行级 | 说明 |
+|------|--------|------|------|
+| Operating CF | 100% | 33.2% | 季度数据多空行，年度基本全覆盖 |
+| D&A (CF) | 98.6% | 29.6% | 同上 |
+| CapEx | 94.2% | 28.0% | 同上 |
+| Dividends Paid | 82.8% | 24.5% | 非所有公司分红 |
+| Share Buyback | 95.0% | 22.7% | 覆盖率合理 |
+
+> **股票级 vs 行级**：股票级 = 至少有一期有该字段的股票数；行级 = 全部行中有值的占比。美股行级偏低主要因为早期 SEC 季报（2005-2010）标签不全，近年数据基本正常。
 
 ### 7.3 每日行情（daily_quote）
 
@@ -291,28 +325,39 @@ A股 + 港股（东方财富）：
 |------|--------|--------|---------|
 | CN_A | 6,119,247 | 5,493 | 2021-01-04 ~ 2026-04-21 |
 | CN_HK | 3,147,613 | 2,743 | 2021-01-04 ~ 2026-04-21 |
-| US | 3,099 | 517 | — |
+| US | 683,497 | 519 | 2021-01-04 ~ 2026-04-27 |
+
+- 美股数据源：腾讯 K 线接口（历史回填）+ 腾讯实时行情（每日快照）
+- 美股历史 K 线仅含 OHLCV（无市值/PE/PB），upsert COALESCE 保护不覆盖快照字段
+- 519 只全覆盖（含 BRK-B、BF-B 连字符修复）
 
 ### 7.4 辅助表
 
 | 表 | 记录数 | 说明 |
 |----|--------|------|
 | stock_share（股本） | 15,872 | 腾讯行情接口 |
-| raw_snapshot（原始快照） | 504 | SEC EDGAR Company Facts |
+| raw_snapshot（美股） | 504 | SEC EDGAR Company Facts，支持 reparse |
 | validation_results（校验） | 658,301 | 数据质量校验结果 |
 | index_constituent（指数成分） | 800 | 沪深300 + 中证500 |
 | dividend_split（分红） | 0 | 代码已写，数据未同步 |
 
 ### 7.5 物化视图
 
-| 视图 | 市场 | 说明 |
-|------|------|------|
-| mv_financial_indicator | A股/港股 | 单期财务指标 |
-| mv_indicator_ttm | A股/港股 | TTM 滚动指标 |
-| mv_fcf_yield | A股/港股 | FCF Yield（市值+财务） |
-| mv_us_financial_indicator | 美股 | 单期财务指标 |
-| mv_us_indicator_ttm | 美股 | TTM 滚动指标 |
-| mv_us_fcf_yield | 美股 | FCF Yield |
+| 视图 | 市场 | 行数 | 说明 |
+|------|------|------|------|
+| mv_financial_indicator | A股/港股 | — | 单期财务指标 |
+| mv_indicator_ttm | A股/港股 | — | TTM 滚动指标 |
+| mv_fcf_yield | A股/港股 | — | FCF Yield（市值+财务） |
+| mv_us_financial_indicator | 美股 | 37,079 | 单期指标（毛利率/ROE/ROA/EPS/FCF） |
+| mv_us_indicator_ttm | 美股 | 33,223 | TTM 滚动指标 |
+| mv_us_fcf_yield | 美股 | 485 | 最新 FCF Yield（需 market_cap > 0） |
+
+### 7.6 量化筛选器（quant/screener）
+
+三个预设策略均已支持美股：
+- `classic_value` — 低估值 + 高 FCF Yield（519 → 14 通过硬过滤）
+- `quality` — 高 ROE + 高毛利 + 低负债（519 → 36 通过）
+- `growth_value` — 合理估值 + 高增长（US 暂缺 revenue_yoy/net_profit_yoy）
 
 ---
 
@@ -399,15 +444,19 @@ FCF Yield > 5%
 |------|------|------|------|
 | TTM 计算 | annual + quarterly 混合导致数值虚高 3 倍 | FCF Yield 不准确 | ✅ 已修复（只用 annual） |
 | 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE） |
-| 历史市值缺失 | 腾讯 K 线不返回市值，922 万条无 market_cap | FCF Yield 无法计算历史值 | 🔄 待回算 |
+| 美股日线 | 仅 3,099 行，覆盖不全 | 美股估值指标不可用 | ✅ 已修复（683K 行，2021~2026） |
+| total_equity | 23% NULL，无法算 ROE | 量化筛选器不可用 | ✅ 已修复（三层 fallback，降至 12.3%） |
+| D&A 缺失 | Depreciation-only 公司缺摊销 | D&A 被低估 | ✅ 已修复（自动加 AmortizationOfIntangibleAssets） |
+| screener 不支持 US | CLI 只接受 CN_A/CN_HK | 美股选股不可用 | ✅ 已支持（get_us_universe + 三预设） |
 | IP 封禁 | 东方财富行情 API 从国内被封 | 需用腾讯 fallback | ✅ 已有方案 |
 | SEC 限流 | SEC EDGAR 对请求频率有限制 | 美股同步可能失败 | ✅ 已有重试机制 |
-| 美股日线 | 仅 3,099 行，覆盖不全 | 美股估值指标不可用 | 🔄 待扩展 |
+| 历史市值缺失 | 腾讯 K 线不返回市值 | FCF Yield 仅最新一期可用 | 🔄 待回算（close × total_shares） |
+| 物化视图 | 需手动刷新 | 数据可能滞后 | 🔄 待自动化 |
+| Gross Profit | 73% 股票有，33% 公司不报此 tag | 毛利率筛选缺少部分公司 | 🔄 部分行业天然无此字段 |
+| 总计 US revenue_yoy | 物化视图未计算同比 | growth_value 预设缺两个因子 | 🔄 待添加 |
 | 分红数据 | dividend_split 表为空 | 股息率筛选不可用 | 🔄 代码已写，待执行 |
-| 港股行业缺失 | 49 只港股无行业 | 行业筛选不完整 | 🔄 等东方财富恢复 |
-| 物化视图 | 刷新不及时导致指标与基础表不一致 | 查询结果滞后 | 🔄 需自动化刷新 |
 | raw_snapshot | 大量原始 JSON 占用磁盘空间 | 12 GB+ | 🔄 可按需清理 |
-| equity_issued | 可能映射到回购而非发行 | 数据偏差 | 🔄 待验证 |
+| 20 只美股无 raw_snapshot | 原始数据缺失 | 无法 reparse | 🔄 待重新拉取 |
 
 ### 当前开发阶段
 
