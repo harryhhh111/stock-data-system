@@ -83,8 +83,8 @@ def _resolve_markets(market: str | None) -> list[str]:
     return markets if markets else ["US"]
 
 
-def get_fcf_screen(market: str, min_yield: float = 0.10) -> pd.DataFrame:
-    """获取指定市场 FCF Yield > min_yield 的股票，排除不适用行业。"""
+def get_fcf_screen(market: str, min_yield: float = 0.10, min_mcap: float = 0) -> pd.DataFrame:
+    """获取指定市场 FCF Yield > min_yield 的股票，排除不适用行业和小市值。"""
     cfg = MARKET_CONFIG[market]
     excluded = tuple(cfg["excluded_industries"])
     sql = f"""
@@ -105,11 +105,12 @@ def get_fcf_screen(market: str, min_yield: float = 0.10) -> pd.DataFrame:
     WHERE fy.fcf_yield > %s
       AND {cfg['market_filter']}
       AND s.industry NOT IN %s
+      AND fy.market_cap > %s
     ORDER BY fy.fcf_yield DESC
     """
     try:
         with Connection() as conn:
-            return pd.read_sql(sql, conn, params=(market, min_yield, excluded))
+            return pd.read_sql(sql, conn, params=(market, min_yield, excluded, min_mcap))
     except Exception as e:
         logger.error("查询 %s FCF 筛选失败: %s", market, e, exc_info=True)
         return pd.DataFrame()
@@ -215,16 +216,18 @@ def pick_verification_sample(
     return pd.DataFrame(sample)
 
 
-def run_market_check(market: str, min_yield: float = 0.10, min_roe: float = 0.10, min_years: int = 3) -> dict:
+def run_market_check(market: str, min_yield: float = 0.10, min_roe: float = 0.10,
+                     min_years: int = 3, min_mcap: float = 0) -> dict:
     """对单个市场执行完整检查。"""
     result = {
         "market": market,
         "min_yield": min_yield,
         "min_roe": min_roe,
         "min_years": min_years,
+        "min_mcap": min_mcap,
     }
 
-    df = get_fcf_screen(market, min_yield)
+    df = get_fcf_screen(market, min_yield, min_mcap)
     result["fcf_screen_count"] = len(df)
 
     anomalies = check_anomalies(df)
@@ -256,6 +259,7 @@ def run_full_check(
     min_yield: float = 0.10,
     min_roe: float = 0.10,
     min_years: int = 3,
+    min_mcap: float = 0,
 ) -> dict:
     """对多个市场执行完整检查。"""
     if markets is None:
@@ -265,7 +269,7 @@ def run_full_check(
     total_anomalies = 0
     total_roe_passed = 0
     for m in markets:
-        r = run_market_check(m, min_yield, min_roe, min_years)
+        r = run_market_check(m, min_yield, min_roe, min_years, min_mcap)
         per_market[m] = r
         total_fcf += r["fcf_screen_count"]
         total_anomalies += r["anomaly_count"]
@@ -275,6 +279,7 @@ def run_full_check(
         "min_yield": min_yield,
         "min_roe": min_roe,
         "min_years": min_years,
+        "min_mcap": min_mcap,
         "total_fcf_screen": total_fcf,
         "total_anomalies": total_anomalies,
         "total_roe_passed": total_roe_passed,
@@ -328,6 +333,8 @@ def main():
     parser.add_argument("--min-yield", type=float, default=0.10, help="FCF Yield 阈值 (默认 0.10)")
     parser.add_argument("--min-roe", type=float, default=0.10, help="ROE 阈值 (默认 0.10)")
     parser.add_argument("--min-years", type=int, default=3, help="ROE 连续年数 (默认 3)")
+    parser.add_argument("--min-mcap", type=float, default=0,
+                        help="最低市值（元），A股/港股建议 1e9 (10亿)")
     parser.add_argument("--list-excluded", action="store_true", help="列出各市场排除行业")
     args = parser.parse_args()
 
@@ -339,7 +346,8 @@ def main():
         return
 
     markets = _resolve_markets(args.market)
-    result = run_full_check(markets, args.min_yield, args.min_roe, args.min_years)
+    result = run_full_check(markets, args.min_yield, args.min_roe,
+                            args.min_years, args.min_mcap)
 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
