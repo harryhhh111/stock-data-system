@@ -681,6 +681,8 @@ class SyncManager:
             transform_a_spot_to_records,
             transform_hk_spot_to_records,
             transform_us_spot_to_records,
+            validate_us_spot_records,
+            fetch_finnhub_quotes,
         )
 
         industry_map: dict[str, str] = {}
@@ -693,6 +695,31 @@ class SyncManager:
         elif market == "US":
             df = fetcher.fetch_us_spot()
             records = transform_us_spot_to_records(df)
+
+            # 校验：拦截异常行情（退化行、便士股）
+            records, rejected = validate_us_spot_records(records)
+            if rejected:
+                logger.warning(
+                    "美股行情校验: %d 条被拒绝（退化行/便士股）", len(rejected)
+                )
+
+            # Finnhub fallback：对 Tencent 未返回或被拒绝的股票，尝试 Finnhub 补充
+            tencent_codes = {r["stock_code"] for r in records}
+            rejected_codes = {r["stock_code"] for r in rejected}
+            known_for_fallback = execute(
+                "SELECT stock_code FROM stock_info WHERE market = 'US'",
+                fetch=True,
+            )
+            all_us_codes = {r[0] for r in known_for_fallback}
+            missing_codes = sorted(all_us_codes - tencent_codes | rejected_codes)
+            if missing_codes:
+                logger.info(
+                    "美股 Finnhub fallback: %d 只缺失/被拒，尝试补充", len(missing_codes)
+                )
+                finnhub_records = fetch_finnhub_quotes(missing_codes)
+                if finnhub_records:
+                    records.extend(finnhub_records)
+                    logger.info("Finnhub 补充 %d 只", len(finnhub_records))
         else:
             logger.error("不支持的市场: %s", market)
             return 0

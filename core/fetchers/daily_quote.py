@@ -31,7 +31,7 @@ import akshare as ak
 import pandas as pd
 import requests
 
-from .base import BaseFetcher, retry_with_backoff, rate_limiter
+from .base import BaseFetcher, retry_with_backoff, rate_limiter, AdaptiveRateLimiter, circuit_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -888,6 +888,116 @@ def transform_us_spot_to_records(df: pd.DataFrame) -> list[dict]:
             "currency": "USD",
             "updated_at": datetime.now(),
         })
+    return records
+
+
+def validate_us_spot_records(
+    records: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """校验美股实时行情记录，拦截异常数据。
+
+    Returns:
+        (valid, rejected) — rejected 每条附带 _reject_reason 字段
+    """
+    valid, rejected = [], []
+    for r in records:
+        close = r.get("close")
+        o, h, l = r.get("open"), r.get("high"), r.get("low")
+        vol = r.get("volume")
+
+        # 规则 1: 退化行 — OHLCV 全为 0 或 None，但 close 有值
+        # 典型：Tencent 返回空壳数据（HOLX case: close=0.008, open=high=low=vol=0）
+        all_zero = all(
+            v in (0, 0.0, None)
+            for v in (o, h, l, vol)
+        )
+        if all_zero and close and close > 0:
+            r["_reject_reason"] = f"degenerate_row(close={close}, OHLCV=0)"
+            rejected.append(r)
+            continue
+
+        # 规则 2: 便士股 — 美股正常交易价 > $1
+        if close is not None and close < 1.0:
+            r["_reject_reason"] = f"penny_stock(close={close})"
+            rejected.append(r)
+            continue
+
+        valid.append(r)
+
+    if rejected:
+        for r in rejected:
+            logger.warning(
+                "行情校验拒绝: %s reason=%s",
+                r.get("stock_code"), r.get("_reject_reason"),
+            )
+    return valid, rejected
+
+
+def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
+    """Finnhub API fallback — 逐只获取美股实时行情。
+
+    仅返回 OHLC + close，volume/market_cap/PE/PB 为 None。
+    限速 ~55 次/分钟。
+    """
+    from config import finnhub as cfg
+
+    if not cfg.api_key:
+        logger.warning("Finnhub API key 未配置，跳过 fallback")
+        return []
+
+    if not stock_codes:
+        return []
+
+    finnhub_limiter = AdaptiveRateLimiter(base_delay=1.1, max_delay=5.0)
+    today = datetime.now().date()
+    records = []
+    url = f"{cfg.base_url}/quote"
+
+    for code in stock_codes:
+        if not circuit_breaker.allow("finnhub"):
+            logger.warning("Finnhub 已熔断，跳过剩余 %d 只", len(stock_codes) - len(records))
+            break
+
+        finnhub_limiter.wait()
+        try:
+            resp = requests.get(
+                url,
+                params={"symbol": code, "token": cfg.api_key},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Finhub 返回 {"c": current, "d": change, "dp": pct, "h": high, "l": low, "o": open, "pc": prev_close, "t": ts}
+            c = data.get("c")
+            if c is None or c <= 0:
+                logger.debug("Finnhub 无有效价格: %s", code)
+                continue
+
+            records.append({
+                "stock_code": code,
+                "trade_date": today,
+                "market": "US",
+                "currency": "USD",
+                "open": data.get("o"),
+                "high": data.get("h"),
+                "low": data.get("l"),
+                "close": c,
+                "volume": None,
+                "amount": None,
+                "turnover_rate": None,
+                "market_cap": None,
+                "float_market_cap": None,
+                "pe_ttm": None,
+                "pb": None,
+                "updated_at": datetime.now(),
+            })
+            circuit_breaker.record_success("finnhub")
+        except Exception as e:
+            logger.warning("Finnhub 请求失败: %s — %s", code, e)
+            circuit_breaker.record_failure("finnhub")
+
+    logger.info("Finnhub fallback: 请求 %d 只，成功 %d 只", len(stock_codes), len(records))
     return records
 
 

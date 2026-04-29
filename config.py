@@ -155,6 +155,17 @@ class SECConfig:
     nasdaq100_url: str = "https://en.wikipedia.org/wiki/NASDAQ-100"
 
 
+@dataclass
+class FinnhubConfig:
+    """Finnhub API 配置（美股行情 fallback）。"""
+
+    api_key: str = field(
+        default_factory=lambda: _env("STOCK_FINNHUB_API_KEY", "")
+    )
+    base_url: str = "https://finnhub.io/api/v1"
+    rate_limit: int = 55  # 官方 60/min，留余量
+
+
 # ── 熔断配置 ──────────────────────────────────────────────
 @dataclass
 class CircuitBreakerConfig:
@@ -254,6 +265,7 @@ throttle: ThrottleConfig = ThrottleConfig()
 retry: RetryConfig = RetryConfig()
 circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()
 sec: SECConfig = SECConfig()
+finnhub: FinnhubConfig = FinnhubConfig()
 scheduler: SchedulerConfig = SchedulerConfig()
 
 # ── 日志配置 ──────────────────────────────────────────────
