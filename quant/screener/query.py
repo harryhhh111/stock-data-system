@@ -65,11 +65,7 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
         fy.fcf_ttm,
         fy.cfo_ttm AS fcf_cfo_ttm,
         fy.capex_ttm AS fcf_capex_ttm,
-        fy.ttm_report_date,
-
-        -- TTM 分红
-        d.dividend_yield,
-        d.ttm_dividend
+        fy.ttm_report_date
 
     FROM stock_info s
 
@@ -92,15 +88,6 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
 
     LEFT JOIN mv_fcf_yield fy ON s.stock_code = fy.stock_code
 
-    LEFT JOIN LATERAL (
-        SELECT SUM(dividend_per_share) / q.close AS dividend_yield,
-               SUM(dividend_per_share) AS ttm_dividend
-        FROM dividend_split
-        WHERE stock_code = s.stock_code
-          AND ex_date >= CURRENT_DATE - INTERVAL '365 days'
-          AND dividend_per_share IS NOT NULL
-    ) d ON true
-
     WHERE s.market IN ('CN_A', 'CN_HK')
       {market_filter}
     ORDER BY s.stock_code;
@@ -108,6 +95,40 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
 
     with Connection() as conn:
         df = pd.read_sql(sql, conn)
+    return df
+
+
+def compute_dividend_yield(df: pd.DataFrame) -> pd.DataFrame:
+    """给选股池增加 TTM 股息率列。
+
+    批量查询 dividend_split，避免 LATERAL 子查询性能问题。
+    """
+    codes = df["stock_code"].tolist()
+    if not codes:
+        df["dividend_yield"] = None
+        df["ttm_dividend"] = None
+        return df
+
+    sql = """
+    SELECT stock_code,
+           SUM(dividend_per_share) AS ttm_dividend
+    FROM dividend_split
+    WHERE stock_code = ANY(%s)
+      AND ex_date >= CURRENT_DATE - INTERVAL '365 days'
+      AND dividend_per_share IS NOT NULL
+    GROUP BY stock_code
+    """
+    with Connection() as conn:
+        div_df = pd.read_sql(sql, conn, params=([codes],))
+
+    if div_df.empty:
+        df["dividend_yield"] = None
+        df["ttm_dividend"] = None
+        return df
+
+    div_map = dict(zip(div_df["stock_code"], div_df["ttm_dividend"]))
+    df["ttm_dividend"] = df["stock_code"].map(div_map)
+    df["dividend_yield"] = df["ttm_dividend"] / df["close"]
     return df
 
 

@@ -11,7 +11,7 @@
 
 import argparse
 
-from quant.screener.query import get_universe, get_us_universe
+from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield
 from quant.screener.filters import apply_hard_filters
 from quant.screener.scorer import rank_factors
 from quant.screener.report import format_results, format_summary
@@ -151,6 +151,7 @@ def main():
         df = get_us_universe()
     else:
         df = get_universe(args.market)
+        df = compute_dividend_yield(df)
     n_before = len(df)
 
     # 2. 硬过滤
