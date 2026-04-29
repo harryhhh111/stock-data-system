@@ -42,11 +42,19 @@ US_EXCLUDED_INDUSTRIES = [
     "Personal Credit Institutions",
 ]
 
-# CN A股/港股（申万一级行业）
-CN_EXCLUDED_INDUSTRIES = [
+# CN A股（申万一级行业）
+CN_A_EXCLUDED_INDUSTRIES = [
     "银行",
     "非银金融",
     "房地产",
+]
+
+# CN 港股（东方财富 F10 行业分类，与申万命名不同）
+CN_HK_EXCLUDED_INDUSTRIES = [
+    "银行",
+    "保险",
+    "其他金融",
+    "地产",
 ]
 
 MARKET_CONFIG = {
@@ -60,13 +68,13 @@ MARKET_CONFIG = {
         "fcf_yield_view": "mv_fcf_yield",
         "indicator_view": "mv_financial_indicator",
         "market_filter": "s.market = 'CN_A'",
-        "excluded_industries": CN_EXCLUDED_INDUSTRIES,
+        "excluded_industries": CN_A_EXCLUDED_INDUSTRIES,
     },
     "CN_HK": {
         "fcf_yield_view": "mv_fcf_yield",
         "indicator_view": "mv_financial_indicator",
         "market_filter": "s.market = 'CN_HK'",
-        "excluded_industries": CN_EXCLUDED_INDUSTRIES,
+        "excluded_industries": CN_HK_EXCLUDED_INDUSTRIES,
     },
 }
 
