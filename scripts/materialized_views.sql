@@ -286,6 +286,18 @@ SELECT
         i.net_income / i.revenues
     END AS net_margin,
 
+    -- 增长率（同比）
+    -- US fiscal quarter end dates drift 1-31 days, so match prev year
+    -- same quarter via fuzzy ±30 day window, picking closest date.
+    CASE WHEN i.report_type IN ('quarterly', 'semi')
+         AND prev_q.revenues IS NOT NULL AND prev_q.revenues != 0 THEN
+        (i.revenues - prev_q.revenues) / ABS(prev_q.revenues)
+    END AS revenue_yoy,
+    CASE WHEN i.report_type IN ('quarterly', 'semi')
+         AND prev_q.net_income IS NOT NULL AND prev_q.net_income != 0 THEN
+        (i.net_income - prev_q.net_income) / ABS(prev_q.net_income)
+    END AS net_profit_yoy,
+
     -- 资产负债率
     CASE WHEN b.total_assets IS NOT NULL AND b.total_assets != 0 THEN
         b.total_liabilities / b.total_assets
@@ -337,6 +349,17 @@ LEFT JOIN us_balance_sheet prev_b
     ON i.stock_code = prev_b.stock_code
     AND prev_b.report_type = 'annual'
     AND prev_b.report_date = (DATE_TRUNC('year', i.report_date) - INTERVAL '1 year' + INTERVAL '11 months')::date
+LEFT JOIN LATERAL (
+    SELECT revenues, net_income
+    FROM us_income_statement prev
+    WHERE prev.stock_code = i.stock_code
+      AND prev.report_type = i.report_type
+      AND prev.report_date BETWEEN
+          i.report_date - INTERVAL '1 year' - INTERVAL '30 days'
+          AND i.report_date - INTERVAL '1 year' + INTERVAL '30 days'
+    ORDER BY ABS(EXTRACT(EPOCH FROM prev.report_date - (i.report_date - INTERVAL '1 year')))
+    LIMIT 1
+) prev_q ON true
 WHERE i.report_type IN ('quarterly', 'semi', 'annual');
 
 CREATE UNIQUE INDEX idx_mv_us_indicator_pk ON mv_us_financial_indicator(stock_code, report_date, report_type);
