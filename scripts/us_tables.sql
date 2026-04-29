@@ -207,3 +207,15 @@ ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS dividends_paid_stand
 ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS other_financing_activities_standalone  DECIMAL(20,2);
 ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS net_cash_from_financing_standalone     DECIMAL(20,2);
 ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS effect_of_exchange_rate_standalone     DECIMAL(20,2);
+
+-- ============================================================
+-- frame column — SEC reporting period identifier (e.g. CY2025Q1, CY2025)
+-- Added: 2026-04-30
+-- The frame field reliably identifies which quarter/year each data
+-- point belongs to, unlike fp which can be unreliable (e.g. MELI
+-- where all fp=FY even for quarterly data). Used for cross-quarter
+-- standalone summation validation.
+-- ============================================================
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS frame VARCHAR(20);
+ALTER TABLE us_balance_sheet ADD COLUMN IF NOT EXISTS frame VARCHAR(20);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS frame VARCHAR(20);

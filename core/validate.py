@@ -566,45 +566,141 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
 
 
 def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
-    """Row-level sanity checks for US standalone vs cumulative data.
+    """Cross-quarter standalone summation validation for US stocks.
 
-    Checks per quarterly row with standalone data:
-      1. Negative standalone revenue: standalone revenue should be positive
-         (negative quarterly revenue is extremely unusual and worth flagging)
-      2. Negative cumulative revenue (same check on cumulative column)
+    For each fiscal year, computes the running sum of standalone quarterly
+    revenues (Q1, Q1+Q2, Q1+Q2+Q3) and compares against the cumulative
+    revenue reported for Q2/Q3/Q4. Fiscal year boundaries are derived from
+    annual report dates since fiscal_year_end is not populated for US stocks.
 
-    Standalone > cumulative is NOT checked because it's valid when prior
-    quarters had losses/negatives — standalone is a single quarter, cumulative
-    is YTD sum across potentially sign-mixed quarters.
-
-    Cross-quarter summation (cumulative_Qn vs SUM(standalone_Q1..Qn)) requires
-    knowing fiscal year boundaries, which needs the SEC 'frame' field stored
-    in the DB. Will be added when that field is available.
+    Also performs basic row-level checks: negative standalone or cumulative revenue.
 
     Returns scanned row count.
     """
-    sql = """
-    SELECT
-        i.stock_code, i.report_date,
-        i.revenues, i.revenues_standalone
+    # ── Cross-quarter summation check ──
+    # Derive fiscal year end month from each stock's annual report dates,
+    # assign each quarter to a fiscal year, compute running standalone sum,
+    # and flag discrepancies > 1% or $10M.
+    cross_quarter_sql = """
+    WITH stock_fiscal_month AS (
+        -- Derive fiscal year end month from annual report dates
+        SELECT stock_code,
+               EXTRACT(MONTH FROM MAX(report_date))::int AS fy_end_month
+        FROM us_income_statement
+        WHERE report_type = 'annual'
+        GROUP BY stock_code
+    ),
+    quarterly_rows AS (
+        SELECT i.stock_code, i.report_date, i.revenues, i.revenues_standalone, i.frame,
+               m.fy_end_month
+        FROM us_income_statement i
+        JOIN stock_fiscal_month m ON i.stock_code = m.stock_code
+        WHERE i.report_type = 'quarterly'
+          AND i.revenues IS NOT NULL
+    ),
+    fy_assigned AS (
+        SELECT *,
+               CASE
+                 WHEN EXTRACT(MONTH FROM report_date)::int > fy_end_month
+                 THEN EXTRACT(YEAR FROM report_date)::int + 1
+                 ELSE EXTRACT(YEAR FROM report_date)::int
+               END AS fiscal_year
+        FROM quarterly_rows
+    ),
+    quarters_ordered AS (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY stock_code, fiscal_year
+                   ORDER BY report_date
+               ) AS quarter_num
+        FROM fy_assigned
+    ),
+    -- Mark fiscal years that have proper cumulative data:
+    -- at least one quarter (Q2+) where cumulative > standalone.
+    -- This filters out old SEC data where only standalone versions exist.
+    fy_has_cumulative AS (
+        SELECT stock_code, fiscal_year,
+               BOOL_OR(revenues_standalone IS NOT NULL
+                       AND revenues > revenues_standalone * 1.001) AS has_cum_data
+        FROM quarters_ordered
+        GROUP BY stock_code, fiscal_year
+    ),
+    running_sums AS (
+        SELECT q.*,
+               SUM(q.revenues_standalone) OVER (
+                   PARTITION BY q.stock_code, q.fiscal_year
+                   ORDER BY q.report_date
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+               ) AS running_std_sum,
+               MAX(q.quarter_num) OVER (
+                   PARTITION BY q.stock_code, q.fiscal_year
+               ) AS max_quarter_num,
+               f.has_cum_data
+        FROM quarters_ordered q
+        JOIN fy_has_cumulative f ON q.stock_code = f.stock_code
+                                AND q.fiscal_year = f.fiscal_year
+    )
+    SELECT stock_code, report_date, fiscal_year, quarter_num,
+           revenues AS cumulative_rev,
+           running_std_sum,
+           ABS(revenues - running_std_sum) AS discrepancy,
+           revenues_standalone
+    FROM running_sums
+    WHERE revenues_standalone IS NOT NULL
+      AND has_cum_data = TRUE
+      AND running_std_sum > 0
+      -- Exclude Q4 (last quarter in fiscal year): its cumulative column
+      -- contains standalone value, not full-year cumulative (the annual
+      -- row with the same report_date holds the true full-year value).
+      AND quarter_num < max_quarter_num
+      AND ABS(revenues - running_std_sum) > GREATEST(ABS(revenues) * 0.01, 10000000)
+    ORDER BY stock_code, report_date;
+    """
+    cc_rows = db.execute(cross_quarter_sql, fetch=True) or []
+    scanned = len(cc_rows)
+
+    for r in cc_rows:
+        stock_code = r[0]
+        rdate = str(r[1])
+        fy = r[2]
+        qn = r[3]
+        cum_rev = _d(r[4])
+        running_sum = _d(r[5])
+        discrepancy = _d(r[6])
+
+        issues.append(ValidationIssue(
+            stock_code=stock_code, market="US",
+            report_date=rdate,
+            check_name="standalone_cross_quarter_sum",
+            severity="error",
+            field_name="revenues",
+            actual_value=f"cumulative={cum_rev:,.0f}, sum_standalone={running_sum:,.0f}",
+            expected_value=f"difference < 1% or $10M",
+            message=(
+                f"FY{fy} Q{qn}: cumulative revenue ({cum_rev:,.0f}) != "
+                f"sum of standalone Q1..Q{qn} ({running_sum:,.0f}), "
+                f"diff={discrepancy:,.0f}"
+                + (f" ({discrepancy/cum_rev*100:.1f}%)" if cum_rev and cum_rev != 0 else "")
+            ),
+            suggestion="Check raw SEC data for missing or misclassified quarters.",
+        ))
+
+    # ── Basic row-level checks ──
+    row_sql = """
+    SELECT i.stock_code, i.report_date, i.revenues, i.revenues_standalone
     FROM us_income_statement i
     WHERE i.report_type = 'quarterly'
       AND i.revenues_standalone IS NOT NULL
     ORDER BY i.stock_code, i.report_date
     """
-    rows = db.execute(sql, fetch=True) or []
-    if not rows:
-        return 0
-
-    scanned = 0
+    rows = db.execute(row_sql, fetch=True) or []
+    row_scanned = 0
 
     for r in rows:
         stock_code, rdate = r[0], str(r[1])
         cum_rev, std_rev = _d(r[2]), _d(r[3])
-        scanned += 1
+        row_scanned += 1
 
-        # Negative standalone revenue is very unusual
-        # (a company shouldn't have negative quarterly sales)
         if std_rev is not None and std_rev < 0:
             issues.append(ValidationIssue(
                 stock_code=stock_code, market="US",
@@ -618,7 +714,6 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
                 suggestion="Check raw SEC data: negative quarterly revenue is unusual.",
             ))
 
-        # Negative cumulative revenue
         if cum_rev is not None and cum_rev < 0:
             issues.append(ValidationIssue(
                 stock_code=stock_code, market="US",
@@ -632,7 +727,7 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
                 suggestion="Check raw SEC data.",
             ))
 
-    return scanned
+    return scanned + row_scanned
 
 
 def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:

@@ -41,7 +41,7 @@ _INCOME_DB_COLS = {
     "weighted_avg_shares_diluted_standalone",
     "other_comprehensive_income_standalone",
     "comprehensive_income_standalone",
-    "edgar_tags", "extra_items", "updated_at",
+    "frame", "edgar_tags", "extra_items", "updated_at",
 }
 _BALANCE_DB_COLS = {
     "stock_code", "cik", "report_date", "report_type", "filed_date",
@@ -49,7 +49,7 @@ _BALANCE_DB_COLS = {
     "total_current_assets", "total_assets", "total_current_liabilities",
     "total_liabilities", "total_equity", "retained_earnings",
     "long_term_debt", "short_term_debt",
-    "goodwill", "intangible_assets_net", "edgar_tags", "extra_items", "updated_at",
+    "goodwill", "intangible_assets_net", "frame", "edgar_tags", "extra_items", "updated_at",
 }
 _CASHFLOW_DB_COLS = {
     "stock_code", "cik", "report_date", "report_type", "filed_date",
@@ -73,7 +73,7 @@ _CASHFLOW_DB_COLS = {
     "share_buyback_standalone", "dividends_paid_standalone",
     "other_financing_activities_standalone",
     "net_cash_from_financing_standalone", "effect_of_exchange_rate_standalone",
-    "edgar_tags", "extra_items", "updated_at",
+    "frame", "edgar_tags", "extra_items", "updated_at",
 }
 
 from .base import BaseTransformer, parse_report_date
@@ -446,12 +446,17 @@ class USGAAPTransformer(BaseTransformer):
             "updated_at": datetime.now(),
         }
 
+        # 解析 frame（SEC 报告周期标识，如 CY2025Q1）
+        frame_val = row.get("frame", "")
+        if frame_val and isinstance(frame_val, str) and frame_val.strip():
+            record["frame"] = frame_val.strip()
+
         # 收集数值字段和 edgar_tags
         edgar_tags: dict[str, str] = {}
         extra_items: dict[str, Any] = {}
 
         # 标准字段列表（排除元数据列）
-        meta_cols = {"end", "fp", "filed", "accn", "_date", "_fp_order"}
+        meta_cols = {"end", "fp", "filed", "accn", "_date", "_fp_order", "frame"}
         for col in row.index:
             if col in meta_cols:
                 continue

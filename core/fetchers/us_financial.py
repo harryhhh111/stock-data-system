@@ -648,12 +648,16 @@ class USFinancialFetcher(BaseFetcher):
             sub_df = sub_df.dropna(subset=["val"])
             if sub_df.empty:
                 return pd.DataFrame()
+            # Preserve frame before pivot_table drops it (frame is neither
+            # index, columns, nor values, so pandas silently discards it).
+            frame_map = sub_df.groupby(["end", "fp", "filed", "accn"])["frame"].first().reset_index()
             wide = sub_df.pivot_table(
                 index=["end", "fp", "filed", "accn"],
                 columns="field",
                 values="val",
                 aggfunc="first",
             ).reset_index()
+            wide = wide.merge(frame_map, on=["end", "fp", "filed", "accn"], how="left")
             if suffix:
                 renames = {
                     c: f"{c}{suffix}"
@@ -695,7 +699,7 @@ class USFinancialFetcher(BaseFetcher):
         val_cols = [
             c
             for c in wide.columns
-            if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order"]
+            if c not in ["end", "fp", "filed", "accn", "_date", "_fp_order", "frame"]
         ]
         # 优先选非空列最多的行，让 first() 拿到最完整的数据
         wide["_non_null_count"] = wide[val_cols].notna().sum(axis=1)
@@ -710,6 +714,7 @@ class USFinancialFetcher(BaseFetcher):
         agg_dict = {c: "first" for c in val_cols}
         agg_dict["filed"] = "last"
         agg_dict["accn"] = "last"
+        agg_dict["frame"] = "first"
         wide = wide.drop(columns=["_non_null_count"])
         wide = wide.groupby(["end", "fp"], sort=False).agg(agg_dict).reset_index()
         for c in val_cols:
