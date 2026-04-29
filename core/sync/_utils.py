@@ -159,3 +159,62 @@ def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str |
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error("%s (%s) 同步失败: %s", stock_code, market, error_msg)
         return False, tables_synced, error_msg
+
+
+def correct_market_cap(records: list[dict]) -> int:
+    """用 stock_share.total_shares × close 修复异常的 market_cap。
+
+    当行情 API 返回的市值与 close × total_shares 偏差 > 10% 时，
+    以自行计算值覆盖（API 偶发总股本数据错乱）。
+
+    Returns:
+        修正的记录数
+    """
+    if not records:
+        return 0
+
+    # 收集需要查询的 stock_code
+    codes = list({r["stock_code"] for r in records if r.get("market") and r.get("close")})
+    if not codes:
+        return 0
+
+    # 批量查询 total_shares（取每只股票最新一条记录）
+    shares_map: dict[str, float] = {}
+    try:
+        rows = execute(
+            """SELECT DISTINCT ON (stock_code) stock_code, total_shares
+               FROM stock_share
+               WHERE stock_code = ANY(%s) AND total_shares IS NOT NULL AND total_shares > 0
+               ORDER BY stock_code, trade_date DESC""",
+            ([codes],),
+            fetch=True,
+        )
+        if rows:
+            for r in rows:
+                shares_map[r[0]] = float(r[1])
+    except Exception:
+        return 0
+
+    if not shares_map:
+        return 0
+
+    corrected = 0
+    for rec in records:
+        shares = shares_map.get(rec.get("stock_code", ""))
+        if not shares:
+            continue
+        close = rec.get("close")
+        if close is None or close == 0:
+            continue
+        expected_mcap = close * shares
+        orig_mcap = rec.get("market_cap")
+        if orig_mcap is None:
+            rec["market_cap"] = expected_mcap
+            corrected += 1
+        elif abs(float(orig_mcap) - expected_mcap) / expected_mcap > 0.1:
+            rec["market_cap"] = expected_mcap
+            corrected += 1
+
+    if corrected:
+        logger.info("市值修正: %d 条记录", corrected)
+    return corrected

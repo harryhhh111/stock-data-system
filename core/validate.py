@@ -730,6 +730,84 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
     return scanned + row_scanned
 
 
+# ──────────────────────────────────────────────────────────
+#  3. 市值日环比异常检测（A 股 + 港股）
+# ──────────────────────────────────────────────────────────
+
+
+def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
+    """检测市值日环比跳变（数据源偶发错误）。
+
+    当市值日环比变化 > 50% 但收盘价变化 < 10% 时，
+    说明行情 API 返回了错误的市值（通常是总股本数据错乱）。
+    同时检查 stock_share 表，用 close * total_shares 核实。
+
+    Returns scanned row count.
+    """
+    sql = """
+    WITH jumps AS (
+        SELECT dq.stock_code, dq.market, dq.trade_date,
+               dq.close, dq.market_cap,
+               LAG(dq.market_cap) OVER w AS prev_mcap,
+               LAG(dq.close) OVER w AS prev_close
+        FROM daily_quote dq
+        WHERE dq.market IN ('CN_A', 'CN_HK')
+          AND dq.market_cap IS NOT NULL
+          AND dq.close IS NOT NULL
+        WINDOW w AS (PARTITION BY dq.stock_code, dq.market ORDER BY dq.trade_date)
+    )
+    SELECT j.stock_code, j.market, j.trade_date::text,
+           j.close, j.market_cap, j.prev_mcap, j.prev_close,
+           ss.total_shares
+    FROM jumps j
+    LEFT JOIN stock_share ss
+        ON j.stock_code = ss.stock_code AND j.market = ss.market
+    WHERE j.prev_mcap IS NOT NULL
+      AND j.prev_close IS NOT NULL
+      AND j.prev_mcap > 0
+      AND ABS(j.market_cap - j.prev_mcap) / j.prev_mcap > 0.5
+      AND ABS(j.close - j.prev_close) / j.prev_close < 0.1
+    ORDER BY j.trade_date DESC, j.stock_code
+    """
+    rows = db.execute(sql, fetch=True) or []
+    if not rows:
+        return 0
+
+    scanned = 0
+    for r in rows:
+        stock_code, market, trade_date = r[0], r[1], r[2]
+        close, mcap = _d(r[3]), _d(r[4])
+        prev_mcap, prev_close = _d(r[5]), _d(r[6])
+        total_shares = _d(r[7])
+
+        scanned += 1
+
+        # Calculate expected market_cap from close * total_shares
+        expected_mcap = None
+        if total_shares and total_shares > 0 and close:
+            expected_mcap = close * total_shares
+
+        detail = (f"close {prev_close:.2f}→{close:.2f}, "
+                  f"mcap {prev_mcap/1e8:.1f}→{mcap/1e8:.1f}亿")
+        if expected_mcap:
+            detail += f" (expected {expected_mcap/1e8:.1f}亿 from close × shares)"
+
+        issues.append(ValidationIssue(
+            stock_code=stock_code,
+            market=market,
+            report_date=trade_date,
+            check_name="market_cap_jump",
+            severity="warning",
+            field_name="market_cap",
+            actual_value=str(mcap),
+            expected_value=str(expected_mcap) if expected_mcap else None,
+            message=detail,
+            suggestion="API returned incorrect market_cap; fix: close × total_shares",
+        ))
+
+    return scanned
+
+
 def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
     """检查数据源多样性，记录为已知限制。
 
@@ -925,6 +1003,10 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
             scanned_logic = check_logic_cn_hk(mkt, report.issues)
             report.total_rows_scanned += scanned_logic
             logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
+
+            scanned_mcap = check_market_cap_jump(report.issues)
+            report.total_rows_scanned += scanned_mcap
+            logger.info("  市值跳变: 扫描 %d 行", scanned_mcap)
 
         elif mkt == "US":
             scanned = check_anomalies_us(report.issues)

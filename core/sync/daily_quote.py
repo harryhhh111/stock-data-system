@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 from db import upsert, execute
-from ._utils import logger
+from ._utils import logger, correct_market_cap
 
 
 def backfill_daily_hist(market: str, source: str = "auto") -> dict:
@@ -79,6 +79,7 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
                 else:
                     records = fetch_tencent_hist(code, mkt, start_date=start_date)
                 if records:
+                    correct_market_cap(records)
                     upsert("daily_quote", records, ["stock_code", "trade_date"])
                     mkt_updated += len(records)
                 mkt_success += 1
