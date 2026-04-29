@@ -185,11 +185,23 @@ quant/                   ←→   面向用户的分析工具
 
 ### 4.5 物化视图刷新策略
 
-- `mv_indicator_ttm`：从 income_statement + cash_flow_statement 计算，用 annual 数据（不含 quarterly，避免重复计算）
+**A 股 / 港股：**
+
+- `mv_indicator_ttm`：从 income_statement + cash_flow_statement 计算，优先取最新报告（不限类型）
+  - 若最新为 annual → 直接使用（本身为 12 个月数据）
+  - 若最新为 quarterly/semi → 公式法：`latest_cumulative + last_annual - prior_year_same_period_cumulative`
+  - 无上年同期或上年年报 → fallback 到最近一期 annual
 - `mv_fcf_yield`：从 `mv_indicator_ttm` + `daily_quote` 计算，依赖 daily_quote 的 market_cap
 - 刷新顺序：先 `mv_indicator_ttm`，再 `mv_fcf_yield`
 
-> ⚠️ **已知陷阱：** TTM 计算如果同时包含 annual 和 quarterly 数据，annual 会被当作独立行重复计算，导致数值虚高（曾导致 FCF Yield 夸大 3 倍）。修复方案：只用 annual 数据。
+**美股：** 使用独立的一套 `mv_us_*` 视图，表结构类似但数据源为 `us_*` 表。
+
+> ⚠️ **美股 TTM 尚未修复**：`mv_us_indicator_ttm` 仍使用旧式 `ROWS BETWEEN 3 PRECEDING` 窗口叠加，annual（10-K）和 quarterly（10-Q）混合导致 TTM 虚高 ~75%。A/HK 的公式法待移植到美股。详见 [`[US] DEV_GUIDELINES.md`]([US] DEV_GUIDELINES.md)。
+
+> ⚠️ **已知陷阱（A/HK）：** 
+> 1. **v1 坑**：TTM 用窗口函数 `ROWS BETWEEN 3 PRECEDING` 直接叠加 annual + quarterly，annual 被当作独立行重复计算，FCF Yield 夸大 3 倍。
+> 2. **v1 修复引入的新坑**：改为只用 annual 计算 TTM 后，年中（如 4 月）最新 annual 是上一年数据，严重滞后无参考价值。
+> 3. **v2（当前 A/HK 方案）**：公式法 `latest + last_annual - prior_year`，正确利用 quarterly 数据且避免重复计算。详见 `scripts/materialized_views.sql`。
 
 ---
 
@@ -346,23 +358,26 @@ FCF Yield > 5%
 
 ## 十、已知限制与风险
 
-| 类别 | 描述 | 影响 | 状态 |
-|------|------|------|------|
-| TTM 计算 | annual + quarterly 混合导致数值虚高 3 倍 | FCF Yield 不准确 | ✅ 已修复（只用 annual） |
-| 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE） |
-| 美股日线 | 仅 3,099 行，覆盖不全 | 美股估值指标不可用 | ✅ 已修复（683K 行，2021~2026） |
-| total_equity | 23% NULL，无法算 ROE | 量化筛选器不可用 | ✅ 已修复（三层 fallback，降至 12.3%） |
-| D&A 缺失 | Depreciation-only 公司缺摊销 | D&A 被低估 | ✅ 已修复（自动加 AmortizationOfIntangibleAssets） |
-| screener 不支持 US | CLI 只接受 CN_A/CN_HK | 美股选股不可用 | ✅ 已支持（get_us_universe + 三预设） |
-| IP 封禁 | 东方财富行情 API 从国内被封 | 需用腾讯 fallback | ✅ 已有方案 |
-| SEC 限流 | SEC EDGAR 对请求频率有限制 | 美股同步可能失败 | ✅ 已有重试机制 |
-| 历史市值缺失 | 腾讯 K 线不返回市值 | FCF Yield 仅最新一期可用 | 🔄 待回算（close × total_shares） |
-| 物化视图 | 需手动刷新 | 数据可能滞后 | 🔄 待自动化 |
-| Gross Profit | 73% 股票有，33% 公司不报此 tag | 毛利率筛选缺少部分公司 | 🔄 部分行业天然无此字段 |
-| 总计 US revenue_yoy | 物化视图未计算同比 | growth_value 预设缺两个因子 | 🔄 待添加 |
-| 分红数据 | dividend_split 表为空 | 股息率筛选不可用 | 🔄 代码已写，待执行 |
-| raw_snapshot | 大量原始 JSON 占用磁盘空间 | 12 GB+ | 🔄 可按需清理 |
-| 20 只美股无 raw_snapshot | 原始数据缺失 | 无法 reparse | 🔄 待重新拉取 |
+> 美股特有的限制与风险详见 [`[US] DEV_GUIDELINES.md`]([US] DEV_GUIDELINES.md) 第四章。
+
+| 类别 | 描述 | 市场 | 影响 | 状态 |
+|------|------|:---:|------|------|
+| TTM 计算 | 公式法已修复 annual+quarterly 混合问题 | A/HK | FCF Yield 准确 | ✅ 已修复 |
+| TTM 计算 | ROWS BETWEEN 3 PRECEDING 仍叠加 annual+quarterly | US | FCF Yield 虚高 ~75% | ❌ 待修复 |
+| 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | 全部 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE） |
+| total_equity | 23% NULL，无法算 ROE | A/HK | 量化筛选器不可用 | ✅ 已修复（三层 fallback，降至 12.3%） |
+| 美股日线 | 仅 3,099 行，覆盖不全 | US | 美股估值指标不可用 | ✅ 已修复（683K 行，2021~2026） |
+| D&A 缺失 | Depreciation-only 公司缺摊销 | US | D&A 被低估 | ✅ 已修复（自动加 AmortizationOfIntangibleAssets） |
+| screener 不支持 US | CLI 只接受 CN_A/CN_HK | US | 美股选股不可用 | ✅ 已支持（get_us_universe + 三预设） |
+| IP 封禁 | 东方财富行情 API 从国内被封 | A/HK | 需用腾讯 fallback | ✅ 已有方案 |
+| SEC 限流 | SEC EDGAR 对请求频率有限制 | US | 美股同步可能失败 | ✅ 已有重试机制 |
+| 历史市值缺失 | 腾讯 K 线不返回市值 | A/HK | FCF Yield 仅最新一期可用 | 🔄 待回算（close × total_shares） |
+| 物化视图 | 需手动刷新 | 全部 | 数据可能滞后 | 🔄 待自动化 |
+| Gross Profit | 73% 股票有，33% 公司不报此 tag | US | 毛利率筛选缺少部分公司 | 🔄 部分行业天然无此字段 |
+| US revenue_yoy | 物化视图未计算同比 | US | growth_value 预设缺两个因子 | 🔄 待添加 |
+| 分红数据 | dividend_split 表为空 | A/HK | 股息率筛选不可用 | 🔄 代码已写，待执行 |
+| raw_snapshot | 大量原始 JSON 占用磁盘空间 | 全部 | 12 GB+ | 🔄 可按需清理 |
+| 20 只美股无 raw_snapshot | 原始数据缺失 | US | 无法 reparse | 🔄 待重新拉取 |
 
 ### 当前开发阶段
 

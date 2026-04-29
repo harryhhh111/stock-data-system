@@ -216,11 +216,15 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 
 ## 七、教训记录
 
-以下是从实际开发中总结的教训，避免重复踩坑：
+以下是从实际开发中总结的教训，避免重复踩坑。
+
+> **美股特有教训**见 [`[US] DEV_GUIDELINES.md`]([US] DEV_GUIDELINES.md)。两台服务器数据库独立，部分教训仅影响单一市场。
 
 | # | 教训 | 根因 | 预防措施 |
 |---|------|------|---------|
 | 1 | upsert 无 None 保护导致市值数据丢失 | `db.py` upsert 全量覆盖 | upsert 已实现 COALESCE 保护（`force_null_cols` 可显式覆盖） |
-| 2 | TTM 计算 annual+quarterly 混合导致数值虚高 3 倍 | 窗口函数不区分报告类型 | 只用 annual 计算 TTM |
+| 2 | TTM 计算 annual+quarterly 混合导致数值虚高 3 倍 | 窗口函数不区分报告类型，annual 与 quarterly 被当作独立行叠加 | v1: 只用 annual → 导致数据陈旧（2026年还在用2024年报，无参考价值） | 
+|   | → v1 修复引入新问题：只用 annual 导致 TTM 数据陈旧 | annual 报告滞后于最新季报 6-12 个月 | v2（A/HK 已修）: 公式法 `latest_cumulative + last_annual - prior_year_cumulative` |
+|   | → US 美股尚未修复 | `mv_us_indicator_ttm` 仍用 ROWS BETWEEN 3 PRECEDING 叠加 annual+quarterly | **美股 TTM 仍有 ~75% 虚高**，详见 [US 开发规范]([US] DEV_GUIDELINES.md) |
 | 3 | 历史回填覆盖实时行情字段 | 方案文档未评估字段覆盖风险 | 新功能开发必须检查字段矩阵 |
 | 4 | 方案文档缺失导致设计缺陷 | 缺少系统级规范 | 强制先文档后开发 |
