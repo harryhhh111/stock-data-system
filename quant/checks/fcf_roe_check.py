@@ -107,6 +107,7 @@ def get_fcf_screen(market: str, min_yield: float = 0.10, min_mcap: float = 0) ->
         fy.pe_ttm,
         fy.pb,
         fy.close,
+        fy.ttm_report_date,
         %s AS market
     FROM {cfg['fcf_yield_view']} fy
     JOIN stock_info s ON fy.stock_code = s.stock_code
@@ -163,14 +164,33 @@ def check_roe_consecutive(
     return passed
 
 
-def check_anomalies(df: pd.DataFrame) -> list[dict]:
-    """检查筛选结果中的异常数据。"""
+def check_anomalies(df: pd.DataFrame, max_stale_days: int = 180) -> list[dict]:
+    """检查筛选结果中的异常数据。
+
+    Args:
+        df: FCF 筛选结果 DataFrame
+        max_stale_days: TTM 数据最大允许天数，超期标记为时滞异常
+    """
     anomalies = []
+    now = pd.Timestamp.now()
     for _, row in df.iterrows():
         code = row["stock_code"]
-        fcf_yield = row["fcf_yield"]
-        fcf_ttm = row["fcf_ttm"]
-        cfo_ttm = row["cfo_ttm"]
+        fcf_yield = row.get("fcf_yield")
+        fcf_ttm = row.get("fcf_ttm")
+        cfo_ttm = row.get("cfo_ttm")
+        ttm_date = row.get("ttm_report_date")
+
+        # TTM 数据时滞检测
+        if pd.notna(ttm_date):
+            stale_days = (now - pd.Timestamp(ttm_date)).days
+            if stale_days > max_stale_days:
+                anomalies.append({
+                    "stock_code": code,
+                    "anomaly_type": "ttm_stale",
+                    "detail": (f"TTM 数据截止 {str(ttm_date)[:10]}，已 {stale_days} 天未更新"
+                               f"（FCF Yield={fcf_yield:.1%} 基于过时数据）"),
+                })
+                continue  # 时滞异常不重复报其他类型
 
         if fcf_yield is not None and fcf_yield > 1.0:
             anomalies.append({
