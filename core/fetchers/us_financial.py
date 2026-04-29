@@ -91,6 +91,24 @@ class USFinancialFetcher(BaseFetcher):
 
     source_name = "sec_edgar"
 
+    # Fields that exist in both cumulative and standalone (single-quarter) versions.
+    # When SEC returns multiple entries for the same (tag, end, fp) with different
+    # start dates, the earliest start is cumulative; later starts are standalone.
+    STANDALONE_FIELDS: set[str] = {
+        "revenues", "cost_of_goods_sold", "gross_profit", "operating_expenses",
+        "selling_general_admin", "research_and_development", "depreciation_amortization",
+        "operating_income", "interest_expense", "interest_income", "other_income_expense",
+        "income_before_tax", "income_tax_expense", "net_income", "net_income_common",
+        "preferred_dividends", "eps_basic", "eps_diluted", "weighted_avg_shares_basic",
+        "weighted_avg_shares_diluted", "other_comprehensive_income", "comprehensive_income",
+        "net_income_cf", "stock_based_compensation", "deferred_income_tax",
+        "changes_in_working_capital", "net_cash_from_operations", "capital_expenditures",
+        "acquisitions", "investment_purchases", "investment_maturities",
+        "other_investing_activities", "net_cash_from_investing", "debt_issued",
+        "debt_repaid", "equity_issued", "share_buyback", "dividends_paid",
+        "other_financing_activities", "net_cash_from_financing", "effect_of_exchange_rate",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self._rate_limiter = SECRateLimiter(
@@ -586,26 +604,73 @@ class USFinancialFetcher(BaseFetcher):
                     )
                     df.loc[mask, "fp"] = correct_fp
 
-        # 当同一 (tag, end, fp) 有多个条目时，优先保留 start 最早的（累计值 > 独立值）
-        # SEC 同时对同季度给出累计版本（start=财年第一天）和独立版本（start=季度第一天）
-        # 累计值版本没有 frame 字段，独立值版本有 frame（如 CY2024Q1）
-        # 排序：start 最早优先 → 同 start 内 filed 最新优先
-        df["_start_order"] = pd.to_datetime(df["start"], errors="coerce")
-        df = df.sort_values(
-            ["_start_order", "filed", "accn"],
-            ascending=[True, False, True],
-            na_position="last",
-        ).drop_duplicates(subset=["tag", "end", "fp"], keep="first")
-        df = df.drop(columns=["_start_order"])
+        # Split cumulative vs standalone entries BEFORE dedup.
+        # For each (tag, end, fp) group, the entry with the earliest start is
+        # cumulative (start = fiscal year start). Entries with later start dates
+        # are standalone single-quarter versions (start = quarter start date).
+        # Both are stored so they can be cross-validated.
+        df["_start_dt"] = pd.to_datetime(df["start"], errors="coerce")
+        min_starts = df.groupby(["tag", "end", "fp"])["_start_dt"].transform("min")
+        df["_is_cum"] = (df["_start_dt"] == min_starts) | df["_start_dt"].isna()
 
-        df = df.dropna(subset=["val"])
+        standalone_fields_in_df = [
+            f for f in self.STANDALONE_FIELDS if f in df["field"].values
+        ]
 
-        wide = df.pivot_table(
-            index=["end", "fp", "filed", "accn"],
-            columns="field",
-            values="val",
-            aggfunc="first",
-        ).reset_index()
+        cum_df = df[df["_is_cum"]].drop(columns=["_is_cum"])
+        std_df = df[~df["_is_cum"]].drop(columns=["_is_cum"])
+
+        def _dedup_and_pivot(sub_df, suffix=""):
+            """Dedup within (tag, end, fp) groups and pivot to wide format."""
+            if sub_df.empty:
+                return pd.DataFrame()
+            sub_df = sub_df.copy()
+            sub_df["_start_order"] = pd.to_datetime(sub_df["start"], errors="coerce")
+            sub_df = sub_df.sort_values(
+                ["_start_order", "filed", "accn"],
+                ascending=[True, False, True],
+                na_position="last",
+            ).drop_duplicates(subset=["tag", "end", "fp"], keep="first")
+            sub_df = sub_df.drop(
+                columns=["_start_order", "_start_dt"], errors="ignore"
+            )
+            sub_df = sub_df.dropna(subset=["val"])
+            if sub_df.empty:
+                return pd.DataFrame()
+            wide = sub_df.pivot_table(
+                index=["end", "fp", "filed", "accn"],
+                columns="field",
+                values="val",
+                aggfunc="first",
+            ).reset_index()
+            if suffix:
+                renames = {
+                    c: f"{c}{suffix}"
+                    for c in wide.columns
+                    if c not in ("end", "fp", "filed", "accn")
+                    and c in standalone_fields_in_df
+                }
+                wide = wide.rename(columns=renames)
+            return wide
+
+        wide_cum = _dedup_and_pivot(cum_df)
+        wide_std = _dedup_and_pivot(std_df, suffix="_standalone")
+
+        if not wide_std.empty and not wide_cum.empty:
+            # Keep only _standalone columns + join keys from wide_std to avoid
+            # _x/_y suffix conflicts on non-standalone columns (e.g. amortization)
+            std_only_cols = [c for c in wide_std.columns
+                           if c.endswith("_standalone") or c in ("end", "fp", "filed", "accn")]
+            wide_std = wide_std[std_only_cols]
+            wide = wide_cum.merge(
+                wide_std, on=["end", "fp", "filed", "accn"], how="outer"
+            )
+        elif not wide_cum.empty:
+            wide = wide_cum
+        elif not wide_std.empty:
+            wide = wide_std
+        else:
+            return pd.DataFrame()
 
         # FY/Q4 去重 + 合并：同一 (end, fp) 可能有多个 filed/accn 的行（不同 tag 去重后 filed 不同）
         # 对每个字段取第一个非空值，而不是简单丢弃

@@ -151,3 +151,59 @@ CREATE TABLE IF NOT EXISTS us_cash_flow_statement (
 CREATE INDEX IF NOT EXISTS idx_us_cf_cik ON us_cash_flow_statement(cik);
 CREATE INDEX IF NOT EXISTS idx_us_cf_filed ON us_cash_flow_statement(filed_date);
 CREATE INDEX IF NOT EXISTS idx_us_cf_report ON us_cash_flow_statement(report_date);
+
+-- ============================================================
+-- Standalone (single-quarter) columns for US financial tables
+-- Added: 2026-04-30
+-- SEC provides both cumulative (start=fiscal year start) and
+-- standalone (start=quarter start) entries for each quarterly
+-- report. These columns store the standalone (single-quarter)
+-- values for cross-validation and simplified TTM calculation.
+-- ============================================================
+
+-- us_income_statement standalone columns (22)
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS revenues_standalone                    DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS cost_of_goods_sold_standalone          DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS gross_profit_standalone                DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS operating_expenses_standalone          DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS selling_general_admin_standalone       DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS research_and_development_standalone    DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS depreciation_amortization_standalone   DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS operating_income_standalone            DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS interest_expense_standalone            DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS interest_income_standalone             DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS other_income_expense_standalone        DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS income_before_tax_standalone           DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS income_tax_expense_standalone          DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS net_income_standalone                  DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS net_income_common_standalone           DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS preferred_dividends_standalone         DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS eps_basic_standalone                   DECIMAL(10,4);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS eps_diluted_standalone                 DECIMAL(10,4);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS weighted_avg_shares_basic_standalone   DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS weighted_avg_shares_diluted_standalone DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS other_comprehensive_income_standalone  DECIMAL(20,2);
+ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS comprehensive_income_standalone        DECIMAL(20,2);
+
+-- us_cash_flow_statement standalone columns (20)
+-- Excludes: cash_beginning, cash_ending (point-in-time), net_change_in_cash, free_cash_flow (derived)
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS net_income_cf_standalone               DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS depreciation_amortization_standalone   DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS stock_based_compensation_standalone    DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS deferred_income_tax_standalone         DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS changes_in_working_capital_standalone  DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS net_cash_from_operations_standalone    DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS capital_expenditures_standalone        DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS acquisitions_standalone               DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS investment_purchases_standalone        DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS investment_maturities_standalone       DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS other_investing_activities_standalone  DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS net_cash_from_investing_standalone     DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS debt_issued_standalone                 DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS debt_repaid_standalone                 DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS equity_issued_standalone               DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS share_buyback_standalone               DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS dividends_paid_standalone              DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS other_financing_activities_standalone  DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS net_cash_from_financing_standalone     DECIMAL(20,2);
+ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS effect_of_exchange_rate_standalone     DECIMAL(20,2);

@@ -565,6 +565,144 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
 # ──────────────────────────────────────────────────────────
 
 
+def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
+    """Cross-validate cumulative vs sum of standalone quarters for US stocks.
+
+    For each quarterly report where both cumulative and standalone values exist,
+    verify that cumulative_Qn ~= SUM(standalone_Q1..standalone_Qn) within a
+    fiscal year. A 5% tolerance accounts for SEC rounding differences.
+
+    Returns scanned row count.
+    """
+    # Get all quarterly records that have standalone data
+    sql = """
+    SELECT
+        i.stock_code, i.report_date, i.report_type,
+        i.revenues, i.revenues_standalone,
+        i.net_income, i.net_income_standalone,
+        cf.net_cash_from_operations, cf.net_cash_from_operations_standalone,
+        i.operating_income, i.operating_income_standalone
+    FROM us_income_statement i
+    JOIN us_cash_flow_statement cf
+        ON i.stock_code = cf.stock_code
+        AND i.report_date = cf.report_date
+        AND i.report_type = cf.report_type
+    WHERE i.report_type = 'quarterly'
+      AND i.revenues_standalone IS NOT NULL
+    ORDER BY i.stock_code, i.report_date
+    """
+    rows = db.execute(sql, fetch=True) or []
+    if not rows:
+        return 0
+
+    # Group by stock, then identify fiscal year boundaries.
+    # A new fiscal year starts after a gap of > 6 months between quarterly reports.
+    from collections import defaultdict
+
+    stock_data: dict[str, list[tuple]] = defaultdict(list)
+    for r in rows:
+        stock_data[r[0]].append(r)
+
+    tolerance = 0.05
+    scanned = 0
+
+    for stock_code, records in stock_data.items():
+        if len(records) < 2:
+            continue
+
+        # Build fiscal year groups
+        fy_groups: list[list[tuple]] = []
+        current_group = [records[0]]
+        for i in range(1, len(records)):
+            _, prev_date, *_ = records[i - 1]
+            _, curr_date, *_ = records[i]
+            gap = (curr_date - prev_date).days
+            if gap > 200:  # New fiscal year
+                fy_groups.append(current_group)
+                current_group = [records[i]]
+            else:
+                current_group.append(records[i])
+        fy_groups.append(current_group)
+
+        # For each group, validate cumulative = sum of standalones up to that quarter
+        for fy_group in fy_groups:
+            if len(fy_group) < 2:
+                continue
+
+            # Sort by report_date
+            fy_group.sort(key=lambda x: x[1])
+
+            # For each quarter beyond Q1, validate cumulative
+            for idx in range(len(fy_group)):
+                r = fy_group[idx]
+                rdate = str(r[1])
+                scanned += 1
+
+                prev_records = fy_group[: idx + 1]
+
+                # Check revenues
+                cum_rev = _d(r[3])
+                sum_rev = sum(
+                    _d(pr[4]) for pr in prev_records if _d(pr[4]) is not None
+                )
+                if cum_rev and sum_rev and cum_rev != 0:
+                    diff = abs(cum_rev - sum_rev) / abs(cum_rev)
+                    if diff > tolerance:
+                        issues.append(ValidationIssue(
+                            stock_code=stock_code, market="US",
+                            report_date=rdate,
+                            check_name="cumulative_vs_standalone_mismatch",
+                            severity="warning",
+                            field_name="revenues",
+                            actual_value=f"cum={cum_rev:,.0f}, sum_std={sum_rev:,.0f}, diff={diff:.1%}",
+                            expected_value=f"deviation < {tolerance:.0%}",
+                            message=f"Cumulative revenues ({cum_rev:,.0f}) != sum of standalone quarters ({sum_rev:,.0f}): {diff:.1%}",
+                            suggestion="Verify SEC data for this report. Cumulative value is authoritative.",
+                        ))
+
+                # Check net_income
+                cum_ni = _d(r[5])
+                sum_ni = sum(
+                    _d(pr[6]) for pr in prev_records if _d(pr[6]) is not None
+                )
+                if cum_ni and sum_ni and cum_ni != 0:
+                    diff = abs(cum_ni - sum_ni) / abs(cum_ni)
+                    if diff > tolerance:
+                        issues.append(ValidationIssue(
+                            stock_code=stock_code, market="US",
+                            report_date=rdate,
+                            check_name="cumulative_vs_standalone_mismatch",
+                            severity="warning",
+                            field_name="net_income",
+                            actual_value=f"cum={cum_ni:,.0f}, sum_std={sum_ni:,.0f}, diff={diff:.1%}",
+                            expected_value=f"deviation < {tolerance:.0%}",
+                            message=f"Cumulative net_income ({cum_ni:,.0f}) != sum of standalone quarters ({sum_ni:,.0f}): {diff:.1%}",
+                            suggestion="Verify SEC data for this report.",
+                        ))
+
+                # Check CFO
+                cum_cfo = _d(r[7])
+                sum_cfo = sum(
+                    _d(pr[8]) for pr in prev_records if _d(pr[8]) is not None
+                )
+                if cum_cfo and sum_cfo and cum_cfo != 0:
+                    diff = abs(cum_cfo - sum_cfo) / abs(cum_cfo)
+                    if diff > tolerance:
+                        issues.append(ValidationIssue(
+                            stock_code=stock_code, market="US",
+                            report_date=rdate,
+                            check_name="cumulative_vs_standalone_mismatch",
+                            severity="warning",
+                            field_name="net_cash_from_operations",
+                            actual_value=f"cum={cum_cfo:,.0f}, sum_std={sum_cfo:,.0f}, diff={diff:.1%}",
+                            expected_value=f"deviation < {tolerance:.0%}",
+                            message=f"Cumulative CFO ({cum_cfo:,.0f}) != sum of standalone quarters ({sum_cfo:,.0f}): {diff:.1%}",
+                            suggestion="Verify SEC data for this report.",
+                        ))
+
+    return scanned
+
+
 def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
     """检查数据源多样性，记录为已知限制。
 
@@ -763,6 +901,10 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
             scanned_logic = check_logic_us(report.issues)
             report.total_rows_scanned += scanned_logic
             logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
+
+            scanned_standalone = check_standalone_cross_validation_us(report.issues)
+            report.total_rows_scanned += scanned_standalone
+            logger.info("  累计/独立交叉验证: 扫描 %d 行", scanned_standalone)
 
         # 跨源比对
         check_cross_source(mkt, report.issues)

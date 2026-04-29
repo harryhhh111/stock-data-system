@@ -26,7 +26,22 @@ _INCOME_DB_COLS = {
     "net_income", "net_income_common", "preferred_dividends",
     "eps_basic", "eps_diluted", "weighted_avg_shares_basic",
     "weighted_avg_shares_diluted", "other_comprehensive_income",
-    "comprehensive_income", "edgar_tags", "extra_items", "updated_at",
+    "comprehensive_income",
+    # Standalone (single-quarter) columns
+    "revenues_standalone", "cost_of_goods_sold_standalone",
+    "gross_profit_standalone", "operating_expenses_standalone",
+    "selling_general_admin_standalone", "research_and_development_standalone",
+    "depreciation_amortization_standalone", "operating_income_standalone",
+    "interest_expense_standalone", "interest_income_standalone",
+    "other_income_expense_standalone", "income_before_tax_standalone",
+    "income_tax_expense_standalone", "net_income_standalone",
+    "net_income_common_standalone", "preferred_dividends_standalone",
+    "eps_basic_standalone", "eps_diluted_standalone",
+    "weighted_avg_shares_basic_standalone",
+    "weighted_avg_shares_diluted_standalone",
+    "other_comprehensive_income_standalone",
+    "comprehensive_income_standalone",
+    "edgar_tags", "extra_items", "updated_at",
 }
 _BALANCE_DB_COLS = {
     "stock_code", "cik", "report_date", "report_type", "filed_date",
@@ -43,7 +58,22 @@ _CASHFLOW_DB_COLS = {
     "capital_expenditures", "free_cash_flow", "acquisitions",
     "net_cash_from_investing", "dividends_paid", "share_buyback",
     "debt_issued", "debt_repaid", "net_cash_from_financing",
-    "net_change_in_cash", "equity_issued", "edgar_tags", "extra_items", "updated_at",
+    "net_change_in_cash", "equity_issued",
+    # Standalone (single-quarter) columns
+    # Excludes: cash_beginning, cash_ending (point-in-time),
+    # net_change_in_cash, free_cash_flow (derived from standalone components)
+    "net_income_cf_standalone", "depreciation_amortization_standalone",
+    "stock_based_compensation_standalone", "deferred_income_tax_standalone",
+    "changes_in_working_capital_standalone",
+    "net_cash_from_operations_standalone", "capital_expenditures_standalone",
+    "acquisitions_standalone", "investment_purchases_standalone",
+    "investment_maturities_standalone", "other_investing_activities_standalone",
+    "net_cash_from_investing_standalone", "debt_issued_standalone",
+    "debt_repaid_standalone", "equity_issued_standalone",
+    "share_buyback_standalone", "dividends_paid_standalone",
+    "other_financing_activities_standalone",
+    "net_cash_from_financing_standalone", "effect_of_exchange_rate_standalone",
+    "edgar_tags", "extra_items", "updated_at",
 }
 
 from .base import BaseTransformer, parse_report_date
@@ -306,6 +336,10 @@ class USGAAPTransformer(BaseTransformer):
             if r.get("net_income_common") is None and r.get("net_income") is not None:
                 pref = r.get("preferred_dividends")
                 r["net_income_common"] = r["net_income"] - pref if pref else r["net_income"]
+            # Same fallback for standalone
+            if r.get("net_income_common_standalone") is None and r.get("net_income_standalone") is not None:
+                pref = r.get("preferred_dividends_standalone")
+                r["net_income_common_standalone"] = r["net_income_standalone"] - (pref if pref else 0)
 
         logger.debug("利润表转换: %s, %d 条记录", stock_code, len(records))
         return records

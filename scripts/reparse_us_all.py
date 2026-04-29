@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""全量 reparse 美股财务数据（从 raw_snapshot 重新解析）"""
-import sys, json, time, logging
-sys.path.insert(0, '/root/projects/stock_data')
+"""Full reparse of US financial data from raw_snapshot."""
+import sys, json, time, logging, os
+# Ensure project root is on path so 'core' package is importable
+_proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
+from core.transformers.us_gaap import USGAAPTransformer
+from core.fetchers.us_financial import USFinancialFetcher
 from db import execute, upsert
-from transformers.us_gaap import USGAAPTransformer
-from fetchers.us_financial import USFinancialFetcher
 
 transformer = USGAAPTransformer()
 fetcher = USFinancialFetcher()
