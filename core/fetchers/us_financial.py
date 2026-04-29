@@ -520,12 +520,15 @@ class USFinancialFetcher(BaseFetcher):
                         fp = entry.get("fp", "")
                         frame = str(entry.get("frame", ""))
 
-                        # 优先使用 frame 修正 fp
+                        # 用 frame 修正 fp（仅当需要时）
+                        # frame 是日历年（CY），fp 是财年，非 12 月财年公司两者不一致
+                        # 只在 fp 为 FY 或空时用 frame 修正（如 MELI 改财年 case）
+                        # 已有正确季度 fp 的不覆盖
                         if frame:
                             frame_match = _re.search(r"Q(\d+)(?:I)?$", frame)
-                            if frame_match:
+                            if frame_match and fp in ("FY", "", None):
                                 fp = f"Q{frame_match.group(1)}"
-                            elif "CY" in frame and "Q" not in frame:
+                            elif not frame_match and "CY" in frame:
                                 fp = "FY"
                         # 记录是否 frame 有明确的季度指示
                         records.append(
@@ -536,6 +539,7 @@ class USFinancialFetcher(BaseFetcher):
                                 "fy": entry.get("fy"),
                                 "fp": fp,
                                 "end": entry.get("end"),
+                                "start": entry.get("start"),
                                 "filed": entry.get("filed"),
                                 "accn": entry.get("accn"),
                                 "frame": frame,
@@ -582,12 +586,17 @@ class USFinancialFetcher(BaseFetcher):
                     )
                     df.loc[mask, "fp"] = correct_fp
 
-        # 当同一 (tag, end, fp) 有多个条目时，优先保留有 frame 的记录，再取最新 filed
-        df["_has_frame"] = df["frame"].astype(bool)
+        # 当同一 (tag, end, fp) 有多个条目时，优先保留 start 最早的（累计值 > 独立值）
+        # SEC 同时对同季度给出累计版本（start=财年第一天）和独立版本（start=季度第一天）
+        # 累计值版本没有 frame 字段，独立值版本有 frame（如 CY2024Q1）
+        # 排序：start 最早优先 → 同 start 内 filed 最新优先
+        df["_start_order"] = pd.to_datetime(df["start"], errors="coerce")
         df = df.sort_values(
-            ["filed", "_has_frame", "accn"], ascending=[True, True, True]
-        ).drop_duplicates(subset=["tag", "end", "fp"], keep="last")
-        df = df.drop(columns=["_has_frame"])
+            ["_start_order", "filed", "accn"],
+            ascending=[True, False, True],
+            na_position="last",
+        ).drop_duplicates(subset=["tag", "end", "fp"], keep="first")
+        df = df.drop(columns=["_start_order"])
 
         df = df.dropna(subset=["val"])
 
