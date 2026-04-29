@@ -530,10 +530,15 @@ class USFinancialFetcher(BaseFetcher):
         #   - 每股: "USD/shares"（EPS）
         #   - 股数: "shares"（加权平均股数）
         # 必须遍历所有单位类型，否则 EPS 和 Shares 字段会全量缺失
+        # 只使用 USD 本位的单位，跳过 CNY 等外币单位
+        # SEC 为中概股同时提供 CNY 和 USD 版本，CNY 字典序靠前会被 dedup 保留
+        _KEEP_UNITS = {"USD", "USD/shares", "shares"}
         records = []
         for tag, field_name in tag_mapping.items():
             if tag in usgaap:
                 for unit_name, entries in usgaap[tag].get("units", {}).items():
+                    if unit_name not in _KEEP_UNITS:
+                        continue
                     for entry in entries:
                         fp = entry.get("fp", "")
                         frame = str(entry.get("frame", ""))
