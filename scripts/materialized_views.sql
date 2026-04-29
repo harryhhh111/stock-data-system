@@ -345,45 +345,145 @@ CREATE INDEX idx_mv_us_indicator_fcf ON mv_us_financial_indicator(fcf);
 
 
 -- ============================================================
--- mv_us_indicator_ttm: 美股 TTM 指标（仅使用 annual 数据）
+-- mv_us_indicator_ttm: 美股 TTM 指标（公式法）
 -- ============================================================
 -- SEC 季度数据为累计值（YTD），不能直接窗口求和（会 3x-4x 膨胀）。
--- US TTM 直接取最新 annual 报表值，annual 本身即代表全年。
+-- TTM = latest_cumulative + last_annual - prior_year_same_period
+-- 等价于最近 4 个独立季度之和，但用累计值减法避免独立/累计混用问题。
+-- 四层 fallback：annual → 公式法 → last_annual → latest
 -- ============================================================
 
 DROP MATERIALIZED VIEW IF EXISTS mv_us_indicator_ttm CASCADE;
 
 CREATE MATERIALIZED VIEW mv_us_indicator_ttm AS
-SELECT
-    stock_code,
-    report_date,
-    report_type,
-    filed_date,
-    revenues AS revenue_ttm,
-    net_income AS net_income_ttm,
-    net_cash_from_operations AS cfo_ttm,
-    CASE
-        WHEN net_cash_from_operations IS NOT NULL AND capital_expenditures IS NOT NULL
-        THEN net_cash_from_operations - capital_expenditures
-        ELSE NULL
-    END AS fcf_ttm,
-    updated_at
-FROM (
-    SELECT DISTINCT ON (stock_code, report_date)
-        i.stock_code, i.report_date, i.report_type,
-        i.revenues, i.net_income,
-        cf.net_cash_from_operations, cf.capital_expenditures,
-        i.filed_date, i.updated_at
+WITH report_data AS (
+    SELECT
+        i.stock_code,
+        i.report_date,
+        i.report_type,
+        i.filed_date,
+        i.revenues,
+        i.net_income,
+        cf.net_cash_from_operations,
+        cf.capital_expenditures,
+        i.updated_at
     FROM us_income_statement i
     LEFT JOIN us_cash_flow_statement cf
         ON i.stock_code = cf.stock_code
         AND i.report_date = cf.report_date
         AND i.report_type = cf.report_type
-    WHERE i.report_type = 'annual'
-    ORDER BY stock_code, report_date
-) t;
+    WHERE i.report_type IN ('quarterly', 'annual')
+),
+-- 每只股票最新一期报告（不限类型）
+latest AS (
+    SELECT DISTINCT ON (stock_code) *
+    FROM report_data
+    ORDER BY stock_code, report_date DESC
+),
+-- 同比上一期（±7 天窗口，按日期距离排序取最近）
+prev_year AS (
+    SELECT DISTINCT ON (l.stock_code)
+        l.stock_code,
+        p.revenues                  AS py_revenue,
+        p.net_income                AS py_net_income,
+        p.net_cash_from_operations  AS py_ocf,
+        p.capital_expenditures      AS py_capex
+    FROM latest l
+    JOIN report_data p
+        ON  p.stock_code  = l.stock_code
+        AND p.report_type = l.report_type
+        AND p.report_date BETWEEN l.report_date - INTERVAL '1 year' - INTERVAL '7 days'
+                              AND l.report_date - INTERVAL '1 year' + INTERVAL '7 days'
+    ORDER BY l.stock_code, ABS(EXTRACT(EPOCH FROM (p.report_date - (l.report_date - INTERVAL '1 year'))))
+),
+-- 最近一期年报（在最新报告之前）
+last_annual AS (
+    SELECT DISTINCT ON (l.stock_code)
+        l.stock_code,
+        a.revenues                  AS la_revenue,
+        a.net_income                AS la_net_income,
+        a.net_cash_from_operations  AS la_ocf,
+        a.capital_expenditures      AS la_capex
+    FROM latest l
+    JOIN report_data a
+        ON  a.stock_code  = l.stock_code
+        AND a.report_type = 'annual'
+        AND a.report_date < l.report_date
+    ORDER BY l.stock_code, a.report_date DESC
+)
+SELECT
+    l.stock_code,
+    l.report_date,
+    l.report_type,
+    l.filed_date,
+    l.updated_at,
 
-CREATE UNIQUE INDEX idx_mv_us_ttm_pk ON mv_us_indicator_ttm(stock_code, report_date);
+    -- Revenue TTM
+    CASE WHEN l.report_type = 'annual'
+         THEN l.revenues
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN l.revenues + la.la_revenue - py.py_revenue
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_revenue
+         ELSE l.revenues
+    END AS revenue_ttm,
+
+    -- Net Income TTM
+    CASE WHEN l.report_type = 'annual'
+         THEN l.net_income
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN l.net_income + la.la_net_income - py.py_net_income
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_net_income
+         ELSE l.net_income
+    END AS net_income_ttm,
+
+    -- CFO TTM
+    CASE WHEN l.report_type = 'annual'
+         THEN l.net_cash_from_operations
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN l.net_cash_from_operations + la.la_ocf - py.py_ocf
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_ocf
+         ELSE l.net_cash_from_operations
+    END AS cfo_ttm,
+
+    -- Capex TTM
+    CASE WHEN l.report_type = 'annual'
+         THEN l.capital_expenditures
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN l.capital_expenditures + la.la_capex - py.py_capex
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_capex
+         ELSE l.capital_expenditures
+    END AS capex_ttm,
+
+    -- FCF TTM = CFO TTM - Capex TTM
+    CASE WHEN l.report_type = 'annual'
+              AND l.net_cash_from_operations IS NOT NULL
+              AND l.capital_expenditures IS NOT NULL
+         THEN l.net_cash_from_operations - l.capital_expenditures
+         WHEN py.stock_code IS NOT NULL
+              AND la.stock_code IS NOT NULL
+              AND l.net_cash_from_operations IS NOT NULL
+              AND l.capital_expenditures IS NOT NULL
+              AND la.la_ocf IS NOT NULL AND la.la_capex IS NOT NULL
+              AND py.py_ocf IS NOT NULL AND py.py_capex IS NOT NULL
+         THEN (l.net_cash_from_operations + la.la_ocf - py.py_ocf)
+            - (l.capital_expenditures + la.la_capex - py.py_capex)
+         WHEN la.stock_code IS NOT NULL
+              AND la.la_ocf IS NOT NULL AND la.la_capex IS NOT NULL
+         THEN la.la_ocf - la.la_capex
+         WHEN l.net_cash_from_operations IS NOT NULL
+              AND l.capital_expenditures IS NOT NULL
+         THEN l.net_cash_from_operations - l.capital_expenditures
+    END AS fcf_ttm
+
+FROM latest l
+LEFT JOIN prev_year py ON py.stock_code = l.stock_code
+LEFT JOIN last_annual la ON la.stock_code = l.stock_code;
+
+CREATE UNIQUE INDEX idx_mv_us_ttm_pk ON mv_us_indicator_ttm(stock_code);
 CREATE INDEX idx_mv_us_ttm_fcf ON mv_us_indicator_ttm(fcf_ttm);
 
 
