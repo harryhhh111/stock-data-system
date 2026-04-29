@@ -98,24 +98,39 @@ def get_stocks_max_report_date(market: str) -> dict[str, date]:
     return result
 
 
-def get_sync_progress_report_dates(market: str) -> dict[str, date]:
-    """获取 sync_progress 中记录的各股票 last_report_date。
+def get_sync_progress_report_dates(market: str) -> dict[str, tuple[date, list[str]]]:
+    """获取 sync_progress 中各股票的 last_report_date 和已同步表。
 
     Args:
         market: 市场标识
 
     Returns:
-        {stock_code: last_report_date} 字典
+        {stock_code: (last_report_date, tables_synced)} 字典
     """
     rows = execute(
-        "SELECT stock_code, last_report_date FROM sync_progress "
+        "SELECT stock_code, last_report_date, tables_synced FROM sync_progress "
         "WHERE market = %s AND status = 'success' AND last_report_date IS NOT NULL",
         (market,),
         fetch=True,
     )
     if not rows:
         return {}
-    return {r[0]: r[1] for r in rows if r[0] and r[1]}
+    return {r[0]: (r[1], r[2] or []) for r in rows if r[0] and r[1]}
+
+
+# 各市场期望的三大报表表名
+_EXPECTED_TABLES: dict[str, list[str]] = {
+    "CN_A": ["income_statement", "balance_sheet", "cash_flow_statement"],
+    "CN_HK": ["income_statement", "balance_sheet", "cash_flow_statement"],
+}
+
+
+def _tables_complete(market: str, tables_synced: list[str]) -> bool:
+    """检查是否已同步了该市场的全部三大报表。"""
+    expected = _EXPECTED_TABLES.get(market)
+    if not expected:
+        return True
+    return all(t in tables_synced for t in expected)
 
 
 def determine_stocks_to_sync(
@@ -153,12 +168,14 @@ def determine_stocks_to_sync(
     for market, stocks in market_stocks.items():
         # 查询该市场财务表中的最大报告期
         db_max_dates = get_stocks_max_report_date(market)
-        # 查询 sync_progress 中的记录
-        progress_dates = get_sync_progress_report_dates(market)
+        # 查询 sync_progress 中的记录（含已同步表列表）
+        progress_info = get_sync_progress_report_dates(market)
 
         for code, m in stocks:
             db_max = db_max_dates.get(code)
-            progress_max = progress_dates.get(code)
+            progress = progress_info.get(code)
+            progress_max = progress[0] if progress else None
+            tables_synced = progress[1] if progress else []
 
             if db_max is None:
                 # 财务表中无数据 → 新股票，必须同步
@@ -170,8 +187,12 @@ def determine_stocks_to_sync(
                 # DB 中有更新的报告期（可能上次同步不完整）
                 pending.append((code, m))
             elif db_max == progress_max:
-                # 最新报告期相同，跳过
-                skipped += 1
+                # 最新报告期相同，但检查是否三大报表都完整
+                if not _tables_complete(m, tables_synced):
+                    # 有表缺失（如 income_statement 被跳过），需补同步
+                    pending.append((code, m))
+                else:
+                    skipped += 1
             else:
                 # db_max < progress_max 不应发生，但安全起见也同步
                 logger.warning(

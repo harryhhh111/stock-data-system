@@ -114,6 +114,8 @@ class EastmoneyTransformer(BaseTransformer):
             op_cost = record.get("operating_cost")
             if op_rev is not None and op_cost is not None:
                 record["gross_profit"] = op_rev - op_cost
+            else:
+                record["gross_profit"] = None
 
             results.append(record)
         return results

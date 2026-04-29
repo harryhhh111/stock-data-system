@@ -21,6 +21,30 @@ logger = logging.getLogger(__name__)
 _pool: Optional[pool.ThreadedConnectionPool] = None
 
 
+def _detect_db_encoding() -> str:
+    """检测数据库编码。在首次调用 save_raw_snapshot 时惰性初始化。"""
+    try:
+        conn = _get_pool().getconn()
+        cur = conn.cursor()
+        cur.execute("SHOW server_encoding")
+        encoding = cur.fetchone()[0]
+        _get_pool().putconn(conn)
+        return encoding
+    except Exception:
+        return "UTF8"  # 默认假设 UTF8
+
+
+_db_encoding: str | None = None
+
+
+def _check_db_encoding() -> str:
+    """惰性获取数据库编码。"""
+    global _db_encoding
+    if _db_encoding is None:
+        _db_encoding = _detect_db_encoding()
+    return _db_encoding
+
+
 def _get_pool() -> pool.ThreadedConnectionPool:
     """延迟初始化连接池（单例）。"""
     global _pool
@@ -187,13 +211,15 @@ def save_raw_snapshot(
         # 导致 PostgreSQL JSONB 列拒绝插入（NaN / NaT 不是合法 JSON 值）。
         data_to_store = _sanitize_records(data_to_store)
 
-    # Sanitize non-ASCII chars — SQL_ASCII DB can't store them even as JSONB.
-    # PostgreSQL JSONB parser un-escapes \uXXXX back to raw Unicode chars,
-    # so ensure_ascii=True alone is not enough.
-    data_to_store = _ascii_sanitize(data_to_store)
+    # SQL_ASCII 编码的数据库无法存储非 ASCII 字符（包括 JSONB）。
+    # 国内服务器 UTF8 数据库跳过此步骤，保留中文原始文本。
+    if _check_db_encoding() == "SQL_ASCII":
+        data_to_store = _ascii_sanitize(data_to_store)
+        raw_json = _json.dumps(data_to_store, ensure_ascii=True, default=str)
+        raw_json = raw_json.encode("ascii", errors="replace").decode("ascii")
+    else:
+        raw_json = _json.dumps(data_to_store, ensure_ascii=False, default=str)
 
-    # raw_snapshot 的唯一索引包含 COALESCE((api_params)::text, ''::text)
-    # 因此 ON CONFLICT 需要包含相同的字段
     api_params_json = _json.dumps(api_params, default=str)
     sql = """
         INSERT INTO raw_snapshot (stock_code, data_type, source, api_params, raw_data, sync_time)
@@ -201,9 +227,6 @@ def save_raw_snapshot(
         ON CONFLICT (stock_code, data_type, source, COALESCE((api_params)::text, ''::text))
         DO UPDATE SET raw_data = EXCLUDED.raw_data, sync_time = NOW()
     """
-    raw_json = _json.dumps(data_to_store, ensure_ascii=True, default=str)
-    # Ensure pure ASCII for SQL_ASCII DB encoding
-    raw_json = raw_json.encode("ascii", errors="replace").decode("ascii")
     try:
         execute(
             sql,
