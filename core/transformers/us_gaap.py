@@ -472,6 +472,14 @@ class USGAAPTransformer(BaseTransformer):
                 extra_items[col_str] = val
                 continue
 
+            # Clamp DECIMAL(10,4) fields to avoid numeric overflow
+            if col_str in ("eps_basic", "eps_diluted", "eps_basic_standalone", "eps_diluted_standalone"):
+                max_val = 999999.9999
+                if val > max_val:
+                    val = max_val
+                elif val < -max_val:
+                    val = -max_val
+
             record[col_str] = val
             # 收集 edgar_tags
             edgar_tags[col_str] = col_str

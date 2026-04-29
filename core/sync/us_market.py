@@ -142,20 +142,21 @@ def sync_us_market(args) -> dict:
 
     for i, ticker in enumerate(pending_tickers, 1):
         try:
-            cik = fetcher.resolve_cik(ticker)
-            if not cik:
-                failed += 1
-                errors.append(f"{ticker}: 无法解析 CIK")
-                continue
+            cik = fetcher.ticker_to_cik(ticker)
+        except ValueError:
+            failed += 1
+            errors.append(f"{ticker}: 无法解析 CIK")
+            continue
 
-            raw_data = fetcher.fetch_company_facts(cik)
+        try:
+            raw_data = fetcher.fetch_company_facts(ticker)
             if not raw_data:
                 failed += 1
                 errors.append(f"{ticker}: 无 Company Facts 数据")
                 continue
 
             # 保存原始快照
-            save_raw_snapshot(ticker, "company_facts", raw_data, source="sec_edgar")
+            save_raw_snapshot(ticker, "company_facts", source="sec_edgar", api_params={}, raw_data=raw_data)
 
             tables_synced = _process_us_company_data(fetcher, transformer, ticker, cik, raw_data)
 

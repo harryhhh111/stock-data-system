@@ -166,6 +166,16 @@ def save_raw_snapshot(
     """
     import json as _json
 
+    def _ascii_sanitize(obj):
+        """Recursively replace non-ASCII chars in strings for SQL_ASCII DB."""
+        if isinstance(obj, dict):
+            return {_ascii_sanitize(k): _ascii_sanitize(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [_ascii_sanitize(v) for v in obj]
+        elif isinstance(obj, str):
+            return obj.encode("ascii", errors="replace").decode("ascii")
+        return obj
+
     # 处理 DataFrame
     data_to_store = raw_data
     if hasattr(raw_data, "to_dict"):
@@ -177,6 +187,11 @@ def save_raw_snapshot(
         # 导致 PostgreSQL JSONB 列拒绝插入（NaN / NaT 不是合法 JSON 值）。
         data_to_store = _sanitize_records(data_to_store)
 
+    # Sanitize non-ASCII chars — SQL_ASCII DB can't store them even as JSONB.
+    # PostgreSQL JSONB parser un-escapes \uXXXX back to raw Unicode chars,
+    # so ensure_ascii=True alone is not enough.
+    data_to_store = _ascii_sanitize(data_to_store)
+
     # raw_snapshot 的唯一索引包含 COALESCE((api_params)::text, ''::text)
     # 因此 ON CONFLICT 需要包含相同的字段
     api_params_json = _json.dumps(api_params, default=str)
@@ -186,11 +201,13 @@ def save_raw_snapshot(
         ON CONFLICT (stock_code, data_type, source, COALESCE((api_params)::text, ''::text))
         DO UPDATE SET raw_data = EXCLUDED.raw_data, sync_time = NOW()
     """
+    raw_json = _json.dumps(data_to_store, ensure_ascii=True, default=str)
+    # Ensure pure ASCII for SQL_ASCII DB encoding
+    raw_json = raw_json.encode("ascii", errors="replace").decode("ascii")
     try:
         execute(
             sql,
-            (stock_code, data_type, source, api_params_json,
-             _json.dumps(data_to_store, ensure_ascii=False, default=str)),
+            (stock_code, data_type, source, api_params_json, raw_json),
         )
         logger.info("raw_snapshot 已保存: stock=%s type=%s source=%s", stock_code, data_type, source)
     except Exception as exc:
