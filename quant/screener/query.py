@@ -65,7 +65,11 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
         fy.fcf_ttm,
         fy.cfo_ttm AS fcf_cfo_ttm,
         fy.capex_ttm AS fcf_capex_ttm,
-        fy.ttm_report_date
+        fy.ttm_report_date,
+
+        -- TTM 分红
+        d.dividend_yield,
+        d.ttm_dividend
 
     FROM stock_info s
 
