@@ -605,20 +605,31 @@ class USFinancialFetcher(BaseFetcher):
                     df.loc[mask, "fp"] = correct_fp
 
         # Split cumulative vs standalone entries BEFORE dedup.
-        # For each (tag, end, fp) group, the entry with the earliest start is
-        # cumulative (start = fiscal year start). Entries with later start dates
-        # are standalone single-quarter versions (start = quarter start date).
-        # Both are stored so they can be cross-validated.
+        #
+        # Cumulative (old method, backward compatible):
+        #   Within each (tag, end, fp) group, the earliest start = cumulative
+        #   (start = fiscal year start). This correctly handles IS data where
+        #   both versions exist in the same group.
+        #
+        # Standalone (duration-based, fixes CF coverage gap):
+        #   end - start ≤ ~1 quarter (100 days) = standalone single quarter.
+        #   The old method alone fails for CF because many (tag, end, fp) groups
+        #   contain only standalone entries — all share the same start and get
+        #   misclassified as cumulative, leaving _standalone columns empty.
         df["_start_dt"] = pd.to_datetime(df["start"], errors="coerce")
+        df["_end_dt"] = pd.to_datetime(df["end"], errors="coerce")
+        df["_duration_days"] = (df["_end_dt"] - df["_start_dt"]).dt.days
+        QUARTER_DAYS_MAX = 100
         min_starts = df.groupby(["tag", "end", "fp"])["_start_dt"].transform("min")
-        df["_is_cum"] = (df["_start_dt"] == min_starts) | df["_start_dt"].isna()
+        df["_is_cum"] = df["_start_dt"].isna() | (df["_start_dt"] == min_starts)
+        df["_is_std"] = df["_start_dt"].notna() & (df["_duration_days"] <= QUARTER_DAYS_MAX)
 
         standalone_fields_in_df = [
             f for f in self.STANDALONE_FIELDS if f in df["field"].values
         ]
 
-        cum_df = df[df["_is_cum"]].drop(columns=["_is_cum"])
-        std_df = df[~df["_is_cum"]].drop(columns=["_is_cum"])
+        cum_df = df[df["_is_cum"]].drop(columns=["_is_cum", "_is_std"])
+        std_df = df[df["_is_std"]].drop(columns=["_is_cum", "_is_std"])
 
         def _dedup_and_pivot(sub_df, suffix=""):
             """Dedup within (tag, end, fp) groups and pivot to wide format."""
@@ -632,7 +643,7 @@ class USFinancialFetcher(BaseFetcher):
                 na_position="last",
             ).drop_duplicates(subset=["tag", "end", "fp"], keep="first")
             sub_df = sub_df.drop(
-                columns=["_start_order", "_start_dt"], errors="ignore"
+                columns=["_start_order", "_start_dt", "_end_dt", "_duration_days"], errors="ignore"
             )
             sub_df = sub_df.dropna(subset=["val"])
             if sub_df.empty:
