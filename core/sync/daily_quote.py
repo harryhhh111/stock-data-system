@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 from db import upsert, execute
-from ._utils import logger, correct_market_cap
+from ._utils import logger, correct_market_cap, refresh_views_after_sync
 
 
 def backfill_daily_hist(market: str, source: str = "auto") -> dict:
@@ -131,4 +131,5 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
             "elapsed_min": round(elapsed / 60, 1),
         }
 
+    refresh_views_after_sync("daily")
     return total_result

@@ -13,7 +13,7 @@ from core.incremental import (
     update_last_report_date,
 )
 
-from ._utils import ensure_sync_progress_table, sync_one_stock, logger
+from ._utils import ensure_sync_progress_table, sync_one_stock, logger, refresh_views_after_sync
 
 
 class SyncManager:
@@ -228,6 +228,7 @@ class SyncManager:
             for e in errors:
                 logger.info("  - %s", e)
 
+        refresh_views_after_sync("financial")
         return result
 
     # ── 指数成分同步 ────────────────────────────────────
@@ -373,6 +374,7 @@ class SyncManager:
             for e in errors:
                 logger.info("  - %s", e)
 
+        refresh_views_after_sync("dividend")
         return {
             "total": total, "success": success, "failed": failed, "elapsed": elapsed,
         }

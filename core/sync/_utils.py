@@ -218,3 +218,35 @@ def correct_market_cap(records: list[dict]) -> int:
     if corrected:
         logger.info("市值修正: %d 条记录", corrected)
     return corrected
+
+
+# ── 物化视图自动刷新 ──────────────────────────────────────────
+
+# 各操作需要刷新的视图
+_REFRESH_MAP: dict[str, list[str]] = {
+    "financial": ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"],
+    "daily": ["mv_fcf_yield"],
+    "dividend": [],  # dividend_split 暂无视图依赖
+}
+
+
+def refresh_views_after_sync(sync_type: str) -> None:
+    """同步完成后自动刷新相关物化视图。
+
+    根据同步类型决定刷新哪些视图，避免不必要的全量刷新。
+    """
+    views = _REFRESH_MAP.get(sync_type)
+    if not views:
+        return
+
+    import time as _time
+
+    logger.info("同步后自动刷新物化视图: %s", ", ".join(views))
+    for v in views:
+        try:
+            t0 = _time.time()
+            execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {v}", commit=True)
+            elapsed = _time.time() - t0
+            logger.info("  %s 刷新完成 (%.1fs)", v, elapsed)
+        except Exception as exc:
+            logger.warning("  %s 刷新失败（可能无数据或未创建）: %s", v, exc)
