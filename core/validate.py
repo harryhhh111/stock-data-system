@@ -91,11 +91,11 @@ class ValidationReport:
 _CREATE_VALIDATION_TABLE = """
 CREATE TABLE IF NOT EXISTS validation_results (
     id              BIGSERIAL PRIMARY KEY,
-    batch_id        VARCHAR(50) NOT NULL,       -- 批次标识，如 '2026-03-29_153300'
+    batch_id        VARCHAR(50) NOT NULL,       -- batch id, e.g. '2026-03-29_153300'
     stock_code      VARCHAR(20) NOT NULL,
     market          VARCHAR(10) NOT NULL,        -- 'CN_A' | 'CN_HK' | 'US'
     report_date     DATE NOT NULL,
-    check_name      VARCHAR(80) NOT NULL,        -- 检查规则名称
+    check_name      VARCHAR(80) NOT NULL,        -- check rule name
     severity        VARCHAR(10) NOT NULL,        -- 'error' | 'warning' | 'info'
     field_name      VARCHAR(100),
     actual_value    TEXT,
@@ -258,7 +258,7 @@ def check_anomalies_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
                         severity="warning",
                         field_name="cfo_net/parent_net_profit",
                         actual_value=f"CFO={cfo:,.0f}, 净利润={parent_net_profit:,.0f}",
-                        message="净利润为正但经营现金流为负",
+                        message="Positive net income but negative operating cash flow",
                         suggestion="盈利质量存疑，检查应收/存货变化",
                     )
                 )
@@ -335,8 +335,8 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
                     severity="error",
                     field_name="total_assets",
                     actual_value=str(total_assets),
-                    message=f"总资产为负数: {total_assets:,.0f}",
-                    suggestion="数据录入错误或持续经营问题",
+                    message=f"Negative total assets: {total_assets:,.0f}",
+                    suggestion="Data entry error or going concern issue",
                 )
             )
 
@@ -354,8 +354,8 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
                         field_name="total_liabilities/total_assets",
                         actual_value=f"{ratio:.2%}",
                         expected_value="< 200%",
-                        message=f"资产负债率 {ratio:.1%} 超过 200%",
-                        suggestion="可能资不抵债",
+                        message=f"Debt ratio {ratio:.1%} exceeds 200%",
+                        suggestion="Possibly insolvent",
                     )
                 )
 
@@ -370,9 +370,9 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
                         check_name="net_income_exceeds_revenue",
                         severity="warning",
                         field_name="net_income/revenues",
-                        actual_value=f"净利润={net_income:,.0f}, 营收={revenues:,.0f}",
-                        message=f"净利润({net_income:,.0f})远超营收({revenues:,.0f})",
-                        suggestion="可能有大额非经常性收益",
+                        actual_value=f"net_income={net_income:,.0f}, revenues={revenues:,.0f}",
+                        message=f"net_income ({net_income:,.0f}) far exceeds revenues ({revenues:,.0f})",
+                        suggestion="Possible large non-recurring gains",
                     )
                 )
 
@@ -387,9 +387,9 @@ def check_anomalies_us(issues: list[ValidationIssue]) -> int:
                         check_name="cfo_negative_income_positive",
                         severity="warning",
                         field_name="net_cash_from_operations/net_income",
-                        actual_value=f"CFO={cfo:,.0f}, 净利润={net_income:,.0f}",
-                        message="净利润为正但经营现金流为负",
-                        suggestion="盈利质量存疑",
+                        actual_value=f"CFO={cfo:,.0f}, net_income={net_income:,.0f}",
+                        message="Positive net income but negative operating cash flow",
+                        suggestion="Earnings quality is questionable",
                     )
                 )
 
@@ -532,10 +532,10 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
                             check_name="balance_equation",
                             severity="error",
                             field_name="total_assets vs total_liabilities + total_equity",
-                            actual_value=f"资产={total_assets:,.0f}, 负债+权益={rhs:,.0f}, 偏差={diff_ratio:.2%}",
-                            expected_value="偏差 < 1%",
-                            message=f"会计等式不平：偏差 {diff_ratio:.2%}",
-                            suggestion="检查少数股东权益是否单独记录",
+                            actual_value=f"assets={total_assets:,.0f}, liab+equity={rhs:,.0f}, diff={diff_ratio:.2%}",
+                            expected_value="diff < 1%",
+                            message=f"Balance sheet equation off by {diff_ratio:.2%}",
+                            suggestion="Check if NCI (non-controlling interest) is recorded separately",
                         )
                     )
 
@@ -550,10 +550,10 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
                         check_name="cash_exceeds_current_assets",
                         severity="error",
                         field_name="cash_and_equivalents vs total_current_assets",
-                        actual_value=f"现金={cash_equiv:,.0f}, 流动资产={current_assets:,.0f}",
-                        expected_value="现金 <= 流动资产",
-                        message=f"现金({cash_equiv:,.0f}) > 流动资产({current_assets:,.0f})",
-                        suggestion="数据可能存在错误",
+                        actual_value=f"cash={cash_equiv:,.0f}, current_assets={current_assets:,.0f}",
+                        expected_value="cash <= current_assets",
+                        message=f"Cash ({cash_equiv:,.0f}) > current assets ({current_assets:,.0f})",
+                        suggestion="Data may be incorrect",
                     )
                 )
 
@@ -566,27 +566,28 @@ def check_logic_us(issues: list[ValidationIssue]) -> int:
 
 
 def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
-    """Cross-validate cumulative vs sum of standalone quarters for US stocks.
+    """Row-level sanity checks for US standalone vs cumulative data.
 
-    For each quarterly report where both cumulative and standalone values exist,
-    verify that cumulative_Qn ~= SUM(standalone_Q1..standalone_Qn) within a
-    fiscal year. A 5% tolerance accounts for SEC rounding differences.
+    Checks per quarterly row with standalone data:
+      1. Negative standalone revenue: standalone revenue should be positive
+         (negative quarterly revenue is extremely unusual and worth flagging)
+      2. Negative cumulative revenue (same check on cumulative column)
+
+    Standalone > cumulative is NOT checked because it's valid when prior
+    quarters had losses/negatives — standalone is a single quarter, cumulative
+    is YTD sum across potentially sign-mixed quarters.
+
+    Cross-quarter summation (cumulative_Qn vs SUM(standalone_Q1..Qn)) requires
+    knowing fiscal year boundaries, which needs the SEC 'frame' field stored
+    in the DB. Will be added when that field is available.
 
     Returns scanned row count.
     """
-    # Get all quarterly records that have standalone data
     sql = """
     SELECT
-        i.stock_code, i.report_date, i.report_type,
-        i.revenues, i.revenues_standalone,
-        i.net_income, i.net_income_standalone,
-        cf.net_cash_from_operations, cf.net_cash_from_operations_standalone,
-        i.operating_income, i.operating_income_standalone
+        i.stock_code, i.report_date,
+        i.revenues, i.revenues_standalone
     FROM us_income_statement i
-    JOIN us_cash_flow_statement cf
-        ON i.stock_code = cf.stock_code
-        AND i.report_date = cf.report_date
-        AND i.report_type = cf.report_type
     WHERE i.report_type = 'quarterly'
       AND i.revenues_standalone IS NOT NULL
     ORDER BY i.stock_code, i.report_date
@@ -595,110 +596,41 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
     if not rows:
         return 0
 
-    # Group by stock, then identify fiscal year boundaries.
-    # A new fiscal year starts after a gap of > 6 months between quarterly reports.
-    from collections import defaultdict
-
-    stock_data: dict[str, list[tuple]] = defaultdict(list)
-    for r in rows:
-        stock_data[r[0]].append(r)
-
-    tolerance = 0.05
     scanned = 0
 
-    for stock_code, records in stock_data.items():
-        if len(records) < 2:
-            continue
+    for r in rows:
+        stock_code, rdate = r[0], str(r[1])
+        cum_rev, std_rev = _d(r[2]), _d(r[3])
+        scanned += 1
 
-        # Build fiscal year groups
-        fy_groups: list[list[tuple]] = []
-        current_group = [records[0]]
-        for i in range(1, len(records)):
-            _, prev_date, *_ = records[i - 1]
-            _, curr_date, *_ = records[i]
-            gap = (curr_date - prev_date).days
-            if gap > 200:  # New fiscal year
-                fy_groups.append(current_group)
-                current_group = [records[i]]
-            else:
-                current_group.append(records[i])
-        fy_groups.append(current_group)
+        # Negative standalone revenue is very unusual
+        # (a company shouldn't have negative quarterly sales)
+        if std_rev is not None and std_rev < 0:
+            issues.append(ValidationIssue(
+                stock_code=stock_code, market="US",
+                report_date=rdate,
+                check_name="negative_standalone_revenue",
+                severity="warning",
+                field_name="revenues_standalone",
+                actual_value=str(std_rev),
+                expected_value="> 0",
+                message=f"Negative standalone revenue: {std_rev:,.0f}",
+                suggestion="Check raw SEC data: negative quarterly revenue is unusual.",
+            ))
 
-        # For each group, validate cumulative = sum of standalones up to that quarter
-        for fy_group in fy_groups:
-            if len(fy_group) < 2:
-                continue
-
-            # Sort by report_date
-            fy_group.sort(key=lambda x: x[1])
-
-            # For each quarter beyond Q1, validate cumulative
-            for idx in range(len(fy_group)):
-                r = fy_group[idx]
-                rdate = str(r[1])
-                scanned += 1
-
-                prev_records = fy_group[: idx + 1]
-
-                # Check revenues
-                cum_rev = _d(r[3])
-                sum_rev = sum(
-                    _d(pr[4]) for pr in prev_records if _d(pr[4]) is not None
-                )
-                if cum_rev and sum_rev and cum_rev != 0:
-                    diff = abs(cum_rev - sum_rev) / abs(cum_rev)
-                    if diff > tolerance:
-                        issues.append(ValidationIssue(
-                            stock_code=stock_code, market="US",
-                            report_date=rdate,
-                            check_name="cumulative_vs_standalone_mismatch",
-                            severity="warning",
-                            field_name="revenues",
-                            actual_value=f"cum={cum_rev:,.0f}, sum_std={sum_rev:,.0f}, diff={diff:.1%}",
-                            expected_value=f"deviation < {tolerance:.0%}",
-                            message=f"Cumulative revenues ({cum_rev:,.0f}) != sum of standalone quarters ({sum_rev:,.0f}): {diff:.1%}",
-                            suggestion="Verify SEC data for this report. Cumulative value is authoritative.",
-                        ))
-
-                # Check net_income
-                cum_ni = _d(r[5])
-                sum_ni = sum(
-                    _d(pr[6]) for pr in prev_records if _d(pr[6]) is not None
-                )
-                if cum_ni and sum_ni and cum_ni != 0:
-                    diff = abs(cum_ni - sum_ni) / abs(cum_ni)
-                    if diff > tolerance:
-                        issues.append(ValidationIssue(
-                            stock_code=stock_code, market="US",
-                            report_date=rdate,
-                            check_name="cumulative_vs_standalone_mismatch",
-                            severity="warning",
-                            field_name="net_income",
-                            actual_value=f"cum={cum_ni:,.0f}, sum_std={sum_ni:,.0f}, diff={diff:.1%}",
-                            expected_value=f"deviation < {tolerance:.0%}",
-                            message=f"Cumulative net_income ({cum_ni:,.0f}) != sum of standalone quarters ({sum_ni:,.0f}): {diff:.1%}",
-                            suggestion="Verify SEC data for this report.",
-                        ))
-
-                # Check CFO
-                cum_cfo = _d(r[7])
-                sum_cfo = sum(
-                    _d(pr[8]) for pr in prev_records if _d(pr[8]) is not None
-                )
-                if cum_cfo and sum_cfo and cum_cfo != 0:
-                    diff = abs(cum_cfo - sum_cfo) / abs(cum_cfo)
-                    if diff > tolerance:
-                        issues.append(ValidationIssue(
-                            stock_code=stock_code, market="US",
-                            report_date=rdate,
-                            check_name="cumulative_vs_standalone_mismatch",
-                            severity="warning",
-                            field_name="net_cash_from_operations",
-                            actual_value=f"cum={cum_cfo:,.0f}, sum_std={sum_cfo:,.0f}, diff={diff:.1%}",
-                            expected_value=f"deviation < {tolerance:.0%}",
-                            message=f"Cumulative CFO ({cum_cfo:,.0f}) != sum of standalone quarters ({sum_cfo:,.0f}): {diff:.1%}",
-                            suggestion="Verify SEC data for this report.",
-                        ))
+        # Negative cumulative revenue
+        if cum_rev is not None and cum_rev < 0:
+            issues.append(ValidationIssue(
+                stock_code=stock_code, market="US",
+                report_date=rdate,
+                check_name="negative_cumulative_revenue",
+                severity="warning",
+                field_name="revenues",
+                actual_value=str(cum_rev),
+                expected_value="> 0",
+                message=f"Negative cumulative revenue: {cum_rev:,.0f}",
+                suggestion="Check raw SEC data.",
+            ))
 
     return scanned
 
@@ -719,9 +651,9 @@ def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
                 severity="info",
                 field_name="source",
                 actual_value="eastmoney / eastmoney_hk",
-                expected_value="多源交叉验证",
-                message="A 股/港股数据仅来自东方财富单一源，暂无跨源比对能力",
-                suggestion="未来可接入 akshare/同花顺作为第二数据源进行交叉验证",
+                expected_value="Cross-source validation",
+                message="A-share/HK data only from EastMoney single source, no cross-source comparison capability",
+                suggestion="Consider adding akshare/Tonghuashun as second data source for cross-validation",
             )
         )
     if market in ("US", ""):
@@ -734,9 +666,9 @@ def check_cross_source(market: str, issues: list[ValidationIssue]) -> int:
                 severity="info",
                 field_name="source",
                 actual_value="SEC EDGAR",
-                expected_value="多源交叉验证",
-                message="美股数据仅来自 SEC EDGAR 单一源",
-                suggestion="未来可接入 Yahoo Finance / Financial Modeling Prep 作为第二数据源",
+                expected_value="Cross-source validation",
+                message="US data only from SEC EDGAR single source",
+                suggestion="Consider adding Yahoo Finance / Financial Modeling Prep as second source",
             )
         )
     return 0
@@ -773,6 +705,12 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
     """
     rows = []
     for issue in report.issues:
+        # Sanitize non-ASCII chars for SQL_ASCII DB encoding
+        def _sanitize(val):
+            if val is None:
+                return None
+            return val.encode("ascii", errors="replace").decode("ascii")
+
         rows.append(
             {
                 "batch_id": batch_id,
@@ -784,10 +722,10 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
                 "check_name": issue.check_name,
                 "severity": issue.severity,
                 "field_name": issue.field_name,
-                "actual_value": issue.actual_value,
-                "expected_value": issue.expected_value,
-                "message": issue.message,
-                "suggestion": issue.suggestion,
+                "actual_value": _sanitize(issue.actual_value),
+                "expected_value": _sanitize(issue.expected_value),
+                "message": _sanitize(issue.message),
+                "suggestion": _sanitize(issue.suggestion),
             }
         )
 
