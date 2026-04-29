@@ -1,8 +1,8 @@
 # 价值投资选股系统 — 规划方案
 
 > 创建时间：2026-04-23（v2）
-> 更新时间：2026-04-25（v3）
-> 状态：Phase 1.1 已完成，待改进
+> 更新时间：2026-04-29（v4）
+> 状态：Phase 1.1 ✅ | Phase 1.2 开发中 | Phase 1.5 待规划
 
 ## 一、定位
 
@@ -15,34 +15,35 @@
 
 | 指标 | CN_A (5,493) | CN_HK (2,743) | US (503) |
 |------|:---:|:---:|:---:|
-| FCF Yield | ✅ 3,612 | ✅ 1,950 | ❌ 无日线 |
-| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ❌ 无日线 |
-| PB | ✅ 5,191 | ✅ 2,724 | ❌ 无日线 |
-| 市值 | ✅ 5,191 | ✅ 2,724 | ❌ 无日线 |
-| 毛利率 | ✅ 3,517 | ✅ 2,475 | ✅ 有 |
+| FCF Yield | ✅ 3,612 | ✅ 1,950 | ✅ 485（annual-only，待修） |
+| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
+| PB | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
+| 市值 | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
+| 毛利率 | ✅ 3,517 | ✅ 2,475 | ✅ 70.9% 股票级 |
 | 营业利润率 | ✅ | ✅ | ✅ |
 | 净利率 | ✅ | ✅ | ✅ |
 | 资产负债率 | ✅ 3,620 | ✅ 2,660 | ✅ |
 | 流动比率 | ✅ | ✅ | ❌ |
-| ROE | ⚠️ 907 (parent_equity 缺) | ⚠️ 可用 total_equity 兜底 | ✅ |
+| ROE | ✅ 6,280 只（三层 fallback） | ✅ 三层 fallback | ✅ |
 | ROA | ✅ | ✅ | ✅ |
-| 营收同比增长 | ✅ 2,712 | ✅ 2,015 | ❌ |
-| 净利润同比增长 | ✅ | ✅ | ❌ |
-| TTM 收入/利润/CFO/CAPEX | ✅ | ✅ | ❌ |
+| 营收同比增长 | ✅ 2,712 | ✅ 2,015 | ❌（mv_us 未计算） |
+| 净利润同比增长 | ✅ | ✅ | ❌（mv_us 未计算） |
+| TTM 收入/利润/CFO/CAPEX | ✅ 公式法 | ✅ 公式法 | ⚠️ annual-only（75% 虚高已修，时效性差） |
 | EPS | ✅ | ✅ | ✅ |
 | 分红 | ❌ 表空 | ❌ 表空 | ❌ |
 | 行业分类 | ✅ 申万一级 | ✅ 东方财富 F10 | ✅ SIC |
 
 ### 2.2 关键问题
 
-1. **美股无日线行情**：`daily_quote` 中 US market = 0 条。无 PE/PB/市值，无法计算 FCF Yield。
-2. **分红表为空**：`dividend_split` 无数据。
-3. **ROE 覆盖率低**：CN_A 仅 907 只有 ROE（需 annual report + parent_equity 同时存在）。港股无 parent_equity，需用 total_equity 兜底。
+1. ~~**美股无日线行情**~~ ✅ 已修复：腾讯 K 线回填 683K 行（2021~2026），PE/PB/市值/FCF Yield 均已可用。
+2. **分红表为空**：`dividend_split` 无数据。A 股/港股分红代码已写，待执行同步。
+3. ~~**ROE 覆盖率低**~~ ✅ 已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。
 4. **物化视图刷新滞后**：新财报数据同步后需手动 `REFRESH MATERIALIZED VIEW`。
+5. **美股 TTM 时效性差**：`mv_us_indicator_ttm` 改用 annual-only 修复了 75% 虚高，但年中只有上一年年报，数据陈旧。公式法待移植。
 
 ### 2.3 结论
 
-**Phase 1 先做 CN_A + CN_HK**，美股待日线行情补全后再加入。
+**Phase 1 先做 CN_A + CN_HK**，美股筛选已可用（screener 支持 US，三个预设），但 FCF Yield 基于 annual-only TTM（年中数据陈旧），US 个股分析待 Phase 2.0 完善。
 
 ## 三、系统设计
 
@@ -357,27 +358,17 @@ python -m quant.analyzer 600519 --format md     # Markdown
 
 在实现筛选器和分析器之前，需要先补全几个数据缺口。
 
-#### 3.4.1 ROE 修复
+#### 3.4.1 ROE 修复 ✅ 已完成
 
 **问题**：CN_HK 无 `parent_equity`，CN_A 部分缺失。
-**方案**：修改 `mv_financial_indicator` 的 ROE 计算，当 `parent_equity` 为 NULL 时 fallback 到 `total_equity`。
+**方案**：修改 `mv_financial_indicator` 的 ROE 计算，三层 fallback：`parent_equity` → `total_equity` → `total_assets - total_liab`。
+**结果**：A/HK 共 6,280 只有 ROE（之前 CN_A 仅 907 只）。
 
-```sql
--- 修改 ROE 计算逻辑
-CASE
-    WHEN report_type = 'annual' AND parent_equity IS NOT NULL AND parent_equity > 0
-        THEN parent_net_profit / parent_equity
-    WHEN report_type = 'annual' AND total_equity IS NOT NULL AND total_equity > 0
-        THEN parent_net_profit / total_equity  -- fallback
-    ...
-END AS roe
-```
-
-#### 3.4.2 美股日线行情
+#### 3.4.2 美股日线行情 ✅ 已完成
 
 **问题**：`daily_quote` 中 US = 0 条，无 PE/PB/市值。
-**方案**：复用现有腾讯接口 `fetch_us_spot()` + `fetch_us_hist()`，补充 S&P 500 + 纳斯达克 100 的日线数据。
-**前置**：确认美股实时行情接口是否仍可用。
+**方案**：复用现有腾讯接口，回填 S&P 500 + 纳斯达克 100 的日线数据。
+**结果**：519 只美股，683K 行（2021~2026），PE/PB/市值/FCF Yield 均已可用。
 
 #### 3.4.3 分红数据
 
@@ -496,11 +487,12 @@ Phase 1.0 ✅          Phase 1.1 ✅          Phase 1.2（1 周）
                             ▼
 Phase 2.0（后期）
 ┌──────────────────┐
-│ 美股 + 分红       │
+│ 美股完善 + 分红   │
 │                  │
-│ • 美股日线行情    │
+│ • 美股 TTM 公式法 │
 │ • 分红数据同步    │
 │ • 分红策略预设    │
+│ • 美股 analyzer   │
 └──────────────────┘
 ```
 

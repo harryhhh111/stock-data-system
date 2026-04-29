@@ -69,6 +69,9 @@ def _pivot_long_to_wide(
     df = raw_df[[date_col, item_col, amount_col]].copy()
     df = df.dropna(subset=[date_col, item_col])
 
+    # 去重：API 偶有重复 (report_date, item_name) 对
+    df = df.drop_duplicates(subset=[date_col, item_col])
+
     # pivot
     wide = df.pivot(index=date_col, columns=item_col, values=amount_col).reset_index()
 
@@ -193,6 +196,7 @@ class EastmoneyHkTransformer(BaseTransformer):
         available_fields = set(wide.columns)
         mapped = {k: v for k, v in HK_CASHFLOW_FIELDS.items() if k in available_fields}
 
+        # First pass: build records, keeping capex / capex_intangible separate
         results: list[dict[str, Any]] = []
         for _, row in wide.iterrows():
             report_date = _parse_date(row.get("REPORT_DATE"))
@@ -211,15 +215,44 @@ class EastmoneyHkTransformer(BaseTransformer):
             for cn_name, std_field in mapped.items():
                 record[std_field] = _safe_float(row.get(cn_name))
 
-            # CAPEX = 购建固定资产 + 购建无形资产及其他资产
-            capex_fa = record.get("capex")
-            capex_int = record.pop("capex_intangible", None)
-            if capex_fa is not None and capex_int is not None:
-                record["capex"] = capex_fa + capex_int
-            elif capex_fa is None and capex_int is not None:
-                record["capex"] = capex_int
-
             results.append(record)
+
+        # Build fallback: 购建固定资产 (capex) from non-annual reports by fiscal year.
+        # EastMoney stopped including 购建固定资产 in HK annual CF reports since ~2024,
+        # but semi-annual/quarterly reports still carry it. Use the max intra-year value
+        # as a floor for the missing annual figure.
+        capex_fa_fallback: dict[int, float] = {}
+        for r in results:
+            capex_fa = r.get("capex")
+            if capex_fa is not None and r["report_type"] != "annual":
+                fy = pd.Timestamp(r["report_date"]).year
+                if fy not in capex_fa_fallback or capex_fa > capex_fa_fallback[fy]:
+                    capex_fa_fallback[fy] = capex_fa
+
+        # Second pass: combine capex + capex_intangible
+        for r in results:
+            capex_fa = r.get("capex")
+            capex_int = r.pop("capex_intangible", None)
+
+            if capex_fa is not None and capex_int is not None:
+                r["capex"] = capex_fa + capex_int
+            elif capex_fa is not None:
+                r["capex"] = capex_fa
+            elif capex_int is not None:
+                fy = pd.Timestamp(r["report_date"]).year
+                fallback_fa = capex_fa_fallback.get(fy)
+                if fallback_fa is not None:
+                    r["capex"] = fallback_fa + capex_int
+                    logger.info(
+                        "HK CAPEX fallback: %s %s annual missing 购建固定资产, "
+                        "using FY%d max intra-year value %.1f亿 + intangible %.1f亿",
+                        r["stock_code"], r["report_date"],
+                        fy, fallback_fa / 1e8, capex_int / 1e8,
+                    )
+                else:
+                    r["capex"] = capex_int
+            # else: both None → capex stays None
+
         return results
 
 
