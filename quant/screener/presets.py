@@ -17,6 +17,7 @@ class FilterConfig(TypedDict, total=False):
     debt_ratio_max: float | None          # 最高资产负债率
     gross_margin_min: float | None        # 最低毛利率
     net_margin_min: float | None          # 最低净利率
+    dividend_yield_min: float | None      # 最低股息率
 
 
 class FactorWeight(TypedDict):
@@ -93,6 +94,26 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 30,
     },
+    "dividend_value": {
+        "description": "红利价值 — 高股息 + 稳定盈利 + 合理估值",
+        "filters": {
+            "market_cap_min": 10e9,        # 市值 > 100 亿
+            "exclude_st": True,
+            "dividend_yield_min": 0.02,    # 股息率 > 2%
+            "pe_ttm_positive": True,
+            "pe_ttm_max": 25,              # PE < 25
+            "debt_ratio_max": 0.6,         # 资产负债率 < 60%
+        },
+        "weights": {
+            "dividend_yield": {"weight": 0.30, "ascending": False},
+            "fcf_yield":      {"weight": 0.20, "ascending": False},
+            "pe_ttm":         {"weight": 0.15, "ascending": True},
+            "debt_ratio":     {"weight": 0.15, "ascending": True},
+            "roe":            {"weight": 0.10, "ascending": False},
+            "gross_margin":   {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 30,
+    },
 }
 
 
@@ -101,31 +122,33 @@ PRESETS: dict[str, PresetConfig] = {
 # ───────────────────────────────────────────────
 
 FACTOR_LABELS: dict[str, str] = {
-    "fcf_yield":     "FCF Yield",
-    "pe_ttm":        "PE(TTM)",
-    "pb":            "PB",
-    "roe":           "ROE",
-    "gross_margin":  "毛利率",
-    "net_margin":    "净利率",
-    "debt_ratio":    "资产负债率",
-    "revenue_yoy":   "营收同比",
-    "net_profit_yoy":"净利润同比",
-    "cfo_quality":   "现金流质量",
+    "fcf_yield":      "FCF Yield",
+    "dividend_yield": "股息率",
+    "pe_ttm":         "PE(TTM)",
+    "pb":             "PB",
+    "roe":            "ROE",
+    "gross_margin":   "毛利率",
+    "net_margin":     "净利率",
+    "debt_ratio":     "资产负债率",
+    "revenue_yoy":    "营收同比",
+    "net_profit_yoy": "净利润同比",
+    "cfo_quality":    "现金流质量",
 }
 
 
 # 因子需要的原始列（用于计算）
 FACTOR_COLUMNS: dict[str, str] = {
-    "fcf_yield":     "fcf_yield",
-    "pe_ttm":        "pe_ttm",
-    "pb":            "pb",
-    "roe":           "roe",
-    "gross_margin":  "gross_margin",
-    "net_margin":    "net_margin",
-    "debt_ratio":    "debt_ratio",
-    "revenue_yoy":   "revenue_yoy",
-    "net_profit_yoy":"net_profit_yoy",
-    "cfo_quality":   "cfo_ttm",  # 需要额外计算：cfo_ttm / net_profit_ttm
+    "fcf_yield":      "fcf_yield",
+    "dividend_yield": "dividend_yield",
+    "pe_ttm":         "pe_ttm",
+    "pb":             "pb",
+    "roe":            "roe",
+    "gross_margin":   "gross_margin",
+    "net_margin":     "net_margin",
+    "debt_ratio":     "debt_ratio",
+    "revenue_yoy":    "revenue_yoy",
+    "net_profit_yoy": "net_profit_yoy",
+    "cfo_quality":    "cfo_ttm",  # 需要额外计算：cfo_ttm / net_profit_ttm
 }
 
 
@@ -138,6 +161,7 @@ OUTPUT_COLUMNS = [
     ("market_cap", "市值(亿)", "currency_billion"),
     ("pe_ttm", "PE", "float_1"),
     ("pb", "PB", "float_2"),
+    ("dividend_yield", "股息率", "pct_1"),
     ("fcf_yield", "FCF Yield", "pct_1"),
     ("roe", "ROE", "pct_1"),
     ("gross_margin", "毛利率", "pct_1"),

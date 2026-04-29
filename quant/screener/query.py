@@ -88,6 +88,15 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
 
     LEFT JOIN mv_fcf_yield fy ON s.stock_code = fy.stock_code
 
+    LEFT JOIN LATERAL (
+        SELECT SUM(dividend_per_share) / q.close AS dividend_yield,
+               SUM(dividend_per_share) AS ttm_dividend
+        FROM dividend_split
+        WHERE stock_code = s.stock_code
+          AND ex_date >= CURRENT_DATE - INTERVAL '365 days'
+          AND dividend_per_share IS NOT NULL
+    ) d ON true
+
     WHERE s.market IN ('CN_A', 'CN_HK')
       {market_filter}
     ORDER BY s.stock_code;

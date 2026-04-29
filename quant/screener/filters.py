@@ -65,5 +65,9 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if filters.get("net_margin_min") is not None:
         result = result[result["net_margin"] >= filters["net_margin_min"]]
 
+    # 股息率下限
+    if filters.get("dividend_yield_min") is not None:
+        result = result[result["dividend_yield"].notna() & (result["dividend_yield"] >= filters["dividend_yield_min"])]
+
     n_after = len(result)
     return result, n_before, n_after
