@@ -18,6 +18,7 @@ from quant.analyzer.analysis import (
     analyze_cashflow,
     analyze_valuation,
     compute_overall,
+    _safe_val,
 )
 from quant.analyzer.report import format_report
 
@@ -83,10 +84,11 @@ def main() -> None:
         df_ind = pd.DataFrame()
 
     # 3. 四维分析
+    ttm_report_date = _safe_val(stock_df.iloc[0].get("ttm_report_date"))
     sections = {
         "profitability": analyze_profitability(df_hist),
         "health": analyze_health(df_hist),
-        "cashflow": analyze_cashflow(df_hist, df_ttm),
+        "cashflow": analyze_cashflow(df_hist, df_ttm, ttm_report_date),
         "valuation": analyze_valuation(stock_df, df_ind),
     }
     overall = compute_overall(sections)

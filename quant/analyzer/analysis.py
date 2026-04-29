@@ -185,12 +185,14 @@ def analyze_health(df_hist: pd.DataFrame) -> dict:
     }
 
 
-def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame) -> dict:
+def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame,
+                     ttm_report_date=None) -> dict:
     """现金流质量分析：CFO/净利润、FCF 趋势、CAPEX 强度。
 
     Args:
         df_hist: get_financial_history()
         df_ttm: get_ttm_data()
+        ttm_report_date: TTM 数据截止日期，用于判断数据新鲜度
     """
     if df_hist.empty:
         return {"rating": None, "verdict": "暂无现金流数据", "details": {}, "star": "暂无数据"}
@@ -269,9 +271,27 @@ def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame) -> dict:
         n = _safe_val(row.get("parent_net_profit"))
         fcf_years.append({"year": yr, "fcf": f, "cfo": c, "net_profit": n})
 
+    # TTM 数据新鲜度检查
+    stale_warning = None
+    if source == "TTM" and ttm_report_date is not None:
+        try:
+            import pandas as _pd
+            stale_days = (_pd.Timestamp.now() - _pd.Timestamp(ttm_report_date)).days
+            if stale_days > 180:
+                stale_warning = (
+                    f"⚠ TTM 数据截止 {str(ttm_report_date)[:10]}，已 {stale_days} 天未更新，"
+                    f"基于过时数据，FCF Yield 参考价值有限"
+                )
+        except Exception:
+            pass
+
+    verdict = "；".join(parts) if parts else "现金流数据不足"
+    if stale_warning:
+        verdict = stale_warning + "；" + verdict
+
     return {
         "rating": rating,
-        "verdict": "；".join(parts) if parts else "现金流数据不足",
+        "verdict": verdict,
         "details": {
             "source": source,
             "cfo": cfo,
@@ -282,6 +302,8 @@ def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame) -> dict:
             "cfo_quality": cfo_quality,
             "capex_intensity": capex_intensity,
             "fcf_years": fcf_years,
+            "ttm_report_date": str(ttm_report_date)[:10] if ttm_report_date is not None and str(ttm_report_date) != "NaT" else None,
+            "stale_warning": stale_warning,
         },
         "star": _star(rating),
     }
