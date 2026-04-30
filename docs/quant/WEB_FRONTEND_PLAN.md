@@ -107,7 +107,7 @@ stock_data/
 │   │   │
 │   │   ├── lib/
 │   │   │   ├── api/
-│   │   │   │   ├── client.ts            # fetch 封装 (baseURL, error, auth)
+│   │   │   │   ├── client.ts            # fetch 封装 (baseURL, error, dual-server routing)
 │   │   │   │   ├── dashboard.ts
 │   │   │   │   ├── sync.ts
 │   │   │   │   ├── quality.ts
@@ -201,7 +201,7 @@ stock_data/
 │   │       └── analyzer-page.tsx
 │   │
 │   ├── package.json
-│   ├── vite.config.ts                     # + proxy to localhost:8000
+│   ├── vite.config.ts                     # proxy: /api/cn → localhost:8001, /api/us → localhost:8002
 │   ├── tsconfig.json
 │   ├── tailwind.config.ts
 │   ├── postcss.config.js
@@ -296,19 +296,21 @@ interface SyncStatusByMarket {
 interface SyncLogEntry {
   id: number;
   data_type: string;
-  market: string;                   // Market | "all"（批量同步如 --market all）
+  /** Market | "all"。注意：sync_log 表无 market 列，API service 从 config_json->>'market' 提取 */
+  market: string;
   status: string;
   started_at: string;
   finished_at: string | null;
   success_count: number;
   fail_count: number;
+  /** API service 计算: EXTRACT(EPOCH FROM finished_at - started_at) */
   elapsed_seconds: number | null;
   error_detail: string | null;
 }
 
 interface SyncProgressEntry {
   stock_code: string;
-  stock_name: string;
+  stock_name: string;               // API service JOIN stock_info 获取
   market: Market;
   status: "success" | "failed" | "partial" | "in_progress";
   tables_synced: string[];
@@ -385,8 +387,10 @@ interface ScreenerParams {
 }
 
 interface ScreenerResult {
-  total_before_filter: number;    // 候选池总股票数（过滤前）
-  total_after_filter: number;     // 硬过滤后剩余股票数
+  /** 候选池总股票数（过滤前）。screener_wrapper 从 get_universe 返回的 len(df) 捕获 */
+  total_before_filter: number;
+  /** 硬过滤后剩余股票数。screener_wrapper 从 apply_hard_filters 返回值捕获 */
+  total_after_filter: number;
   total: number;                  // 本次返回条数 = results.length（≤ top_n）
   results: ScreenerStock[];
   preset: string;
@@ -675,6 +679,7 @@ function useDashboardStats() {
     queries: [
       {
         queryKey: queryKeys.dashboard.stats,
+        // market 参数仅用于 apiFetch 内部选择服务器（getBaseUrl），不拼到 URL query string
         queryFn: () => apiFetch<DashboardStats>("/dashboard/stats", { market: "CN_A" }),
         staleTime: 30_000,
         refetchInterval: 30_000,
@@ -1008,3 +1013,4 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v6 | 2026-04-30 | 审阅修订：DashboardStats 增加 market 维度、补充 sync/progress 端点、删除残留 API Key、时间序列统一 DESC、apiFetch 类型放宽、useQueries 双服务器仪表板方案、CSS 注释修正、Nginx 域名对齐、fy_vs 重命名、搜索约束 |
 | v7 | 2026-04-30 | 二次审阅修订 |
 | v8 | 2026-04-30 | 终审：删除 cachetools 依赖、useDashboardStats 补全 staleTime |
+| v8.1 | 2026-04-30 | 四审修订：SyncLogEntry/SyncProgressEntry 注明字段来源（config_json、EXTRACT、JOIN）、client.ts 去 auth 残留、useDashboardStats market 加路由注释、ScreenerResult 计数来源注释、vite proxy 双服务器 |

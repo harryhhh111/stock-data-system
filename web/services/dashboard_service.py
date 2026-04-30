@@ -1,0 +1,168 @@
+"""Dashboard service — 仪表板聚合数据。"""
+from datetime import date, timedelta
+
+from db import Connection
+
+
+def get_stats() -> dict:
+    """聚合仪表板数据，返回 DashboardStats 结构。"""
+    with Connection() as conn:
+        cur = conn.cursor()
+
+        # 1. 各市场股票总数
+        cur.execute("SELECT market, COUNT(*) FROM stock_info GROUP BY market")
+        total_stocks = {r[0]: r[1] for r in cur.fetchall()}
+
+        # 2. 各市场同步状态
+        cur.execute(
+            "SELECT market, status, COUNT(*) FROM sync_progress GROUP BY market, status"
+        )
+        sync_status: dict[str, dict] = {}
+        for market, status, cnt in cur.fetchall():
+            if market not in sync_status:
+                sync_status[market] = {"success": 0, "failed": 0, "in_progress": 0, "partial": 0}
+            sync_status[market][status] = cnt
+
+        # 3. 近 7 天同步趋势（从 sync_log 聚合）
+        seven_days_ago = date.today() - timedelta(days=6)
+        cur.execute(
+            """
+            SELECT started_at::date AS d, status, COUNT(*)
+            FROM sync_log
+            WHERE started_at::date >= %s
+            GROUP BY d, status
+            ORDER BY d
+            """,
+            (seven_days_ago,),
+        )
+        trend_raw: dict[str, dict] = {}
+        for d, status, cnt in cur.fetchall():
+            ds = d.isoformat()
+            if ds not in trend_raw:
+                trend_raw[ds] = {"date": ds, "success": 0, "failed": 0}
+            if status == "success":
+                trend_raw[ds]["success"] += cnt
+            elif status in ("failed", "error"):
+                trend_raw[ds]["failed"] += cnt
+        sync_trend: dict[str, list] = {}
+        for market in total_stocks:
+            sync_trend[market] = []  # 按 market 分组，同步日志无 market 列则放入第一个 market
+        # sync_log 不区分 market，归入第一个可用 market 或 "all"
+        if total_stocks:
+            primary = list(total_stocks.keys())[0]
+            sync_trend[primary] = sorted(trend_raw.values(), key=lambda x: x["date"])
+
+        # 4. 数据新鲜度
+        cur.execute(
+            """
+            SELECT si.market, MAX(inc.report_date)
+            FROM income_statement inc
+            JOIN stock_info si ON inc.stock_code = si.stock_code
+            GROUP BY si.market
+            """
+        )
+        fin_latest = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute(
+            "SELECT market, MAX(trade_date) FROM daily_quote GROUP BY market"
+        )
+        quote_latest = {r[0]: r[1] for r in cur.fetchall()}
+
+        # US financial last report date from us_income_statement
+        cur.execute(
+            """
+            SELECT MAX(inc.report_date)
+            FROM us_income_statement inc
+            JOIN stock_info si ON inc.stock_code = si.stock_code
+            WHERE si.market = 'US'
+            """
+        )
+        us_fin = cur.fetchone()[0]
+        if us_fin:
+            fin_latest["US"] = us_fin
+
+        # US quote from daily_quote (if synced on this server)
+        # already covered by daily_quote query above
+
+        today = date.today()
+        finan_stale_days = 90
+        quote_stale_days = 1
+
+        freshness = []
+        for market in total_stocks:
+            f_date = fin_latest.get(market)
+            q_date = quote_latest.get(market)
+            freshness.append({
+                "market": market,
+                "financial_date": f_date.isoformat() if f_date else None,
+                "quote_date": q_date.isoformat() if q_date else None,
+                "financial_stale": (
+                    f_date is None or (today - f_date).days > finan_stale_days
+                ),
+                "quote_stale": (
+                    q_date is None or (today - q_date).days > quote_stale_days
+                ),
+            })
+
+        # 5. 校验问题统计
+        cur.execute(
+            "SELECT COUNT(*) FROM validation_results WHERE created_at >= now() - interval '24 hours'"
+        )
+        errors_24h = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT COUNT(*) FROM validation_results WHERE severity = 'warning' AND created_at >= now() - interval '7 days'"
+        )
+        warnings_7d = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM validation_results")
+        total_open = cur.fetchone()[0]
+
+        validation_issues = {
+            "errors_24h": errors_24h,
+            "warnings_7d": warnings_7d,
+            "total_open": total_open,
+        }
+
+        # 6. 今日异常数
+        cur.execute(
+            "SELECT COUNT(*) FROM validation_results WHERE severity = 'error' AND created_at::date = CURRENT_DATE"
+        )
+        anomalies_today = cur.fetchone()[0]
+
+        # 7. 最近 10 条问题
+        cur.execute(
+            """
+            SELECT vr.id, vr.stock_code, COALESCE(si.stock_name, vr.stock_code) AS stock_name,
+                   vr.market, vr.severity, vr.check_name, vr.message,
+                   to_char(vr.created_at, 'YYYY-MM-DD HH24:MI:SS') AS created_at
+            FROM validation_results vr
+            LEFT JOIN stock_info si ON vr.stock_code = si.stock_code
+            ORDER BY vr.created_at DESC
+            LIMIT 10
+            """
+        )
+        recent_issues = []
+        for row in cur.fetchall():
+            recent_issues.append({
+                "id": row[0],
+                "stock_code": row[1],
+                "stock_name": row[2],
+                "market": row[3],
+                "severity": row[4],
+                "check_name": row[5],
+                "message": row[6],
+                "created_at": row[7],
+            })
+
+        cur.close()
+
+    return {
+        "total_stocks": total_stocks,
+        "sync_status": sync_status,
+        "sync_trend": sync_trend,
+        "validation_issues": validation_issues,
+        "anomalies_today": anomalies_today,
+        "freshness": freshness,
+        "recent_issues": recent_issues,
+    }
