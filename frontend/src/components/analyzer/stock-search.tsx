@@ -123,7 +123,7 @@ export function StockSearch({ market, onSelect }: Props) {
               {/* Search results */}
               {showResults && (
                 <Command.Group heading="搜索结果">
-                  {results!.slice(0, 15).map((stock) => (
+                  {results?.slice(0, 15).map((stock) => (
                     <Command.Item
                       key={`${stock.stock_code}-${stock.market}`}
                       value={`${stock.stock_code}-${stock.stock_name}`}

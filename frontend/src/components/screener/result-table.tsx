@@ -24,6 +24,13 @@ function SortIcon({ active, asc }: { active: boolean; asc: boolean }) {
   return asc ? <ArrowUp className="h-3 w-3 ml-1" /> : <ArrowDown className="h-3 w-3 ml-1" />;
 }
 
+function escapeCsv(val: unknown): string {
+  const s = String(val ?? "");
+  if (/[,"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/^[=+\-@\t]/.test(s)) return `'${s}`;
+  return s;
+}
+
 function exportCsv(results: ScreenerStock[]) {
   const headers = ["排名", "代码", "名称", "市场", "行业", "市值", "PE", "PB", "FCF Yield", "ROE", "毛利率", "净利率", "得分"];
   const rows = results.map((s) => [
@@ -41,7 +48,7 @@ function exportCsv(results: ScreenerStock[]) {
     s.net_margin ?? "",
     s.score,
   ]);
-  const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
+  const csv = [headers, ...rows].map((r) => r.map(escapeCsv).join(",")).join("\n");
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
