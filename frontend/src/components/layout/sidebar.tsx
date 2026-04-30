@@ -48,7 +48,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 )
               }
             >
-              <item.icon className="h-4.5 w-4.5 shrink-0" />
+              <item.icon className="h-4 w-4 shrink-0" />
               {!collapsed && <span className="whitespace-nowrap overflow-hidden text-ellipsis">{item.label}</span>}
             </NavLink>
           );

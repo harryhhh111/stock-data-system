@@ -87,12 +87,10 @@ export function EChartsWrapper({ option, className, style }: Props) {
   }, []);
 
   useEffect(() => {
-    chartRef.current?.setOption(isDark ? DARK_THEME : LIGHT_THEME, false);
-  }, [isDark]);
-
-  useEffect(() => {
-    chartRef.current?.setOption(option, true);
-  }, [option]);
+    if (!chartRef.current) return;
+    chartRef.current.setOption(option, true);
+    chartRef.current.setOption(isDark ? DARK_THEME : LIGHT_THEME, false);
+  }, [option, isDark]);
 
   return (
     <div
