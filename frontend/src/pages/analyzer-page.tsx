@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { analyzerApi } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Search } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
+import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 function Star({ rating }: { rating: number | null }) {
   if (rating == null) return <span className="text-muted-foreground">-</span>;
@@ -18,26 +19,20 @@ function Star({ rating }: { rating: number | null }) {
   return <span className="text-yellow-500">{"★".repeat(stars)}{"☆".repeat(5 - stars)}</span>;
 }
 
-function fmtNum(val: number | null, suffix = ""): string {
-  if (val == null) return "-";
-  if (Math.abs(val) >= 1e12) return `${(val / 1e12).toFixed(2)}万亿${suffix}`;
-  if (Math.abs(val) >= 1e8) return `${(val / 1e8).toFixed(2)}亿${suffix}`;
-  if (Math.abs(val) >= 1e4) return `${(val / 1e4).toFixed(2)}万${suffix}`;
-  return `${val.toLocaleString()}${suffix}`;
-}
-
-function fmtPct(val: number | null): string {
-  if (val == null) return "-";
-  return `${(val * 100).toFixed(1)}%`;
-}
-
 export function AnalyzerPage() {
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [market, setMarket] = useState<Market | "all">("all");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const searchQuery = useQuery({
-    queryKey: ["analyzer", "search", query, market],
-    queryFn: () => analyzerApi.search(query, market === "all" ? undefined : market),
-    enabled: query.length >= 1,
+    queryKey: ["analyzer", "search", debouncedQuery, market],
+    queryFn: () => analyzerApi.search(debouncedQuery, market === "all" ? undefined : market),
+    enabled: debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
 
@@ -83,11 +78,11 @@ export function AnalyzerPage() {
 
       {/* 搜索结果下拉 */}
       {searchQuery.data && searchQuery.data.length > 0 && !report && (
-        <div className="border rounded-lg bg-white shadow-md max-h-60 overflow-y-auto">
+        <div className="border rounded-lg bg-card shadow-md max-h-60 overflow-y-auto">
           {searchQuery.data.slice(0, 20).map((stock) => (
             <button
               key={`${stock.stock_code}-${stock.market}`}
-              className="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center justify-between border-b last:border-b-0"
+              className="w-full text-left px-4 py-2 hover:bg-accent flex items-center justify-between border-b last:border-b-0"
               onClick={() => handleSelect(stock)}
             >
               <span>
@@ -129,11 +124,11 @@ export function AnalyzerPage() {
             <CardContent>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4 text-sm">
                 <div><span className="text-muted-foreground">收盘价</span><p className="font-medium">{report.stock.close ?? "-"}</p></div>
-                <div><span className="text-muted-foreground">市值</span><p className="font-medium">{fmtNum(report.stock.market_cap)}</p></div>
+                <div><span className="text-muted-foreground">市值</span><p className="font-medium">{fmtMcap(report.stock.market_cap)}</p></div>
                 <div><span className="text-muted-foreground">PE TTM</span><p className="font-medium">{report.stock.pe_ttm?.toFixed(1) ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">PB</span><p className="font-medium">{report.stock.pb?.toFixed(2) ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.stock.fcf_yield)}</p></div>
-                <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtNum(report.stock.revenue_ttm)}</p></div>
+                <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtMcap(report.stock.revenue_ttm)}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -181,8 +176,8 @@ export function AnalyzerPage() {
                     {report.sections.profitability.details.map((d) => (
                       <TableRow key={d.year}>
                         <TableCell>{d.year}</TableCell>
-                        <TableCell className="text-right">{fmtNum(d.revenue)}</TableCell>
-                        <TableCell className="text-right">{fmtNum(d.net_profit)}</TableCell>
+                        <TableCell className="text-right">{fmtMcap(d.revenue)}</TableCell>
+                        <TableCell className="text-right">{fmtMcap(d.net_profit)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.gross_margin)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.net_margin)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.roe)}</TableCell>
@@ -204,7 +199,7 @@ export function AnalyzerPage() {
               <div><span className="text-muted-foreground">资产负债率</span><p className="font-medium">{fmtPct(report.sections.health.details.debt_ratio)}</p></div>
               <div><span className="text-muted-foreground">流动比率</span><p className="font-medium">{report.sections.health.details.current_ratio?.toFixed(2) ?? "-"}</p></div>
               <div><span className="text-muted-foreground">速动比率</span><p className="font-medium">{report.sections.health.details.quick_ratio?.toFixed(2) ?? "-"}</p></div>
-              <div><span className="text-muted-foreground">总资产</span><p className="font-medium">{fmtNum(report.sections.health.details.total_assets)}</p></div>
+              <div><span className="text-muted-foreground">总资产</span><p className="font-medium">{fmtMcap(report.sections.health.details.total_assets)}</p></div>
             </div>
             {report.sections.health.details.debt_trend.length > 0 && (
               <div className="text-sm text-muted-foreground">
@@ -216,9 +211,9 @@ export function AnalyzerPage() {
           {/* 现金流 */}
           <SectionCard title="现金流" section={report.sections.cashflow}>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm mb-4">
-              <div><span className="text-muted-foreground">经营现金流</span><p className="font-medium">{fmtNum(report.sections.cashflow.details.cfo)}</p></div>
-              <div><span className="text-muted-foreground">资本开支</span><p className="font-medium">{fmtNum(report.sections.cashflow.details.capex)}</p></div>
-              <div><span className="text-muted-foreground">自由现金流</span><p className="font-medium">{fmtNum(report.sections.cashflow.details.fcf)}</p></div>
+              <div><span className="text-muted-foreground">经营现金流</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.cfo)}</p></div>
+              <div><span className="text-muted-foreground">资本开支</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.capex)}</p></div>
+              <div><span className="text-muted-foreground">自由现金流</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.fcf)}</p></div>
               <div><span className="text-muted-foreground">CFO 净利润比</span><p className="font-medium">{report.sections.cashflow.details.cfo_quality?.toFixed(2) ?? "-"}</p></div>
             </div>
             {report.sections.cashflow.details.fcf_years.length > 0 && (
@@ -236,9 +231,9 @@ export function AnalyzerPage() {
                     {report.sections.cashflow.details.fcf_years.map((d) => (
                       <TableRow key={d.year}>
                         <TableCell>{d.year}</TableCell>
-                        <TableCell className="text-right">{fmtNum(d.fcf)}</TableCell>
-                        <TableCell className="text-right">{fmtNum(d.cfo)}</TableCell>
-                        <TableCell className="text-right">{fmtNum(d.net_profit)}</TableCell>
+                        <TableCell className="text-right">{fmtMcap(d.fcf)}</TableCell>
+                        <TableCell className="text-right">{fmtMcap(d.cfo)}</TableCell>
+                        <TableCell className="text-right">{fmtMcap(d.net_profit)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

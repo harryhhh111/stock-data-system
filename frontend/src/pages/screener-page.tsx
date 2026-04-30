@@ -9,19 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
-
-function fmtMarketCap(val: number | null): string {
-  if (val == null) return "-";
-  if (val >= 1e12) return `${(val / 1e12).toFixed(1)}万亿`;
-  if (val >= 1e8) return `${(val / 1e8).toFixed(1)}亿`;
-  if (val >= 1e4) return `${(val / 1e4).toFixed(1)}万`;
-  return val.toLocaleString();
-}
-
-function fmtPct(val: number | null): string {
-  if (val == null) return "-";
-  return `${(val * 100).toFixed(1)}%`;
-}
+import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 export function ScreenerPage() {
   const [market, setMarket] = useState<Market | "all">("all");
@@ -157,7 +145,7 @@ export function ScreenerPage() {
                   <TableCell className="max-w-[150px] truncate text-xs" title={stock.industry}>
                     {stock.industry || "-"}
                   </TableCell>
-                  <TableCell className="text-right whitespace-nowrap">{fmtMarketCap(stock.market_cap)}</TableCell>
+                  <TableCell className="text-right whitespace-nowrap">{fmtMcap(stock.market_cap)}</TableCell>
                   <TableCell className="text-right">{stock.pe_ttm?.toFixed(1) ?? "-"}</TableCell>
                   <TableCell className="text-right">{stock.pb?.toFixed(2) ?? "-"}</TableCell>
                   <TableCell className="text-right">{fmtPct(stock.fcf_yield)}</TableCell>

@@ -71,7 +71,7 @@ export function QualityPage() {
           <h3 className="font-medium mb-3">检查项分布</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {summary.by_check.slice(0, 12).map((c) => (
-              <div key={`${c.check_name}-${c.severity}`} className="flex items-center justify-between text-sm p-2 rounded bg-gray-50">
+              <div key={`${c.check_name}-${c.severity}`} className="flex items-center justify-between text-sm p-2 rounded bg-muted">
                 <span className="truncate mr-2" title={c.check_name}>{c.label}</span>
                 <Badge variant={SEVERITY_VARIANT[c.severity]} className="shrink-0">{c.count}</Badge>
               </div>

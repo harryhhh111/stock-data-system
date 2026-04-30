@@ -15,16 +15,16 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
   const title = titles[pathname] ?? "Stock Data";
 
   return (
-    <header className="h-14 bg-white border-b flex items-center px-4 md:px-6 justify-between">
+    <header className="h-14 bg-card border-b flex items-center px-4 md:px-6 justify-between">
       <div className="flex items-center gap-3">
         {onMenuClick && (
           <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
             <Menu className="h-5 w-5" />
           </Button>
         )}
-        <span className="font-medium text-gray-800">{title}</span>
+        <span className="font-medium text-foreground">{title}</span>
       </div>
-      <span className="text-xs text-gray-400">
+      <span className="text-xs text-muted-foreground">
         {new Date().toLocaleString("zh-CN")}
       </span>
     </header>

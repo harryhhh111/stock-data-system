@@ -277,6 +277,12 @@ class BaseFetcher:
 
         # Fallback: 本地 JSON 文件
         _RAW_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        # 同一天同一 stock+type+source 只保留一份，避免重复同步产生冗余文件
+        date_prefix = datetime.now().strftime("%Y%m%d")
+        existing = list(_RAW_SNAPSHOT_DIR.glob(f"{stock_code}_{data_type}_{source}_{date_prefix}_*.json"))
+        if existing:
+            logger.debug("快照文件已存在，跳过: %s", existing[0].name)
+            return
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{stock_code}_{data_type}_{source}_{ts}.json"
         filepath = _RAW_SNAPSHOT_DIR / filename

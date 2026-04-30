@@ -11,9 +11,9 @@ const nav = [
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <aside className="w-56 bg-white border-r flex flex-col h-full">
+    <aside className="w-56 bg-card border-r flex flex-col h-full">
       <div className="p-4 border-b">
-        <h1 className="font-semibold text-lg">📊 Stock Data</h1>
+        <h1 className="font-semibold text-lg">Stock Data</h1>
       </div>
       <nav className="flex-1 p-2 space-y-1">
         {nav.map((item) => (
@@ -25,8 +25,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               cn(
                 "block px-3 py-2 rounded-md text-sm",
                 isActive
-                  ? "bg-blue-50 text-blue-700 font-medium"
-                  : "text-gray-700 hover:bg-gray-100"
+                  ? "bg-primary/10 text-primary font-medium"
+                  : "text-foreground hover:bg-accent"
               )
             }
           >
