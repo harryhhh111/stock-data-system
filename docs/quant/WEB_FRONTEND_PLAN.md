@@ -1,6 +1,6 @@
-# Web 前端仪表板 — 实现方案 v7
+# Web 前端仪表板 — 实现方案 v8 (Final)
 
-> v7：二次审阅修订，`DashboardStats` 按市场拆分 + 类型收尾，见 [Changelog](#changelog)
+> 审核通过，可进入编码阶段。
 
 ## 顶层架构
 
@@ -676,11 +676,13 @@ function useDashboardStats() {
       {
         queryKey: queryKeys.dashboard.stats,
         queryFn: () => apiFetch<DashboardStats>("/dashboard/stats", { market: "CN_A" }),
+        staleTime: 30_000,
         refetchInterval: 30_000,
       },
       {
         queryKey: [...queryKeys.dashboard.stats, "us"],
         queryFn: () => apiFetch<DashboardStats>("/dashboard/stats", { market: "US" }),
+        staleTime: 30_000,
         refetchInterval: 30_000,
       },
     ],
@@ -877,7 +879,7 @@ shadcn/ui 内置 dark mode 支持（Tailwind `dark:` class + CSS variables）。
 > 再并行铺开 Phase 3-8 的其余页面。
 
 ### Phase 1: API 骨架 + Dashboard（验证链路）
-1. `requirements.txt` — 添加 `fastapi`, `uvicorn[standard]`, `cachetools`
+1. `requirements.txt` — 添加 `fastapi`, `uvicorn[standard]`
 2. `config.py` — 添加 `WebConfig`
 3. `web/app.py` — FastAPI + CORS + 错误处理（无需 API Key）
 4. `web/routes/health.py` — `GET /api/v1/health`
@@ -1004,4 +1006,5 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化、ScreenerStock 拆分 factor_ranks、图表动态渲染、部署 Nginx+systemd、Phase 优先验证链路、搜索不支持拼音、新鲜度阈值 |
 | v5 | 2026-04-30 | 修订：纯只读 API + 双服务器直连架构 |
 | v6 | 2026-04-30 | 审阅修订：DashboardStats 增加 market 维度、补充 sync/progress 端点、删除残留 API Key、时间序列统一 DESC、apiFetch 类型放宽、useQueries 双服务器仪表板方案、CSS 注释修正、Nginx 域名对齐、fy_vs 重命名、搜索约束 |
-| v7 | 2026-04-30 | 二次审阅：DashboardStats.sync_status/sync_trend 改为 Record<Market, ...>、getBaseUrl 类型统一、Nginx location 块补全、ScreenerResult.total 加注释、去掉 ? 冗余三态、fcf_years 加排序注释、SyncLogEntry.market 加说明 |
+| v7 | 2026-04-30 | 二次审阅修订 |
+| v8 | 2026-04-30 | 终审：删除 cachetools 依赖、useDashboardStats 补全 staleTime |
