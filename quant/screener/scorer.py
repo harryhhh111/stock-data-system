@@ -24,13 +24,15 @@ def compute_derived_factors(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def rank_factors(df: pd.DataFrame, weights: dict[str, FactorWeight]) -> pd.DataFrame:
+def rank_factors(df: pd.DataFrame, weights: dict[str, FactorWeight],
+                 by_industry: bool = True) -> pd.DataFrame:
     """
-    对因子进行截面百分位排名，按权重加总得到综合得分
+    对因子进行截面百分位排名，按权重加总得到综合得分。
 
     Args:
         df: 已过滤的 DataFrame（包含所有需要的原始列）
         weights: {因子名: {weight, ascending}}
+        by_industry: 是否在每个行业内独立排名（默认开启）
 
     Returns:
         增加了 score 列和 factor_rank 列的 DataFrame
@@ -46,17 +48,19 @@ def rank_factors(df: pd.DataFrame, weights: dict[str, FactorWeight]) -> pd.DataF
         if col not in result.columns:
             continue
 
-        # 百分位排名（0-100），越高越好
-        # ascending=False: 原始值越大排名越高
-        rank = result[col].rank(pct=True, ascending=cfg["ascending"]) * 100
+        if by_industry and "industry" in result.columns:
+            # 行业内百分位排名：每个行业组内独立排名
+            rank = result.groupby("industry")[col].transform(
+                lambda x: x.rank(pct=True, ascending=cfg["ascending"]) * 100
+            )
+        else:
+            # 全局百分位排名
+            rank = result[col].rank(pct=True, ascending=cfg["ascending"]) * 100
 
-        # 缺失值用中位数填充（避免极端惩罚/奖励）
+        # 缺失值用中位数填充
         rank = rank.fillna(50)
 
-        # 记录排名（用于展示）
         result[f"{factor_name}_rank"] = rank
-
-        # 加权
         score += rank * (cfg["weight"] / total_weight)
 
     result["score"] = score
