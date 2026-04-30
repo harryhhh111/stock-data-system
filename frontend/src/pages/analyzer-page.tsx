@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search } from "lucide-react";
+import { Search, Clock, X } from "lucide-react";
+import { useAnalyzerStore } from "@/lib/store/analyzer-store";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
 import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
@@ -24,6 +25,7 @@ export function AnalyzerPage() {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [market, setMarket] = useState<Market | "all">("all");
+  const { history, addHistory, clearHistory } = useAnalyzerStore();
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query), 300);
@@ -44,8 +46,9 @@ export function AnalyzerPage() {
 
   const handleSelect = useCallback((stock: StockSearchResult) => {
     setQuery(stock.stock_name);
+    addHistory(stock);
     analyzeMutation.mutate({ code: stock.stock_code, mkt: stock.market });
-  }, [analyzeMutation]);
+  }, [analyzeMutation, addHistory]);
 
   const report: AnalysisReport | undefined = analyzeMutation.data;
 
@@ -76,6 +79,33 @@ export function AnalyzerPage() {
           </SelectContent>
         </Select>
       </div>
+
+      {/* 搜索历史 */}
+      {!query && !report && history.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" /> 最近搜索
+            </span>
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearHistory}>
+              <X className="h-3 w-3 mr-1" /> 清空
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {history.map((stock) => (
+              <button
+                key={`${stock.stock_code}-${stock.market}`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border bg-card hover:bg-accent text-sm transition-colors"
+                onClick={() => handleSelect(stock)}
+              >
+                <span className="font-medium">{stock.stock_name}</span>
+                <span className="text-muted-foreground text-xs">{stock.stock_code}</span>
+                <Badge variant="outline" className="text-xs ml-0.5">{stock.market}</Badge>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 搜索结果下拉 */}
       {searchQuery.data && searchQuery.data.length > 0 && !report && (
@@ -283,6 +313,7 @@ export function AnalyzerPage() {
             variant="outline"
             onClick={() => {
               setQuery("");
+              setDebouncedQuery("");
               analyzeMutation.reset();
             }}
           >

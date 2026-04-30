@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { screenerApi } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -7,14 +6,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { useScreenerStore } from "@/lib/store/screener-store";
 import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
 import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 export function ScreenerPage() {
-  const [market, setMarket] = useState<Market>("CN_A");
-  const [preset, setPreset] = useState<string>("classic_value");
-  const [topN, setTopN] = useState(50);
+  const { market, setMarket, preset, setPreset, topN, setTopN } = useScreenerStore();
 
   const { data: presetsData } = useQuery({
     queryKey: ["screener", "presets"],
