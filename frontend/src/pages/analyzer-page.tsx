@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Search } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
-import { fmtMcap, fmtPct } from "@/lib/utils/format";
+import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
 
 function Star({ rating }: { rating: number | null }) {
   if (rating == null) return <span className="text-muted-foreground">-</span>;
@@ -128,7 +128,7 @@ export function AnalyzerPage() {
                 <div><span className="text-muted-foreground">PE TTM</span><p className="font-medium">{report.stock.pe_ttm?.toFixed(1) ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">PB</span><p className="font-medium">{report.stock.pb?.toFixed(2) ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.stock.fcf_yield)}</p></div>
-                <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtMcap(report.stock.revenue_ttm)}</p></div>
+                <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtYi(report.stock.revenue_ttm)}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -176,8 +176,8 @@ export function AnalyzerPage() {
                     {report.sections.profitability.details.map((d) => (
                       <TableRow key={d.year}>
                         <TableCell>{d.year}</TableCell>
-                        <TableCell className="text-right">{fmtMcap(d.revenue)}</TableCell>
-                        <TableCell className="text-right">{fmtMcap(d.net_profit)}</TableCell>
+                        <TableCell className="text-right">{fmtYi(d.revenue)}</TableCell>
+                        <TableCell className="text-right">{fmtYi(d.net_profit)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.gross_margin)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.net_margin)}</TableCell>
                         <TableCell className="text-right">{fmtPct(d.roe)}</TableCell>
@@ -199,7 +199,7 @@ export function AnalyzerPage() {
               <div><span className="text-muted-foreground">资产负债率</span><p className="font-medium">{fmtPct(report.sections.health.details.debt_ratio)}</p></div>
               <div><span className="text-muted-foreground">流动比率</span><p className="font-medium">{report.sections.health.details.current_ratio?.toFixed(2) ?? "-"}</p></div>
               <div><span className="text-muted-foreground">速动比率</span><p className="font-medium">{report.sections.health.details.quick_ratio?.toFixed(2) ?? "-"}</p></div>
-              <div><span className="text-muted-foreground">总资产</span><p className="font-medium">{fmtMcap(report.sections.health.details.total_assets)}</p></div>
+              <div><span className="text-muted-foreground">总资产</span><p className="font-medium">{fmtYi(report.sections.health.details.total_assets)}</p></div>
             </div>
             {report.sections.health.details.debt_trend.length > 0 && (
               <div className="text-sm text-muted-foreground">
@@ -211,9 +211,9 @@ export function AnalyzerPage() {
           {/* 现金流 */}
           <SectionCard title="现金流" section={report.sections.cashflow}>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm mb-4">
-              <div><span className="text-muted-foreground">经营现金流</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.cfo)}</p></div>
-              <div><span className="text-muted-foreground">资本开支</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.capex)}</p></div>
-              <div><span className="text-muted-foreground">自由现金流</span><p className="font-medium">{fmtMcap(report.sections.cashflow.details.fcf)}</p></div>
+              <div><span className="text-muted-foreground">经营现金流</span><p className="font-medium">{fmtYi(report.sections.cashflow.details.cfo)}</p></div>
+              <div><span className="text-muted-foreground">资本开支</span><p className="font-medium">{fmtYi(report.sections.cashflow.details.capex)}</p></div>
+              <div><span className="text-muted-foreground">自由现金流</span><p className="font-medium">{fmtYi(report.sections.cashflow.details.fcf)}</p></div>
               <div><span className="text-muted-foreground">CFO 净利润比</span><p className="font-medium">{report.sections.cashflow.details.cfo_quality?.toFixed(2) ?? "-"}</p></div>
             </div>
             {report.sections.cashflow.details.fcf_years.length > 0 && (
@@ -231,9 +231,9 @@ export function AnalyzerPage() {
                     {report.sections.cashflow.details.fcf_years.map((d) => (
                       <TableRow key={d.year}>
                         <TableCell>{d.year}</TableCell>
-                        <TableCell className="text-right">{fmtMcap(d.fcf)}</TableCell>
-                        <TableCell className="text-right">{fmtMcap(d.cfo)}</TableCell>
-                        <TableCell className="text-right">{fmtMcap(d.net_profit)}</TableCell>
+                        <TableCell className="text-right">{fmtYi(d.fcf)}</TableCell>
+                        <TableCell className="text-right">{fmtYi(d.cfo)}</TableCell>
+                        <TableCell className="text-right">{fmtYi(d.net_profit)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

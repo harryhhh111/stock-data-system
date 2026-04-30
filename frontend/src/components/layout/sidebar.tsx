@@ -13,7 +13,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <aside className="w-56 bg-card border-r flex flex-col h-full">
       <div className="p-4 border-b">
-        <h1 className="font-semibold text-lg">Stock Data</h1>
+        <h1 className="font-semibold text-lg">📊 Stock Data</h1>
       </div>
       <nav className="flex-1 p-2 space-y-1">
         {nav.map((item) => (

@@ -12,7 +12,7 @@ import type { ScreenerResult } from "@/lib/types/screener";
 import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 export function ScreenerPage() {
-  const [market, setMarket] = useState<Market | "all">("all");
+  const [market, setMarket] = useState<Market>("CN_A");
   const [preset, setPreset] = useState<string>("classic_value");
   const [topN, setTopN] = useState(50);
 
@@ -25,7 +25,7 @@ export function ScreenerPage() {
   const mutation = useMutation({
     mutationFn: () =>
       screenerApi.run({
-        market: market as Market | "all",
+        market,
         preset: preset || undefined,
         top_n: topN,
       }),
@@ -41,12 +41,11 @@ export function ScreenerPage() {
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1">
           <label className="text-sm text-muted-foreground">市场</label>
-          <Select value={market} onValueChange={(v) => setMarket(v as Market | "all")}>
+          <Select value={market} onValueChange={(v) => setMarket(v as Market)}>
             <SelectTrigger className="w-32">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
               <SelectItem value="CN_A">A 股</SelectItem>
               <SelectItem value="CN_HK">港股</SelectItem>
               <SelectItem value="US">美股</SelectItem>

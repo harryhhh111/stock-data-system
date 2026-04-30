@@ -120,7 +120,7 @@ export const screenerApi = {
       "/screener/presets",
       { market },
     ),
-  run: (params: { market: Market | "all"; preset?: string; top_n?: number }) =>
+  run: (params: { market: Market; preset?: string; top_n?: number }) =>
     apiFetch<import("@/lib/types/screener").ScreenerResult>("/screener/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
