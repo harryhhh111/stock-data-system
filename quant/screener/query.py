@@ -69,22 +69,25 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
 
     FROM stock_info s
 
-    LEFT JOIN LATERAL (
-        SELECT *
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
         FROM mv_financial_indicator
-        WHERE stock_code = s.stock_code AND report_type = 'annual'
-        ORDER BY report_date DESC LIMIT 1
-    ) f ON true
+        WHERE report_type = 'annual'
+        ORDER BY stock_code, report_date DESC
+    ) f ON s.stock_code = f.stock_code
 
-    LEFT JOIN LATERAL (
-        SELECT *
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
         FROM daily_quote
-        WHERE stock_code = s.stock_code
-          AND market_cap IS NOT NULL AND market_cap > 0
-        ORDER BY trade_date DESC LIMIT 1
-    ) q ON true
+        WHERE market_cap IS NOT NULL AND market_cap > 0
+        ORDER BY stock_code, trade_date DESC
+    ) q ON s.stock_code = q.stock_code AND s.market = q.market
 
-    LEFT JOIN mv_indicator_ttm t ON s.stock_code = t.stock_code
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
+        FROM mv_indicator_ttm
+        ORDER BY stock_code, report_date DESC
+    ) t ON s.stock_code = t.stock_code
 
     LEFT JOIN mv_fcf_yield fy ON s.stock_code = fy.stock_code
 
@@ -183,28 +186,26 @@ def get_us_universe() -> pd.DataFrame:
 
     FROM stock_info s
 
-    LEFT JOIN LATERAL (
-        SELECT *
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
         FROM mv_us_financial_indicator
-        WHERE stock_code = s.stock_code AND report_type = 'annual'
-        ORDER BY report_date DESC LIMIT 1
-    ) f ON true
+        WHERE report_type = 'annual'
+        ORDER BY stock_code, report_date DESC
+    ) f ON s.stock_code = f.stock_code
 
-    LEFT JOIN LATERAL (
-        SELECT *
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
         FROM daily_quote
-        WHERE stock_code = s.stock_code
-          AND market = 'US'
+        WHERE market = 'US'
           AND market_cap IS NOT NULL AND market_cap > 0
-        ORDER BY trade_date DESC LIMIT 1
-    ) q ON true
+        ORDER BY stock_code, trade_date DESC
+    ) q ON s.stock_code = q.stock_code
 
-    LEFT JOIN LATERAL (
-        SELECT *
+    LEFT JOIN (
+        SELECT DISTINCT ON (stock_code) *
         FROM mv_us_indicator_ttm
-        WHERE stock_code = s.stock_code
-        ORDER BY report_date DESC LIMIT 1
-    ) t ON true
+        ORDER BY stock_code, report_date DESC
+    ) t ON s.stock_code = t.stock_code
 
     LEFT JOIN mv_us_fcf_yield fy ON s.stock_code = fy.stock_code
 
