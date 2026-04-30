@@ -153,6 +153,7 @@ class SECConfig:
     ticker_url: str = "https://www.sec.gov/files/company_tickers.json"
     sp500_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     nasdaq100_url: str = "https://en.wikipedia.org/wiki/NASDAQ-100"
+    russell1000_url: str = "https://en.wikipedia.org/wiki/Russell_1000_Index"
 
 
 @dataclass

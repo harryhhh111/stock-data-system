@@ -7,10 +7,13 @@ fetchers/us_financial.py — 美股 SEC EDGAR 数据拉取
 - fetch_company_list(): 获取 CIK ↔ ticker 映射
 - fetch_sp500_constituents(): 获取 S&P 500 成分股列表
 - fetch_nasdaq100_constituents(): 获取 NASDAQ 100 成分股列表
+- fetch_russell1000_constituents(): 获取 Russell 1000 成分股列表
+- get_tickers_by_index(): 根据指数名称获取成分股（支持 SP500/NASDAQ100/RUSSELL1000/ALL）
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -176,7 +179,7 @@ class USFinancialFetcher(BaseFetcher):
         try:
             resp = requests.get(config.sec.sp500_url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
-            tables = pd.read_html(resp.text)
+            tables = pd.read_html(io.StringIO(resp.text))
             df = tables[0]
             ticker_col = None
             for col in df.columns:
@@ -253,7 +256,7 @@ class USFinancialFetcher(BaseFetcher):
         try:
             resp = requests.get(config.sec.nasdaq100_url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
-            tables = pd.read_html(resp.text)
+            tables = pd.read_html(io.StringIO(resp.text))
             # NASDAQ-100 Wikipedia 有多张表，找包含 "Symbol" 或 "Ticker" 列的
             for df in tables:
                 ticker_col = None
@@ -295,6 +298,81 @@ class USFinancialFetcher(BaseFetcher):
             return tickers
 
         raise RuntimeError("NASDAQ 100 所有数据源均失败，请检查网络或内置 JSON 文件")
+
+    def fetch_russell1000_constituents(self) -> list[str]:
+        """获取 Russell 1000 成分股 ticker 列表。
+
+        数据源：Wikipedia Russell 1000 页面。
+        本地缓存 7 天过期。
+
+        Returns:
+            ticker 字符串列表，如 ["AAPL", "MSFT", ...]
+        """
+        cache_file = CACHE_DIR / "russell1000_tickers.json"
+        if self._load_cache(cache_file):
+            tickers = json.loads(cache_file.read_text())
+            logger.info("Russell 1000 从缓存加载: %d 只", len(tickers))
+            return tickers
+
+        logger.info("获取 Russell 1000 成分股...")
+
+        try:
+            resp = requests.get(config.sec.russell1000_url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            tables = pd.read_html(io.StringIO(resp.text))
+            for df in tables:
+                ticker_col = None
+                for col in df.columns:
+                    if "symbol" in str(col).lower() or "ticker" in str(col).lower():
+                        ticker_col = col
+                        break
+                if ticker_col is None:
+                    continue
+                tickers = (
+                    df[ticker_col]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"\.", "-", regex=True)
+                    .tolist()
+                )
+                if len(tickers) >= 800:  # 合理的 Russell 1000 数量
+                    tickers = list(dict.fromkeys(tickers))
+                    self._save_cache(cache_file, json.dumps(tickers))
+                    logger.info("Russell 1000 成分股获取完成 (Wikipedia): %d 只", len(tickers))
+                    return tickers
+            logger.warning("Wikipedia 表格解析未找到有效数据")
+        except Exception as e:
+            logger.error("获取 Russell 1000 失败: %s", e)
+
+        raise RuntimeError("Russell 1000 所有数据源均失败，请检查网络")
+
+    def get_tickers_by_index(self, index_name: str) -> list[str]:
+        """根据指数名称获取成分股 ticker 列表。
+
+        Args:
+            index_name: 指数名称，支持 SP500 / NASDAQ100 / RUSSELL1000 / ALL
+
+        Returns:
+            ticker 字符串列表（去重）
+        """
+        name = index_name.upper()
+        if name == "SP500":
+            return self.fetch_sp500_constituents()
+        elif name == "NASDAQ100":
+            return self.fetch_nasdaq100_constituents()
+        elif name == "RUSSELL1000":
+            return self.fetch_russell1000_constituents()
+        elif name == "ALL":
+            sp500 = set(self.fetch_sp500_constituents())
+            nasdaq100 = set(self.fetch_nasdaq100_constituents())
+            russell1000 = set(self.fetch_russell1000_constituents())
+            all_tickers = sorted(sp500 | nasdaq100 | russell1000)
+            logger.info("ALL 模式合并: SP500(%d) + NASDAQ100(%d) + Russell1000(%d) = %d 去重",
+                        len(sp500), len(nasdaq100), len(russell1000), len(all_tickers))
+            return all_tickers
+        else:
+            raise ValueError(f"不支持的指数: {index_name}，可选: SP500, NASDAQ100, RUSSELL1000, ALL")
 
     def ticker_to_cik(self, ticker: str) -> str:
         """将 ticker 转为 10 位 CIK。"""

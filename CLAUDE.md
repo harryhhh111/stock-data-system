@@ -25,6 +25,8 @@ python -m core.sync --type financial --market CN_A --workers 4   # A-share finan
 python -m core.sync --type financial --market CN_HK --workers 4  # HK financials
 python -m core.sync --type financial --market US --us-tickers AAPL,MSFT  # specific US tickers
 python -m core.sync --type financial --market US --us-index SP500  # US S&P 500
+python -m core.sync --type financial --market US --us-index RUSSELL1000  # US Russell 1000 (~1000 stocks)
+python -m core.sync --type financial --market US --us-index ALL  # SP500 + NASDAQ100 + Russell1000
 python -m core.sync --type financial --market all   # all markets
 python -m core.sync --type index                    # index constituents (CSI 300 + 500)
 python -m core.sync --type dividend                 # dividends (A + HK)

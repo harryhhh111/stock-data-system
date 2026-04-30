@@ -51,7 +51,7 @@ def main():
     parser.add_argument(
         "--us-index",
         default="SP500",
-        choices=["SP500", "NASDAQ100", "ALL"],
+        choices=["SP500", "NASDAQ100", "RUSSELL1000", "ALL"],
         help="美股指数范围（仅 US 市场有效）",
     )
     parser.add_argument(
