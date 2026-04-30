@@ -6,8 +6,23 @@ interface Props {
   cashflow: FCFYearItem[];
 }
 
+function autoScale(values: (number | null)[]): { divisor: number; unit: string } {
+  const max = Math.max(0, ...values.filter((v): v is number => v != null).map(Math.abs));
+  if (max >= 1e12) return { divisor: 1e12, unit: "万亿" };
+  if (max >= 1e8) return { divisor: 1e8, unit: "亿" };
+  if (max >= 1e4) return { divisor: 1e4, unit: "万" };
+  return { divisor: 1, unit: "" };
+}
+
 export function FinancialChart({ profitability, cashflow }: Props) {
   const years = profitability.map((d) => String(d.year));
+
+  const allAmounts = [
+    ...profitability.map((d) => d.revenue),
+    ...profitability.map((d) => d.net_profit),
+    ...cashflow.map((d) => d.fcf),
+  ];
+  const { divisor, unit } = autoScale(allAmounts);
 
   const option = {
     tooltip: { trigger: "axis" as const },
@@ -22,7 +37,7 @@ export function FinancialChart({ profitability, cashflow }: Props) {
     ],
     yAxis: [
       { type: "value" as const, name: "%", gridIndex: 0, axisLabel: { formatter: "{value}%" } },
-      { type: "value" as const, name: "亿", gridIndex: 1 },
+      { type: "value" as const, name: unit || "元", gridIndex: 1 },
     ],
     series: [
       {
@@ -57,7 +72,7 @@ export function FinancialChart({ profitability, cashflow }: Props) {
         type: "bar" as const,
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: profitability.map((d) => d.revenue != null ? +(d.revenue / 1e8).toFixed(2) : 0),
+        data: profitability.map((d) => d.revenue != null ? +(d.revenue / divisor).toFixed(2) : 0),
         itemStyle: { color: "#60a5fa" },
       },
       {
@@ -65,7 +80,7 @@ export function FinancialChart({ profitability, cashflow }: Props) {
         type: "bar" as const,
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: profitability.map((d) => d.net_profit != null ? +(d.net_profit / 1e8).toFixed(2) : 0),
+        data: profitability.map((d) => d.net_profit != null ? +(d.net_profit / divisor).toFixed(2) : 0),
         itemStyle: { color: "#f59e0b" },
       },
       {
@@ -75,7 +90,7 @@ export function FinancialChart({ profitability, cashflow }: Props) {
         yAxisIndex: 1,
         data: years.map((y) => {
           const item = cashflow.find((d) => String(d.year) === y);
-          return item?.fcf != null ? +(item.fcf / 1e8).toFixed(2) : 0;
+          return item?.fcf != null ? +(item.fcf / divisor).toFixed(2) : 0;
         }),
         itemStyle: { color: "#22c55e" },
       },

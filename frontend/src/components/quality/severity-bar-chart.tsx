@@ -1,10 +1,10 @@
 import { EChartsWrapper } from "@/components/charts/echarts-wrapper";
 import type { QualitySummary } from "@/lib/types/quality";
 
-const SEVERITY_COLORS: Record<string, string> = {
-  error: "#ef4444",
-  warning: "#f59e0b",
-  info: "#3b82f6",
+const SEVERITY_META: Record<string, { color: string; label: string }> = {
+  error: { color: "#ef4444", label: "错误" },
+  warning: { color: "#f59e0b", label: "警告" },
+  info: { color: "#3b82f6", label: "信息" },
 };
 
 interface Props {
@@ -16,21 +16,21 @@ export function SeverityBarChart({ byCheck }: Props) {
   const severities = ["error", "warning", "info"] as const;
 
   const series = severities.map((sev) => ({
-    name: sev,
+    name: SEVERITY_META[sev].label,
     type: "bar" as const,
     stack: "total",
     data: checkNames.map((name) => {
       const item = byCheck.find((c) => c.check_name === name && c.severity === sev);
       return item?.count ?? 0;
     }),
-    itemStyle: { color: SEVERITY_COLORS[sev] },
+    itemStyle: { color: SEVERITY_META[sev].color },
   }));
 
   const option = {
     tooltip: { trigger: "axis" as const, axisPointer: { type: "shadow" as const } },
     legend: {
       bottom: 0,
-      data: severities.map((s) => ({ name: s, itemStyle: { color: SEVERITY_COLORS[s] } })),
+      data: severities.map((s) => ({ name: SEVERITY_META[s].label, itemStyle: { color: SEVERITY_META[s].color } })),
     },
     grid: { left: 180, right: 30, top: 10, bottom: 50 },
     xAxis: { type: "value" as const, name: "数量" },
