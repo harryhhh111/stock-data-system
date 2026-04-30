@@ -54,6 +54,9 @@ export function mergeStats(
   let totalOpen = 0;
   let anomaliesToday = 0;
 
+  const inProgress: Record<string, number> = {};
+  const partial: Record<string, number> = {};
+
   for (const s of [cn, us]) {
     if (!s) continue;
     for (const [m, c] of Object.entries(s.total_stocks)) {
@@ -62,6 +65,8 @@ export function mergeStats(
     for (const [m, v] of Object.entries(s.sync_status)) {
       status[m] = (status[m] ?? 0) + v.success;
       failed[m] = (failed[m] ?? 0) + v.failed;
+      inProgress[m] = (inProgress[m] ?? 0) + (v.in_progress ?? 0);
+      partial[m] = (partial[m] ?? 0) + (v.partial ?? 0);
     }
     for (const [m, v] of Object.entries(s.sync_trend)) {
       trend[m] = (trend[m] ?? []).concat(v);
@@ -83,8 +88,8 @@ export function mergeStats(
     syncStatus[m] = {
       success: status[m] ?? 0,
       failed: failed[m] ?? 0,
-      in_progress: 0,
-      partial: 0,
+      in_progress: inProgress[m] ?? 0,
+      partial: partial[m] ?? 0,
     };
   }
 

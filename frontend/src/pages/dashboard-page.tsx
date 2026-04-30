@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 
 export function DashboardPage() {
-  const { cn, us, isLoading } = useDashboardStats();
+  const { cn, us, isLoading, errors } = useDashboardStats();
   const stats = mergeStats(cn, us);
 
   if (isLoading && !stats) {
@@ -31,6 +31,11 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {errors.length > 0 && (
+        <div className="border border-red-300 bg-red-50 text-red-700 rounded-lg px-4 py-3 text-sm">
+          部分市场数据加载失败: {errors.map((e: any) => e?.message ?? String(e)).join("; ")}
+        </div>
+      )}
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard

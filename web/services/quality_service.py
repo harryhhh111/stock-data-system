@@ -10,7 +10,7 @@ def get_summary(days: int = 7) -> dict:
         cur.execute(
             """
             SELECT severity, COUNT(*) FROM validation_results
-            WHERE created_at >= now() - interval '%s days'
+            WHERE created_at >= now() - interval '1 day' * %s
             GROUP BY severity
             """,
             (days,),
@@ -21,7 +21,7 @@ def get_summary(days: int = 7) -> dict:
             """
             SELECT check_name, severity, COUNT(*)
             FROM validation_results
-            WHERE created_at >= now() - interval '%s days'
+            WHERE created_at >= now() - interval '1 day' * %s
             GROUP BY check_name, severity
             ORDER BY COUNT(*) DESC
             """,

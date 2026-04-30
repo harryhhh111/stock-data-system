@@ -33,15 +33,17 @@ def get_status(market: str | None) -> dict:
             markets[m][st] = cnt
             markets[m]["total_stocks"] += cnt
 
-        # 补充 last_sync_time
+        # 补充 last_sync_time 和 last_report_date
         for m in markets:
             cur.execute(
-                "SELECT MAX(last_sync_time) FROM sync_progress WHERE market=%s",
+                "SELECT MAX(last_sync_time), MAX(last_report_date) FROM sync_progress WHERE market=%s",
                 (m,),
             )
-            lst = cur.fetchone()[0]
-            if lst:
-                markets[m]["last_sync_time"] = lst.isoformat()
+            row = cur.fetchone()
+            if row[0]:
+                markets[m]["last_sync_time"] = row[0].isoformat()
+            if row[1]:
+                markets[m]["last_report_date"] = row[1].isoformat()
 
         cur.close()
 

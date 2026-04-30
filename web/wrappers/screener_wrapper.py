@@ -54,6 +54,12 @@ def run_screener(market: str, preset: str | None, top_n: int) -> dict:
             logging.getLogger(__name__).warning(
                 "美股暂无股息数据，dividend_yield 因子将以 NaN 参与打分"
             )
+    elif market == "all":
+        import pandas as pd
+        cn_df = get_universe("all")
+        cn_df = compute_dividend_yield(cn_df)
+        us_df = get_us_universe()
+        df = pd.concat([cn_df, us_df], ignore_index=True)
     else:
         df = get_universe(market)
         df = compute_dividend_yield(df)
