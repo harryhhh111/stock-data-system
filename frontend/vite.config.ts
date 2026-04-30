@@ -9,6 +9,17 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "echarts-core": ["echarts/core", "echarts/renderers"],
+          "echarts-charts": ["echarts/charts", "echarts/components"],
+          vendor: ["react", "react-dom", "react-router-dom", "@tanstack/react-query", "@tanstack/react-table"],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       "/api/cn": {
