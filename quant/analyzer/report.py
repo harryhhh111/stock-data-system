@@ -15,7 +15,7 @@ def _v(val, default="-"):
 
 
 def _fmt_amount(val) -> str:
-    """金额格式化为亿。"""
+    """金额格式化为亿（人民币）。"""
     v = _v(val)
     if v == "-":
         return v
@@ -23,6 +23,17 @@ def _fmt_amount(val) -> str:
     if abs(yi) >= 10000:
         return f"{yi/10000:.2f}万亿"
     return f"{yi:,.1f}亿"
+
+
+def _fmt_amount_us(val) -> str:
+    """金额格式化为 B/M（美元）。"""
+    v = _v(val)
+    if v == "-":
+        return v
+    n = float(v)
+    if abs(n) >= 1e9:
+        return f"{n/1e9:,.1f}B"
+    return f"{n/1e6:,.0f}M"
 
 
 def _fmt_pct(val, decimals=1) -> str:
@@ -64,7 +75,12 @@ def _fmt_pe(val) -> str:
 
 def format_report(stock: dict, sections: dict, overall: dict, fmt: str = "text") -> str:
     """主入口：根据 fmt 分发到对应格式化函数。"""
+    is_us = stock.get("market") == "US"
+    stock["_currency"] = "$" if is_us else "￥"
+    stock["_fmt_amt"] = _fmt_amount_us if is_us else _fmt_amount
     if fmt == "json":
+        stock.pop("_currency", None)
+        stock.pop("_fmt_amt", None)
         return _format_json(stock, sections, overall)
     elif fmt == "md" or fmt == "markdown":
         return _format_markdown(stock, sections, overall)
@@ -80,10 +96,12 @@ def _format_text(stock: dict, sections: dict, overall: dict) -> str:
     industry = _v(stock.get("industry"), "未知行业")
     close = _v(stock.get("close"))
     mcap = _v(stock.get("market_cap"))
+    cur = stock.get("_currency", "￥")
+    fmt_amt = stock.get("_fmt_amt", _fmt_amount)
 
     # 标题行
-    price_str = f"￥{float(close):.2f}" if close != "-" else "-"
-    mcap_str = _fmt_amount(mcap) if mcap != "-" else "-"
+    price_str = f"{cur}{float(close):.2f}" if close != "-" else "-"
+    mcap_str = fmt_amt(mcap) if mcap != "-" else "-"
     list_date = _v(stock.get("list_date"))
     list_str = str(list_date)[:10] if list_date != "-" else ""
 
@@ -104,9 +122,9 @@ def _format_text(stock: dict, sections: dict, overall: dict) -> str:
         for d in prof["details"]:
             lines.append(
                 f"  {d['year']:<6} "
-                f"{_fmt_amount(d.get('revenue')):>8} "
+                f"{fmt_amt(d.get('revenue')):>8} "
                 f"{_fmt_yoy(d.get('revenue_yoy')):>6} "
-                f"{_fmt_amount(d.get('net_profit')):>8} "
+                f"{fmt_amt(d.get('net_profit')):>8} "
                 f"{_fmt_yoy(d.get('net_profit_yoy')):>6} "
                 f"{_fmt_pct(d.get('gross_margin')):>7} "
                 f"{_fmt_pct(d.get('net_margin')):>7} "
@@ -137,16 +155,16 @@ def _format_text(stock: dict, sections: dict, overall: dict) -> str:
     cd = cf.get("details", {})
     if cd:
         lines.append(f"  数据源：{cd.get('source', '-')}")
-        lines.append(f"  经营现金流(CFO)：{_fmt_amount(cd.get('cfo'))}")
-        lines.append(f"  资本开支(CAPEX)：{_fmt_amount(cd.get('capex'))}")
-        lines.append(f"  自由现金流(FCF)：{_fmt_amount(cd.get('fcf'))}")
+        lines.append(f"  经营现金流(CFO)：{fmt_amt(cd.get('cfo'))}")
+        lines.append(f"  资本开支(CAPEX)：{fmt_amt(cd.get('capex'))}")
+        lines.append(f"  自由现金流(FCF)：{fmt_amt(cd.get('fcf'))}")
         lines.append(f"  CFO/净利润：{_fmt_ratio(cd.get('cfo_quality'))}")
         lines.append(f"  CAPEX/营收：{_fmt_pct(cd.get('capex_intensity'))}")
         fcf_years = cd.get("fcf_years", [])
         if fcf_years:
             lines.append(f"  近{len(fcf_years)}年 FCF：")
             for fy in fcf_years:
-                lines.append(f"    {fy['year']}: {_fmt_amount(fy.get('fcf'))}")
+                lines.append(f"    {fy['year']}: {fmt_amt(fy.get('fcf'))}")
     lines.append(f"  {cf.get('verdict', '-')}")
 
     # 四、估值水平
@@ -212,9 +230,11 @@ def _format_markdown(stock: dict, sections: dict, overall: dict) -> str:
     industry = _v(stock.get("industry"), "未知行业")
     close = _v(stock.get("close"))
     mcap = _v(stock.get("market_cap"))
+    cur = stock.get("_currency", "￥")
+    fmt_amt = stock.get("_fmt_amt", _fmt_amount)
 
-    price_str = f"￥{float(close):.2f}" if close != "-" else "-"
-    mcap_str = _fmt_amount(mcap) if mcap != "-" else "-"
+    price_str = f"{cur}{float(close):.2f}" if close != "-" else "-"
+    mcap_str = fmt_amt(mcap) if mcap != "-" else "-"
 
     lines = []
     lines.append(f"# 个股分析报告：{code} {name}")
@@ -232,9 +252,9 @@ def _format_markdown(stock: dict, sections: dict, overall: dict) -> str:
         for d in prof["details"]:
             lines.append(
                 f"| {d['year']} "
-                f"| {_fmt_amount(d.get('revenue'))} "
+                f"| {fmt_amt(d.get('revenue'))} "
                 f"| {_fmt_yoy(d.get('revenue_yoy'))} "
-                f"| {_fmt_amount(d.get('net_profit'))} "
+                f"| {fmt_amt(d.get('net_profit'))} "
                 f"| {_fmt_yoy(d.get('net_profit_yoy'))} "
                 f"| {_fmt_pct(d.get('gross_margin'))} "
                 f"| {_fmt_pct(d.get('net_margin'))} "
@@ -264,9 +284,9 @@ def _format_markdown(stock: dict, sections: dict, overall: dict) -> str:
     cd = cf.get("details", {})
     if cd:
         lines.append(f"- 数据源：{cd.get('source', '-')}")
-        lines.append(f"- CFO：{_fmt_amount(cd.get('cfo'))}")
-        lines.append(f"- CAPEX：{_fmt_amount(cd.get('capex'))}")
-        lines.append(f"- FCF：{_fmt_amount(cd.get('fcf'))}")
+        lines.append(f"- CFO：{fmt_amt(cd.get('cfo'))}")
+        lines.append(f"- CAPEX：{fmt_amt(cd.get('capex'))}")
+        lines.append(f"- FCF：{fmt_amt(cd.get('fcf'))}")
         lines.append(f"- CFO/净利润：{_fmt_ratio(cd.get('cfo_quality'))}")
         lines.append(f"- CAPEX/营收：{_fmt_pct(cd.get('capex_intensity'))}")
     lines.append(f"\n{cf.get('verdict', '-')}\n")

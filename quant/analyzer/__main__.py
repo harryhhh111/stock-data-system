@@ -31,7 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("stock_code", help="股票代码，如 600519、00700")
     p.add_argument(
         "--market",
-        choices=["CN_A", "CN_HK"],
+        choices=["CN_A", "CN_HK", "US"],
         default=None,
         help="市场（默认自动识别）",
     )
@@ -74,8 +74,8 @@ def main() -> None:
         print(f"错误：未找到股票 {args.stock_code}（市场 {market}）")
         sys.exit(1)
 
-    df_hist = get_financial_history(args.stock_code, args.years)
-    df_ttm = get_ttm_data(args.stock_code)
+    df_hist = get_financial_history(args.stock_code, args.years, market)
+    df_ttm = get_ttm_data(args.stock_code, market)
 
     industry = stock_df.iloc[0].get("industry")
     if industry is not None and not (isinstance(industry, float) and pd.isna(industry)):

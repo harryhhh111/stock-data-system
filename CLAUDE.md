@@ -52,6 +52,8 @@ python -m quant.screener --list-presets
 # Analyzer (quant layer)
 python -m quant.analyzer 600519                      # auto-detect market
 python -m quant.analyzer 00700 --market CN_HK        # HK stock
+python -m quant.analyzer AAPL --market US            # US stock
+python -m quant.analyzer AAPL --market US --format md  # Markdown
 python -m quant.analyzer 600519 --format json        # JSON output
 python -m quant.analyzer 600519 --format md          # Markdown output
 

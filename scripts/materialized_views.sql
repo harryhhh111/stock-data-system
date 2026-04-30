@@ -334,6 +334,23 @@ SELECT
         cf.net_cash_from_operations - cf.capital_expenditures
     END AS fcf,
 
+    -- 流动比率 / 速动比率
+    CASE WHEN b.total_current_liabilities IS NOT NULL AND b.total_current_liabilities != 0 THEN
+        b.total_current_assets / b.total_current_liabilities
+    END AS current_ratio,
+    CASE WHEN b.total_current_liabilities IS NOT NULL AND b.total_current_liabilities != 0 THEN
+        (b.total_current_assets - COALESCE(b.inventory_net, 0)) / b.total_current_liabilities
+    END AS quick_ratio,
+
+    -- 资产负债表
+    b.total_assets,
+    b.total_liabilities AS total_liab,
+    b.total_equity,
+
+    -- 现金流
+    cf.net_cash_from_operations AS cfo,
+    cf.capital_expenditures AS capex,
+
     i.filed_date,
     i.updated_at
 FROM us_income_statement i
