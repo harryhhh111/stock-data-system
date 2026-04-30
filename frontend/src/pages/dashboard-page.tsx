@@ -1,6 +1,9 @@
 import { Activity, BarChart3, Database, AlertTriangle } from "lucide-react";
 import { useDashboardStats, mergeStats } from "@/lib/hooks/use-dashboard";
 import { StatCard } from "@/components/dashboard/stat-card";
+import { lazy, Suspense } from "react";
+const SyncPieChart = lazy(() => import("@/components/dashboard/sync-pie-chart").then((m) => ({ default: m.SyncPieChart })));
+const SyncTrendChart = lazy(() => import("@/components/dashboard/sync-trend-chart").then((m) => ({ default: m.SyncTrendChart })));
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 
@@ -64,7 +67,23 @@ export function DashboardPage() {
         />
       </div>
 
-      {/* 市场明细 */}
+      {/* 市场明细 + 图表 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="border rounded-lg p-4">
+          <h3 className="font-medium mb-3">同步状态分布</h3>
+          <Suspense fallback={<Skeleton className="h-[300px]" />}>
+            <SyncPieChart syncStatus={stats.sync_status} />
+          </Suspense>
+        </div>
+        <div className="border rounded-lg p-4">
+          <h3 className="font-medium mb-3">7 天同步趋势</h3>
+          <Suspense fallback={<Skeleton className="h-[300px]" />}>
+            <SyncTrendChart syncTrend={stats.sync_trend} />
+          </Suspense>
+        </div>
+      </div>
+
+      {/* 市场卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {Object.entries(stats.total_stocks).map(([market, count]) => {
           const ss = stats.sync_status[market as keyof typeof stats.sync_status];

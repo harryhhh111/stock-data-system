@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, lazy, Suspense } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { analyzerApi } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { Search } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
 import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
+const FinancialChart = lazy(() => import("@/components/analyzer/financial-chart").then((m) => ({ default: m.FinancialChart })));
 
 function Star({ rating }: { rating: number | null }) {
   if (rating == null) return <span className="text-muted-foreground">-</span>;
@@ -244,6 +245,19 @@ export function AnalyzerPage() {
               <p className="text-yellow-600 text-sm mt-2">{report.sections.cashflow.details.stale_warning}</p>
             )}
           </SectionCard>
+
+          {/* 财务趋势图 */}
+          {report.sections.profitability.details.length > 0 && (
+            <div className="border rounded-lg p-4">
+              <h3 className="font-medium mb-3">财务趋势</h3>
+              <Suspense fallback={<Skeleton className="h-[420px]" />}>
+                <FinancialChart
+                  profitability={report.sections.profitability.details}
+                  cashflow={report.sections.cashflow.details.fcf_years}
+                />
+              </Suspense>
+            </div>
+          )}
 
           {/* 估值 */}
           <SectionCard title="估值" section={report.sections.valuation}>

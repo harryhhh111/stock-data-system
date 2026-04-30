@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { qualityApi } from "@/lib/api/client";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, ShieldCheck, Info } from "lucide-react";
+const SeverityBarChart = lazy(() => import("@/components/quality/severity-bar-chart").then((m) => ({ default: m.SeverityBarChart })));
 import type { Market, Severity } from "@/lib/types/common";
 
 const SEVERITY_VARIANT: Record<Severity, "destructive" | "secondary" | "default"> = {
@@ -69,14 +70,9 @@ export function QualityPage() {
       {summary && summary.by_check.length > 0 && (
         <div className="border rounded-lg p-4">
           <h3 className="font-medium mb-3">检查项分布</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {summary.by_check.slice(0, 12).map((c) => (
-              <div key={`${c.check_name}-${c.severity}`} className="flex items-center justify-between text-sm p-2 rounded bg-muted">
-                <span className="truncate mr-2" title={c.check_name}>{c.label}</span>
-                <Badge variant={SEVERITY_VARIANT[c.severity]} className="shrink-0">{c.count}</Badge>
-              </div>
-            ))}
-          </div>
+          <Suspense fallback={<Skeleton className="h-[300px]" />}>
+            <SeverityBarChart byCheck={summary.by_check} />
+          </Suspense>
         </div>
       )}
 
