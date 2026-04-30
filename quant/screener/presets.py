@@ -48,12 +48,12 @@ PRESETS: dict[str, PresetConfig] = {
             "gross_margin_min": 0.2,
         },
         # 打分因子与硬过滤不重叠：pe_ttm/debt_ratio/gross_margin 已被过滤，
-        # 改用 roe(盈利能力) + pb(估值) + cfo_quality(现金流) 提供增量信息
+        # roe(盈利能力) + pb(估值) + cfo_quality(现金流) + revenue_yoy(成长) 提供增量信息
         "weights": {
             "fcf_yield":     {"weight": 0.30, "ascending": False},
             "roe":           {"weight": 0.20, "ascending": False},
             "cfo_quality":   {"weight": 0.20, "ascending": False},
-            "net_margin":    {"weight": 0.15, "ascending": False},
+            "revenue_yoy":   {"weight": 0.15, "ascending": False},
             "pb":            {"weight": 0.15, "ascending": True},
         },
         "top_n": 30,

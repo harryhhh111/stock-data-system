@@ -10,6 +10,7 @@
 """
 
 import argparse
+import sys
 
 from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield
 from quant.screener.filters import apply_hard_filters
@@ -149,6 +150,8 @@ def main():
     print(f"正在查询 {args.market} 市场数据...")
     if args.market == "US":
         df = get_us_universe()
+        if "dividend_yield" in weights:
+            print("警告：美股暂无股息数据，dividend_yield 因子将以 NaN 参与打分")
     else:
         df = get_universe(args.market)
         df = compute_dividend_yield(df)
