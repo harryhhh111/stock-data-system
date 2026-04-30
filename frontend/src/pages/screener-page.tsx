@@ -1,15 +1,13 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { screenerApi } from "@/lib/api/client";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { ResultTable } from "@/components/screener/result-table";
 import { useScreenerStore } from "@/lib/store/screener-store";
 import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
-import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 export function ScreenerPage() {
   const { market, setMarket, preset, setPreset, topN, setTopN } = useScreenerStore();
@@ -91,7 +89,7 @@ export function ScreenerPage() {
 
       {/* 错误 */}
       {mutation.isError && (
-        <div className="border border-red-300 bg-red-50 text-red-700 rounded-lg px-4 py-3 text-sm">
+        <div className="border border-destructive/50 bg-destructive/10 text-destructive rounded-lg px-4 py-3 text-sm">
           {(mutation.error as Error).message}
         </div>
       )}
@@ -110,51 +108,7 @@ export function ScreenerPage() {
       {mutation.isPending ? (
         <Skeleton className="h-96" />
       ) : result && result.results.length > 0 ? (
-        <div className="border rounded-lg overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">#</TableHead>
-                <TableHead>股票</TableHead>
-                <TableHead>市场</TableHead>
-                <TableHead>行业</TableHead>
-                <TableHead className="text-right">市值</TableHead>
-                <TableHead className="text-right">PE</TableHead>
-                <TableHead className="text-right">PB</TableHead>
-                <TableHead className="text-right">FCF Yield</TableHead>
-                <TableHead className="text-right">ROE</TableHead>
-                <TableHead className="text-right">毛利率</TableHead>
-                <TableHead className="text-right">净利率</TableHead>
-                <TableHead className="text-right">得分</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {result.results.map((stock) => (
-                <TableRow key={`${stock.stock_code}-${stock.market}`}>
-                  <TableCell className="text-muted-foreground">{stock.score_rank}</TableCell>
-                  <TableCell className="font-medium whitespace-nowrap">
-                    {stock.stock_name}
-                    <span className="text-muted-foreground ml-1 text-xs">{stock.stock_code}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{stock.market}</Badge>
-                  </TableCell>
-                  <TableCell className="max-w-[150px] truncate text-xs" title={stock.industry}>
-                    {stock.industry || "-"}
-                  </TableCell>
-                  <TableCell className="text-right whitespace-nowrap">{fmtMcap(stock.market_cap)}</TableCell>
-                  <TableCell className="text-right">{stock.pe_ttm?.toFixed(1) ?? "-"}</TableCell>
-                  <TableCell className="text-right">{stock.pb?.toFixed(2) ?? "-"}</TableCell>
-                  <TableCell className="text-right">{fmtPct(stock.fcf_yield)}</TableCell>
-                  <TableCell className="text-right">{fmtPct(stock.roe)}</TableCell>
-                  <TableCell className="text-right">{fmtPct(stock.gross_margin)}</TableCell>
-                  <TableCell className="text-right">{fmtPct(stock.net_margin)}</TableCell>
-                  <TableCell className="text-right font-semibold">{stock.score.toFixed(2)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <ResultTable results={result.results} />
       ) : result ? (
         <div className="text-center text-muted-foreground py-12">筛选结果为空，请调整筛选条件</div>
       ) : null}

@@ -1,14 +1,13 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useCallback, lazy, Suspense } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { analyzerApi } from "@/lib/api/client";
+import { StockSearch } from "@/components/analyzer/stock-search";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, Clock, X } from "lucide-react";
 import { useAnalyzerStore } from "@/lib/store/analyzer-store";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
@@ -22,22 +21,8 @@ function Star({ rating }: { rating: number | null }) {
 }
 
 export function AnalyzerPage() {
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [market, setMarket] = useState<Market | "all">("all");
-  const { history, addHistory, clearHistory } = useAnalyzerStore();
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(query), 300);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  const searchQuery = useQuery({
-    queryKey: ["analyzer", "search", debouncedQuery, market],
-    queryFn: () => analyzerApi.search(debouncedQuery, market === "all" ? undefined : market),
-    enabled: debouncedQuery.length >= 2,
-    staleTime: 60_000,
-  });
+  const { addHistory } = useAnalyzerStore();
 
   const analyzeMutation = useMutation({
     mutationFn: ({ code, mkt }: { code: string; mkt?: Market }) =>
@@ -45,7 +30,6 @@ export function AnalyzerPage() {
   });
 
   const handleSelect = useCallback((stock: StockSearchResult) => {
-    setQuery(stock.stock_name);
     addHistory(stock);
     analyzeMutation.mutate({ code: stock.stock_code, mkt: stock.market });
   }, [analyzeMutation, addHistory]);
@@ -58,15 +42,7 @@ export function AnalyzerPage() {
 
       {/* 搜索栏 */}
       <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            placeholder="输入股票代码或名称..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
+        <StockSearch market={market} onSelect={handleSelect} />
         <Select value={market} onValueChange={(v) => setMarket(v as Market | "all")}>
           <SelectTrigger className="w-28">
             <SelectValue />
@@ -80,61 +56,12 @@ export function AnalyzerPage() {
         </Select>
       </div>
 
-      {/* 搜索历史 */}
-      {!query && !report && history.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" /> 最近搜索
-            </span>
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearHistory}>
-              <X className="h-3 w-3 mr-1" /> 清空
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {history.map((stock) => (
-              <button
-                key={`${stock.stock_code}-${stock.market}`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border bg-card hover:bg-accent text-sm transition-colors"
-                onClick={() => handleSelect(stock)}
-              >
-                <span className="font-medium">{stock.stock_name}</span>
-                <span className="text-muted-foreground text-xs">{stock.stock_code}</span>
-                <Badge variant="outline" className="text-xs ml-0.5">{stock.market}</Badge>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 搜索结果下拉 */}
-      {searchQuery.data && searchQuery.data.length > 0 && !report && (
-        <div className="border rounded-lg bg-card shadow-md max-h-60 overflow-y-auto">
-          {searchQuery.data.slice(0, 20).map((stock) => (
-            <button
-              key={`${stock.stock_code}-${stock.market}`}
-              className="w-full text-left px-4 py-2 hover:bg-accent flex items-center justify-between border-b last:border-b-0"
-              onClick={() => handleSelect(stock)}
-            >
-              <span>
-                <span className="font-medium">{stock.stock_name}</span>
-                <span className="text-muted-foreground ml-2 text-sm">{stock.stock_code}</span>
-              </span>
-              <div className="flex items-center gap-2">
-                {stock.industry && <span className="text-xs text-muted-foreground">{stock.industry}</span>}
-                <Badge variant="outline">{stock.market}</Badge>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* 加载中 */}
       {analyzeMutation.isPending && <Skeleton className="h-96" />}
 
       {/* 错误 */}
       {analyzeMutation.isError && (
-        <div className="border border-red-300 bg-red-50 text-red-700 rounded-lg px-4 py-3 text-sm">
+        <div className="border border-destructive/50 bg-destructive/10 text-destructive rounded-lg px-4 py-3 text-sm">
           {(analyzeMutation.error as Error).message}
         </div>
       )}
@@ -311,11 +238,7 @@ export function AnalyzerPage() {
           {/* 重新搜索按钮 */}
           <Button
             variant="outline"
-            onClick={() => {
-              setQuery("");
-              setDebouncedQuery("");
-              analyzeMutation.reset();
-            }}
+            onClick={() => analyzeMutation.reset()}
           >
             重新搜索
           </Button>
