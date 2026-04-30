@@ -1,37 +1,44 @@
-# Web 前端仪表板 — 实现方案 v4（修订版）
+# Web 前端仪表板 — 实现方案 v5
 
-> v3 → v4 修订：安全、类型定义、部署、搜索实现细节，见文末 [Changelog](#changelog)
+> v4 → v5：纯只读 API + 双服务器直连架构，见 [Changelog](#changelog)
 
-## 架构安全
+## 顶层架构
 
-### API 认证
-
-前端部署在 Cloudflare Pages（公网），API 部署在国内服务器。写操作需要 API Key 认证：
-
-```python
-# web/app.py — 中间件
-from fastapi import Header, HTTPException
-import os
-
-API_KEY = os.environ.get("STOCK_WEB_API_KEY")
-if not API_KEY:
-    raise RuntimeError("STOCK_WEB_API_KEY 必须设置")
-
-def verify_api_key(x_api_key: str | None = Header(None)):
-    if x_api_key != API_KEY:
-        raise HTTPException(401, "API Key 无效")
-
-# 只对写操作要求认证，读操作不需要
-# POST /api/v1/sync/trigger → dependencies=[Depends(verify_api_key)]
-# GET /api/v1/dashboard/stats → 无需认证
+```
+                         Cloudflare Pages (一份前端代码)
+                        ┌─────────────────────────────────┐
+                        │  VITE_CN_API_URL ──────────────┼───► 国内服务器 (CN_A, CN_HK)
+                        │  VITE_US_API_URL ──────────────┼───► 海外服务器 (US)
+                        │                                 │
+                        │  仪表板                          │
+                        │  ├─ CN_A 同步状态  (来自国内 API) │
+                        │  └─ US 同步状态    (来自海外 API) │
+                        │                                 │
+                        │  选股筛选                        │
+                        │  ├─ 选 CN_A/CN_HK → 国内 API    │
+                        │  └─ 选 US        → 海外 API    │
+                        │                                 │
+                        │  个股分析                        │
+                        │  ├─ 600519 → 国内 API (CN_A)    │
+                        │  └─ AAPL   → 海外 API (US)      │
+                        └─────────────────────────────────┘
 ```
 
-**理由**：前端部署在 Cloudflare Pages（公网可访问），需要防止未授权的同步触发。读操作（仪表板、筛选、分析）不涉及数据修改，无需认证。前端通过 `VITE_API_KEY` 环境变量注入，构建时写入 `client.ts` 的默认请求头。
+**关键决策**：
 
-### 连接安全
+- **前端纯只读**：不提供 Web 端触发同步功能。同步由 APScheduler 自动管理，Web 端只做监控 + 筛选 + 分析。无需 API Key 认证体系。
+- **双 API URL**：前端通过两个环境变量直连两台服务器，按 market 自动路由。仪表板同时展示两边数据，各展示各的，不做合并。
+- **CORS 白名单**：只允许 Cloudflare Pages 域名 + `localhost:5173`
 
-- API 服务器开启 HTTPS（Let's Encrypt + Nginx），前端通过 HTTPS 通信
-- CORS 白名单：只允许 Cloudflare Pages 域名 + `localhost:5173`（开发）
+```typescript
+const CN_API_BASE = import.meta.env.VITE_CN_API_URL;  // https://api.cn.stock.example.com
+const US_API_BASE = import.meta.env.VITE_US_API_URL;  // https://api.us.stock.example.com
+
+function getBaseUrl(market?: Market): string {
+  if (market === "US") return US_API_BASE;
+  return CN_API_BASE;  // CN_A, CN_HK, "all", undefined
+}
+```
 
 ### 数据新鲜度阈值
 
@@ -84,8 +91,7 @@ stock_data/
 │   │   ├── __init__.py
 │   │   ├── dashboard_service.py
 │   │   ├── sync_service.py
-│   │   ├── quality_service.py
-│   │   └── background.py
+│   │   └── quality_service.py
 │   └── wrappers/
 │       ├── __init__.py
 │       ├── screener_wrapper.py
@@ -165,7 +171,6 @@ stock_data/
 │   │   │   │
 │   │   │   ├── sync/
 │   │   │   │   ├── sync-status-cards.tsx # 各市场同步状态卡片组
-│   │   │   │   ├── trigger-sync-dialog.tsx # 触发同步对话框
 │   │   │   │   ├── sync-progress-table.tsx # 同步进度表（可折叠）
 │   │   │   │   └── sync-log-table.tsx    # 同步日志表
 │   │   │   │
@@ -312,17 +317,6 @@ interface SyncProgressEntry {
   error_detail: string | null;
 }
 
-type BackgroundTaskStatus = "running" | "done" | "error";
-
-interface BackgroundTask {
-  task_id: string;
-  market: Market;
-  job_type: string;
-  status: BackgroundTaskStatus;
-  started_at: string;
-  result?: Record<string, unknown>;
-  error?: string;
-}
 ```
 
 ### Quality 类型 (`lib/types/quality.ts`)
@@ -544,6 +538,46 @@ interface OverallAssessment {
   verdict: string;
   risks: string[];                  // 风险提示列表
 }
+```
+
+---
+
+## API 设计
+
+所有端点前缀 `/api/v1/`，统一响应格式 `{"ok": true, "data": ...}` | `{"ok": false, "error": "..."}`。
+前端纯只读，不提供写操作端点。
+
+| 方法 | 路径 | 参数 | 返回 | 说明 |
+|------|------|------|------|------|
+| GET | `/api/v1/health` | — | `{db: bool}` | DB 连接检查 |
+| GET | `/api/v1/dashboard/stats` | — | `DashboardStats` | 仪表板聚合数据 |
+| GET | `/api/v1/sync/status` | `?market=` | `SyncStatusByMarket[]` | 同步进度摘要 |
+| GET | `/api/v1/sync/log` | `?market=&limit=&offset=` | `Paginated<SyncLog>` | 同步日志 |
+| GET | `/api/v1/quality/summary` | `?days=7` | `QualitySummary` | 质量问题汇总 |
+| GET | `/api/v1/quality/issues` | `?severity=&market=&check=&limit=&offset=` | `Paginated<QualityIssue>` | 问题列表 |
+| GET | `/api/v1/screener/presets` | — | `Preset[]` | 预设策略列表 |
+| POST | `/api/v1/screener/run` | body: `ScreenerParams` | `ScreenerResult` | 运行筛选 |
+| GET | `/api/v1/analyzer/search` | `?q=&market=` | `StockSearchResult[]` | 股票搜索 |
+| GET | `/api/v1/analyzer/analyze` | `?stock_code=&market=` | `AnalysisReport` | 个股分析 |
+
+### 双服务器路由
+
+```typescript
+const CN_API = import.meta.env.VITE_CN_API_URL;  // https://api.cn.stock.example.com
+const US_API = import.meta.env.VITE_US_API_URL;  // https://api.us.stock.example.com
+
+function getBaseUrl(market?: Market): string {
+  if (market === "US") return US_API;
+  return CN_API;  // CN_A, CN_HK, "all", undefined → 国内
+}
+```
+
+| 请求 market | API 服务器 |
+|-------------|-----------|
+| `CN_A`, `CN_HK`, `"all"`, `undefined` | `VITE_CN_API_URL` |
+| `US` | `VITE_US_API_URL` |
+
+**仪表板**向两台服务器各发一次 `GET /api/v1/dashboard/stats`，结果各自独立展示，不合并。**搜索**需要 `market` 参数指定查哪个服务器。
 
 ---
 
@@ -553,7 +587,13 @@ interface OverallAssessment {
 
 ```typescript
 // lib/api/client.ts
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const CN_API = import.meta.env.VITE_CN_API_URL || "http://localhost:8001";
+const US_API = import.meta.env.VITE_US_API_URL || "http://localhost:8002";
+
+function getBaseUrl(market?: Market): string {
+  if (market === "US") return US_API;
+  return CN_API;
+}
 
 class ApiError extends Error {
   constructor(public status: number, public code: string, public detail?: string) {
@@ -561,10 +601,12 @@ class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/v1${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+async function apiFetch<T>(path: string, init?: RequestInit & { market?: Market }): Promise<T> {
+  const base = getBaseUrl(init?.market);
+  const { market, ...fetchInit } = init ?? {};
+  const res = await fetch(`${base}/api/v1${path}`, {
+    ...fetchInit,
+    headers: { "Content-Type": "application/json", ...fetchInit?.headers },
   });
   const json = await res.json();
   if (!json.ok) throw new ApiError(res.status, json.error, json.detail);
@@ -584,7 +626,6 @@ const queryKeys = {
     status: (market?: string) => ["sync", "status", market] as const,
     log: (params: { market?: string; limit: number; offset: number }) =>
       ["sync", "log", params] as const,
-    task: (taskId: string) => ["sync", "task", taskId] as const,
   },
   quality: {
     summary: (days: number) => ["quality", "summary", days] as const,
@@ -610,7 +651,6 @@ const queryKeys = {
 | 仪表板 chart data | 同上 | 60s | — | 随 stats 一起 |
 | 同步状态卡片 | `useSyncStatus()` | 15s | 15s | 同步进度实时 |
 | 同步日志 | `useSyncLog()` | 60s | — | 手动翻页 |
-| 后台任务状态 | `useTaskStatus(id)` | 2s | 2s | 轮询至完成 |
 | 质量问题摘要 | `useQualitySummary()` | 5min | — | 低频变化 |
 | 质量问题列表 | `useQualityIssues()` | 2min | — | 手动翻页 |
 | 预设列表 | `usePresets()` | Infinity | — | 不变 |
@@ -798,58 +838,52 @@ shadcn/ui 内置 dark mode 支持（Tailwind `dark:` class + CSS variables）。
 ### Phase 1: API 骨架 + Dashboard（验证链路）
 1. `requirements.txt` — 添加 `fastapi`, `uvicorn[standard]`, `cachetools`
 2. `config.py` — 添加 `WebConfig`
-3. `web/app.py` — FastAPI 应用工厂 + CORS + API Key 中间件 + 错误处理
+3. `web/app.py` — FastAPI + CORS + 错误处理（无需 API Key）
 4. `web/routes/health.py` — `GET /api/v1/health`
-5. `web/services/dashboard_service.py` — 仪表板聚合 SQL（总共 6-8 条轻量查询）
+5. `web/services/dashboard_service.py` — 仪表板聚合 SQL
 6. `web/routes/dashboard.py` — `GET /api/v1/dashboard/stats`
-7. `web/__main__.py` — uvicorn 启动入口
+7. `web/__main__.py` — uvicorn 启动
 
-**验证**：`python -m web` → `curl localhost:8000/api/v1/health` 返回 `{"ok":true,"data":{"db":true}}`
+**验证**：`python -m web` → `curl localhost:8000/api/v1/health`
 
 ### Phase 2: 前端骨架 + Dashboard（验证链路）
 8. `npm create vite@latest frontend -- --template react-ts`
-9. Tailwind + shadcn/ui 初始化
-10. 安装依赖: `@tanstack/react-query`, `@tanstack/react-table`, `react-router-dom`, `zustand`, `echarts`, `react-hook-form`, `lucide-react`, `date-fns`, `clsx`, `tailwind-merge`
-11. `vite.config.ts` — API proxy (`/api/v1` → `localhost:8000`)
-12. `lib/api/client.ts` — fetch 封装（baseURL + API Key 头 + 错误处理）
-13. `lib/types/common.ts` + `lib/types/dashboard.ts`
-14. `components/layout/` — AppLayout + Sidebar + TopBar
-15. `App.tsx` — Router + QueryClientProvider
-16. `components/dashboard/` — StatCard + 饼图 + 折线图
-17. `lib/hooks/use-dashboard.ts` — TanStack Query hook (30s refetchInterval)
-18. `pages/dashboard-page.tsx`
+9. Tailwind + shadcn/ui 初始化 + 安装依赖
+10. `lib/api/client.ts` — fetch 封装（双 API URL，按 market 路由）
+11. `lib/types/` — 类型定义
+12. `components/layout/` — AppLayout + Sidebar + TopBar
+13. `App.tsx` — Router + QueryClientProvider
+14. `components/dashboard/` + `pages/dashboard-page.tsx`
+15. `lib/hooks/use-dashboard.ts` — TanStack Query（双服务器请求）
 
-**验证**：前端 `npm run dev` → `localhost:5173` 看到带真实数据的仪表板，API 全链路通
+**验证**：`npm run dev` → 仪表板展示 CN+US 两边数据
 
-### Phase 3: 同步监控 + 数据质量 + 选股筛选 + 个股分析
-19. Sync API routes + services + background task + 前端页面
-20. Quality API routes + services + 前端页面
-21. Screener wrapper + API routes + 前端页面
-22. Analyzer wrapper + API routes + 前端页面
-
-**理由**：Phase 2 验证后，这四个模块可以并行开发（前后端各自独立）
+### Phase 3: 其余页面（可并行）
+16. Sync API + 前端页面（纯只读监控，无触发同步）
+17. Quality API + 前端页面
+18. Screener wrapper + API + 前端页面
+19. Analyzer wrapper + API + 前端页面
 
 ### Phase 4: 部署
-23. API 服务器：Nginx 反代 + HTTPS (Let's Encrypt) + systemd 托管 uvicorn
-24. 前端：Cloudflare Pages (连接 GitHub 仓库，`frontend/` 目录，`npm run build` → `dist/`)
-25. 前端环境变量 `VITE_API_BASE_URL` 指向 `https://api.<your-domain>.com`
-26. Cloudflare Pages 环境变量 `VITE_API_KEY`（构建时注入）
+20. **API 服务器（两台）**：Nginx 反代 + HTTPS (Let's Encrypt) + systemd 托管 uvicorn
+21. **前端**：Cloudflare Pages 连接 GitHub，`frontend/` 目录，`npm run build` → `dist/`
+22. Cloudflare Pages 环境变量：`VITE_CN_API_URL` + `VITE_US_API_URL`
 
 ### 部署架构
 
 ```
 用户浏览器
     │
-    ├── https://stock.example.com (Cloudflare Pages)
-    │   └── 静态文件: frontend/dist/
-    │       构建: VITE_API_BASE_URL=https://api.stock.example.com
-    │             VITE_API_KEY=<key>
-    │
-    └── https://api.stock.example.com (国内服务器)
-        └── Nginx → 127.0.0.1:8000 (uvicorn web/__main__.py)
-            ├── CORS: 只允许 stock.example.com
-            ├── rate limiting (可选, Nginx limit_req_zone)
-            └── systemd: Restart=always, WorkingDirectory=/path/to/stock_data
+    └── https://stock.example.com (Cloudflare Pages, 一份构建产物)
+        │
+        │  VITE_CN_API_URL = https://api.cn.stock.example.com
+        │  VITE_US_API_URL = https://api.us.stock.example.com
+        │
+        ├── CN_A / CN_HK 请求 → 国内服务器
+        │   └── Nginx → 127.0.0.1:8000 (uvicorn)
+        │
+        └── US 请求 → 海外服务器
+            └── Nginx → 127.0.0.1:8000 (uvicorn)
 ```
 
 **Nginx 要点**：
@@ -922,4 +956,5 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v1 | 2026-04-30 | 初始方案：FastAPI + Jinja2 集成式 |
 | v2 | 2026-04-30 | 改为 Monorepo 前后端分离，前端独立部署 Cloudflare Pages |
 | v3 | 2026-04-30 | 确认技术栈 React+shadcn/ui+ECharts，细化类型定义、组件树、数据流 |
-| v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化（匹配 analysis.py 输出）、ScreenerStock 拆分 factor_ranks、图表按 API 数据动态渲染市场、部署方案补充 Nginx+systemd、Phase 优先验证链路（dashboard+health 先行）、前端搜索明确不支持拼音、数据新鲜度阈值定义 |
+| v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化、ScreenerStock 拆分 factor_ranks、图表动态渲染、部署 Nginx+systemd、Phase 优先验证链路、搜索不支持拼音、新鲜度阈值 |
+| v5 | 2026-04-30 | 修订：纯只读 API（砍掉 sync/trigger，无需 API Key）、双 API URL 直连两台服务器（VITE_CN_API_URL + VITE_US_API_URL）、仪表板同时展示两边数据不合并、前端按 market 自动路由请求 |
