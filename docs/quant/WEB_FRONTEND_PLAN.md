@@ -1,6 +1,6 @@
-# Web 前端仪表板 — 实现方案 v5
+# Web 前端仪表板 — 实现方案 v6
 
-> v4 → v5：纯只读 API + 双服务器直连架构，见 [Changelog](#changelog)
+> v6：审阅修订，修复类型错配 + 补充端点 + 双服务器 Hook + 细节优化，见 [Changelog](#changelog)
 
 ## 顶层架构
 
@@ -241,7 +241,8 @@ type Severity = "error" | "warning" | "info";
 
 ```typescript
 interface DashboardStats {
-  total_stocks: Record<Market, number>;
+  market: Market;                   // 所属市场（单个 API 服务器总是只返回自己的数据）
+  total_stocks: number;
   sync_status: {
     success: number;
     failed: number;
@@ -475,7 +476,7 @@ interface ProfitabilityDetailsItem {
   net_profit_yoy?: number | null;
 }
 
-type ProfitabilityDetails = ProfitabilityDetailsItem[];  // 近3年，按年份DESC
+type ProfitabilityDetails = ProfitabilityDetailsItem[];  // 近3年，最新在前 (DESC)，与报告展示顺序一致
 
 // ── 财务健康度 ──
 interface DebtTrendItem {
@@ -487,7 +488,7 @@ interface HealthDetails {
   debt_ratio: number | null;
   current_ratio: number | null;
   quick_ratio: number | null;
-  debt_trend: DebtTrendItem[];      // 近3年，时间升序
+  debt_trend: DebtTrendItem[];      // 近3年，最新在前 (DESC)，与 profitability 保持一致
   total_assets: number | null;
   total_liab: number | null;
   total_equity: number | null;
@@ -528,7 +529,7 @@ interface ValuationDetails {
   median_fcf_yield: number | null;
   pe_vs: string | null;             // "显著偏低" | "偏低" | "接近中位数" | "偏高" | "显著偏高" | "亏损"
   pb_vs: string | null;
-  fy_vs: string | null;             // FCF Yield vs 行业
+  fcf_yield_vs: string | null;      // FCF Yield vs 行业
 }
 
 // ── 综合评估 ──
@@ -551,8 +552,9 @@ interface OverallAssessment {
 |------|------|------|------|------|
 | GET | `/api/v1/health` | — | `{db: bool}` | DB 连接检查 |
 | GET | `/api/v1/dashboard/stats` | — | `DashboardStats` | 仪表板聚合数据 |
-| GET | `/api/v1/sync/status` | `?market=` | `SyncStatusByMarket[]` | 同步进度摘要 |
-| GET | `/api/v1/sync/log` | `?market=&limit=&offset=` | `Paginated<SyncLog>` | 同步日志 |
+| GET | `/api/v1/sync/status` | `?market=` | `SyncStatusByMarket[]` | 同步进度摘要（市场级） |
+| GET | `/api/v1/sync/progress` | `?market=&limit=&offset=` | `Paginated<SyncProgressEntry>` | 个股同步进度 |
+| GET | `/api/v1/sync/log` | `?market=&limit=&offset=` | `Paginated<SyncLogEntry>` | 同步日志历史 |
 | GET | `/api/v1/quality/summary` | `?days=7` | `QualitySummary` | 质量问题汇总 |
 | GET | `/api/v1/quality/issues` | `?severity=&market=&check=&limit=&offset=` | `Paginated<QualityIssue>` | 问题列表 |
 | GET | `/api/v1/screener/presets` | — | `Preset[]` | 预设策略列表 |
@@ -566,7 +568,7 @@ interface OverallAssessment {
 const CN_API = import.meta.env.VITE_CN_API_URL;  // https://api.cn.stock.example.com
 const US_API = import.meta.env.VITE_US_API_URL;  // https://api.us.stock.example.com
 
-function getBaseUrl(market?: Market): string {
+function getBaseUrl(market?: Market | "all"): string {
   if (market === "US") return US_API;
   return CN_API;  // CN_A, CN_HK, "all", undefined → 国内
 }
@@ -601,7 +603,7 @@ class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit & { market?: Market }): Promise<T> {
+async function apiFetch<T>(path: string, init?: RequestInit & { market?: Market | "all" }): Promise<T> {
   const base = getBaseUrl(init?.market);
   const { market, ...fetchInit } = init ?? {};
   const res = await fetch(`${base}/api/v1${path}`, {
@@ -657,6 +659,44 @@ const queryKeys = {
 | 筛选结果 | `useScreenerRun()` | — | — | 手动触发 |
 | 股票搜索 | `useStockSearch(q)` | 5min | — | 防抖 300ms |
 | 分析报告 | `useAnalysis(code, market)` | 5min | — | 手动触发 |
+
+> `refetchInterval` 会无条件重新获取，`staleTime` 只影响"后台重新获取时是否显示 loading"。
+> 同时设 `staleTime: 30s` + `refetchInterval: 30s` 的效果：数据不会超过 30 秒旧，且窗口切换回页面时不会显示骨架屏。
+>
+> Query key 中不要放入不可序列化的值（如 `Date`、`function`）。`ScreenerParams` 的 `filters` 是 plain object，可安全作为 key。
+
+### 仪表板双服务器数据获取
+
+仪表板需要同时从两台服务器拉取数据，用 `useQueries` 而不是 `useQuery`：
+
+```typescript
+// lib/hooks/use-dashboard.ts
+function useDashboardStats() {
+  const results = useQueries({
+    queries: [
+      {
+        queryKey: queryKeys.dashboard.stats,
+        queryFn: () => apiFetch<DashboardStats>("/dashboard/stats", { market: "CN_A" }),
+        refetchInterval: 30_000,
+      },
+      {
+        queryKey: [...queryKeys.dashboard.stats, "us"],
+        queryFn: () => apiFetch<DashboardStats>("/dashboard/stats", { market: "US" }),
+        refetchInterval: 30_000,
+      },
+    ],
+  });
+  return {
+    cn: results[0].data ?? null,
+    us: results[1].data ?? null,
+    isLoading: results.some((r) => r.isLoading),
+    errors: results.filter((r) => r.error).map((r) => r.error),
+  };
+}
+```
+
+> `useQueries` 并发请求两台服务器，互不阻塞。如果一台不可达，另一台的数据仍然正常展示。
+> 仪表板组件根据 `cn` / `us` 是否非 null 决定是否渲染对应的卡片和图表。
 
 ### Zustand Store
 
@@ -744,13 +784,15 @@ variant 影响左边框颜色 + icon 背景色。`danger` 时 value 红色高亮
 
 ```typescript
 // 使用 shadcn/ui Command 组件 (cmdk) 实现类似 Spotlight 的搜索体验
-// 输入 → 300ms 防抖 → GET /api/v1/analyzer/search?q=xxx
-// 搜索字段: stock_code (模糊匹配 LIKE '%q%') + stock_name (模糊匹配)
+// 输入 ≥ 2 个字符 → 300ms 防抖 → GET /api/v1/analyzer/search?q=xxx&market=CN_A
+// 搜索字段: stock_code (LIKE '%q%') + stock_name (LIKE '%q%')
 // 不需要 pinyin 列 — 数据库只有 stock_code/stock_name，不支持拼音搜索
 // 后续可选: 在 stock_info 加 pinyin_abbr 列 (用 pypinyin 库生成)
 // 下拉列表显示: stock_code | stock_name | market badge | industry
 // 选中后自动触发分析
 // 如果只匹配1只股票，直接选中
+// market 必须指定单一市场（如 CN_A），market=all 返回 400
+//   → 理由：CN_A 和 US 在不同服务器上，无法合并搜索；代码体系完全不同不存在跨市场歧义
 ```
 
 ### RatingCardGrid
@@ -805,21 +847,21 @@ variant 影响左边框颜色 + icon 背景色。`danger` 时 value 红色高亮
 
 shadcn/ui 内置 dark mode 支持（Tailwind `dark:` class + CSS variables）。
 
-```
+```css
 :root {
-  --background: 0 0% 100%;       // 白
-  --foreground: 222 47% 11%;     // 近黑
+  --background: 0 0% 100%;       /* 白 */
+  --foreground: 222 47% 11%;     /* 近黑 */
   --card: 0 0% 100%;
   --border: 214 32% 91%;
-  --primary: 221 83% 53%;        // 蓝色
-  --destructive: 0 84% 60%;      // 红色
+  --primary: 221 83% 53%;        /* 蓝色 */
+  --destructive: 0 84% 60%;      /* 红色 */
   --muted: 210 40% 96%;
 }
 
 .dark {
-  --background: 222 47% 11%;     // 深蓝黑
-  --foreground: 210 40% 98%;     // 浅灰白
-  --card: 217 33% 17%;           // 深灰卡片
+  --background: 222 47% 11%;     /* 深蓝黑 */
+  --foreground: 210 40% 98%;     /* 浅灰白 */
+  --card: 217 33% 17%;           /* 深灰卡片 */
   --border: 217 33% 25%;
   --primary: 217 91% 60%;
   --muted: 217 33% 17%;
@@ -886,25 +928,29 @@ shadcn/ui 内置 dark mode 支持（Tailwind `dark:` class + CSS variables）。
             └── Nginx → 127.0.0.1:8000 (uvicorn)
 ```
 
-**Nginx 要点**：
+**Nginx 配置**（两台服务器各一份，仅 `server_name` 不同）：
+
 ```nginx
+# 国内服务器 /etc/nginx/sites-available/stock-api
 server {
     listen 443 ssl;
-    server_name api.stock.example.com;
+    server_name api.cn.stock.example.com;
 
-    ssl_certificate /etc/letsencrypt/live/api.stock.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.stock.example.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/api.cn.stock.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.cn.stock.example.com/privkey.pem;
+    # ... location 同上 ...
+}
 
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
+# 海外服务器 /etc/nginx/sites-available/stock-api
+server {
+    listen 443 ssl;
+    server_name api.us.stock.example.com;
+    # ... 其余同上 ...
 }
 ```
 
-**systemd unit** (`/etc/systemd/system/stock-web.service`)：
+**systemd unit** (`/etc/systemd/system/stock-web.service`), 国内和海外部署相同的 unit：
+
 ```ini
 [Unit]
 Description=Stock Data Web API
@@ -914,7 +960,6 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/projects/stock_data
-Environment="STOCK_WEB_API_KEY=<key>"
 ExecStart=/home/ubuntu/projects/stock_data/venv/bin/python -m web
 Restart=always
 RestartSec=5
@@ -943,7 +988,6 @@ curl http://localhost:8000/api/v1/dashboard/stats | jq
 curl "http://localhost:8000/api/v1/analyzer/search?q=600519" | jq
 curl -X POST http://localhost:8000/api/v1/screener/run \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <key>" \
   -d '{"market":"CN_A","preset":"classic_value","top_n":5}' | jq
 ```
 
@@ -957,4 +1001,5 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v2 | 2026-04-30 | 改为 Monorepo 前后端分离，前端独立部署 Cloudflare Pages |
 | v3 | 2026-04-30 | 确认技术栈 React+shadcn/ui+ECharts，细化类型定义、组件树、数据流 |
 | v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化、ScreenerStock 拆分 factor_ranks、图表动态渲染、部署 Nginx+systemd、Phase 优先验证链路、搜索不支持拼音、新鲜度阈值 |
-| v5 | 2026-04-30 | 修订：纯只读 API（砍掉 sync/trigger，无需 API Key）、双 API URL 直连两台服务器（VITE_CN_API_URL + VITE_US_API_URL）、仪表板同时展示两边数据不合并、前端按 market 自动路由请求 |
+| v5 | 2026-04-30 | 修订：纯只读 API + 双服务器直连架构 |
+| v6 | 2026-04-30 | 审阅修订：DashboardStats 增加 market 维度、补充 sync/progress 端点、删除残留 API Key、时间序列统一 DESC、apiFetch 类型放宽、useQueries 双服务器仪表板方案、CSS 注释修正、Nginx 域名对齐、fy_vs 重命名、搜索约束（≥2字符 + market=all→400）、查询行为说明 |
