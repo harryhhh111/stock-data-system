@@ -933,11 +933,74 @@ def validate_us_spot_records(
     return valid, rejected
 
 
+def guard_us_market_cap(records: list[dict]) -> int:
+    """市值自校验：对比前一交易日市值，拦截跳变。
+
+    当市值日环比变化 > 50% 但收盘价变化 < 10% 时，
+    将 market_cap 设为 None（COALESCE 会保留前一日的好值）。
+
+    Returns: 被拦截的记录数。
+    """
+    if not records:
+        return 0
+
+    from db import execute
+
+    today = records[0].get("trade_date")
+    if not today:
+        return 0
+
+    # 查前一交易日的市值和收盘价
+    prev_data = execute(
+        """
+        SELECT DISTINCT ON (stock_code)
+               stock_code, close, market_cap
+        FROM daily_quote
+        WHERE market = 'US' AND trade_date < %s AND market_cap IS NOT NULL
+        ORDER BY stock_code, trade_date DESC
+        """,
+        (today,),
+        fetch=True,
+    )
+    if not prev_data:
+        return 0
+
+    prev_map = {r[0]: (r[1], r[2]) for r in prev_data}
+    guarded = 0
+    for r in records:
+        code = r.get("stock_code")
+        if not code or code not in prev_map:
+            continue
+
+        prev_close, prev_mcap = prev_map[code]
+        prev_close, prev_mcap = float(prev_close), float(prev_mcap)
+        cur_close = r.get("close")
+        cur_mcap = r.get("market_cap")
+
+        if not all(v and v > 0 for v in (prev_close, prev_mcap, cur_close, cur_mcap)):
+            continue
+
+        close_chg = abs(cur_close - prev_close) / prev_close
+        mcap_chg = abs(cur_mcap - prev_mcap) / prev_mcap
+
+        if mcap_chg > 0.5 and close_chg < 0.1:
+            logger.warning(
+                "市值跳变拦截: %s close %.2f→%.2f (%.1f%%), "
+                "mcap $%.2fB→$%.2fB (%.1f%%) → 设为 NULL",
+                code, prev_close, cur_close, close_chg * 100,
+                prev_mcap / 1e9, cur_mcap / 1e9, mcap_chg * 100,
+            )
+            r["market_cap"] = None
+            guarded += 1
+
+    return guarded
+
+
 def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
     """Finnhub API fallback — 逐只获取美股实时行情。
 
-    仅返回 OHLC + close，volume/market_cap/PE/PB 为 None。
-    限速 ~55 次/分钟。
+    返回 OHLC + close + market_cap（从 stock_share 计算）。
+    volume/PE/PB 仍为 None。限速 ~55 次/分钟。
     """
     from config import finnhub as cfg
 
@@ -947,6 +1010,19 @@ def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
 
     if not stock_codes:
         return []
+
+    # 预加载 stock_share 数据用于计算 market_cap
+    shares_map: dict[str, float] = {}
+    try:
+        from db import execute
+        rows = execute(
+            "SELECT stock_code, total_shares FROM stock_share "
+            "WHERE total_shares IS NOT NULL AND total_shares > 0",
+            fetch=True,
+        )
+        shares_map = {r[0]: float(r[1]) for r in (rows or [])}
+    except Exception:
+        pass
 
     finnhub_limiter = AdaptiveRateLimiter(base_delay=1.1, max_delay=5.0)
     today = datetime.now().date()
@@ -974,6 +1050,12 @@ def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
                 logger.debug("Finnhub 无有效价格: %s", code)
                 continue
 
+            # 从 stock_share 计算 market_cap
+            mcap = None
+            total_shares = shares_map.get(code)
+            if total_shares and c:
+                mcap = c * total_shares
+
             records.append({
                 "stock_code": code,
                 "trade_date": today,
@@ -986,7 +1068,7 @@ def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
                 "volume": None,
                 "amount": None,
                 "turnover_rate": None,
-                "market_cap": None,
+                "market_cap": mcap,
                 "float_market_cap": None,
                 "pe_ttm": None,
                 "pb": None,

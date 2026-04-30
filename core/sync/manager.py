@@ -684,6 +684,7 @@ class SyncManager:
             transform_hk_spot_to_records,
             transform_us_spot_to_records,
             validate_us_spot_records,
+            guard_us_market_cap,
             fetch_finnhub_quotes,
         )
 
@@ -704,6 +705,11 @@ class SyncManager:
                 logger.warning(
                     "美股行情校验: %d 条被拒绝（退化行/便士股）", len(rejected)
                 )
+
+            # 市值自校验：对比前一交易日，拦截跳变
+            guarded = guard_us_market_cap(records)
+            if guarded:
+                logger.warning("美股市值跳变拦截: %d 只", guarded)
 
             # Finnhub fallback：对 Tencent 未返回或被拒绝的股票，尝试 Finnhub 补充
             tencent_codes = {r["stock_code"] for r in records}

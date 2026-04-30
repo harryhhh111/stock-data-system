@@ -731,7 +731,7 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
 
 
 # ──────────────────────────────────────────────────────────
-#  3. 市值日环比异常检测（A 股 + 港股）
+#  3. 市值日环比异常检测（全市场）
 # ──────────────────────────────────────────────────────────
 
 
@@ -751,7 +751,7 @@ def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
                LAG(dq.market_cap) OVER w AS prev_mcap,
                LAG(dq.close) OVER w AS prev_close
         FROM daily_quote dq
-        WHERE dq.market IN ('CN_A', 'CN_HK')
+        WHERE dq.market IN ('CN_A', 'CN_HK', 'US')
           AND dq.market_cap IS NOT NULL
           AND dq.close IS NOT NULL
         WINDOW w AS (PARTITION BY dq.stock_code, dq.market ORDER BY dq.trade_date)
@@ -761,7 +761,7 @@ def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
            ss.total_shares
     FROM jumps j
     LEFT JOIN stock_share ss
-        ON j.stock_code = ss.stock_code AND j.market = ss.market
+        ON j.stock_code = ss.stock_code
     WHERE j.prev_mcap IS NOT NULL
       AND j.prev_close IS NOT NULL
       AND j.prev_mcap > 0
@@ -787,10 +787,16 @@ def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
         if total_shares and total_shares > 0 and close:
             expected_mcap = close * total_shares
 
-        detail = (f"close {prev_close:.2f}→{close:.2f}, "
-                  f"mcap {prev_mcap/1e8:.1f}→{mcap/1e8:.1f}亿")
-        if expected_mcap:
-            detail += f" (expected {expected_mcap/1e8:.1f}亿 from close × shares)"
+        if market == "US":
+            detail = (f"close {prev_close:.2f}→{close:.2f}, "
+                      f"mcap ${prev_mcap/1e9:.2f}B→${mcap/1e9:.2f}B")
+            if expected_mcap:
+                detail += f" (expected ${expected_mcap/1e9:.2f}B from close × shares)"
+        else:
+            detail = (f"close {prev_close:.2f}→{close:.2f}, "
+                      f"mcap {prev_mcap/1e8:.1f}→{mcap/1e8:.1f}亿")
+            if expected_mcap:
+                detail += f" (expected {expected_mcap/1e8:.1f}亿 from close × shares)"
 
         issues.append(ValidationIssue(
             stock_code=stock_code,
@@ -1004,10 +1010,6 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
             report.total_rows_scanned += scanned_logic
             logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
 
-            scanned_mcap = check_market_cap_jump(report.issues)
-            report.total_rows_scanned += scanned_mcap
-            logger.info("  市值跳变: 扫描 %d 行", scanned_mcap)
-
         elif mkt == "US":
             scanned = check_anomalies_us(report.issues)
             report.total_rows_scanned += scanned
@@ -1023,6 +1025,11 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
 
         # 跨源比对
         check_cross_source(mkt, report.issues)
+
+    # 市值跳变检测（全市场，SQL 内已含 market 过滤）
+    scanned_mcap = check_market_cap_jump(report.issues)
+    report.total_rows_scanned += scanned_mcap
+    logger.info("  市值跳变: 扫描 %d 行", scanned_mcap)
 
     # 汇总
     report.finished_at = datetime.now().isoformat()
