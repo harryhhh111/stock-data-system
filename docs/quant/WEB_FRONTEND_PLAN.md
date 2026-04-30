@@ -1,4 +1,50 @@
-# Web 前端仪表板 — 实现方案 v3（详细前端架构）
+# Web 前端仪表板 — 实现方案 v4（修订版）
+
+> v3 → v4 修订：安全、类型定义、部署、搜索实现细节，见文末 [Changelog](#changelog)
+
+## 架构安全
+
+### API 认证
+
+前端部署在 Cloudflare Pages（公网），API 部署在国内服务器。写操作需要 API Key 认证：
+
+```python
+# web/app.py — 中间件
+from fastapi import Header, HTTPException
+import os
+
+API_KEY = os.environ.get("STOCK_WEB_API_KEY")
+if not API_KEY:
+    raise RuntimeError("STOCK_WEB_API_KEY 必须设置")
+
+def verify_api_key(x_api_key: str | None = Header(None)):
+    if x_api_key != API_KEY:
+        raise HTTPException(401, "API Key 无效")
+
+# 只对写操作要求认证，读操作不需要
+# POST /api/v1/sync/trigger → dependencies=[Depends(verify_api_key)]
+# GET /api/v1/dashboard/stats → 无需认证
+```
+
+**理由**：前端部署在 Cloudflare Pages（公网可访问），需要防止未授权的同步触发。读操作（仪表板、筛选、分析）不涉及数据修改，无需认证。前端通过 `VITE_API_KEY` 环境变量注入，构建时写入 `client.ts` 的默认请求头。
+
+### 连接安全
+
+- API 服务器开启 HTTPS（Let's Encrypt + Nginx），前端通过 HTTPS 通信
+- CORS 白名单：只允许 Cloudflare Pages 域名 + `localhost:5173`（开发）
+
+### 数据新鲜度阈值
+
+| 数据 | 阈值 | 说明 |
+|------|------|------|
+| 财务数据 stale | > 90 天 | 年报/季报发布后 3 个月内为正常 |
+| 行情数据 stale | > 1 个交易日 | 昨日行情应在今日 18:00 前更新 |
+| TTM 数据 stale | > 180 天 | 半年内应有新年报/季报发布 |
+| 同步进度 stale | > 24 小时 | 每日应至少同步一次 |
+
+阈值在 API 端（`dashboard_service.py`）定义，前端只展示状态。
+
+---
 
 ## 技术选型（已确认）
 
@@ -369,8 +415,8 @@ interface ScreenerStock {
   gross_margin: number | null;
   net_margin: number | null;
   debt_ratio: number | null;
-  // 因子排名
-  [factor_name: string]: number | string | null;
+  // 各因子百分位排名 (0-100)，key 如 "fcf_yield_rank", "roe_rank"
+  factor_ranks: Record<string, number>;
 }
 ```
 
@@ -384,17 +430,10 @@ interface StockSearchResult {
   industry: string | null;
 }
 
-interface AnalysisReport {
-  stock: StockInfo;
-  sections: {
-    profitability: AnalysisSection;
-    health: AnalysisSection;
-    cashflow: AnalysisSection;
-    valuation: AnalysisSection;
-  };
-  overall: OverallAssessment;
-}
-
+// 注意：StockInfo 是 AnalysisReport 中返回的完整股票信息，
+// 不同于 StockSearchResult（搜索建议只返回最简字段）。
+// 两者分开定义，不互相继承，因为搜索 API 返回字段少、分析 API 返回字段多，
+// 强行继承会导致搜索端大量 optional 字段。
 interface StockInfo {
   stock_code: string;
   stock_name: string;
@@ -411,20 +450,100 @@ interface StockInfo {
   cfo_ttm: number | null;
 }
 
-interface AnalysisSection {
-  rating: number | null;    // 1-5
-  star: string;             // "*****"
-  verdict: string;
-  details: Record<string, unknown>;
+interface AnalysisReport {
+  stock: StockInfo;
+  sections: {
+    profitability: AnalysisSection<ProfitabilityDetails>;
+    health: AnalysisSection<HealthDetails>;
+    cashflow: AnalysisSection<CashflowDetails>;
+    valuation: AnalysisSection<ValuationDetails>;
+  };
+  overall: OverallAssessment;
 }
 
+// 每股分析维度的通用结构
+interface AnalysisSection<T = Record<string, unknown>> {
+  rating: number | null;    // 1-5
+  star: string;             // "★★★★☆"
+  verdict: string;
+  details: T;
+}
+
+// ── 盈利能力 ──
+interface ProfitabilityDetailsItem {
+  year: number;
+  revenue: number | null;
+  net_profit: number | null;
+  gross_margin: number | null;
+  net_margin: number | null;
+  roe: number | null;
+  revenue_yoy?: number | null;
+  net_profit_yoy?: number | null;
+}
+
+type ProfitabilityDetails = ProfitabilityDetailsItem[];  // 近3年，按年份DESC
+
+// ── 财务健康度 ──
+interface DebtTrendItem {
+  year: number;
+  debt_ratio: number | null;
+}
+
+interface HealthDetails {
+  debt_ratio: number | null;
+  current_ratio: number | null;
+  quick_ratio: number | null;
+  debt_trend: DebtTrendItem[];      // 近3年，时间升序
+  total_assets: number | null;
+  total_liab: number | null;
+  total_equity: number | null;
+}
+
+// ── 现金流质量 ──
+interface FCFYearItem {
+  year: number;
+  fcf: number | null;
+  cfo: number | null;
+  net_profit: number | null;
+}
+
+interface CashflowDetails {
+  source: string;                    // "TTM" | "最新年报" | ""
+  cfo: number | null;
+  capex: number | null;
+  fcf: number | null;
+  revenue: number | null;
+  net_profit: number | null;
+  cfo_quality: number | null;      // CFO / 净利润
+  capex_intensity: number | null;  // CAPEX / 营收
+  fcf_years: FCFYearItem[];        // 近3年
+  ttm_report_date: string | null;  // TTM 数据截止日期
+  stale_warning: string | null;    // TTM 过时警告
+}
+
+// ── 估值水平 ──
+interface ValuationDetails {
+  pe: number | null;
+  pb: number | null;
+  fcf_yield: number | null;
+  market_cap: number | null;
+  close: number | null;
+  peer_count: number;               // 同行业股票数
+  median_pe: number | null;
+  median_pb: number | null;
+  median_fcf_yield: number | null;
+  pe_vs: string | null;             // "显著偏低" | "偏低" | "接近中位数" | "偏高" | "显著偏高" | "亏损"
+  pb_vs: string | null;
+  fy_vs: string | null;             // FCF Yield vs 行业
+}
+
+// ── 综合评估 ──
 interface OverallAssessment {
   rating: number | null;
   star: string;
   verdict: string;
-  risks: string[];
+  risks: string[];                  // 风险提示列表
 }
-```
 
 ---
 
@@ -586,10 +705,12 @@ variant 影响左边框颜色 + icon 背景色。`danger` 时 value 红色高亮
 ```typescript
 // 使用 shadcn/ui Command 组件 (cmdk) 实现类似 Spotlight 的搜索体验
 // 输入 → 300ms 防抖 → GET /api/v1/analyzer/search?q=xxx
+// 搜索字段: stock_code (模糊匹配 LIKE '%q%') + stock_name (模糊匹配)
+// 不需要 pinyin 列 — 数据库只有 stock_code/stock_name，不支持拼音搜索
+// 后续可选: 在 stock_info 加 pinyin_abbr 列 (用 pypinyin 库生成)
 // 下拉列表显示: stock_code | stock_name | market badge | industry
 // 选中后自动触发分析
 // 如果只匹配1只股票，直接选中
-// 支持输入股票代码或名称拼音首字母
 ```
 
 ### RatingCardGrid
@@ -603,15 +724,21 @@ variant 影响左边框颜色 + icon 背景色。`danger` 时 value 红色高亮
 
 #### 仪表板 — 同步分布饼图
 ```typescript
-// 环形饼图，按市场分组: CN_A success/failed/partial, CN_HK success/failed/partial
+// 环形饼图，按市场分组。市场列表从 API 返回数据动态渲染：
+//   国内服务器: CN_A + CN_HK 两组环
+//   海外服务器: US 一组环
+//   每组环内: success=绿 / failed=红 / partial=黄 / in_progress=蓝
 // 颜色: success=#22c55e, partial=#f59e0b, failed=#ef4444, in_progress=#3b82f6
 // 中间显示总数
+// 理由: 前端部署在 Cloudflare Pages，同一份构建产物会访问不同的 API 服务器，
+//   图表应根据实际 API 返回的市场数据动态渲染，不能硬编码
 ```
 
 #### 仪表板 — 7天趋势折线图
 ```typescript
 // X: 近7天日期  Y: 同步成功数
-// 两条线: CN_A (绿色)、CN_HK (蓝色)
+// 折线条数由 API 返回的市场列表决定（同上，动态渲染）
+// 颜色映射: CN_A=#22c55e, CN_HK=#3b82f6, US=#f59e0b
 // tooltip 显示当日详情: 成功/失败/耗时
 // dataZoom 允许缩放到近30天
 ```
@@ -665,86 +792,102 @@ shadcn/ui 内置 dark mode 支持（Tailwind `dark:` class + CSS variables）。
 
 ## 实施顺序
 
-### Phase 1: API 后端 (`web/`)
-1. `config.py` — 添加 `WebConfig`
-2. `web/app.py` — FastAPI 应用 + CORS + 错误处理
-3. `web/routes/health.py` — 健康检查
-4. `web/services/dashboard_service.py` — 仪表板聚合 SQL
-5. `web/routes/dashboard.py` — Dashboard API
-6. `web/services/sync_service.py` — 同步查询
-7. `web/routes/sync.py` — Sync API
-8. `web/services/background.py` — 后台任务
-9. `web/services/quality_service.py` — 质量查询
-10. `web/routes/quality.py` — Quality API
-11. `web/wrappers/screener_wrapper.py` — 筛选器封装
-12. `web/routes/screener.py` — Screener API
-13. `web/wrappers/analyzer_wrapper.py` — 分析器封装
-14. `web/routes/analyzer.py` — Analyzer API
-15. `web/__main__.py` — uvicorn 启动
+> **策略**：Phase 1-2 先验证架构可行性（FastAPI + CORS + 前端 fetch 全链路通），
+> 再并行铺开 Phase 3-8 的其余页面。
 
-### Phase 2: 前端骨架 (`frontend/`)
-16. `npm create vite@latest frontend -- --template react-ts`
-17. Tailwind + shadcn/ui 初始化 (`npx shadcn-ui@latest init`)
-18. 安装依赖: `tanstack query`, `tanstack table`, `react-router`, `zustand`, `echarts`, `react-hook-form`, `lucide-react`, `date-fns`, `clsx`, `tailwind-merge`
-19. `components.json` 配置 (style: new-york, baseColor: zinc, cssVariables: true)
-20. `vite.config.ts` — 添加 API proxy
-21. `lib/utils/cn.ts` + `lib/api/client.ts`
-22. `lib/types/` — 所有类型定义
-23. shadcn/ui 组件添加 (button, card, badge, table, select, input, dialog, dropdown-menu, tooltip, separator, skeleton, collapsible, checkbox, popover, command, scroll-area, tabs, progress)
+### Phase 1: API 骨架 + Dashboard（验证链路）
+1. `requirements.txt` — 添加 `fastapi`, `uvicorn[standard]`, `cachetools`
+2. `config.py` — 添加 `WebConfig`
+3. `web/app.py` — FastAPI 应用工厂 + CORS + API Key 中间件 + 错误处理
+4. `web/routes/health.py` — `GET /api/v1/health`
+5. `web/services/dashboard_service.py` — 仪表板聚合 SQL（总共 6-8 条轻量查询）
+6. `web/routes/dashboard.py` — `GET /api/v1/dashboard/stats`
+7. `web/__main__.py` — uvicorn 启动入口
 
-### Phase 3: 布局 + 路由
-24. `components/layout/sidebar.tsx` — 侧边栏
-25. `components/layout/topbar.tsx` — 顶栏
-26. `components/layout/app-layout.tsx` — 布局容器
-27. `App.tsx` — React Router 配置
-28. Zustand stores (ui-store, screener-store, analyzer-store)
+**验证**：`python -m web` → `curl localhost:8000/api/v1/health` 返回 `{"ok":true,"data":{"db":true}}`
 
-### Phase 4: 仪表板页面
-29. `components/dashboard/stat-card.tsx`
-30. `components/dashboard/sync-pie-chart.tsx`
-31. `components/dashboard/sync-trend-chart.tsx`
-32. `components/dashboard/freshness-panel.tsx`
-33. `components/dashboard/recent-issues.tsx`
-34. `lib/hooks/use-dashboard.ts`
-35. `pages/dashboard-page.tsx`
+### Phase 2: 前端骨架 + Dashboard（验证链路）
+8. `npm create vite@latest frontend -- --template react-ts`
+9. Tailwind + shadcn/ui 初始化
+10. 安装依赖: `@tanstack/react-query`, `@tanstack/react-table`, `react-router-dom`, `zustand`, `echarts`, `react-hook-form`, `lucide-react`, `date-fns`, `clsx`, `tailwind-merge`
+11. `vite.config.ts` — API proxy (`/api/v1` → `localhost:8000`)
+12. `lib/api/client.ts` — fetch 封装（baseURL + API Key 头 + 错误处理）
+13. `lib/types/common.ts` + `lib/types/dashboard.ts`
+14. `components/layout/` — AppLayout + Sidebar + TopBar
+15. `App.tsx` — Router + QueryClientProvider
+16. `components/dashboard/` — StatCard + 饼图 + 折线图
+17. `lib/hooks/use-dashboard.ts` — TanStack Query hook (30s refetchInterval)
+18. `pages/dashboard-page.tsx`
 
-### Phase 5: 同步监控页面
-36. `components/sync/sync-status-cards.tsx`
-37. `components/sync/trigger-sync-dialog.tsx`
-38. `components/sync/sync-progress-table.tsx`
-39. `components/sync/sync-log-table.tsx`
-40. `lib/hooks/use-sync.ts`
-41. `pages/sync-page.tsx`
+**验证**：前端 `npm run dev` → `localhost:5173` 看到带真实数据的仪表板，API 全链路通
 
-### Phase 6: 数据质量页面
-42. `components/quality/quality-filter-bar.tsx`
-43. `components/quality/severity-bar-chart.tsx`
-44. `components/quality/quality-issue-table.tsx`
-45. `lib/hooks/use-quality.ts`
-46. `pages/quality-page.tsx`
+### Phase 3: 同步监控 + 数据质量 + 选股筛选 + 个股分析
+19. Sync API routes + services + background task + 前端页面
+20. Quality API routes + services + 前端页面
+21. Screener wrapper + API routes + 前端页面
+22. Analyzer wrapper + API routes + 前端页面
 
-### Phase 7: 选股筛选页面
-47. `components/screener/preset-card-group.tsx`
-48. `components/screener/filter-form.tsx`
-49. `components/screener/filter-summary.tsx`
-50. `components/screener/result-table.tsx`
-51. `lib/hooks/use-screener.ts`
-52. `pages/screener-page.tsx`
+**理由**：Phase 2 验证后，这四个模块可以并行开发（前后端各自独立）
 
-### Phase 8: 个股分析页面
-53. `components/analyzer/stock-search.tsx`
-54. `components/analyzer/analysis-header.tsx`
-55. `components/analyzer/rating-card-grid.tsx`
-56. `components/analyzer/dimension-detail.tsx`
-57. `components/analyzer/financial-chart.tsx`
-58. `components/analyzer/risk-warnings.tsx`
-59. `lib/hooks/use-analyzer.ts`
-60. `pages/analyzer-page.tsx`
+### Phase 4: 部署
+23. API 服务器：Nginx 反代 + HTTPS (Let's Encrypt) + systemd 托管 uvicorn
+24. 前端：Cloudflare Pages (连接 GitHub 仓库，`frontend/` 目录，`npm run build` → `dist/`)
+25. 前端环境变量 `VITE_API_BASE_URL` 指向 `https://api.<your-domain>.com`
+26. Cloudflare Pages 环境变量 `VITE_API_KEY`（构建时注入）
 
-### Phase 9: 部署
-61. Cloudflare Pages 配置 (build: `npm run build`, output: `dist`)
-62. 前端环境变量 `VITE_API_BASE_URL` 指向 API 服务器
-63. API 服务器 uvicorn + systemd 或 tmux
+### 部署架构
+
+```
+用户浏览器
+    │
+    ├── https://stock.example.com (Cloudflare Pages)
+    │   └── 静态文件: frontend/dist/
+    │       构建: VITE_API_BASE_URL=https://api.stock.example.com
+    │             VITE_API_KEY=<key>
+    │
+    └── https://api.stock.example.com (国内服务器)
+        └── Nginx → 127.0.0.1:8000 (uvicorn web/__main__.py)
+            ├── CORS: 只允许 stock.example.com
+            ├── rate limiting (可选, Nginx limit_req_zone)
+            └── systemd: Restart=always, WorkingDirectory=/path/to/stock_data
+```
+
+**Nginx 要点**：
+```nginx
+server {
+    listen 443 ssl;
+    server_name api.stock.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/api.stock.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.stock.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+**systemd unit** (`/etc/systemd/system/stock-web.service`)：
+```ini
+[Unit]
+Description=Stock Data Web API
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/stock_data
+Environment="STOCK_WEB_API_KEY=<key>"
+ExecStart=/home/ubuntu/projects/stock_data/venv/bin/python -m web
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ---
 
@@ -766,5 +909,17 @@ curl http://localhost:8000/api/v1/dashboard/stats | jq
 curl "http://localhost:8000/api/v1/analyzer/search?q=600519" | jq
 curl -X POST http://localhost:8000/api/v1/screener/run \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <key>" \
   -d '{"market":"CN_A","preset":"classic_value","top_n":5}' | jq
 ```
+
+---
+
+## Changelog
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v1 | 2026-04-30 | 初始方案：FastAPI + Jinja2 集成式 |
+| v2 | 2026-04-30 | 改为 Monorepo 前后端分离，前端独立部署 Cloudflare Pages |
+| v3 | 2026-04-30 | 确认技术栈 React+shadcn/ui+ECharts，细化类型定义、组件树、数据流 |
+| v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化（匹配 analysis.py 输出）、ScreenerStock 拆分 factor_ranks、图表按 API 数据动态渲染市场、部署方案补充 Nginx+systemd、Phase 优先验证链路（dashboard+health 先行）、前端搜索明确不支持拼音、数据新鲜度阈值定义 |
