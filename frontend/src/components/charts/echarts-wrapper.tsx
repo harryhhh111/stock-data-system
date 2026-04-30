@@ -35,6 +35,19 @@ const DARK_THEME: echarts.EChartsCoreOption = {
   yAxis: { axisLine: { lineStyle: { color: "#475569" } }, splitLine: { lineStyle: { color: "#334155" } } },
 };
 
+const LIGHT_THEME: echarts.EChartsCoreOption = {
+  backgroundColor: "transparent",
+  textStyle: { color: "#1e293b" },
+  legend: { textStyle: { color: "#475569" } },
+  tooltip: {
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    textStyle: { color: "#1e293b" },
+  },
+  xAxis: { axisLine: { lineStyle: { color: "#cbd5e1" } }, splitLine: { lineStyle: { color: "#f1f5f9" } } },
+  yAxis: { axisLine: { lineStyle: { color: "#cbd5e1" } }, splitLine: { lineStyle: { color: "#f1f5f9" } } },
+};
+
 function useIsDark(): boolean {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
 
@@ -62,7 +75,7 @@ export function EChartsWrapper({ option, className, style }: Props) {
 
   useEffect(() => {
     if (!containerRef.current) return;
-    chartRef.current = echarts.init(containerRef.current, isDark ? DARK_THEME : undefined);
+    chartRef.current = echarts.init(containerRef.current);
 
     const ro = new ResizeObserver(() => chartRef.current?.resize());
     ro.observe(containerRef.current);
@@ -71,6 +84,10 @@ export function EChartsWrapper({ option, className, style }: Props) {
       ro.disconnect();
       chartRef.current?.dispose();
     };
+  }, []);
+
+  useEffect(() => {
+    chartRef.current?.setOption(isDark ? DARK_THEME : LIGHT_THEME, false);
   }, [isDark]);
 
   useEffect(() => {

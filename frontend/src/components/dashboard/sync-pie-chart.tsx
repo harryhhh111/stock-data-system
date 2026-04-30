@@ -23,6 +23,10 @@ export function SyncPieChart({ syncStatus }: Props) {
   const markets = Object.keys(syncStatus);
   const n = markets.length;
 
+  if (n === 0) {
+    return <div className="flex items-center justify-center h-[300px] text-sm text-muted-foreground">暂无同步数据</div>;
+  }
+
   const series = markets.map((market, i) => {
     const s = syncStatus[market as keyof typeof syncStatus];
     const center = n <= 1
