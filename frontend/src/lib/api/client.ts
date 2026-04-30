@@ -32,6 +32,16 @@ export async function apiFetch<T>(
     ...fetchInit,
     headers: { "Content-Type": "application/json", ...fetchInit?.headers },
   });
+  if (!res.ok) {
+    let detail: string | undefined;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? body.error;
+    } catch {
+      detail = await res.text().catch(() => undefined);
+    }
+    throw new ApiError(res.status, res.statusText, detail);
+  }
   const json = await res.json();
   if (!json.ok) throw new ApiError(res.status, json.error, json.detail);
   return json.data as T;
@@ -40,32 +50,52 @@ export async function apiFetch<T>(
 // ── Dashboard ──
 export const dashboardApi = {
   stats: (market?: Market) =>
-    apiFetch("/dashboard/stats", { market }),
+    apiFetch<import("@/lib/types/dashboard").DashboardStats>("/dashboard/stats", { market }),
 };
 
 // ── Sync ──
 export const syncApi = {
-  status: (market?: string) => {
-    const qs = market ? `?market=${market}` : "";
-    return apiFetch(`/sync/status${qs}`, { market: market === "US" ? "US" : undefined });
+  status: (market?: Market) => {
+    const q = new URLSearchParams();
+    if (market) q.set("market", market);
+    const qs = q.toString();
+    return apiFetch<import("@/lib/types/sync").SyncStatusByMarket[]>(
+      `/sync/status${qs ? `?${qs}` : ""}`,
+      { market },
+    );
   },
-  progress: (market?: string, limit = 100, offset = 0) => {
-    const qs = `?market=${market ?? ""}&limit=${limit}&offset=${offset}`;
-    return apiFetch(`/sync/progress${qs}`, { market: market === "US" ? "US" : undefined });
+  progress: (market?: Market, limit = 100, offset = 0) => {
+    const q = new URLSearchParams();
+    if (market) q.set("market", market);
+    q.set("limit", String(limit));
+    q.set("offset", String(offset));
+    return apiFetch<import("@/lib/types/common").Paginated<import("@/lib/types/sync").SyncProgressEntry>>(
+      `/sync/progress?${q}`,
+      { market },
+    );
   },
-  log: (market?: string, limit = 50, offset = 0) => {
-    const qs = `?market=${market ?? ""}&limit=${limit}&offset=${offset}`;
-    return apiFetch(`/sync/log${qs}`, { market: market === "US" ? "US" : undefined });
+  log: (market?: Market, limit = 50, offset = 0) => {
+    const q = new URLSearchParams();
+    if (market) q.set("market", market);
+    q.set("limit", String(limit));
+    q.set("offset", String(offset));
+    return apiFetch<import("@/lib/types/common").Paginated<import("@/lib/types/sync").SyncLogEntry>>(
+      `/sync/log?${q}`,
+      { market },
+    );
   },
 };
 
 // ── Quality ──
 export const qualityApi = {
   summary: (market?: Market, days = 7) =>
-    apiFetch(`/quality/summary?days=${days}`, { market }),
+    apiFetch<import("@/lib/types/quality").QualitySummary>(
+      `/quality/summary?days=${days}`,
+      { market },
+    ),
   issues: (params: {
     severity?: string;
-    market?: string;
+    market?: Market;
     check?: string;
     limit?: number;
     offset?: number;
@@ -76,18 +106,22 @@ export const qualityApi = {
     if (params.check) q.set("check", params.check);
     q.set("limit", String(params.limit ?? 50));
     q.set("offset", String(params.offset ?? 0));
-    return apiFetch(`/quality/issues?${q}`, {
-      market: params.market === "US" ? "US" : undefined,
-    });
+    return apiFetch<import("@/lib/types/common").Paginated<import("@/lib/types/quality").QualityIssue>>(
+      `/quality/issues?${q}`,
+      { market: params.market },
+    );
   },
 };
 
 // ── Screener ──
 export const screenerApi = {
   presets: (market?: Market) =>
-    apiFetch("/screener/presets", { market }),
-  run: (params: { market: string; preset?: string; top_n?: number }) =>
-    apiFetch("/screener/run", {
+    apiFetch<{ presets: import("@/lib/types/screener").Preset[]; factor_labels: Record<string, string> }>(
+      "/screener/presets",
+      { market },
+    ),
+  run: (params: { market: Market | "all"; preset?: string; top_n?: number }) =>
+    apiFetch<import("@/lib/types/screener").ScreenerResult>("/screener/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -97,18 +131,20 @@ export const screenerApi = {
 
 // ── Analyzer ──
 export const analyzerApi = {
-  search: (q: string, market?: string) => {
+  search: (q: string, market?: Market) => {
     const params = new URLSearchParams({ q });
     if (market) params.set("market", market);
-    return apiFetch(`/analyzer/search?${params}`, {
-      market: market === "US" ? "US" : undefined,
-    });
+    return apiFetch<import("@/lib/types/analyzer").StockSearchResult[]>(
+      `/analyzer/search?${params}`,
+      { market },
+    );
   },
-  analyze: (stockCode: string, market?: string) => {
+  analyze: (stockCode: string, market?: Market) => {
     const params = new URLSearchParams({ stock_code: stockCode });
     if (market) params.set("market", market);
-    return apiFetch(`/analyzer/analyze?${params}`, {
-      market: market === "US" ? "US" : undefined,
-    });
+    return apiFetch<import("@/lib/types/analyzer").AnalysisReport>(
+      `/analyzer/analyze?${params}`,
+      { market },
+    );
   },
 };

@@ -9,9 +9,9 @@ const nav = [
   { to: "/analyzer", label: "个股分析" },
 ];
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <aside className="w-56 bg-white border-r flex flex-col">
+    <aside className="w-56 bg-white border-r flex flex-col h-full">
       <div className="p-4 border-b">
         <h1 className="font-semibold text-lg">📊 Stock Data</h1>
       </div>
@@ -20,6 +20,7 @@ export function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={onNavigate}
             className={({ isActive }) =>
               cn(
                 "block px-3 py-2 rounded-md text-sm",

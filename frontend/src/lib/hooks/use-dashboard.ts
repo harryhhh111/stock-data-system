@@ -25,8 +25,8 @@ export function useDashboardStats() {
     ],
   });
 
-  const cn: DashboardStats | null = (results[0].data as DashboardStats) ?? null;
-  const us: DashboardStats | null = (results[1].data as DashboardStats) ?? null;
+  const cn = results[0].data ?? null;
+  const us = results[1].data ?? null;
 
   return {
     cn,
