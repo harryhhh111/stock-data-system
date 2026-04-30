@@ -1,6 +1,6 @@
-# Web 前端仪表板 — 实现方案 v6
+# Web 前端仪表板 — 实现方案 v7
 
-> v6：审阅修订，修复类型错配 + 补充端点 + 双服务器 Hook + 细节优化，见 [Changelog](#changelog)
+> v7：二次审阅修订，`DashboardStats` 按市场拆分 + 类型收尾，见 [Changelog](#changelog)
 
 ## 顶层架构
 
@@ -34,7 +34,7 @@
 const CN_API_BASE = import.meta.env.VITE_CN_API_URL;  // https://api.cn.stock.example.com
 const US_API_BASE = import.meta.env.VITE_US_API_URL;  // https://api.us.stock.example.com
 
-function getBaseUrl(market?: Market): string {
+function getBaseUrl(market?: Market | "all"): string {
   if (market === "US") return US_API_BASE;
   return CN_API_BASE;  // CN_A, CN_HK, "all", undefined
 }
@@ -241,14 +241,18 @@ type Severity = "error" | "warning" | "info";
 
 ```typescript
 interface DashboardStats {
-  market: Market;                   // 所属市场（单个 API 服务器总是只返回自己的数据）
-  total_stocks: number;
-  sync_status: {
+  total_stocks: Record<Market, number>;
+  sync_status: Record<Market, {
     success: number;
     failed: number;
     in_progress: number;
     partial: number;
-  };
+  }>;
+  sync_trend: Record<Market, {
+    date: string;
+    success: number;
+    failed: number;
+  }[]>;
   validation_issues: {
     errors_24h: number;
     warnings_7d: number;
@@ -261,11 +265,6 @@ interface DashboardStats {
     quote_date: string | null;
     financial_stale: boolean;
     quote_stale: boolean;
-  }[];
-  sync_trend: {
-    date: string;
-    success: number;
-    failed: number;
   }[];
   recent_issues: {
     id: number;
@@ -297,7 +296,7 @@ interface SyncStatusByMarket {
 interface SyncLogEntry {
   id: number;
   data_type: string;
-  market: string;
+  market: string;                   // Market | "all"（批量同步如 --market all）
   status: string;
   started_at: string;
   finished_at: string | null;
@@ -386,9 +385,9 @@ interface ScreenerParams {
 }
 
 interface ScreenerResult {
-  total_before_filter: number;
-  total_after_filter: number;
-  total: number;
+  total_before_filter: number;    // 候选池总股票数（过滤前）
+  total_after_filter: number;     // 硬过滤后剩余股票数
+  total: number;                  // 本次返回条数 = results.length（≤ top_n）
   results: ScreenerStock[];
   preset: string;
   market: string;
@@ -472,8 +471,8 @@ interface ProfitabilityDetailsItem {
   gross_margin: number | null;
   net_margin: number | null;
   roe: number | null;
-  revenue_yoy?: number | null;
-  net_profit_yoy?: number | null;
+  revenue_yoy: number | null;
+  net_profit_yoy: number | null;
 }
 
 type ProfitabilityDetails = ProfitabilityDetailsItem[];  // 近3年，最新在前 (DESC)，与报告展示顺序一致
@@ -511,7 +510,7 @@ interface CashflowDetails {
   net_profit: number | null;
   cfo_quality: number | null;      // CFO / 净利润
   capex_intensity: number | null;  // CAPEX / 营收
-  fcf_years: FCFYearItem[];        // 近3年
+  fcf_years: FCFYearItem[];        // 近3年，最新在前 (DESC)
   ttm_report_date: string | null;  // TTM 数据截止日期
   stale_warning: string | null;    // TTM 过时警告
 }
@@ -592,7 +591,7 @@ function getBaseUrl(market?: Market | "all"): string {
 const CN_API = import.meta.env.VITE_CN_API_URL || "http://localhost:8001";
 const US_API = import.meta.env.VITE_US_API_URL || "http://localhost:8002";
 
-function getBaseUrl(market?: Market): string {
+function getBaseUrl(market?: Market | "all"): string {
   if (market === "US") return US_API;
   return CN_API;
 }
@@ -938,15 +937,17 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/api.cn.stock.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/api.cn.stock.example.com/privkey.pem;
-    # ... location 同上 ...
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
 }
 
 # 海外服务器 /etc/nginx/sites-available/stock-api
-server {
-    listen 443 ssl;
-    server_name api.us.stock.example.com;
-    # ... 其余同上 ...
-}
+# 除了 server_name 和证书路径外，其余配置同上
 ```
 
 **systemd unit** (`/etc/systemd/system/stock-web.service`), 国内和海外部署相同的 unit：
@@ -1002,4 +1003,5 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v3 | 2026-04-30 | 确认技术栈 React+shadcn/ui+ECharts，细化类型定义、组件树、数据流 |
 | v4 | 2026-04-30 | 修订：API Key 认证、分析维度 details 类型精确化、ScreenerStock 拆分 factor_ranks、图表动态渲染、部署 Nginx+systemd、Phase 优先验证链路、搜索不支持拼音、新鲜度阈值 |
 | v5 | 2026-04-30 | 修订：纯只读 API + 双服务器直连架构 |
-| v6 | 2026-04-30 | 审阅修订：DashboardStats 增加 market 维度、补充 sync/progress 端点、删除残留 API Key、时间序列统一 DESC、apiFetch 类型放宽、useQueries 双服务器仪表板方案、CSS 注释修正、Nginx 域名对齐、fy_vs 重命名、搜索约束（≥2字符 + market=all→400）、查询行为说明 |
+| v6 | 2026-04-30 | 审阅修订：DashboardStats 增加 market 维度、补充 sync/progress 端点、删除残留 API Key、时间序列统一 DESC、apiFetch 类型放宽、useQueries 双服务器仪表板方案、CSS 注释修正、Nginx 域名对齐、fy_vs 重命名、搜索约束 |
+| v7 | 2026-04-30 | 二次审阅：DashboardStats.sync_status/sync_trend 改为 Record<Market, ...>、getBaseUrl 类型统一、Nginx location 块补全、ScreenerResult.total 加注释、去掉 ? 冗余三态、fcf_years 加排序注释、SyncLogEntry.market 加说明 |
