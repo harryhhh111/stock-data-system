@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { ResultTable } from "@/components/screener/result-table";
+import { PresetCards } from "@/components/screener/preset-cards";
 import { useScreenerStore } from "@/lib/store/screener-store";
 import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
@@ -33,6 +34,15 @@ export function ScreenerPage() {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold">选股筛选</h2>
 
+      {/* 预设卡片 */}
+      {presetsData && presetsData.presets.length > 0 && (
+        <PresetCards
+          presets={presetsData.presets}
+          selected={preset}
+          onSelect={setPreset}
+        />
+      )}
+
       {/* 控制面板 */}
       <div className="flex flex-wrap items-end gap-4">
         <div className="space-y-1">
@@ -45,20 +55,6 @@ export function ScreenerPage() {
               <SelectItem value="CN_A">A 股</SelectItem>
               <SelectItem value="CN_HK">港股</SelectItem>
               <SelectItem value="US">美股</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-muted-foreground">策略</label>
-          <Select value={preset} onValueChange={setPreset}>
-            <SelectTrigger className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(presetsData?.presets ?? []).map((p) => (
-                <SelectItem key={p.name} value={p.name}>{p.description}</SelectItem>
-              ))}
             </SelectContent>
           </Select>
         </div>
@@ -80,13 +76,6 @@ export function ScreenerPage() {
         </Button>
       </div>
 
-      {/* 策略描述 */}
-      {presetsData && preset && (
-        <p className="text-sm text-muted-foreground">
-          {presetsData.presets.find((p) => p.name === preset)?.description}
-        </p>
-      )}
-
       {/* 错误 */}
       {mutation.isError && (
         <div className="border border-destructive/50 bg-destructive/10 text-destructive rounded-lg px-4 py-3 text-sm">
@@ -96,11 +85,13 @@ export function ScreenerPage() {
 
       {/* 结果统计 */}
       {result && (
-        <div className="flex gap-4 text-sm">
+        <div className="flex gap-4 text-sm font-mono tabular-nums">
           <span>筛选前: <strong>{result.total_before_filter.toLocaleString()}</strong></span>
+          <span className="text-muted-foreground">→</span>
           <span>筛选后: <strong>{result.total_after_filter.toLocaleString()}</strong></span>
+          <span className="text-muted-foreground">→</span>
           <span>展示: <strong>{result.total}</strong></span>
-          <span className="text-muted-foreground">策略: {result.preset}</span>
+          <span className="text-muted-foreground ml-auto">策略: {result.preset}</span>
         </div>
       )}
 

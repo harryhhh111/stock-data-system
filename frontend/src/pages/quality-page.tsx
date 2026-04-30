@@ -5,17 +5,56 @@ import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DataTable } from "@/components/ui/data-table";
 import { AlertTriangle, ShieldCheck, Info } from "lucide-react";
 const SeverityBarChart = lazy(() => import("@/components/quality/severity-bar-chart").then((m) => ({ default: m.SeverityBarChart })));
 import type { Market, Severity } from "@/lib/types/common";
+import type { QualityIssue } from "@/lib/types/quality";
+import type { ColumnDef } from "@tanstack/react-table";
 
 const SEVERITY_VARIANT: Record<Severity, "destructive" | "secondary" | "default"> = {
   error: "destructive",
   warning: "secondary",
   info: "default",
 };
+
+const columns: ColumnDef<QualityIssue>[] = [
+  {
+    accessorKey: "stock_name",
+    header: "股票",
+    cell: ({ row }) => (
+      <span className="font-medium whitespace-nowrap">
+        {row.original.stock_name}
+        <span className="text-muted-foreground ml-1 text-xs">{row.original.stock_code}</span>
+      </span>
+    ),
+  },
+  { accessorKey: "market", header: "市场" },
+  { accessorKey: "report_date", header: "报告期", cell: ({ row }) => <span className="whitespace-nowrap">{row.original.report_date}</span> },
+  {
+    accessorKey: "check_name",
+    header: "检查项",
+    cell: ({ row }) => <span className="max-w-[200px] truncate block" title={row.original.check_name}>{row.original.check_name}</span>,
+  },
+  {
+    accessorKey: "severity",
+    header: "严重程度",
+    enableSorting: true,
+    cell: ({ row }) => <Badge variant={SEVERITY_VARIANT[row.original.severity]}>{row.original.severity}</Badge>,
+  },
+  {
+    accessorKey: "message",
+    header: "信息",
+    enableSorting: false,
+    cell: ({ row }) => <span className="max-w-[300px] truncate block" title={row.original.message}>{row.original.message}</span>,
+  },
+  {
+    accessorKey: "created_at",
+    header: "时间",
+    cell: ({ row }) => <span className="whitespace-nowrap text-xs text-muted-foreground">{row.original.created_at}</span>,
+  },
+];
 
 export function QualityPage() {
   const [severity, setSeverity] = useState<Severity | "all">("all");
@@ -110,39 +149,7 @@ export function QualityPage() {
         <Skeleton className="h-96" />
       ) : issues && issues.items.length > 0 ? (
         <>
-          <div className="border rounded-lg overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>股票</TableHead>
-                  <TableHead>市场</TableHead>
-                  <TableHead>报告期</TableHead>
-                  <TableHead>检查项</TableHead>
-                  <TableHead>严重程度</TableHead>
-                  <TableHead>信息</TableHead>
-                  <TableHead>时间</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {issues.items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell className="font-medium whitespace-nowrap">
-                      {item.stock_name}
-                      <span className="text-muted-foreground ml-1 text-xs">{item.stock_code}</span>
-                    </TableCell>
-                    <TableCell>{item.market}</TableCell>
-                    <TableCell className="whitespace-nowrap">{item.report_date}</TableCell>
-                    <TableCell className="max-w-[200px] truncate" title={item.check_name}>{item.check_name}</TableCell>
-                    <TableCell>
-                      <Badge variant={SEVERITY_VARIANT[item.severity]}>{item.severity}</Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[300px] truncate" title={item.message}>{item.message}</TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{item.created_at}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <DataTable columns={columns} data={issues.items} />
 
           {/* 分页 */}
           {totalPages > 1 && (

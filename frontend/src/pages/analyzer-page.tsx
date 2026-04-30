@@ -2,6 +2,7 @@ import { useState, useCallback, lazy, Suspense } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { analyzerApi } from "@/lib/api/client";
 import { StockSearch } from "@/components/analyzer/stock-search";
+import { RatingCardGrid } from "@/components/analyzer/rating-card-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -91,27 +92,28 @@ export function AnalyzerPage() {
             </CardContent>
           </Card>
 
-          {/* 综合评价 */}
-          <Card className="border-l-4 border-l-blue-500">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-3">
-                综合评价
-                <Star rating={report.overall.rating} />
-                {report.overall.rating != null && <span className="text-lg">{report.overall.rating}/5</span>}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="mb-3">{report.overall.verdict}</p>
-              {report.overall.risks.length > 0 && (
-                <div>
-                  <p className="text-sm font-medium text-red-600 mb-1">风险提示:</p>
-                  <ul className="list-disc list-inside text-sm text-red-600 space-y-1">
-                    {report.overall.risks.map((r, i) => <li key={i}>{r}</li>)}
-                  </ul>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* 评分总览 */}
+          <RatingCardGrid items={[
+            { label: "综合", rating: report.overall.rating, star: report.overall.star, verdict: report.overall.verdict },
+            { label: "盈利能力", rating: report.sections.profitability.rating, star: report.sections.profitability.star, verdict: report.sections.profitability.verdict },
+            { label: "财务健康", rating: report.sections.health.rating, star: report.sections.health.star, verdict: report.sections.health.verdict },
+            { label: "现金流", rating: report.sections.cashflow.rating, star: report.sections.cashflow.star, verdict: report.sections.cashflow.verdict },
+            { label: "估值", rating: report.sections.valuation.rating, star: report.sections.valuation.star, verdict: report.sections.valuation.verdict },
+          ]} />
+
+          {/* 风险提示 */}
+          {report.overall.risks.length > 0 && (
+            <Card className="border-l-4 border-l-red-500">
+              <CardHeader>
+                <CardTitle className="text-base">风险提示</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="list-disc list-inside text-sm text-red-600 space-y-1">
+                  {report.overall.risks.map((r, i) => <li key={i}>{r}</li>)}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 盈利能力 */}
           <SectionCard title="盈利能力" section={report.sections.profitability}>

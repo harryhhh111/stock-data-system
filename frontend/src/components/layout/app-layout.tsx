@@ -11,7 +11,7 @@ export function AppLayout() {
     <div className="flex h-screen bg-background">
       {/* Desktop sidebar */}
       <div className="hidden md:block">
-        <Sidebar onNavigate={() => {}} />
+        <Sidebar />
       </div>
 
       {/* Mobile sidebar in Sheet */}
