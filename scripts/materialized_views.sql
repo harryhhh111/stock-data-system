@@ -556,6 +556,15 @@ latest_ttm AS (
     FROM mv_us_indicator_ttm
     WHERE fcf_ttm IS NOT NULL
     ORDER BY stock_code, report_date DESC
+),
+latest_bvps AS (
+    -- 每只美股最新的每股净资产（来自最近 annual 报告）
+    SELECT DISTINCT ON (stock_code)
+        stock_code,
+        book_value_per_share
+    FROM mv_us_financial_indicator
+    WHERE report_type = 'annual' AND book_value_per_share IS NOT NULL AND book_value_per_share > 0
+    ORDER BY stock_code, report_date DESC
 )
 SELECT
     q.stock_code,
@@ -566,7 +575,11 @@ SELECT
     q.close,
     q.market_cap,
     q.pe_ttm,
-    q.pb,
+    -- PB = 股价 / 每股净资产（优先用年报计算，fallback 到 daily_quote）
+    CASE WHEN b.book_value_per_share IS NOT NULL AND b.book_value_per_share > 0
+         THEN q.close / b.book_value_per_share
+         ELSE q.pb
+    END AS pb,
     t.fcf_ttm,
     t.revenue_ttm,
     t.net_profit_ttm,
@@ -585,6 +598,8 @@ JOIN latest_ttm t
     ON q.stock_code = t.stock_code
 JOIN stock_info s
     ON q.stock_code = s.stock_code
+LEFT JOIN latest_bvps b
+    ON q.stock_code = b.stock_code
 WHERE q.market_cap IS NOT NULL
   AND q.market_cap > 0
   AND t.fcf_ttm IS NOT NULL;

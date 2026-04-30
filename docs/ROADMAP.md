@@ -71,19 +71,21 @@
 - [x] P1-4 D&A 修复（Depreciation + AmortizationOfIntangibleAssets，含 MSFT 等）
 - [x] 物化视图刷新（mv_us_financial_indicator 0 → 37K，mv_us_fcf_yield 485 行）
 - [x] 选股筛选器 `screener/` 支持美股（硬过滤 + 多因子打分 + 三个预设策略）
-- [ ] ROE 修复（parent_equity 缺失时 fallback 到 total_equity，提升 CN_HK ROE 覆盖率）
-- [ ] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析）
+- [x] ROE 修复（parent_equity 缺失时 fallback 到 total_equity，提升 CN_HK ROE 覆盖率）
+- [x] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析，支持 CN_A/CN_HK/US）
+- [x] Phase 1.5 筛选器改进（NaN 权重重分配、小行业 fallback、因子去共线性、US 列补全）
+- [x] Phase 2.0 美股完善（公式法 TTM、Russell 1000 扩展至 1,002 只、行业分类全覆盖、PB 修复）
 - [ ] A股/港股 2025 年报补齐（等 5 月出完）
 
 ## Phase 5.5：数据补全（后期）
 
 **目标：** 补齐美股日线行情和分红数据。
 
-- [x] 美股日线行情同步（腾讯接口，S&P 500 + 纳斯达克 100）
+- [x] 美股日线行情同步（腾讯接口 + Finnhub fallback，Russell 1000 全覆盖）
 - [x] 美股历史日线回填（683K 行，2021~2026）
-- [ ] A 股分红数据同步（东方财富/巨潮资讯）
-- [ ] 港股分红数据同步
-- [ ] 分红策略预设（高股息筛选）
+- [x] A 股分红数据同步（5,350 只，82,125 条）
+- [x] 港股分红数据同步（1,981 只）
+- [x] 分红策略预设（dividend_value，支持 CN_A/CN_HK）
 - [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
 
 ## Phase 6：高级分析（待规划）

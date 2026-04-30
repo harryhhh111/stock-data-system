@@ -1,8 +1,8 @@
 # 价值投资选股系统 — 规划方案
 
 > 创建时间：2026-04-23（v2）
-> 更新时间：2026-04-30（v5）
-> 状态：Phase 1.1 ✅ | Phase 1.2 ✅ | Phase 1.5 待规划 | Phase 2.0 待规划
+> 更新时间：2026-04-30（v6）
+> 状态：Phase 1.1 ✅ | Phase 1.2 ✅ | Phase 1.5 ✅ | Phase 2.0 ✅
 
 ## 一、定位
 
@@ -13,25 +13,25 @@
 
 ### 2.1 三个市场的可用指标
 
-| 指标 | CN_A (5,493) | CN_HK (2,743) | US (503) |
+| 指标 | CN_A (5,493) | CN_HK (2,743) | US (1,002) |
 |------|:---:|:---:|:---:|
-| FCF Yield | ✅ 3,612 | ✅ 1,950 | ✅ 485（annual-only，待修） |
-| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
-| PB | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
-| 市值 | ✅ 5,191 | ✅ 2,724 | ✅ 519 |
+| FCF Yield | ✅ 3,612 | ✅ 1,950 | ✅ 872 |
+| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ✅ 1,002 |
+| PB | ✅ 5,191 | ✅ 2,724 | ✅ 1,002（从 book_value_per_share 计算） |
+| 市值 | ✅ 5,191 | ✅ 2,724 | ✅ 1,002 |
 | 毛利率 | ✅ 3,517 | ✅ 2,475 | ✅ 70.9% 股票级 |
 | 营业利润率 | ✅ | ✅ | ✅ |
 | 净利率 | ✅ | ✅ | ✅ |
 | 资产负债率 | ✅ 3,620 | ✅ 2,660 | ✅ |
-| 流动比率 | ✅ | ✅ | ❌ |
+| 流动比率 | ✅ | ✅ | ✅ |
 | ROE | ✅ 6,280 只（三层 fallback） | ✅ 三层 fallback | ✅ |
 | ROA | ✅ | ✅ | ✅ |
-| 营收同比增长 | ✅ 2,712 | ✅ 2,015 | ❌（mv_us 未计算） |
-| 净利润同比增长 | ✅ | ✅ | ❌（mv_us 未计算） |
-| TTM 收入/利润/CFO/CAPEX | ✅ 公式法 | ✅ 公式法 | ⚠️ annual-only（75% 虚高已修，时效性差） |
+| 营收同比增长 | ✅ 2,712 | ✅ 2,015 | ✅ mv_us_financial_indicator |
+| 净利润同比增长 | ✅ | ✅ | ✅ mv_us_financial_indicator |
+| TTM 收入/利润/CFO/CAPEX | ✅ 公式法 | ✅ 公式法 | ✅ 公式法（2026-04-30 实现） |
 | EPS | ✅ | ✅ | ✅ |
 | 分红 | ✅ 5,350 只（82,125 条） | ✅ 1,981 只 | ❌ |
-| 行业分类 | ✅ 申万一级 | ✅ 东方财富 F10 | ✅ SIC |
+| 行业分类 | ✅ 申万一级 | ✅ 东方财富 F10 | ✅ SIC（1,002 只全覆盖） |
 
 ### 2.2 关键问题
 
@@ -39,14 +39,16 @@
 2. ~~**分红表为空**~~ ✅ 已修复：A 股 5,350 只 / 港股 1,981 只，共 82,125 条分红记录。修复了 A 股 transformer（每10股→每股）和港股 transformer（分红方案文本解析）。
 3. ~~**ROE 覆盖率低**~~ ✅ 已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。
 4. ~~**物化视图刷新滞后**~~ ✅ 已修复：`sync_financial`/`sync_dividend`/`daily_quote` 完成后自动 `REFRESH MATERIALIZED VIEW`。
-5. **美股 TTM 时效性差**：`mv_us_indicator_ttm` 改用 annual-only 修复了 75% 虚高，但年中只有上一年年报，数据陈旧。公式法待移植。
-6. ~~**港股 CAPEX 缺失**~~ ✅ 已修复：东方财富 2024+ 年报不再包含 购建固定资产(005005)，从同年半年度/季度报告取值 fallback。修复 2,735 只港股、触发 206 次 fallback。
-7. ~~**A 股利润表大量缺失**~~ ✅ 已修复：1,873 只 A 股无收入数据，根因是增量逻辑只看 MAX(report_date) 不检查表完整性。修复后覆盖 3,545→5,193 只（94.5%）。
-8. **市值 API 偶发跳变**：已加检测（`check_market_cap_jump`）+ 自动修复（`correct_market_cap`），430 条 2026-04-24 异常市值已回算。
+5. ~~**美股 TTM 时效性差**~~ ✅ 已修复：`mv_us_indicator_ttm` 已实现公式法 TTM（latest_cumulative + last_annual - prev_year_same_period），与 CN 链路一致。
+6. ~~**美股 PB 数据错误**~~ ✅ 已修复：腾讯 API 返回的 PB 值系统性错误（AAPL 显示 0.20 而非 ~55），改为从 `mv_us_financial_indicator.book_value_per_share` 计算 `close / bvps`。
+7. ~~**美股行业分类缺失**~~ ✅ 已修复：Russell 1000 新增 483 只股票无 CIK/industry，从 `us_income_statement` 回填 CIK 后同步 SIC 行业分类，1,002 只全覆盖。
+8. ~~**港股 CAPEX 缺失**~~ ✅ 已修复：东方财富 2024+ 年报不再包含 购建固定资产(005005)，从同年半年度/季度报告取值 fallback。修复 2,735 只港股、触发 206 次 fallback。
+9. ~~**A 股利润表大量缺失**~~ ✅ 已修复：1,873 只 A 股无收入数据，根因是增量逻辑只看 MAX(report_date) 不检查表完整性。修复后覆盖 3,545→5,193 只（94.5%）。
+10. **市值 API 偶发跳变**：已加检测（`check_market_cap_jump`）+ 自动修复（`correct_market_cap`），430 条 2026-04-24 异常市值已回算。
 
 ### 2.3 结论
 
-**Phase 1 先做 CN_A + CN_HK**，美股筛选已可用（screener 支持 US，三个预设），但 FCF Yield 基于 annual-only TTM（年中数据陈旧），US 个股分析待 Phase 2.0 完善。
+三个市场均已可用。美股已完成 Russell 1000 扩展（1,002 只）、公式法 TTM、行业分类全覆盖、PB 修复。选股筛选器和个股分析器均支持 US。
 
 ## 三、系统设计
 
@@ -71,7 +73,7 @@ stock_data/
 │   │   ├── scorer.py              # 多因子打分
 │   │   ├── presets.py             # 预设策略
 │   │   └── report.py              # 输出格式化
-│   └── analyzer/                  # 个股分析（Phase 1.2 待开发）
+│   └── analyzer/                  # 个股分析（Phase 1.2 ✅，支持 CN/HK/US）
 │       ├── __init__.py
 │       ├── __main__.py            # CLI 入口
 │       ├── financial.py           # 财务健康度分析

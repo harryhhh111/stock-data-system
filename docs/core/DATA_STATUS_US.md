@@ -1,6 +1,6 @@
 # US 美股数据现状
 
-> 最后更新：2026-04-28 | 服务器：海外（`STOCK_MARKETS=US`）
+> 最后更新：2026-04-30 | 服务器：海外（`STOCK_MARKETS=US`）
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 市场 | 股票数 | 有行业 | 有 raw_snapshot |
 |------|--------|--------|----------------|
-| US（美股） | 519 | 518（SIC Code） | 504（15 只缺失） |
+| US（美股） | 1,002 | 1,002（SIC Code） | ~987 |
 
 ---
 
@@ -16,9 +16,9 @@
 
 | 表 | 总行数 | 股票数 | 时间范围 | 年度/季度 |
 |----|--------|--------|---------|-----------|
-| us_income_statement | 48,722 | 517 | 2006~2026 | 19,842 / 28,880 |
-| us_balance_sheet | 42,779 | 517 | 2005~2026 | — |
-| us_cash_flow_statement | 33,117 | 517 | 2006~2026 | 8,834 / 24,283 |
+| us_income_statement | 86,309 | ~1,000 | 2006~2026 | — |
+| us_balance_sheet | 75,707 | ~1,000 | 2005~2026 | — |
+| us_cash_flow_statement | 58,506 | ~1,000 | 2006~2026 | — |
 
 ### 利润表字段覆盖率
 
@@ -58,11 +58,11 @@
 
 | 市场 | 记录数 | 股票数 | 日期范围 |
 |------|--------|--------|---------|
-| US | 683,497 | 519 | 2021-01-04 ~ 2026-04-27 |
+| US | 685,013 | 1,002 | 2021-01-04 ~ 2026-04-29 |
 
-- 数据源：腾讯 K 线接口（历史回填）+ 腾讯实时行情（每日快照）
+- 数据源：腾讯 K 线接口（历史回填）+ 腾讯实时行情（每日快照）+ Finnhub fallback
 - 历史 K 线仅含 OHLCV（无市值/PE/PB），upsert COALESCE 保护不覆盖快照字段
-- 519 只全覆盖（含 BRK-B、BF-B 连字符修复）
+- 1,002 只全覆盖（Russell 1000，含 BRK-B、BF-B 连字符修复）
 
 ---
 
@@ -78,18 +78,21 @@
 
 | 视图 | 行数 | 说明 |
 |------|------|------|
-| mv_us_financial_indicator | 37,079 | 单期指标（毛利率/ROE/ROA/EPS/FCF） |
-| mv_us_indicator_ttm | 33,223 | TTM 滚动指标 |
-| mv_us_fcf_yield | 487 | 最新 FCF Yield（需 market_cap > 0） |
+| mv_us_financial_indicator | 65,307 | 单期指标（毛利率/ROE/ROA/EPS/FCF/YoY） |
+| mv_us_indicator_ttm | 1,000 | TTM 滚动指标（公式法） |
+| mv_us_fcf_yield | 872 | 最新 FCF Yield（PB 从 book_value_per_share 计算） |
 
 ---
 
 ## 六、量化筛选器
 
-三个预设策略均已支持美股：
-- `classic_value` — 低估值 + 高 FCF Yield（519 → 14 通过硬过滤）
-- `quality` — 高 ROE + 高毛利 + 低负债（519 → 36 通过）
-- `growth_value` — 合理估值 + 高增长（US 暂缺 revenue_yoy/net_profit_yoy）
+四个预设策略均已支持美股：
+- `classic_value` — 低估值 + 高 FCF Yield
+- `quality` — 高 ROE + 高毛利 + 低负债
+- `growth_value` — 合理估值 + 高增长（revenue_yoy/net_profit_yoy 已可用）
+- `dividend_value` — 暂不可用（US 无分红数据）
+
+个股分析器 `quant.analyzer` 支持 US（四维分析 + SIC 行业同行对比）。
 
 ---
 
@@ -98,7 +101,7 @@
 | 优先级 | 问题 | 影响 | 说明 |
 |--------|------|------|------|
 | P1 | 15 只无 raw_snapshot | 无法 reparse | 待重新拉取 |
-| P2 | growth_value 预设缺 revenue_yoy / net_profit_yoy | US 选股该策略不可用 | 物化视图未计算同比 |
+| ~~P2~~ | ~~growth_value 预设缺 revenue_yoy / net_profit_yoy~~ | ✅ 已修复 | mv_us_financial_indicator 已计算同比 |
 | P2 | Total Liabilities 60.9% 行级 | 资产负债率部分缺失 | 部分公司只报 Current + Non-current，不报顶层 |
 | P3 | Gross Profit 40.5% 行级 | 毛利率筛选缺部分公司 | 33% 的公司 SEC 不报此 tag，属于正常 |
 
@@ -108,6 +111,11 @@
 
 | 时间 | 修复 | 效果 |
 |------|------|------|
+| 2026-04-30 | Russell 1000 扩展 | 503 → 1,002 只，新增 483 只股票财务+行情+行业全覆盖 |
+| 2026-04-30 | PB 修复（从 book_value_per_share 计算） | AAPL PB 0.20 → 54.77，腾讯 API 错误数据不再影响估值 |
+| 2026-04-30 | US 行业分类全覆盖 | 483 只新股票回填 CIK + SIC 行业同步，1,002 只全覆盖 |
+| 2026-04-30 | US TTM 公式法 | mv_us_indicator_ttm 改用公式法（与 CN 一致），不再 annual-only |
+| 2026-04-30 | Phase 1.5 筛选器改进 | NaN 权重重分配、小行业 fallback、因子去共线性、US 列补全 |
 | 2026-04-29 | Transformer `_DB_COLS` 列名修正 + 物化视图刷新 US 链路修复 | CF/BS/IS upsert 零 warning，US 财务同步后自动刷新 US 物化视图 |
 | 2026-04-29 | CF 空壳行过滤 + 合并优化 + 全量 reparse | CF 17,585→33,117 行，annual CF 3,770→8,834，行级覆盖率大幅提升 |
 | 2026-04-28 | total_equity 三层 fallback | 行级覆盖率 — + 到 87.7% |
