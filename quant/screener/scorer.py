@@ -73,6 +73,7 @@ def _get_factor_column(factor_name: str) -> str:
     """因子名 → DataFrame 列名"""
     mapping = {
         "fcf_yield": "fcf_yield",
+        "dividend_yield": "dividend_yield",
         "pe_ttm": "pe_ttm",
         "pb": "pb",
         "roe": "roe",

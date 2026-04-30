@@ -40,20 +40,21 @@ PRESETS: dict[str, PresetConfig] = {
     "classic_value": {
         "description": "经典价值 — 高 FCF Yield + 低估值 + 稳定盈利",
         "filters": {
-            "market_cap_min": 5e9,         # 市值 > 50 亿
+            "market_cap_min": 5e9,
             "exclude_st": True,
             "pe_ttm_positive": True,
-            "pe_ttm_max": 20,              # PE < 20
-            "debt_ratio_max": 0.6,         # 资产负债率 < 60%
-            "gross_margin_min": 0.2,       # 毛利率 > 20%
+            "pe_ttm_max": 20,
+            "debt_ratio_max": 0.6,
+            "gross_margin_min": 0.2,
         },
+        # 打分因子与硬过滤不重叠：pe_ttm/debt_ratio/gross_margin 已被过滤，
+        # 改用 roe(盈利能力) + pb(估值) + cfo_quality(现金流) 提供增量信息
         "weights": {
-            "fcf_yield":     {"weight": 0.25, "ascending": False},
-            "pe_ttm":        {"weight": 0.20, "ascending": True},
-            "gross_margin":  {"weight": 0.15, "ascending": False},
-            "debt_ratio":    {"weight": 0.15, "ascending": True},
-            "net_margin":    {"weight": 0.10, "ascending": False},
-            "cfo_quality":   {"weight": 0.15, "ascending": False},
+            "fcf_yield":     {"weight": 0.30, "ascending": False},
+            "roe":           {"weight": 0.20, "ascending": False},
+            "cfo_quality":   {"weight": 0.20, "ascending": False},
+            "net_margin":    {"weight": 0.15, "ascending": False},
+            "pb":            {"weight": 0.15, "ascending": True},
         },
         "top_n": 30,
     },
@@ -66,13 +67,14 @@ PRESETS: dict[str, PresetConfig] = {
             "gross_margin_min": 0.3,
             "net_margin_min": 0.1,
         },
+        # 硬过滤已涵盖 debt_ratio/gross_margin/net_margin，
+        # 打分聚焦盈利质量+现金流+成长+估值
         "weights": {
-            "roe":           {"weight": 0.25, "ascending": False},
-            "gross_margin":  {"weight": 0.20, "ascending": False},
-            "net_margin":    {"weight": 0.15, "ascending": False},
-            "debt_ratio":    {"weight": 0.15, "ascending": True},
-            "fcf_yield":     {"weight": 0.15, "ascending": False},
-            "cfo_quality":   {"weight": 0.10, "ascending": False},
+            "roe":           {"weight": 0.30, "ascending": False},
+            "fcf_yield":     {"weight": 0.25, "ascending": False},
+            "cfo_quality":   {"weight": 0.20, "ascending": False},
+            "pb":            {"weight": 0.15, "ascending": True},
+            "revenue_yoy":   {"weight": 0.10, "ascending": False},
         },
         "top_n": 30,
     },
@@ -84,33 +86,34 @@ PRESETS: dict[str, PresetConfig] = {
             "pe_ttm_positive": True,
             "pe_ttm_max": 30,
         },
+        # 增长策略聚焦成长因子+盈利质量，pe_ttm/debt_ratio 不重复打分
         "weights": {
-            "revenue_yoy":   {"weight": 0.20, "ascending": False},
-            "net_profit_yoy":{"weight": 0.20, "ascending": False},
-            "fcf_yield":     {"weight": 0.15, "ascending": False},
-            "pe_ttm":        {"weight": 0.15, "ascending": True},
-            "gross_margin":  {"weight": 0.15, "ascending": False},
-            "debt_ratio":    {"weight": 0.15, "ascending": True},
+            "revenue_yoy":   {"weight": 0.25, "ascending": False},
+            "net_profit_yoy":{"weight": 0.25, "ascending": False},
+            "fcf_yield":     {"weight": 0.20, "ascending": False},
+            "roe":           {"weight": 0.15, "ascending": False},
+            "cfo_quality":   {"weight": 0.15, "ascending": False},
         },
         "top_n": 30,
     },
     "dividend_value": {
         "description": "红利价值 — 高股息 + 稳定盈利 + 合理估值",
         "filters": {
-            "market_cap_min": 10e9,        # 市值 > 100 亿
+            "market_cap_min": 10e9,
             "exclude_st": True,
-            "dividend_yield_min": 0.02,    # 股息率 > 2%
+            "dividend_yield_min": 0.02,
             "pe_ttm_positive": True,
-            "pe_ttm_max": 25,              # PE < 25
-            "debt_ratio_max": 0.6,         # 资产负债率 < 60%
+            "pe_ttm_max": 25,
+            "debt_ratio_max": 0.6,
         },
+        # 股息率+盈利能力+现金流可持续性是红利策略核心
+        # pe_ttm/debt_ratio/gross_margin 已被过滤，不重复
         "weights": {
-            "dividend_yield": {"weight": 0.30, "ascending": False},
-            "fcf_yield":      {"weight": 0.20, "ascending": False},
-            "pe_ttm":         {"weight": 0.15, "ascending": True},
-            "debt_ratio":     {"weight": 0.15, "ascending": True},
-            "roe":            {"weight": 0.10, "ascending": False},
-            "gross_margin":   {"weight": 0.10, "ascending": False},
+            "dividend_yield":{"weight": 0.25, "ascending": False},
+            "fcf_yield":     {"weight": 0.25, "ascending": False},
+            "cfo_quality":   {"weight": 0.20, "ascending": False},
+            "roe":           {"weight": 0.15, "ascending": False},
+            "pb":            {"weight": 0.15, "ascending": True},
         },
         "top_n": 30,
     },
