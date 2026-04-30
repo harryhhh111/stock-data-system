@@ -1,8 +1,8 @@
 # 价值投资选股系统 — 规划方案
 
 > 创建时间：2026-04-23（v2）
-> 更新时间：2026-04-29（v4）
-> 状态：Phase 1.1 ✅ | Phase 1.2 开发中 | Phase 1.5 待规划
+> 更新时间：2026-04-30（v5）
+> 状态：Phase 1.1 ✅ | Phase 1.2 ✅ | Phase 1.5 待规划 | Phase 2.0 待规划
 
 ## 一、定位
 
@@ -30,16 +30,19 @@
 | 净利润同比增长 | ✅ | ✅ | ❌（mv_us 未计算） |
 | TTM 收入/利润/CFO/CAPEX | ✅ 公式法 | ✅ 公式法 | ⚠️ annual-only（75% 虚高已修，时效性差） |
 | EPS | ✅ | ✅ | ✅ |
-| 分红 | ❌ 表空 | ❌ 表空 | ❌ |
+| 分红 | ✅ 5,350 只（82,125 条） | ✅ 1,981 只 | ❌ |
 | 行业分类 | ✅ 申万一级 | ✅ 东方财富 F10 | ✅ SIC |
 
 ### 2.2 关键问题
 
 1. ~~**美股无日线行情**~~ ✅ 已修复：腾讯 K 线回填 683K 行（2021~2026），PE/PB/市值/FCF Yield 均已可用。
-2. **分红表为空**：`dividend_split` 无数据。A 股/港股分红代码已写，待执行同步。
+2. ~~**分红表为空**~~ ✅ 已修复：A 股 5,350 只 / 港股 1,981 只，共 82,125 条分红记录。修复了 A 股 transformer（每10股→每股）和港股 transformer（分红方案文本解析）。
 3. ~~**ROE 覆盖率低**~~ ✅ 已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。
-4. **物化视图刷新滞后**：新财报数据同步后需手动 `REFRESH MATERIALIZED VIEW`。
+4. ~~**物化视图刷新滞后**~~ ✅ 已修复：`sync_financial`/`sync_dividend`/`daily_quote` 完成后自动 `REFRESH MATERIALIZED VIEW`。
 5. **美股 TTM 时效性差**：`mv_us_indicator_ttm` 改用 annual-only 修复了 75% 虚高，但年中只有上一年年报，数据陈旧。公式法待移植。
+6. ~~**港股 CAPEX 缺失**~~ ✅ 已修复：东方财富 2024+ 年报不再包含 购建固定资产(005005)，从同年半年度/季度报告取值 fallback。修复 2,735 只港股、触发 206 次 fallback。
+7. ~~**A 股利润表大量缺失**~~ ✅ 已修复：1,873 只 A 股无收入数据，根因是增量逻辑只看 MAX(report_date) 不检查表完整性。修复后覆盖 3,545→5,193 只（94.5%）。
+8. **市值 API 偶发跳变**：已加检测（`check_market_cap_jump`）+ 自动修复（`correct_market_cap`），430 条 2026-04-24 异常市值已回算。
 
 ### 2.3 结论
 
@@ -370,11 +373,38 @@ python -m quant.analyzer 600519 --format md     # Markdown
 **方案**：复用现有腾讯接口，回填 S&P 500 + 纳斯达克 100 的日线数据。
 **结果**：519 只美股，683K 行（2021~2026），PE/PB/市值/FCF Yield 均已可用。
 
-#### 3.4.3 分红数据
+#### 3.4.3 分红数据 ✅ 已完成
 
 **问题**：`dividend_split` 表为空。
-**方案**：A 股用 `ak.stock_dividend_cninfo()` 或东方财富接口；港股用 `ak.stock_dividend_hk()`。
-**优先级**：低（分红策略可以后做）。
+**方案**：A 股用 `ak.stock_history_dividend_detail()`，港股用 `ak.stock_hk_dividend_payout_em()`。
+**修复**：A 股 transformer 修正（派息/10 转为每股 DPS）；港股 transformer 修正（解析"每股派港币5.3元"文本）。
+**结果**：A 股 5,350 只 / 港股 1,981 只，共 82,125 条记录。
+
+#### 3.4.4 港股 CAPEX 缺失 ✅ 已完成
+
+**问题**：东方财富 2024+ 年报不再包含 购建固定资产(005005)，导致 CAPEX 偏低。
+**方案**：`eastmoney_hk.py` 增加 fallback：年报缺失 005005 时，从同年半年度/季度报告取值。
+**结果**：腾讯 2025 CAPEX 从 254 亿修复为 710 亿，2735 只港股重处理，触发 206 次 fallback。
+
+#### 3.4.5 A 股利润表大量缺失 ✅ 已完成
+
+**问题**：1,873 只 A 股无 `income_statement` 数据。
+**根因**：增量逻辑只看 `MAX(report_date)` 不检查表完整性。首次同步收入 API 失败后被永久跳过。
+**修复**：`incremental.py` 增加 `tables_synced` 完整性检查；`eastmoney.py` 始终写入 `gross_profit`（None 时也保留 key）。
+**结果**：覆盖 3,545 → 5,193 只（94.5%）。
+
+#### 3.4.6 市值数据异常 ✅ 已完成
+
+**问题**：2026-04-24 腾讯 API 对 330 只港股返回错误市值（股价不变，市值暴跌 50-80%）。
+**根因**：API 偶发总股本数据错乱。
+**修复**：`daily_quote.py` 写入前用 `close × stock_share.total_shares` 校验纠正；`validate.py` 新增 `check_market_cap_jump` 检测。
+**结果**：430 条异常市值回算修复。
+
+#### 3.4.7 物化视图自动刷新 ✅ 已完成
+
+**方案**：`refresh_views_after_sync()` 按同步类型自动刷新相关视图。
+- financial → mv_financial_indicator + mv_indicator_ttm + mv_fcf_yield
+- daily → mv_fcf_yield
 
 ## 四、已知局限与改进方向
 
@@ -461,38 +491,42 @@ python -m quant.analyzer 600519 --format md     # Markdown
 ## 五、开发顺序
 
 ```
-Phase 1.0 ✅          Phase 1.1 ✅          Phase 1.2（1 周）
+Phase 1.0 ✅          Phase 1.1 ✅          Phase 1.2 ✅
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
 │ 数据补全          │  │ 选股筛选器        │  │ 个股分析          │
 │                  │  │                  │  │                  │
-│ • ROE fallback   │  │ • query.py       │  │ • financial.py   │
-│   修复物化视图    │  │ • filters.py     │  │ • valuation.py   │
-│ • 刷新物化视图    │  │ • scorer.py      │  │ • trend.py       │
-│ • 验证数据质量    │  │ • presets.py     │  │ • report.py      │
-│                  │  │ • CLI __main__   │  │ • CLI __main__   │
-└──────────────────┘  └──────────────────┘  └──────────────────┘
-                            │
-                            ▼
-                    Phase 1.5（筛选器改进）
-                    ┌──────────────────┐
-                    │ 行业感知 + 去相关 │
-                    │                  │
-                    │ • 行业内排名      │
-                    │ • 精简相关因子    │
-                    │ • 硬过滤/打分解耦 │
-                    │ • NaN 降权        │
-                    │ • 历史分位因子    │
-                    └──────────────────┘
-                            │
-                            ▼
+│ • ROE fallback   │  │ • query.py       │  │ • query.py       │
+│ • ROE 修复        │  │ • filters.py     │  │ • analysis.py    │
+│ • 美股日线行情    │  │ • scorer.py      │  │ • report.py      │
+│ • 丰富数据覆盖    │  │ • presets.py     │  │ • CLI __main__   │
+│ • 补全分红/CF     │  │ • CLI __main__   │  │                  │
+└──────────────────┘  │ • dividend_value  │  └──────────────────┘
+                            │   preset 🆕       │
+                            └──────────────────┘
+                                    │
+                                    ▼
+                            Phase 1.5（筛选器改进）
+                            ┌──────────────────┐
+                            │ 行业感知 + 去相关 │
+                            │                  │
+                            │ • 行业内排名      │
+                            │ • 精简相关因子    │
+                            │ • 硬过滤/打分解耦 │
+                            │ • NaN 降权        │
+                            │ • 历史分位因子    │
+                            │ • 查询性能优化    │
+                            └──────────────────┘
+                                    │
+                                    ▼
 Phase 2.0（后期）
 ┌──────────────────┐
 │ 美股完善 + 分红   │
 │                  │
 │ • 美股 TTM 公式法 │
-│ • 分红数据同步    │
-│ • 分红策略预设    │
+│ • ~~分红数据同步~~✅│
+│ • ~~分红策略预设~~✅│
 │ • 美股 analyzer   │
+│ • 历史市值回算    │
 └──────────────────┘
 ```
 

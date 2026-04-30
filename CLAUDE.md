@@ -45,7 +45,23 @@ python -m core.validate --market A --output json  # A-share with JSON output
 # Screener (quant layer)
 python -m quant.screener --preset classic_value --market CN_A
 python -m quant.screener --preset quality --market all --top 50
+python -m quant.screener --preset growth_value --market CN_HK
+python -m quant.screener --preset dividend_value --market CN_A   # 红利价值
 python -m quant.screener --list-presets
+
+# Analyzer (quant layer)
+python -m quant.analyzer 600519                      # auto-detect market
+python -m quant.analyzer 00700 --market CN_HK        # HK stock
+python -m quant.analyzer 600519 --format json        # JSON output
+python -m quant.analyzer 600519 --format md          # Markdown output
+
+# Quality checks
+python -m quant.checks.fcf_roe_check --market all --min-mcap 1e9 --json
+
+# Reparse scripts (re-transform from raw_snapshot or re-fetch)
+python scripts/reparse_hk_cf.py              # HK CAPEX fix
+python scripts/reparse_cn_a_income.py        # A-share income backfill
+python scripts/reparse_hk_income_balance.py  # HK income/balance backfill
 
 # Config self-check
 python config.py
