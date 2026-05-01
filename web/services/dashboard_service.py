@@ -1,4 +1,5 @@
 """Dashboard service — 仪表板聚合数据。"""
+import os
 from datetime import date, timedelta
 
 from db import Connection
@@ -6,16 +7,21 @@ from db import Connection
 
 def get_stats() -> dict:
     """聚合仪表板数据，返回 DashboardStats 结构。"""
+    markets = os.getenv("STOCK_MARKETS", "CN_A,CN_HK").split(",")
     with Connection() as conn:
         cur = conn.cursor()
 
         # 1. 各市场股票总数
-        cur.execute("SELECT market, COUNT(*) FROM stock_info GROUP BY market")
+        cur.execute(
+            "SELECT market, COUNT(*) FROM stock_info WHERE market = ANY(%s) GROUP BY market",
+            (markets,)
+        )
         total_stocks = {r[0]: r[1] for r in cur.fetchall()}
 
         # 2. 各市场同步状态
         cur.execute(
-            "SELECT market, status, COUNT(*) FROM sync_progress GROUP BY market, status"
+            "SELECT market, status, COUNT(*) FROM sync_progress WHERE market = ANY(%s) GROUP BY market, status",
+            (markets,)
         )
         sync_status: dict[str, dict] = {}
         for market, status, cnt in cur.fetchall():
@@ -58,28 +64,32 @@ def get_stats() -> dict:
             SELECT si.market, MAX(inc.report_date)
             FROM income_statement inc
             JOIN stock_info si ON inc.stock_code = si.stock_code
+            WHERE si.market = ANY(%s)
             GROUP BY si.market
-            """
+            """,
+            (markets,)
         )
         fin_latest = {r[0]: r[1] for r in cur.fetchall()}
 
         cur.execute(
-            "SELECT market, MAX(trade_date) FROM daily_quote GROUP BY market"
+            "SELECT market, MAX(trade_date) FROM daily_quote WHERE market = ANY(%s) GROUP BY market",
+            (markets,)
         )
         quote_latest = {r[0]: r[1] for r in cur.fetchall()}
 
         # US financial last report date from us_income_statement
-        cur.execute(
-            """
-            SELECT MAX(inc.report_date)
-            FROM us_income_statement inc
-            JOIN stock_info si ON inc.stock_code = si.stock_code
-            WHERE si.market = 'US'
-            """
-        )
-        us_fin = cur.fetchone()[0]
-        if us_fin:
-            fin_latest["US"] = us_fin
+        if "US" in markets:
+            cur.execute(
+                """
+                SELECT MAX(inc.report_date)
+                FROM us_income_statement inc
+                JOIN stock_info si ON inc.stock_code = si.stock_code
+                WHERE si.market = 'US'
+                """
+            )
+            us_fin = cur.fetchone()[0]
+            if us_fin:
+                fin_latest["US"] = us_fin
 
         # US quote from daily_quote (if synced on this server)
         # already covered by daily_quote query above
@@ -106,16 +116,18 @@ def get_stats() -> dict:
 
         # 5. 校验问题统计
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE created_at >= now() - interval '24 hours'"
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND created_at >= now() - interval '24 hours'",
+            (markets,)
         )
         errors_24h = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE severity = 'warning' AND created_at >= now() - interval '7 days'"
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND severity = 'warning' AND created_at >= now() - interval '7 days'",
+            (markets,)
         )
         warnings_7d = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM validation_results")
+        cur.execute("SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s)", (markets,))
         total_open = cur.fetchone()[0]
 
         validation_issues = {
@@ -126,7 +138,8 @@ def get_stats() -> dict:
 
         # 6. 今日异常数
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE severity = 'error' AND created_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND severity = 'error' AND created_at::date = CURRENT_DATE",
+            (markets,)
         )
         anomalies_today = cur.fetchone()[0]
 
@@ -138,9 +151,11 @@ def get_stats() -> dict:
                    to_char(vr.created_at, 'YYYY-MM-DD HH24:MI:SS') AS created_at
             FROM validation_results vr
             LEFT JOIN stock_info si ON vr.stock_code = si.stock_code
+            WHERE vr.market = ANY(%s)
             ORDER BY vr.created_at DESC
             LIMIT 10
-            """
+            """,
+            (markets,)
         )
         recent_issues = []
         for row in cur.fetchall():

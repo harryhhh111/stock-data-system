@@ -27,8 +27,9 @@ export default defineConfig({
         rewrite: (p) => p.replace(/^\/api\/cn/, ""),
       },
       "/api/us": {
-        target: "http://localhost:8000",
+        target: "http://43.167.190.219:8000",
         rewrite: (p) => p.replace(/^\/api\/us/, ""),
+        changeOrigin: true,
       },
     },
   },
