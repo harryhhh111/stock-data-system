@@ -96,7 +96,7 @@ def get_stats() -> dict:
 
         today = date.today()
         finan_stale_days = 90
-        quote_stale_days = 1
+        quote_stale_days = 5
 
         freshness = []
         for market in total_stocks:

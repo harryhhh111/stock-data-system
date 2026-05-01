@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { syncApi } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Market } from "@/lib/types/common";
+import type { SyncStatusByMarket } from "@/lib/types/sync";
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
@@ -31,11 +32,25 @@ export function SyncPage() {
 
   const marketParam = market === "all" ? undefined : market;
 
-  const { data: statusList, isLoading: statusLoading } = useQuery({
-    queryKey: ["sync", "status"],
-    queryFn: () => syncApi.status(),
-    refetchInterval: 30_000,
+  const statusResults = useQueries({
+    queries: [
+      {
+        queryKey: ["sync", "status", "CN"],
+        queryFn: () => syncApi.status(),
+        refetchInterval: 30_000,
+      },
+      {
+        queryKey: ["sync", "status", "US"],
+        queryFn: () => syncApi.status("US"),
+        refetchInterval: 30_000,
+      },
+    ],
   });
+
+  const cnStatus = statusResults[0].data ?? [];
+  const usStatus = statusResults[1].data ?? [];
+  const statusList = [...cnStatus, ...usStatus];
+  const statusLoading = statusResults.some((r) => r.isLoading && !r.data);
 
   const { data: progress, isLoading: progressLoading } = useQuery({
     queryKey: ["sync", "progress", market, progressPage],

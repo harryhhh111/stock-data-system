@@ -1,20 +1,27 @@
 """Sync service — 同步状态与日志。"""
+import os
 from db import Connection
 
 
 def get_status(market: str | None) -> dict:
     """同步进度摘要（市场级），返回 SyncStatusByMarket[]。"""
+    # 根据 STOCK_MARKETS 环境变量过滤市场
+    allowed_markets = os.getenv("STOCK_MARKETS", "CN_A,CN_HK").split(",")
+
     with Connection() as conn:
         cur = conn.cursor()
 
         if market:
+            if market not in allowed_markets:
+                return []
             cur.execute(
                 "SELECT market, status, COUNT(*) FROM sync_progress WHERE market=%s GROUP BY market, status",
                 (market,),
             )
         else:
             cur.execute(
-                "SELECT market, status, COUNT(*) FROM sync_progress GROUP BY market, status"
+                "SELECT market, status, COUNT(*) FROM sync_progress WHERE market = ANY(%s) GROUP BY market, status",
+                (allowed_markets,)
             )
 
         markets: dict[str, dict] = {}
@@ -52,11 +59,20 @@ def get_status(market: str | None) -> dict:
 
 def get_progress(market: str | None, limit: int, offset: int) -> dict:
     """个股同步进度，返回 Paginated<SyncProgressEntry>。"""
+    # 根据 STOCK_MARKETS 环境变量过滤市场
+    allowed_markets = os.getenv("STOCK_MARKETS", "CN_A,CN_HK").split(",")
+
     with Connection() as conn:
         cur = conn.cursor()
 
-        where = f"WHERE sp.market = %s" if market else ""
-        params = [market, limit, offset] if market else [limit, offset]
+        if market:
+            if market not in allowed_markets:
+                return {"items": [], "total": 0, "limit": limit, "offset": offset}
+            where = f"WHERE sp.market = %s"
+            params = [market, limit, offset]
+        else:
+            where = f"WHERE sp.market = ANY(%s)"
+            params = [allowed_markets, limit, offset]
 
         cur.execute(
             f"""
@@ -96,11 +112,21 @@ def get_progress(market: str | None, limit: int, offset: int) -> dict:
 
 def get_log(market: str | None, limit: int, offset: int) -> dict:
     """同步日志历史，返回 Paginated<SyncLogEntry>。"""
+    # 根据 STOCK_MARKETS 环境变量过滤市场
+    allowed_markets = os.getenv("STOCK_MARKETS", "CN_A,CN_HK").split(",")
+
     with Connection() as conn:
         cur = conn.cursor()
 
-        where = "WHERE config_json->>'market' = %s" if market else ""
-        params = [market, limit, offset] if market else [limit, offset]
+        if market:
+            if market not in allowed_markets:
+                return {"items": [], "total": 0, "limit": limit, "offset": offset}
+            where = "WHERE config_json->>'market' = %s"
+            params = [market, limit, offset]
+        else:
+            # config_json->>'market' 可能为空，过滤空值和不在允许列表中的值
+            where = "WHERE (config_json->>'market' IS NULL OR config_json->>'market' = ANY(%s))"
+            params = [allowed_markets, limit, offset]
 
         cur.execute(
             f"""
