@@ -112,8 +112,13 @@ git push
 6. 配置构建设置：
    - **Framework preset**: `Vite`
    - **Build command**: `npm run build`
-   - **Build output directory**: `frontend/dist`
-   - **Root directory**: `/`（或 `frontend/` 如果 frontend 是子目录）
+   - **Build output directory**: `dist`
+   - **Root directory**: `frontend`
+
+**说明**：
+- `Root directory: frontend/` - Cloudflare Pages 会在 frontend/ 子目录下查找 `package.json`
+- `Build output directory: dist` - 相对于 `frontend/`，即 `frontend/dist/`
+- `Build command: npm run build` - 会在 `frontend/` 目录下执行
 
 ### 2.3 配置环境变量
 
