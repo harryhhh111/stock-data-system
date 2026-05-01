@@ -1,6 +1,6 @@
 # 多服务器前端配置修复清单
 
-> 状态：待实施  
+> 状态：进行中（#4 #5 待实施，其余已完成）  
 > 日期：2026-05-02
 
 ## 1. 结论
@@ -34,7 +34,7 @@
 | 1 | 海外后端 `43.167.190.219:8000` 连接失败 | 所有 US 接口不可用 | 海外服务器需确认后端运行 + 防火墙开放 8000 端口 |
 | 2 | `syncApi.progress` / `syncApi.log` 在 market=all 时只请求 CN | 缺 US 同步进度和日志 | 按市场筛选时正常；market=all 时只显示 CN 数据，可接受 |
 | 3 | `qualityApi.summary` / `qualityApi.issues` 只请求 CN | 缺 US 质量数据 | 同上，按市场筛选时正常 |
-| 4 | `screenerApi.presets` 只请求 CN | 选 US 市场时预设列表为空 | 修改为传 market 参数路由到海外后端 |
+| 4 | `screenerApi.presets` 只请求 CN | 选 US 市场时预设列表实际可用（预设不区分市场），但路由不规范 | 修改调用方传入 market 参数（`client.ts` 已支持） |
 | 5 | `analyzerApi.search` market=all 时只请求 CN | 搜不到 US 股票 | 修改为 market=all 时分别请求两个后端合并结果 |
 
 ### 2.3 各接口路由状态
@@ -47,7 +47,7 @@
 | sync/log | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
 | quality/summary | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
 | quality/issues | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
-| screener/presets | ✅ CN 后端 | ❌ 未传 market | ⚠️ 只返回 CN | 需修复 #4 |
+| screener/presets | ✅ CN 后端 | ⚠️ 未传 market（预设不区分市场） | ⚠️ 只返回 CN | 需修复 #4 |
 | screener/run | ✅ CN 后端 | ✅ US 后端 | N/A | 单市场操作，无需合并 |
 | analyzer/search | ✅ CN 后端 | ✅ US 后端 | ⚠️ 搜不到 US | 需修复 #5 |
 | analyzer/analyze | ✅ CN 后端 | ✅ US 后端 | N/A | 单市场操作，无需合并 |
@@ -81,17 +81,12 @@ curl -s http://43.167.190.219:8000/api/v1/health
 
 ### 3.2 screener/presets 修复（#4）
 
-`client.ts` 中 `screenerApi.presets` 需要传 market 参数：
+> **注意：** 预设策略（classic_value 等）不区分市场，所以即使路由到 CN 后端也能拿到正确数据。修复只是为了路由规范。
+
+`client.ts` 中 `screenerApi.presets` 已接受 `market` 参数，只需在调用方传入。同时填充 URL query param 让后端也能收到 market：
 
 ```typescript
-// 修改前
-presets: (market?: Market) =>
-  apiFetch<{ presets: Preset[]; factor_labels: Record<string, string> }>(
-    "/screener/presets",
-    { market },
-  ),
-
-// 修改后 — 传 market 查询参数 + 路由
+// client.ts: presets 函数加上 query string
 presets: (market?: Market) => {
   const q = new URLSearchParams();
   if (market) q.set("market", market);
@@ -156,8 +151,8 @@ const results = useMemo(() => {
 
 理由：
 - 分页合并逻辑复杂（排序、total、offset 对齐），投入产出比低
-- 用户可以切到 US 市场看 US 数据，交互上完全可以接受
-- 如果未来确实需要 market=all 的分页合并，可以再引入
+- 用户切 market tab 分别查看 CN/US 数据是标准 UX 模式，不需要在 market=all 时强行展示跨市场合并列表
+- 当前切到 US 市场时，progress / log / issues 会路由到 US 后端，功能完整
 
 ## 4. 后端 market 过滤保留
 
