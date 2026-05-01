@@ -115,11 +115,15 @@ export const qualityApi = {
 
 // ── Screener ──
 export const screenerApi = {
-  presets: (market?: Market) =>
-    apiFetch<{ presets: import("@/lib/types/screener").Preset[]; factor_labels: Record<string, string> }>(
-      "/screener/presets",
+  presets: (market?: Market) => {
+    const q = new URLSearchParams();
+    if (market) q.set("market", market);
+    const qs = q.toString();
+    return apiFetch<{ presets: import("@/lib/types/screener").Preset[]; factor_labels: Record<string, string> }>(
+      `/screener/presets${qs ? `?${qs}` : ""}`,
       { market },
-    ),
+    );
+  },
   run: (params: { market: Market; preset?: string; top_n?: number }) =>
     apiFetch<import("@/lib/types/screener").ScreenerResult>("/screener/run", {
       method: "POST",

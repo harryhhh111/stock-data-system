@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { syncApi } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Market } from "@/lib/types/common";
-import type { SyncStatusByMarket } from "@/lib/types/sync";
+import type { SyncProgressEntry, SyncLogEntry } from "@/lib/types/sync";
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
@@ -144,7 +144,7 @@ export function SyncPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {progress.items.map((item) => (
+                    {progress.items.map((item: SyncProgressEntry) => (
                       <TableRow key={`${item.stock_code}-${item.market}`}>
                         <TableCell className="font-medium whitespace-nowrap">
                           {item.stock_name}
@@ -200,7 +200,7 @@ export function SyncPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {log.items.map((item) => (
+                    {log.items.map((item: SyncLogEntry) => (
                       <TableRow key={item.id}>
                         <TableCell className="text-xs text-muted-foreground">{item.id}</TableCell>
                         <TableCell>{item.data_type}</TableCell>

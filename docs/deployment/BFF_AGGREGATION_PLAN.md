@@ -1,6 +1,6 @@
 # 多服务器前端配置修复清单
 
-> 状态：进行中（#4 #5 待实施，其余已完成）  
+> 状态：✅ 全部完成
 > 日期：2026-05-02
 
 ## 1. 结论
@@ -34,8 +34,8 @@
 | 1 | 海外后端 `43.167.190.219:8000` 连接失败 | 所有 US 接口不可用 | 海外服务器需确认后端运行 + 防火墙开放 8000 端口 |
 | 2 | `syncApi.progress` / `syncApi.log` 在 market=all 时只请求 CN | 缺 US 同步进度和日志 | 按市场筛选时正常；market=all 时只显示 CN 数据，可接受 |
 | 3 | `qualityApi.summary` / `qualityApi.issues` 只请求 CN | 缺 US 质量数据 | 同上，按市场筛选时正常 |
-| 4 | `screenerApi.presets` 只请求 CN | 选 US 市场时预设列表实际可用（预设不区分市场），但路由不规范 | 修改调用方传入 market 参数（`client.ts` 已支持） |
-| 5 | `analyzerApi.search` market=all 时只请求 CN | 搜不到 US 股票 | 修改为 market=all 时分别请求两个后端合并结果 |
+| 4 | `screenerApi.presets` 只请求 CN | 选 US 市场时预设列表实际可用（预设不区分市场），但路由不规范 | ✅ 已修复：client.ts 加 query string + screener-page 传 market |
+| 5 | `analyzerApi.search` market=all 时只请求 CN | 搜不到 US 股票 | ✅ 已修复：stock-search.tsx 用 useQueries 分别请求 CN/US 合并 |
 
 ### 2.3 各接口路由状态
 
@@ -47,9 +47,9 @@
 | sync/log | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
 | quality/summary | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
 | quality/issues | ✅ CN 后端 | ✅ US 后端 | ⚠️ 只返回 CN | 按市场筛选正常 |
-| screener/presets | ✅ CN 后端 | ⚠️ 未传 market（预设不区分市场） | ⚠️ 只返回 CN | 需修复 #4 |
+| screener/presets | ✅ CN 后端 | ✅ US 后端 | ✅ 传 market 路由 | 已修复 #4 |
 | screener/run | ✅ CN 后端 | ✅ US 后端 | N/A | 单市场操作，无需合并 |
-| analyzer/search | ✅ CN 后端 | ✅ US 后端 | ⚠️ 搜不到 US | 需修复 #5 |
+| analyzer/search | ✅ CN 后端 | ✅ US 后端 | ✅ useQueries 合并 | 已修复 #5 |
 | analyzer/analyze | ✅ CN 后端 | ✅ US 后端 | N/A | 单市场操作，无需合并 |
 
 ## 3. 修复计划
@@ -172,7 +172,7 @@ const results = useMemo(() => {
 - [ ] 海外后端 `/dashboard/stats` 只返回 US
 - [ ] 前端 Dashboard 同时显示 CN + US 数据
 - [ ] 前端 Sync Status 同时显示 CN + US
-- [ ] 前端 Screener 选 US 市场时 presets 正常加载
-- [ ] 前端 Analyzer 搜索 market=all 时能搜到 US 股票
+- [x] 前端 Screener 选 US 市场时 presets 正常加载
+- [x] 前端 Analyzer 搜索 market=all 时能搜到 US 股票
 - [ ] 前端 Screener/Analyzer 选 US 市场时功能正常
 - [ ] 海外后端断开时，CN 数据正常显示，US 显示错误/空状态

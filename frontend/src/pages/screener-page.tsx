@@ -14,8 +14,8 @@ export function ScreenerPage() {
   const { market, setMarket, preset, setPreset, topN, setTopN } = useScreenerStore();
 
   const { data: presetsData } = useQuery({
-    queryKey: ["screener", "presets"],
-    queryFn: () => screenerApi.presets(),
+    queryKey: ["screener", "presets", market],
+    queryFn: () => screenerApi.presets(market),
     staleTime: 300_000,
   });
 

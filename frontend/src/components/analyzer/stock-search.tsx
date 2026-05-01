@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { Command } from "cmdk";
 import { Badge } from "@/components/ui/badge";
 import { Search, Clock, X } from "lucide-react";
@@ -24,12 +24,30 @@ export function StockSearch({ market, onSelect }: Props) {
     return () => clearTimeout(timer);
   }, [query]);
 
-  const { data: results } = useQuery({
-    queryKey: ["analyzer", "search", debouncedQuery, market],
-    queryFn: () => analyzerApi.search(debouncedQuery, market === "all" ? undefined : market),
-    enabled: debouncedQuery.length >= 2,
-    staleTime: 60_000,
+  const searchResults = useQueries({
+    queries: [
+      {
+        queryKey: ["analyzer", "search", debouncedQuery, "CN"],
+        queryFn: () => analyzerApi.search(debouncedQuery, "CN_A"),
+        enabled: debouncedQuery.length >= 2 && (market === "all" || market === "CN_A" || market === "CN_HK"),
+        staleTime: 60_000,
+      },
+      {
+        queryKey: ["analyzer", "search", debouncedQuery, "US"],
+        queryFn: () => analyzerApi.search(debouncedQuery, "US"),
+        enabled: debouncedQuery.length >= 2 && (market === "all" || market === "US"),
+        staleTime: 60_000,
+      },
+    ],
   });
+
+  const results = useMemo(() => {
+    const cn = searchResults[0].data ?? [];
+    const us = searchResults[1].data ?? [];
+    if (market === "US") return us;
+    if (market !== "all") return cn;
+    return [...cn, ...us];
+  }, [searchResults, market]);
 
   const handleSelect = useCallback((stock: StockSearchResult) => {
     setOpen(false);
