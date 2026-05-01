@@ -1,0 +1,36 @@
+# Systemd 服务文件
+# 放置位置: /etc/systemd/system/stock-web.service
+# 启用: sudo systemctl enable stock-web
+# 启动: sudo systemctl start stock-web
+# 查看日志: sudo journalctl -u stock-web -f
+
+[Unit]
+Description=Stock Data Web API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=vinci
+Group=vinci
+WorkingDirectory=/home/vinci/projects/stock_data
+Environment="PATH=/home/vinci/projects/stock_data/venv/bin"
+ExecStart=/home/vinci/projects/stock_data/venv/bin/python -m web --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stock-web
+
+# 资源限制
+MemoryMax=1G
+CPUQuota=100%
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/vinci/projects/stock_data
+
+[Install]
+WantedBy=multi-user.target
