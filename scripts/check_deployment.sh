@@ -91,17 +91,17 @@ else
     exit 1
 fi
 
- if [ -f "docs/deployment/PHASE4_DEPLOYMENT.md" ]; then
+if [ -f "docs/deployment/PHASE4_DEPLOYMENT.md" ]; then
     echo "✅ 部署文档存在"
 else
     echo "❌ 部署文档缺失"
     exit 1
 fi
 
- echo ""
- echo "=== 所有检查通过！可以开始部署 ==="
- echo ""
- echo "下一步："
- echo "1. 查看 docs/deployment/PHASE4_DEPLOYMENT.md 获取详细部署指南"
- echo "2. 按照指南完成 Nginx + systemd 配置"
- echo "3. 连接 Cloudflare Pages 部署前端"
+echo ""
+echo "=== 所有检查通过！可以开始部署 ==="
+echo ""
+echo "下一步："
+echo "1. 查看 docs/deployment/PHASE4_DEPLOYMENT.md 获取详细部署指南"
+echo "2. 按照指南完成 Nginx + systemd 配置"
+echo "3. 连接 Cloudflare Pages 部署前端"

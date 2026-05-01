@@ -14,7 +14,7 @@ User=vinci
 Group=vinci
 WorkingDirectory=/home/vinci/projects/stock_data
 Environment="PATH=/home/vinci/projects/stock_data/venv/bin"
- ExecStart=/home/vinci/projects/stock_data/venv/bin/python -m web
+ExecStart=/home/vinci/projects/stock_data/venv/bin/python -m web
 Restart=always
 RestartSec=5
 StandardOutput=journal
