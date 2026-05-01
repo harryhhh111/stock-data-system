@@ -1,6 +1,6 @@
 # 多服务器前端配置修复清单
 
-> 状态：✅ 全部完成
+> 状态：✅ 代码全部完成，剩余验证项需前端部署后确认
 > 日期：2026-05-02
 
 ## 1. 结论
@@ -31,7 +31,7 @@
 
 | # | 问题 | 影响 | 修复方式 |
 |---|------|------|---------|
-| 1 | 海外后端 `43.167.190.219:8000` 连接失败 | 所有 US 接口不可用 | 海外服务器需确认后端运行 + 防火墙开放 8000 端口 |
+| 1 | 海外后端 `43.167.190.219:8000` 连接失败 | 所有 US 接口不可用 | ✅ 已修复：后端运行中，监听 0.0.0.0:8000，公网可访问 |
 | 2 | `syncApi.progress` / `syncApi.log` 在 market=all 时只请求 CN | 缺 US 同步进度和日志 | 按市场筛选时正常；market=all 时只显示 CN 数据，可接受 |
 | 3 | `qualityApi.summary` / `qualityApi.issues` 只请求 CN | 缺 US 质量数据 | 同上，按市场筛选时正常 |
 | 4 | `screenerApi.presets` 只请求 CN | 选 US 市场时预设列表实际可用（预设不区分市场），但路由不规范 | ✅ 已修复：client.ts 加 query string + screener-page 传 market |
@@ -166,13 +166,13 @@ const results = useMemo(() => {
 
 完成修复后，逐项验证：
 
-- [ ] 海外后端 `43.167.190.219:8000` 可连通
-- [ ] 海外后端 `STOCK_MARKETS=US`，`/health` 正常
-- [ ] 国内后端 `/dashboard/stats` 只返回 CN_A + CN_HK
-- [ ] 海外后端 `/dashboard/stats` 只返回 US
-- [ ] 前端 Dashboard 同时显示 CN + US 数据
-- [ ] 前端 Sync Status 同时显示 CN + US
+- [x] 海外后端 `43.167.190.219:8000` 可连通
+- [x] 海外后端 `STOCK_MARKETS=US`，`/health` 正常
+- [ ] 国内后端 `/dashboard/stats` 只返回 CN_A + CN_HK（需在国内服务器验证）
+- [x] 海外后端 `/dashboard/stats` 只返回 US
+- [ ] 前端 Dashboard 同时显示 CN + US 数据（需前端部署后验证）
+- [ ] 前端 Sync Status 同时显示 CN + US（需前端部署后验证）
 - [x] 前端 Screener 选 US 市场时 presets 正常加载
 - [x] 前端 Analyzer 搜索 market=all 时能搜到 US 股票
-- [ ] 前端 Screener/Analyzer 选 US 市场时功能正常
-- [ ] 海外后端断开时，CN 数据正常显示，US 显示错误/空状态
+- [x] 前端 Screener/Analyzer 选 US 市场时功能正常（代码已验证）
+- [ ] 海外后端断开时，CN 数据正常显示，US 显示错误/空状态（需前端部署后验证）
