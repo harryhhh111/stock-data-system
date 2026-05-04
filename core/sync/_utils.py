@@ -61,8 +61,8 @@ def _em_code(stock_code: str) -> str:
 # ── 市场配置注册 ──────────────────────────────────────────
 MARKET_CONFIG: dict[str, dict] = {
     "CN_A": {
-        "fetcher_cls": "fetchers.a_financial.AFinancialFetcher",
-        "transformer_cls": "transformers.eastmoney.EastmoneyTransformer",
+        "fetcher_cls": "core.fetchers.a_financial.AFinancialFetcher",
+        "transformer_cls": "core.transformers.eastmoney.EastmoneyTransformer",
         "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
@@ -77,8 +77,8 @@ MARKET_CONFIG: dict[str, dict] = {
         },
     },
     "CN_HK": {
-        "fetcher_cls": "fetchers.hk_financial.HkFinancialFetcher",
-        "transformer_cls": "transformers.eastmoney_hk.EastmoneyHkTransformer",
+        "fetcher_cls": "core.fetchers.hk_financial.HkFinancialFetcher",
+        "transformer_cls": "core.transformers.eastmoney_hk.EastmoneyHkTransformer",
         "tables": ["income_statement", "balance_sheet", "cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
@@ -90,8 +90,8 @@ MARKET_CONFIG: dict[str, dict] = {
         "fetch_kwargs_builder": lambda stock_code, fetcher: {"stock_code": stock_code},
     },
     "US": {
-        "fetcher_cls": "fetchers.us_financial.USFinancialFetcher",
-        "transformer_cls": "transformers.us_gaap.USGAAPTransformer",
+        "fetcher_cls": "core.fetchers.us_financial.USFinancialFetcher",
+        "transformer_cls": "core.transformers.us_gaap.USGAAPTransformer",
         "tables": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
         "conflict_keys": ["stock_code", "report_date", "report_type"],
         "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
