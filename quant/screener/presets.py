@@ -14,6 +14,7 @@ class FilterConfig(TypedDict, total=False):
     pb_max: float | None                  # PB 上限
     min_days_since_list: int | None       # 最少上市天数
     fcf_yield_min: float | None           # 最低 FCF Yield
+    roe_min: float | None                 # 最低 ROE
     debt_ratio_max: float | None          # 最高资产负债率
     gross_margin_min: float | None        # 最低毛利率
     net_margin_min: float | None          # 最低净利率
@@ -37,6 +38,25 @@ class PresetConfig(TypedDict):
 # ───────────────────────────────────────────────
 
 PRESETS: dict[str, PresetConfig] = {
+    "fcf_roe_value": {
+        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + ROE > 10% + 低估值 + 排除金融地产",
+        "filters": {
+            "market_cap_min": 1e10,           # 市值 > 100 亿
+            "exclude_st": True,
+            "exclude_industries": ["银行", "非银金融", "房地产"],
+            "fcf_yield_min": 0.10,             # FCF Yield > 10%
+            "roe_min": 0.10,                   # ROE > 10%
+        },
+        # ROE/FCF Yield 已被硬过滤，打分聚焦估值 + 现金流可持续性 + 成长
+        "weights": {
+            "fcf_yield":     {"weight": 0.30, "ascending": False},
+            "cfo_quality":   {"weight": 0.25, "ascending": False},
+            "pb":            {"weight": 0.20, "ascending": True},
+            "revenue_yoy":   {"weight": 0.15, "ascending": False},
+            "gross_margin":  {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 30,
+    },
     "classic_value": {
         "description": "经典价值 — 高 FCF Yield + 低估值 + 稳定盈利",
         "filters": {

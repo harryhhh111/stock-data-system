@@ -65,6 +65,10 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if filters.get("net_margin_min") is not None:
         result = result[result["net_margin"] >= filters["net_margin_min"]]
 
+    # ROE 下限
+    if filters.get("roe_min") is not None:
+        result = result[result["roe"] >= filters["roe_min"]]
+
     # 股息率下限（列不存在时跳过，如美股无股息数据）
     if filters.get("dividend_yield_min") is not None and "dividend_yield" in result.columns:
         result = result[result["dividend_yield"].notna() & (result["dividend_yield"] >= filters["dividend_yield_min"])]
