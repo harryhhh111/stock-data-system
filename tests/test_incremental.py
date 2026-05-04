@@ -11,6 +11,23 @@ from datetime import date
 from unittest.mock import patch, MagicMock, call
 
 
+# 辅助：构造 get_sync_progress_report_dates 的返回值
+def _progress(stock_code, last_report_date, tables_synced=None):
+    """构造 {stock_code: (last_report_date, tables_synced)} 格式。"""
+    if tables_synced is None:
+        tables_synced = ["income_statement", "balance_sheet", "cash_flow_statement"]
+    return {stock_code: (last_report_date, tables_synced)}
+
+
+def _progress_multi(*args):
+    """构造多只股票的 progress 字典。args 每项为 (code, date, tables)。"""
+    result = {}
+    for code, d, tables in args:
+        result[code] = (d, tables if tables is not None else
+                        ["income_statement", "balance_sheet", "cash_flow_statement"])
+    return result
+
+
 class TestDetermineStocksToSync:
     """增量同步判断核心逻辑测试。"""
 
@@ -27,7 +44,7 @@ class TestDetermineStocksToSync:
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
     def test_all_stocks_have_same_dates_are_skipped(self, mock_db_max, mock_progress):
-        """DB 中最新报告期 = sync_progress 记录 → 跳过。"""
+        """DB 中最新报告期 = sync_progress 记录，且三表完整 → 跳过。"""
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
@@ -35,8 +52,8 @@ class TestDetermineStocksToSync:
             "000002": date(2024, 9, 30),
         }
         mock_progress.return_value = {
-            "000001": date(2024, 9, 30),
-            "000002": date(2024, 9, 30),
+            "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            "000002": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
         }
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
@@ -56,8 +73,8 @@ class TestDetermineStocksToSync:
             "000002": date(2024, 9, 30),
         }
         mock_progress.return_value = {
-            "000001": date(2024, 9, 30),  # DB 有更新
-            "000002": date(2024, 9, 30),  # 相同，跳过
+            "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            "000002": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
         }
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
@@ -66,6 +83,25 @@ class TestDetermineStocksToSync:
         assert len(pending) == 1
         assert pending[0] == ("000001", "CN_A")
         assert skipped == 1
+
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
+    def test_incomplete_tables_triggers_sync(self, mock_db_max, mock_progress):
+        """即使日期相同，三表不完整也需补同步。"""
+        from core.incremental import determine_stocks_to_sync
+
+        mock_db_max.return_value = {
+            "000001": date(2024, 9, 30),
+        }
+        mock_progress.return_value = {
+            "000001": (date(2024, 9, 30), ["income_statement"]),
+        }
+
+        stocks = [("000001", "CN_A")]
+        pending, skipped = determine_stocks_to_sync(stocks, force=False)
+
+        assert len(pending) == 1
+        assert skipped == 0
 
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
@@ -118,12 +154,12 @@ class TestDetermineStocksToSync:
         def progress_side_effect(market):
             if market == "CN_A":
                 return {
-                    "000001": date(2024, 9, 30),  # 相同，跳过
-                    "000002": date(2024, 3, 31),  # DB 更新，同步
+                    "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+                    "000002": (date(2024, 3, 31), ["income_statement", "balance_sheet", "cash_flow_statement"]),
                 }
             elif market == "CN_HK":
                 return {
-                    "00700": date(2024, 6, 30),  # 相同，跳过
+                    "00700": (date(2024, 6, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
                 }
             return {}
 
@@ -153,8 +189,8 @@ class TestDetermineStocksToSync:
             "GOOGL": date(2024, 6, 30),
         }
         mock_progress.return_value = {
-            "AAPL": date(2024, 9, 30),  # 相同
-            "MSFT": date(2024, 6, 30),  # 相同
+            "AAPL": (date(2024, 9, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "MSFT": (date(2024, 6, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
         }
 
         stocks = [("AAPL", "US"), ("MSFT", "US"), ("GOOGL", "US")]
@@ -210,18 +246,32 @@ class TestGetSyncProgressReportDates:
 
     @patch("core.incremental.execute")
     def test_returns_dict(self, mock_execute):
-        """正确返回 progress 记录。"""
+        """正确返回 progress 记录（包含 tables_synced）。"""
         from core.incremental import get_sync_progress_report_dates
 
         mock_execute.return_value = [
-            ("000001", date(2024, 9, 30)),
-            ("000002", date(2024, 6, 30)),
+            ("000001", date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            ("000002", date(2024, 6, 30), ["income_statement", "balance_sheet"]),
         ]
 
         result = get_sync_progress_report_dates("CN_A")
         assert result == {
-            "000001": date(2024, 9, 30),
-            "000002": date(2024, 6, 30),
+            "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            "000002": (date(2024, 6, 30), ["income_statement", "balance_sheet"]),
+        }
+
+    @patch("core.incremental.execute")
+    def test_null_tables_synced(self, mock_execute):
+        """tables_synced 为 NULL 时返回空列表。"""
+        from core.incremental import get_sync_progress_report_dates
+
+        mock_execute.return_value = [
+            ("000001", date(2024, 9, 30), None),
+        ]
+
+        result = get_sync_progress_report_dates("CN_A")
+        assert result == {
+            "000001": (date(2024, 9, 30), []),
         }
 
     @patch("core.incremental.execute")
@@ -238,20 +288,33 @@ class TestUpdateLastReportDate:
     """update_last_report_date 测试。"""
 
     @patch("core.incremental.execute")
-    def test_updates_with_max_date(self, mock_execute):
-        """从财务表中取最大日期并更新。"""
+    def test_updates_with_min_date(self, mock_execute):
+        """从财务表中取最小日期（MIN of MAXs）并更新。"""
         from core.incremental import update_last_report_date
 
-        # 第一次调用: UNION ALL 查询
-        # 第二次调用: UPDATE sync_progress
         mock_execute.side_effect = [
-            [("2024-09-30",), ("2024-06-30",)],  # 查询结果
+            [("2024-09-30",), ("2024-06-30",)],  # UNION ALL 查询
             None,  # UPDATE 结果
         ]
 
         result = update_last_report_date("000001", ["income_statement", "balance_sheet"])
-        assert result == date(2024, 9, 30)
+        # MIN of (2024-09-30, 2024-06-30) = 2024-06-30
+        assert result == date(2024, 6, 30)
         assert mock_execute.call_count == 2
+
+    @patch("core.incremental.execute")
+    def test_all_same_date(self, mock_execute):
+        """所有表同一日期 → 返回该日期。"""
+        from core.incremental import update_last_report_date
+
+        mock_execute.side_effect = [
+            [("2024-12-31",), ("2024-12-31",), ("2024-12-31",)],
+            None,
+        ]
+
+        result = update_last_report_date("000001",
+                                          ["income_statement", "balance_sheet", "cash_flow_statement"])
+        assert result == date(2024, 12, 31)
 
     @patch("core.incremental.execute")
     def test_empty_tables_returns_none(self, mock_execute):

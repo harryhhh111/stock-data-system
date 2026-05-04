@@ -219,7 +219,8 @@ def determine_stocks_to_sync(
 def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date]:
     """同步完成后更新 sync_progress.last_report_date。
 
-    从财务表中查询该股票的最大报告期并记录。
+    使用 MIN 而非 MAX：只当所有表都覆盖到同一报告期时，日期才推进。
+    这样，任何一张表落后都会在下次增量判断中被检测到。
 
     Args:
         stock_code: 股票代码
@@ -231,7 +232,7 @@ def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date
     if not tables:
         return None
 
-    # 从同步涉及的表中取最大报告期
+    # 从同步涉及的表中取最小报告期（确保所有表都覆盖）
     union_parts = []
     for table in tables:
         union_parts.append(
@@ -246,21 +247,21 @@ def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date
     if not rows:
         return None
 
-    max_date = None
+    min_date = None
     for row in rows:
         if row[0]:
             d = row[0]
             if isinstance(d, str):
                 from core.transformers.base import parse_report_date
                 d = parse_report_date(d)
-            if d and (max_date is None or d > max_date):
-                max_date = d
+            if d and (min_date is None or d < min_date):
+                min_date = d
 
-    if max_date:
+    if min_date:
         execute(
             "UPDATE sync_progress SET last_report_date = %s WHERE stock_code = %s",
-            (max_date, stock_code),
+            (min_date, stock_code),
             commit=True,
         )
 
-    return max_date
+    return min_date

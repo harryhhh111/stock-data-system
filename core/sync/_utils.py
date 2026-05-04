@@ -108,18 +108,26 @@ MARKET_CONFIG: dict[str, dict] = {
 # ── 同步单只股票（核心函数）─────────────────────────────────
 
 
-def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str | None]:
+def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], list[str], str | None]:
     """同步单只股票的三大报表（通用版）。
 
     支持 CN_A、CN_HK 市场。US 市场走 sync_us_market 特殊路径。
+
+    Returns:
+        (ok, tables_synced, tables_failed, error)
+        ok: 至少有一张表同步成功
+        tables_synced: 成功同步的表名列表
+        tables_failed: 预期但未成功同步的表名列表
     """
     cfg = MARKET_CONFIG.get(market)
     if cfg is None:
-        return False, [], f"不支持的市场: {market}"
+        return False, [], [], f"不支持的市场: {market}"
     if cfg.get("special"):
-        return False, [], f"市场 {market} 需要走专用同步路径"
+        return False, [], [], f"市场 {market} 需要走专用同步路径"
 
+    expected_tables: list[str] = cfg["tables"]
     tables_synced: list[str] = []
+    tables_failed: list[str] = []
 
     try:
         # 动态导入
@@ -139,26 +147,30 @@ def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], str |
         for fetch_method, transform_method, table, conflict_keys in zip(
             cfg["fetch_methods"],
             cfg["transform_methods"],
-            cfg["tables"],
-            [cfg["conflict_keys"]] * len(cfg["tables"]),
+            expected_tables,
+            [cfg["conflict_keys"]] * len(expected_tables),
         ):
             try:
                 raw_df = getattr(fetcher, fetch_method)(**fetch_kwargs)
                 if raw_df is None or raw_df.empty:
+                    tables_failed.append(table)
                     continue
                 records = getattr(transformer, transform_method)(raw_df)
                 if records:
                     upsert(table, records, conflict_keys)
                     tables_synced.append(table)
+                else:
+                    tables_failed.append(table)
             except Exception as exc:
                 logger.warning("%s %s 失败: %s", stock_code, table, exc)
+                tables_failed.append(table)
 
-        return (len(tables_synced) > 0, tables_synced, None)
+        return (len(tables_synced) > 0, tables_synced, tables_failed, None)
 
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error("%s (%s) 同步失败: %s", stock_code, market, error_msg)
-        return False, tables_synced, error_msg
+        return False, tables_synced, [t for t in expected_tables if t not in tables_synced], error_msg
 
 
 def correct_market_cap(records: list[dict]) -> int:

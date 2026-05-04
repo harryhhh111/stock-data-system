@@ -141,6 +141,7 @@ class SyncManager:
         # 并发执行
         success = 0
         failed = 0
+        partial = 0
         errors: list[str] = []
         t0 = time.time()
 
@@ -155,19 +156,41 @@ class SyncManager:
 
                 code, m = futures[future]
                 try:
-                    ok, tables, err = future.result()
+                    ok, tables, failed_tables, err = future.result()
                     if ok:
-                        success += 1
+                        status = "partial" if failed_tables else "success"
+                        if status == "success":
+                            success += 1
+                        else:
+                            partial += 1
+                            logger.info(
+                                "%s (%s) 部分成功: 已同步=%s, 缺失=%s",
+                                code, m, tables, failed_tables,
+                            )
+
+                        # 合并 tables_synced：保留之前同步成功的表记录
                         execute(
                             """INSERT INTO sync_progress (stock_code, market, last_sync_time, tables_synced, status)
-                               VALUES (%s, %s, NOW(), %s, 'success')
+                               VALUES (%s, %s, NOW(), %s, %s)
                                ON CONFLICT (stock_code) DO UPDATE SET
-                                   last_sync_time = NOW(), tables_synced = %s, status = 'success', error_detail = NULL""",
-                            (code, m, tables, tables),
+                                   last_sync_time = NOW(),
+                                   tables_synced = ARRAY(SELECT DISTINCT unnest(
+                                       COALESCE(sync_progress.tables_synced, '{}') || EXCLUDED.tables_synced
+                                   )),
+                                   status = %s,
+                                   error_detail = NULL""",
+                            (code, m, tables, status, status),
                             commit=True,
                         )
+                        # 用合并后的表列表更新 last_report_date
+                        merged_tables = execute(
+                            "SELECT tables_synced FROM sync_progress WHERE stock_code = %s",
+                            (code,),
+                            fetch=True,
+                        )
+                        merged_tables = merged_tables[0][0] if merged_tables else tables
                         try:
-                            update_last_report_date(code, tables)
+                            update_last_report_date(code, merged_tables)
                         except Exception as uerr:
                             logger.debug(
                                 "更新 last_report_date 失败: %s %s", code, uerr
@@ -195,11 +218,12 @@ class SyncManager:
                         (len(pending) - i) / rate / self.max_workers if rate > 0 else 0
                     )
                     logger.info(
-                        "进度: %d/%d (%.1f%%) 成功=%d 失败=%d 速率=%.1f/min ETA=%dmin",
+                        "进度: %d/%d (%.1f%%) 成功=%d 部分=%d 失败=%d 速率=%.1f/min ETA=%dmin",
                         i,
                         len(pending),
                         i / len(pending) * 100,
                         success,
+                        partial,
                         failed,
                         rate * 60,
                         int(eta / 60),
@@ -209,15 +233,17 @@ class SyncManager:
         result = {
             "total": total,
             "success": success,
+            "partial": partial,
             "failed": failed,
             "skipped": skipped,
             "elapsed": elapsed,
         }
 
         logger.info(
-            "财务数据同步完成: 总计=%d, 成功=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
+            "财务数据同步完成: 总计=%d, 成功=%d, 部分=%d, 失败=%d, 跳过=%d, 耗时=%.1fs",
             total,
             success,
+            partial,
             failed,
             skipped,
             elapsed,
