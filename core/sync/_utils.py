@@ -108,10 +108,15 @@ MARKET_CONFIG: dict[str, dict] = {
 # ── 同步单只股票（核心函数）─────────────────────────────────
 
 
-def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], list[str], str | None]:
+def sync_one_stock(stock_code: str, market: str, save_snapshot: bool = True) -> tuple[bool, list[str], list[str], str | None]:
     """同步单只股票的三大报表（通用版）。
 
     支持 CN_A、CN_HK 市场。US 市场走 sync_us_market 特殊路径。
+
+    Args:
+        stock_code: 股票代码
+        market: 市场标识
+        save_snapshot: 是否保存原始 API 响应到 raw_snapshot（增量同步设为 False）
 
     Returns:
         (ok, tables_synced, tables_failed, error)
@@ -135,6 +140,8 @@ def sync_one_stock(stock_code: str, market: str) -> tuple[bool, list[str], list[
         module = __import__(parts[0], fromlist=[parts[1]])
         fetcher_cls = getattr(module, parts[1])
         fetcher = fetcher_cls()
+        if not save_snapshot:
+            fetcher.skip_snapshot = True
 
         parts = cfg["transformer_cls"].rsplit(".", 1)
         module = __import__(parts[0], fromlist=[parts[1]])

@@ -182,6 +182,9 @@ class BaseFetcher:
 
     source_name: str = "unknown"  # 子类覆盖
 
+    def __init__(self) -> None:
+        self.skip_snapshot = False  # 增量同步时由 sync_one_stock 设为 True
+
     # ---- fallback 多数据源 ----
     def fetch_with_fallback(
         self,
@@ -249,6 +252,9 @@ class BaseFetcher:
         raw_data: Any,
     ) -> None:
         """保存原始 API 响应到数据库（或 fallback 到本地 JSON 文件）。"""
+        if self.skip_snapshot:
+            return
+
         record = {
             "stock_code": stock_code,
             "data_type": data_type,

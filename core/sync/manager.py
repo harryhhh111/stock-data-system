@@ -147,7 +147,7 @@ class SyncManager:
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(sync_one_stock, code, m): (code, m) for code, m in pending
+                pool.submit(sync_one_stock, code, m, self.force): (code, m) for code, m in pending
             }
 
             for i, future in enumerate(as_completed(futures), 1):
