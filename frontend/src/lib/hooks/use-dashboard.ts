@@ -1,6 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { dashboardApi } from "@/lib/api/client";
 import type { DashboardStats } from "@/lib/types/dashboard";
+import type { Market } from "@/lib/types/common";
 
 const queryKeys = {
   stats: ["dashboard", "stats"] as const,
@@ -43,10 +44,10 @@ export function mergeStats(
 ): DashboardStats | null {
   if (!cn && !us) return null;
 
-  const total: Record<string, number> = {};
-  const status: Record<string, number> = {};
-  const failed: Record<string, number> = {};
-  const trend: Record<string, { date: string; success: number; failed: number }[]> = {};
+  const total = {} as Record<Market, number>;
+  const status = {} as Record<Market, number>;
+  const failed = {} as Record<Market, number>;
+  const trend = {} as Record<Market, { date: string; success: number; failed: number }[]>;
   const freshness: DashboardStats["freshness"] = [];
   const allIssues: DashboardStats["recent_issues"] = [];
   let errors24h = 0;
@@ -54,21 +55,21 @@ export function mergeStats(
   let totalOpen = 0;
   let anomaliesToday = 0;
 
-  const inProgress: Record<string, number> = {};
-  const partial: Record<string, number> = {};
+  const inProgress = {} as Record<Market, number>;
+  const partial = {} as Record<Market, number>;
 
   for (const s of [cn, us]) {
     if (!s) continue;
-    for (const [m, c] of Object.entries(s.total_stocks)) {
+    for (const [m, c] of Object.entries(s.total_stocks) as [Market, number][]) {
       total[m] = (total[m] ?? 0) + c;
     }
-    for (const [m, v] of Object.entries(s.sync_status)) {
+    for (const [m, v] of Object.entries(s.sync_status) as [Market, (typeof s.sync_status)[Market]][]) {
       status[m] = (status[m] ?? 0) + v.success;
       failed[m] = (failed[m] ?? 0) + v.failed;
       inProgress[m] = (inProgress[m] ?? 0) + (v.in_progress ?? 0);
       partial[m] = (partial[m] ?? 0) + (v.partial ?? 0);
     }
-    for (const [m, v] of Object.entries(s.sync_trend)) {
+    for (const [m, v] of Object.entries(s.sync_trend) as [Market, (typeof s.sync_trend)[Market]][]) {
       trend[m] = (trend[m] ?? []).concat(v);
     }
     freshness.push(...s.freshness);
@@ -83,8 +84,8 @@ export function mergeStats(
   const recent10 = allIssues.slice(0, 10);
 
   // Build proper sync_status per market
-  const syncStatus: Record<string, { success: number; failed: number; in_progress: number; partial: number }> = {};
-  for (const m of Object.keys(total)) {
+  const syncStatus = {} as Record<Market, { success: number; failed: number; in_progress: number; partial: number }>;
+  for (const m of Object.keys(total) as Market[]) {
     syncStatus[m] = {
       success: status[m] ?? 0,
       failed: failed[m] ?? 0,
@@ -101,5 +102,5 @@ export function mergeStats(
     anomalies_today: anomaliesToday,
     freshness,
     recent_issues: recent10,
-  } as DashboardStats;
+  };
 }

@@ -109,7 +109,7 @@ export function AnalyzerPage() {
               </CardHeader>
               <CardContent>
                 <ul className="list-disc list-inside text-sm text-red-600 space-y-1">
-                  {report.overall.risks.map((r, i) => <li key={i}>{r}</li>)}
+                  {report.overall.risks.map((r) => <li key={r}>{r}</li>)}
                 </ul>
               </CardContent>
             </Card>
