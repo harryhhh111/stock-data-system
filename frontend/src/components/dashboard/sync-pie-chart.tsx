@@ -62,13 +62,16 @@ export function SyncPieChart({ syncStatus }: Props) {
     };
   });
 
-  // Build flat legend from all markets
-  const legendData = markets.flatMap((market) =>
-    (["success", "failed", "partial", "in_progress"] as const).map((k) => ({
-      name: `${market} ${LABELS[k]}`,
-      itemStyle: { color: COLORS[k] },
-    }))
-  );
+  // Build flat legend — only include entries that actually exist in series data
+  const legendData = markets.flatMap((market) => {
+    const s = syncStatus[market as keyof typeof syncStatus];
+    return (["success", "failed", "partial", "in_progress"] as const)
+      .filter((k) => (s[k] ?? 0) > 0)
+      .map((k) => ({
+        name: `${market} ${LABELS[k]}`,
+        itemStyle: { color: COLORS[k] },
+      }));
+  });
 
   const option = {
     tooltip: { trigger: "item" as const, formatter: "{b}: {c} ({d}%)" },
