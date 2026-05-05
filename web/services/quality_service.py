@@ -2,18 +2,29 @@
 from db import Connection
 
 
-def get_summary(days: int = 7) -> dict:
-    """质量问题汇总，返回 QualitySummary。"""
+def _latest_batch(cur) -> str:
+    """获取最新 batch_id。"""
+    cur.execute("SELECT batch_id FROM validation_results ORDER BY batch_id DESC LIMIT 1")
+    row = cur.fetchone()
+    return row[0] if row else ""
+
+
+def get_summary(days: int = 30) -> dict:
+    """质量问题汇总（只看最新 batch），返回 QualitySummary。"""
     with Connection() as conn:
         cur = conn.cursor()
+
+        batch = _latest_batch(cur)
+        if not batch:
+            return {"by_severity": [], "by_check": [], "last_check_at": None}
 
         cur.execute(
             """
             SELECT severity, COUNT(*) FROM validation_results
-            WHERE created_at >= now() - interval '1 day' * %s
+            WHERE batch_id = %s
             GROUP BY severity
             """,
-            (days,),
+            (batch,),
         )
         by_severity = [{"severity": r[0], "count": r[1]} for r in cur.fetchall()]
 
@@ -21,11 +32,11 @@ def get_summary(days: int = 7) -> dict:
             """
             SELECT check_name, severity, COUNT(*)
             FROM validation_results
-            WHERE created_at >= now() - interval '1 day' * %s
+            WHERE batch_id = %s
             GROUP BY check_name, severity
             ORDER BY COUNT(*) DESC
             """,
-            (days,),
+            (batch,),
         )
         by_check = [
             {"check_name": r[0], "label": r[0], "severity": r[1], "count": r[2]}
@@ -51,24 +62,28 @@ def get_issues(
     limit: int,
     offset: int,
 ) -> dict:
-    """问题列表，返回 Paginated<QualityIssue>。"""
+    """问题列表（只看最新 batch），返回 Paginated<QualityIssue>。"""
     with Connection() as conn:
         cur = conn.cursor()
 
-        conditions = []
-        params: list = []
+        batch = _latest_batch(cur)
+        if not batch:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
+        conditions = ["vr.batch_id = %s"]
+        params: list = [batch]
 
         if severity:
-            conditions.append("severity = %s")
+            conditions.append("vr.severity = %s")
             params.append(severity)
         if market:
-            conditions.append("market = %s")
+            conditions.append("vr.market = %s")
             params.append(market)
         if check:
-            conditions.append("check_name = %s")
+            conditions.append("vr.check_name = %s")
             params.append(check)
 
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        where = "WHERE " + " AND ".join(conditions)
         params.extend([limit, offset])
 
         cur.execute(
@@ -83,7 +98,7 @@ def get_issues(
             FROM validation_results vr
             LEFT JOIN stock_info si ON vr.stock_code = si.stock_code
             {where}
-            ORDER BY vr.created_at DESC
+            ORDER BY vr.severity, vr.check_name, vr.stock_code
             LIMIT %s OFFSET %s
             """,
             params,
