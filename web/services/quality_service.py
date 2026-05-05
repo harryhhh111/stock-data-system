@@ -9,7 +9,7 @@ def _latest_batch(cur) -> str:
     return row[0] if row else ""
 
 
-def get_summary(days: int = 30) -> dict:
+def get_summary() -> dict:
     """质量问题汇总（只看最新 batch），返回 QualitySummary。"""
     with Connection() as conn:
         cur = conn.cursor()

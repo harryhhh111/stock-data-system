@@ -88,9 +88,9 @@ export const syncApi = {
 
 // ── Quality ──
 export const qualityApi = {
-  summary: (market?: Market, days = 7) =>
+  summary: (market?: Market) =>
     apiFetch<import("@/lib/types/quality").QualitySummary>(
-      `/quality/summary?days=${days}`,
+      "/quality/summary",
       { market },
     ),
   issues: (params: {

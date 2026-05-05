@@ -8,10 +8,10 @@ router = APIRouter()
 
 
 @router.get("/quality/summary")
-async def quality_summary(days: int = Query(7)):
+async def quality_summary():
     """质量问题汇总。"""
     try:
-        return ok(quality_service.get_summary(days))
+        return ok(quality_service.get_summary())
     except Exception as e:
         return err("quality_summary_error", str(e))
 
