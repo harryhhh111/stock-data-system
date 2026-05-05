@@ -133,6 +133,12 @@ def _tables_complete(market: str, tables_synced: list[str]) -> bool:
     return all(t in tables_synced for t in expected)
 
 
+def _is_stale(last_report_date: date) -> bool:
+    """报告期距今超过 5 个月 → 下一期财报应已发布，但上次同步时 API 尚未返回。"""
+    cutoff = date.today() - timedelta(days=150)
+    return last_report_date < cutoff
+
+
 def determine_stocks_to_sync(
     all_stocks: list[tuple[str, str]],
     force: bool = False,
@@ -190,6 +196,9 @@ def determine_stocks_to_sync(
                 # 最新报告期相同，但检查是否三大报表都完整
                 if not _tables_complete(m, tables_synced):
                     # 有表缺失（如 income_statement 被跳过），需补同步
+                    pending.append((code, m))
+                elif _is_stale(progress_max):
+                    # 数据超过 4 个月未更新，可能有新报告期但 API 当时未返回
                     pending.append((code, m))
                 else:
                     skipped += 1

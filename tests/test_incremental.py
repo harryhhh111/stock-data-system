@@ -41,19 +41,24 @@ class TestDetermineStocksToSync:
         assert len(pending) == 3
         assert skipped == 0
 
+    # 使用近期日期避免触发 _is_stale（150 天阈值）
+    RECENT = date(2026, 3, 31)   # 35 天前，不 stale
+    STALE = date(2025, 9, 30)    # 217 天前，stale
+    ALL_TABLES = ["income_statement", "balance_sheet", "cash_flow_statement"]
+
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
     def test_all_stocks_have_same_dates_are_skipped(self, mock_db_max, mock_progress):
-        """DB 中最新报告期 = sync_progress 记录，且三表完整 → 跳过。"""
+        """DB 中最新报告期 = sync_progress 记录，且三表完整 + 不 stale → 跳过。"""
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
-            "000001": date(2024, 9, 30),
-            "000002": date(2024, 9, 30),
+            "000001": self.RECENT,
+            "000002": self.RECENT,
         }
         mock_progress.return_value = {
-            "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
-            "000002": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            "000001": (self.RECENT, self.ALL_TABLES),
+            "000002": (self.RECENT, self.ALL_TABLES),
         }
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
@@ -69,12 +74,12 @@ class TestDetermineStocksToSync:
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
-            "000001": date(2024, 12, 31),
-            "000002": date(2024, 9, 30),
+            "000001": self.RECENT,
+            "000002": self.RECENT,
         }
         mock_progress.return_value = {
-            "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
-            "000002": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+            "000001": (date(2025, 12, 31), self.ALL_TABLES),  # DB 有 Q1 更新
+            "000002": (self.RECENT, self.ALL_TABLES),          # 相同，跳过
         }
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
@@ -91,10 +96,29 @@ class TestDetermineStocksToSync:
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
-            "000001": date(2024, 9, 30),
+            "000001": self.RECENT,
         }
         mock_progress.return_value = {
-            "000001": (date(2024, 9, 30), ["income_statement"]),
+            "000001": (self.RECENT, ["income_statement"]),
+        }
+
+        stocks = [("000001", "CN_A")]
+        pending, skipped = determine_stocks_to_sync(stocks, force=False)
+
+        assert len(pending) == 1
+        assert skipped == 0
+
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
+    def test_stale_data_triggers_resync(self, mock_db_max, mock_progress):
+        """数据超过 5 个月未更新 → 强制重检，即使 db_max == progress_max。"""
+        from core.incremental import determine_stocks_to_sync
+
+        mock_db_max.return_value = {
+            "000001": self.STALE,
+        }
+        mock_progress.return_value = {
+            "000001": (self.STALE, self.ALL_TABLES),
         }
 
         stocks = [("000001", "CN_A")]
@@ -142,24 +166,24 @@ class TestDetermineStocksToSync:
         def db_max_side_effect(market):
             if market == "CN_A":
                 return {
-                    "000001": date(2024, 9, 30),
-                    "000002": date(2024, 6, 30),
+                    "000001": self.RECENT,
+                    "000002": date(2025, 12, 31),
                 }
             elif market == "CN_HK":
                 return {
-                    "00700": date(2024, 6, 30),
+                    "00700": self.RECENT,
                 }
             return {}
 
         def progress_side_effect(market):
             if market == "CN_A":
                 return {
-                    "000001": (date(2024, 9, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
-                    "000002": (date(2024, 3, 31), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+                    "000001": (self.RECENT, self.ALL_TABLES),             # 相同，不 stale → 跳过
+                    "000002": (date(2025, 6, 30), self.ALL_TABLES),      # DB 更新 → 同步
                 }
             elif market == "CN_HK":
                 return {
-                    "00700": (date(2024, 6, 30), ["income_statement", "balance_sheet", "cash_flow_statement"]),
+                    "00700": (self.RECENT, self.ALL_TABLES),             # 相同，不 stale → 跳过
                 }
             return {}
 
@@ -180,26 +204,25 @@ class TestDetermineStocksToSync:
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
     def test_us_market(self, mock_db_max, mock_progress):
-        """美股增量判断。"""
+        """美股增量判断（含 _is_stale 触发）。"""
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
-            "AAPL": date(2024, 9, 30),
-            "MSFT": date(2024, 6, 30),
-            "GOOGL": date(2024, 6, 30),
+            "AAPL": self.RECENT,
+            "MSFT": self.STALE,
+            "GOOGL": self.RECENT,
         }
         mock_progress.return_value = {
-            "AAPL": (date(2024, 9, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
-            "MSFT": (date(2024, 6, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "AAPL": (self.RECENT, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "MSFT": (self.STALE, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
         }
 
         stocks = [("AAPL", "US"), ("MSFT", "US"), ("GOOGL", "US")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
 
-        # GOOGL 没有 progress 记录 → 首次同步
-        assert len(pending) == 1
-        assert pending[0] == ("GOOGL", "US")
-        assert skipped == 2
+        # MSFT: stale → 重检; GOOGL: 无 progress → 首次; AAPL: 跳过
+        assert len(pending) == 2
+        assert skipped == 1
 
 
 class TestGetStocksMaxReportDate:
