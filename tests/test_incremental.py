@@ -193,11 +193,11 @@ class TestDetermineStocksToSync:
         assert pending[0] == ("000002", "CN_A")
         assert skipped == 2
 
-    @patch("core.incremental._get_us_annual_report_dates")
+    @patch("core.incremental._get_us_latest_report_info")
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
-    def test_us_market(self, mock_db_max, mock_progress, mock_annual):
-        """美股无 annual 数据时不触发重检。"""
+    def test_us_market(self, mock_db_max, mock_progress, mock_latest):
+        """美股无报告数据时不触发重检。"""
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
@@ -209,24 +209,24 @@ class TestDetermineStocksToSync:
             "AAPL": (date(2025, 9, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
             "MSFT": (date(2025, 6, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
         }
-        mock_annual.return_value = {}  # 无 annual 数据
+        mock_latest.return_value = {}  # 无数据
 
         stocks = [("AAPL", "US"), ("MSFT", "US"), ("GOOGL", "US")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
 
-        # GOOGL 无 progress → 首次; AAPL/MSFT 美股不触发重检 → 跳过
+        # GOOGL 无 progress → 首次; AAPL/MSFT 不触发重检 → 跳过
         assert len(pending) == 1
         assert pending[0] == ("GOOGL", "US")
         assert skipped == 2
 
-    @patch("core.incremental._get_us_annual_report_dates")
+    @patch("core.incremental._get_us_latest_report_info")
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
-    def test_us_annual_stale_triggers_recheck(self, mock_db_max, mock_progress, mock_annual):
-        """美股 annual 报告超过 470 天（365+105）→ 触发重检。"""
+    def test_us_annual_stale_triggers_recheck(self, mock_db_max, mock_progress, mock_latest):
+        """美股 annual 报告超过 435 天（365+70）→ 触发重检。"""
         from core.incremental import determine_stocks_to_sync
 
-        old_annual = date(2024, 1, 31)  # 超过 470 天 → 应触发
+        old_annual = date(2024, 1, 31)    # 超过 435 天 → 应触发
         recent_annual = date(2025, 9, 30)  # 未超过 → 不触发
 
         mock_db_max.return_value = {
@@ -237,15 +237,46 @@ class TestDetermineStocksToSync:
             "AAPL": (recent_annual, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
             "MSFT": (old_annual, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
         }
-        mock_annual.return_value = {
-            "AAPL": recent_annual,
-            "MSFT": old_annual,
+        mock_latest.return_value = {
+            "AAPL": (recent_annual, "annual"),
+            "MSFT": (old_annual, "annual"),
         }
 
         stocks = [("AAPL", "US"), ("MSFT", "US")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
 
         # MSFT annual 超期 → 重检; AAPL 未超期 → 跳过
+        assert len(pending) == 1
+        assert pending[0] == ("MSFT", "US")
+        assert skipped == 1
+
+    @patch("core.incremental._get_us_latest_report_info")
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
+    def test_us_quarterly_stale_triggers_recheck(self, mock_db_max, mock_progress, mock_latest):
+        """美股 quarterly 报告超过 180 天 → 触发重检。"""
+        from core.incremental import determine_stocks_to_sync
+
+        old_quarterly = date(2025, 9, 30)     # 超过 180 天 → 应触发
+        recent_quarterly = date(2026, 1, 31)  # 未超过 → 不触发
+
+        mock_db_max.return_value = {
+            "AAPL": recent_quarterly,
+            "MSFT": old_quarterly,
+        }
+        mock_progress.return_value = {
+            "AAPL": (recent_quarterly, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "MSFT": (old_quarterly, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+        }
+        mock_latest.return_value = {
+            "AAPL": (recent_quarterly, "quarterly"),
+            "MSFT": (old_quarterly, "quarterly"),
+        }
+
+        stocks = [("AAPL", "US"), ("MSFT", "US")]
+        pending, skipped = determine_stocks_to_sync(stocks, force=False)
+
+        # MSFT quarterly 超期 → 重检; AAPL 未超期 → 跳过
         assert len(pending) == 1
         assert pending[0] == ("MSFT", "US")
         assert skipped == 1

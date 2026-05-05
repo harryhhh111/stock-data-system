@@ -200,43 +200,69 @@ def _cn_should_recheck(last_report_date: date) -> bool:
 
 
 # ── US 重检逻辑 ──────────────────────────────────────────────
-# 财年不统一，从 annual 报告期推算财年末，按 SEC deadline 判断
-# 10-K deadline: large accelerated filer 60天, 其他 75-90天
-# 取中间值 75 天 + 30 天缓冲 = 105 天
+# 财年不统一，按 SEC filing deadline + 缓冲判断
+#
+# SEC deadline:
+#   10-K 年报: 大加速申报人 60天, 其他 75-90天 → 取 70 天缓冲
+#   10-Q 季报: 大加速申报人 40天, 其他 45天   → 取 50 天缓冲
+#
+# 重检窗口:
+#   annual  → report_date + 365 + 70 天 (≈435天，等下一个财年末 + SEC deadline)
+#   quarterly → report_date + 180 天 (两个季度，下一季报应已发布)
 
-_US_ANNUAL_GRACE_DAYS = 105
+_US_ANNUAL_BUFFER_DAYS = 70    # 10-K: 取 60~90 天中间偏保守
+_US_QUARTERLY_BUFFER_DAYS = 180  # 10-Q: 一个季度 + SEC deadline + 缓冲
 
 
-def _get_us_annual_report_dates() -> dict[str, date]:
-    """批量查询 US 股票最新 annual 报告期（用于推算财年末和 SEC 截止日）。"""
+def _get_us_latest_report_info() -> dict[str, tuple[date, str]]:
+    """批量查询 US 股票最新报告的日期和类型。
+
+    Returns:
+        {stock_code: (report_date, report_type)} — report_type 为 'annual' 或 'quarterly'
+    """
     rows = execute(
-        "SELECT stock_code, MAX(report_date) FROM us_income_statement "
-        "WHERE report_type = 'annual' GROUP BY stock_code",
+        "SELECT stock_code, report_date, report_type FROM ("
+        "  SELECT stock_code, report_date, report_type,"
+        "         ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn"
+        "  FROM us_income_statement"
+        ") sub WHERE rn = 1",
         fetch=True,
     )
     if not rows:
         return {}
     result = {}
     for row in rows:
-        if row[0] and row[1]:
+        if row[0] and row[1] and row[2]:
             d = row[1]
             if isinstance(d, str):
                 from core.transformers.base import parse_report_date
                 d = parse_report_date(d)
             if d:
-                result[row[0]] = d
+                result[row[0]] = (d, row[2])
     return result
 
 
-def _us_should_recheck(stock_code: str, annual_dates: dict[str, date]) -> bool:
-    """US: 上一份 10-K 超过 365 + SEC deadline + 缓冲 → 应有新 10-K。
+def _us_should_recheck(
+    stock_code: str,
+    latest_reports: dict[str, tuple[date, str]],
+) -> bool:
+    """US: 根据最新报告类型和 SEC deadline 判断是否应有新数据。
 
-    逻辑: annual_date + 365 + 105 天 < today → 该公司应已发布新年报。
+    annual  (10-K): 上一份年报 + 365 + 70 天 → 应有新年报
+    quarterly (10-Q): 上一份季报 + 180 天 → 应有新季报
     """
-    annual_date = annual_dates.get(stock_code)
-    if annual_date is None:
+    info = latest_reports.get(stock_code)
+    if info is None:
         return False
-    deadline = annual_date + timedelta(days=365 + _US_ANNUAL_GRACE_DAYS)
+
+    report_date, report_type = info
+    if report_type == "annual":
+        deadline = report_date + timedelta(days=365 + _US_ANNUAL_BUFFER_DAYS)
+    elif report_type == "quarterly":
+        deadline = report_date + timedelta(days=_US_QUARTERLY_BUFFER_DAYS)
+    else:
+        return False
+
     return date.today() >= deadline
 
 
@@ -253,14 +279,14 @@ def _should_recheck(
     last_report_date: date,
     market: str = "CN_A",
     stock_code: str = "",
-    us_annual_dates: dict[str, date] | None = None,
+    us_latest_reports: dict[str, tuple[date, str]] | None = None,
 ) -> bool:
     """下一期财报的法定截止日已过 → 应该有新数据。按市场分派。"""
     kind = _MARKET_RECHECK.get(market)
     if kind == "cn":
         return _cn_should_recheck(last_report_date)
     if kind == "us":
-        return _us_should_recheck(stock_code, us_annual_dates or {})
+        return _us_should_recheck(stock_code, us_latest_reports or {})
     return False
 
 
@@ -296,8 +322,8 @@ def determine_stocks_to_sync(
     pending: list[tuple[str, str]] = []
     skipped = 0
 
-    # US 股票需要 annual 报告期来推算财年末和 SEC 截止日
-    us_annual_dates = _get_us_annual_report_dates() if "US" in market_stocks else {}
+    # US 股票需要最新报告的日期和类型来推算 SEC 截止日
+    us_latest_reports = _get_us_latest_report_info() if "US" in market_stocks else {}
 
     for market, stocks in market_stocks.items():
         # 查询该市场财务表中的最大报告期
@@ -320,7 +346,7 @@ def determine_stocks_to_sync(
             elif db_max == progress_max:
                 if not _tables_complete(m, tables_synced):
                     pending.append((code, m))
-                elif _should_recheck(progress_max, market=m, stock_code=code, us_annual_dates=us_annual_dates):
+                elif _should_recheck(progress_max, market=m, stock_code=code, us_latest_reports=us_latest_reports):
                     pending.append((code, m))
                 else:
                     skipped += 1
