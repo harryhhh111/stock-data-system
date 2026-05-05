@@ -163,36 +163,90 @@ def _tables_complete(market: str, tables_synced: list[str]) -> bool:
 _REPORT_GRACE_DAYS = 5
 
 
-def _next_expected_report_date(last_report_date: date) -> date | None:
-    """根据当前报告期推算下一个应发布的报告期截止日。
+# ── CN_A / CN_HK 重检逻辑 ──────────────────────────────────
+# 固定季报日历: Q1(3/31), 中报(6/30), Q3(9/30), 年报(12/31)
+# 法定发布截止: Q1→4/30, 中报→8/31, Q3→10/31, 年报→次年4/30
 
-    A股/港股报告期: 03-31(Q1), 06-30(中报), 09-30(Q3), 12-31(年报)
-    发布截止: Q1→4/30, 中报→8/31, Q3→10/31, 年报→次年4/30
+
+def _cn_next_deadline(last_report_date: date) -> date | None:
+    """根据当前报告期推算下一个应发布的截止日 + 缓冲。
 
     Returns:
-        下一报告期截止日 + 缓冲，如果该截止日已过则应已发布；None 表示无法判断
+        截止日 + 缓冲天数；None 表示非标准报告期，无法推算
     """
     year = last_report_date.year
     month = last_report_date.month
 
-    # 下一报告期 → (报告日, 法定截止月日)
-    if month == 3:    # Q1 → 中报 (6/30, 截止 8/31)
-        next_rpt = date(year, 6, 30)
+    if month == 3:    # Q1 → 中报截止 8/31
         deadline = date(year, 8, 31)
-    elif month == 6:  # 中报 → Q3 (9/30, 截止 10/31)
-        next_rpt = date(year, 9, 30)
+    elif month == 6:  # 中报 → Q3 截止 10/31
         deadline = date(year, 10, 31)
-    elif month == 9:  # Q3 → 年报 (12/31, 截止次年 4/30)
-        next_rpt = date(year, 12, 31)
+    elif month == 9:  # Q3 → 年报截止次年 4/30
         deadline = date(year + 1, 4, 30)
-    elif month == 12: # 年报 → Q1 (3/31, 截止 4/30)
-        next_rpt = date(year + 1, 3, 31)
+    elif month == 12: # 年报 → Q1 截止 4/30
         deadline = date(year + 1, 4, 30)
     else:
-        # 非标准报告期（港股有些公司财年不同），跳过推算
         return None
 
     return deadline + timedelta(days=_REPORT_GRACE_DAYS)
+
+
+def _cn_should_recheck(last_report_date: date) -> bool:
+    """A股/港股: 下一报告期的法定截止日已过 → 应有新数据。"""
+    deadline = _cn_next_deadline(last_report_date)
+    if deadline is None:
+        return False
+    return date.today() >= deadline
+
+
+# ── US 重检逻辑 ──────────────────────────────────────────────
+# 财年不统一，从 annual 报告期推算财年末，按 SEC deadline 判断
+# 10-K deadline: large accelerated filer 60天, 其他 75-90天
+# 取中间值 75 天 + 30 天缓冲 = 105 天
+
+_US_ANNUAL_GRACE_DAYS = 105
+
+
+def _get_us_annual_report_dates() -> dict[str, date]:
+    """批量查询 US 股票最新 annual 报告期（用于推算财年末和 SEC 截止日）。"""
+    rows = execute(
+        "SELECT stock_code, MAX(report_date) FROM us_income_statement "
+        "WHERE report_type = 'annual' GROUP BY stock_code",
+        fetch=True,
+    )
+    if not rows:
+        return {}
+    result = {}
+    for row in rows:
+        if row[0] and row[1]:
+            d = row[1]
+            if isinstance(d, str):
+                from core.transformers.base import parse_report_date
+                d = parse_report_date(d)
+            if d:
+                result[row[0]] = d
+    return result
+
+
+def _us_should_recheck(stock_code: str, annual_dates: dict[str, date]) -> bool:
+    """US: 上一份 10-K 超过 365 + SEC deadline + 缓冲 → 应有新 10-K。
+
+    逻辑: annual_date + 365 + 105 天 < today → 该公司应已发布新年报。
+    """
+    annual_date = annual_dates.get(stock_code)
+    if annual_date is None:
+        return False
+    deadline = annual_date + timedelta(days=365 + _US_ANNUAL_GRACE_DAYS)
+    return date.today() >= deadline
+
+
+# ── 统一调度 ──────────────────────────────────────────────────
+
+_MARKET_RECHECK: dict[str, str] = {
+    "CN_A": "cn",
+    "CN_HK": "cn",
+    "US": "us",
+}
 
 
 def _should_recheck(
@@ -201,27 +255,12 @@ def _should_recheck(
     stock_code: str = "",
     us_annual_dates: dict[str, date] | None = None,
 ) -> bool:
-    """下一期财报的法定截止日已过 → 应该有新数据。
-
-    CN_A/CN_HK: 按固定季报日历推算。
-    US: 根据该公司的财年末（从 annual 报告期推断）+ SEC deadline 判断。
-    """
-    if market in ("CN_A", "CN_HK"):
-        deadline = _next_expected_report_date(last_report_date)
-        if deadline is None:
-            return False
-        return date.today() >= deadline
-
-    if market == "US" and us_annual_dates:
-        annual_date = us_annual_dates.get(stock_code)
-        if annual_date is None:
-            return False
-        # 财年末 = annual report_date (e.g. 2026-01-31 → FY ends Jan 31)
-        # 下一份 annual 应在 财年末 + 365 天 + SEC deadline 内发布
-        # 保守估算: 上一份 annual 日期 + 365 + grace days
-        deadline = annual_date + timedelta(days=365 + _US_ANNUAL_GRACE_DAYS)
-        return date.today() >= deadline
-
+    """下一期财报的法定截止日已过 → 应该有新数据。按市场分派。"""
+    kind = _MARKET_RECHECK.get(market)
+    if kind == "cn":
+        return _cn_should_recheck(last_report_date)
+    if kind == "us":
+        return _us_should_recheck(stock_code, us_annual_dates or {})
     return False
 
 
