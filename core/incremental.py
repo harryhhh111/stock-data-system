@@ -122,7 +122,33 @@ def get_sync_progress_report_dates(market: str) -> dict[str, tuple[date, list[st
 _EXPECTED_TABLES: dict[str, list[str]] = {
     "CN_A": ["income_statement", "balance_sheet", "cash_flow_statement"],
     "CN_HK": ["income_statement", "balance_sheet", "cash_flow_statement"],
+    "US": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
 }
+
+# SEC 10-K filing deadline (large accelerated filer: 60 days, others: 75-90 days)
+# 取中间值 75 天 + 30 天缓冲 = 105 天
+_US_ANNUAL_GRACE_DAYS = 105
+
+
+def _get_us_annual_report_dates() -> dict[str, date]:
+    """批量查询 US 股票最新 annual 报告期（用于推算财年末和 SEC 截止日）。"""
+    rows = execute(
+        "SELECT stock_code, MAX(report_date) FROM us_income_statement "
+        "WHERE report_type = 'annual' GROUP BY stock_code",
+        fetch=True,
+    )
+    if not rows:
+        return {}
+    result = {}
+    for row in rows:
+        if row[0] and row[1]:
+            d = row[1]
+            if isinstance(d, str):
+                from core.transformers.base import parse_report_date
+                d = parse_report_date(d)
+            if d:
+                result[row[0]] = d
+    return result
 
 
 def _tables_complete(market: str, tables_synced: list[str]) -> bool:
@@ -169,12 +195,34 @@ def _next_expected_report_date(last_report_date: date) -> date | None:
     return deadline + timedelta(days=_REPORT_GRACE_DAYS)
 
 
-def _should_recheck(last_report_date: date) -> bool:
-    """下一期财报的法定截止日已过 → 应该有新数据。"""
-    deadline = _next_expected_report_date(last_report_date)
-    if deadline is None:
-        return False
-    return date.today() >= deadline
+def _should_recheck(
+    last_report_date: date,
+    market: str = "CN_A",
+    stock_code: str = "",
+    us_annual_dates: dict[str, date] | None = None,
+) -> bool:
+    """下一期财报的法定截止日已过 → 应该有新数据。
+
+    CN_A/CN_HK: 按固定季报日历推算。
+    US: 根据该公司的财年末（从 annual 报告期推断）+ SEC deadline 判断。
+    """
+    if market in ("CN_A", "CN_HK"):
+        deadline = _next_expected_report_date(last_report_date)
+        if deadline is None:
+            return False
+        return date.today() >= deadline
+
+    if market == "US" and us_annual_dates:
+        annual_date = us_annual_dates.get(stock_code)
+        if annual_date is None:
+            return False
+        # 财年末 = annual report_date (e.g. 2026-01-31 → FY ends Jan 31)
+        # 下一份 annual 应在 财年末 + 365 天 + SEC deadline 内发布
+        # 保守估算: 上一份 annual 日期 + 365 + grace days
+        deadline = annual_date + timedelta(days=365 + _US_ANNUAL_GRACE_DAYS)
+        return date.today() >= deadline
+
+    return False
 
 
 def determine_stocks_to_sync(
@@ -209,6 +257,9 @@ def determine_stocks_to_sync(
     pending: list[tuple[str, str]] = []
     skipped = 0
 
+    # US 股票需要 annual 报告期来推算财年末和 SEC 截止日
+    us_annual_dates = _get_us_annual_report_dates() if "US" in market_stocks else {}
+
     for market, stocks in market_stocks.items():
         # 查询该市场财务表中的最大报告期
         db_max_dates = get_stocks_max_report_date(market)
@@ -230,8 +281,7 @@ def determine_stocks_to_sync(
             elif db_max == progress_max:
                 if not _tables_complete(m, tables_synced):
                     pending.append((code, m))
-                elif m in ("CN_A", "CN_HK") and _should_recheck(progress_max):
-                    # A股/港股按固定季报日历，下一报告期截止日已过 → 应有新数据
+                elif _should_recheck(progress_max, market=m, stock_code=code, us_annual_dates=us_annual_dates):
                     pending.append((code, m))
                 else:
                     skipped += 1
