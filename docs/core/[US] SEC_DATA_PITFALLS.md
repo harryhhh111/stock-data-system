@@ -139,3 +139,43 @@
 - `_BALANCE_DB_COLS` 里的 `intangible_assets`、`total_debt` 和 `_CASHFLOW_DB_COLS` 里的 6 个计算列在数据库表中不存在
 - 这些是待建的字段，不影响核心数据，但日志会刷大量警告
 - **待办**：补全数据库表结构
+
+---
+
+## 11. 同一 report_date 存在 annual + quarterly 两行（NCI 缺失导致会计等式不平）
+
+**现象**：`us_balance_sheet` 的主键是 `(stock_code, report_date, report_type)`，同一报告日可以同时存在 10-K（annual）和 10-Q（quarterly）两行。总计 15,442 组重复对。
+
+**原因**：SEC 的 10-K 和 10-Q 是独立的 filing，都会报告资产负债表。对于财年末（如 9 月 30 日），公司先提交 10-Q（Q3 季报），之后再提交 10-K（年报）。两者报告同一时间点的资产负债表，但明细程度不同。
+
+**核心问题**：annual 行的 `total_equity_including_nci` 经常为 NULL（10-K 不单独列示 NCI），而 quarterly 行有该字段。2,334 组重复对存在 NULL/non-NULL NCI 混合。
+
+**影响**：
+- 验证逻辑的 `balance_equation` 检查已修复为 GROUP BY 合并后再检查（2026-05-05）
+- 修复前 5,578 条误报，修复后减少 1,198 条
+- 剩余 4,380 条是真实数据缺失（两行都没有 NCI）
+- 对下游计算无影响：TTM 和单期指标不依赖 `total_equity_including_nci`
+
+**数据参考**：
+
+| 类型 | 总行数 | NCI 为 NULL |
+|------|--------|------------|
+| annual | 15,616 | 13,395 (86%) |
+| quarterly | 60,091 | 38,923 (65%) |
+
+---
+
+## 12. Q1 累计收入跨财年（standalone_cross_quarter_sum 误报）
+
+**现象**：部分公司的 Q1 季报中，`revenues`（累计列）包含了上一财年 Q4 的数据，而非纯 Q1。例如 ABBV FY2014 Q1：cumulative=9,489M, standalone=4,926M，差额 4,563M 即上财年 Q4。
+
+**影响范围**：581 只股票，1,843 条验证错误（Q1: 580, Q2: 474, Q3: 673, 其他: 116）。
+
+**对下游的影响**：
+- **TTM 计算**（`mv_us_indicator_ttm`）：使用公式 `latest + last_annual - prior_year`，如果 Q1 累计跨财年，TTM 会略有偏差。但仅影响最新一期恰好是 Q1 的股票，且需满足同比匹配条件（±7 天窗口）。实际影响很小。
+- **单期指标**：毛利率/净利率/ROE 等比率指标，分子分母来自同一行，偏差互相抵消，无影响。
+- **FCF Yield / PE / PB**：不直接依赖 revenue 累计值，无影响。
+
+**已知问题**：验证逻辑用 `ROW_NUMBER()` 按日期排序分配季度号，部分公司季报日期差 1 天（如 2022-09-22 和 2022-09-23）会被识别为两个季度，产生幻影 Q5/Q6/Q7（45 条）。
+
+**处理方式**：标记为已知数据质量限制，暂不修复。如需精确 TTM，可在视图层用 `revenues_standalone` 重新累加。
