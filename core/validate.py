@@ -486,17 +486,27 @@ def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
 
 
 def check_logic_us(issues: list[ValidationIssue]) -> int:
-    """美股逻辑一致性检查。返回扫描行数。"""
+    """美股逻辑一致性检查。返回扫描行数。
+
+    同一 (stock_code, report_date) 可能存在 annual 和 quarterly 两行（来自 10-K
+    和 10-Q 两种 SEC filing），数据字段相同但 NCI 等明细可能不同。验证前先按
+    (stock_code, report_date) 合并，取非 NULL 值，避免因明细缺失误报。
+    """
     sql = """
     SELECT
-        ub.stock_code, ub.report_date,
-        ub.total_assets, ub.total_liabilities, ub.total_equity, ub.total_equity_including_nci,
-        ub.total_current_assets, ub.cash_and_equivalents
-    FROM us_balance_sheet ub
-    WHERE ub.total_assets IS NOT NULL
-      AND ub.total_liabilities IS NOT NULL
-      AND ub.total_equity IS NOT NULL
-    ORDER BY ub.stock_code, ub.report_date
+        stock_code, report_date,
+        MAX(total_assets) AS total_assets,
+        MAX(total_liabilities) AS total_liabilities,
+        MAX(total_equity) AS total_equity,
+        MAX(total_equity_including_nci) AS total_equity_including_nci,
+        MAX(total_current_assets) AS total_current_assets,
+        MAX(cash_and_equivalents) AS cash_and_equivalents
+    FROM us_balance_sheet
+    WHERE total_assets IS NOT NULL
+      AND total_liabilities IS NOT NULL
+      AND total_equity IS NOT NULL
+    GROUP BY stock_code, report_date
+    ORDER BY stock_code, report_date
     """
     rows = db.execute(sql, fetch=True) or []
     scanned = len(rows)
