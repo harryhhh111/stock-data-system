@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAnalyzerStore } from "@/lib/store/analyzer-store";
+import { PageHeader } from "@/components/layout/page-header";
+import { LineChart } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
 import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
@@ -38,8 +40,8 @@ export function AnalyzerPage() {
   const report: AnalysisReport | undefined = analyzeMutation.data;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">个股分析</h2>
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <PageHeader icon={LineChart} title="个股分析" description="单只股票深度分析" />
 
       {/* 搜索栏 */}
       <div className="flex items-center gap-3">
@@ -58,7 +60,24 @@ export function AnalyzerPage() {
       </div>
 
       {/* 加载中 */}
-      {analyzeMutation.isPending && <Skeleton className="h-96" />}
+      {analyzeMutation.isPending && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader><Skeleton className="h-6 w-48" /></CardHeader>
+            <CardContent className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="space-y-1"><Skeleton className="h-4 w-16" /><Skeleton className="h-6 w-20" /></div>
+              ))}
+            </CardContent>
+          </Card>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i}><CardContent className="p-4"><Skeleton className="h-20" /></CardContent></Card>
+            ))}
+          </div>
+          <Skeleton className="h-[420px]" />
+        </div>
+      )}
 
       {/* 错误 */}
       {analyzeMutation.isError && (

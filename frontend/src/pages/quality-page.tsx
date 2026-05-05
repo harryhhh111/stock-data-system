@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { DataTable } from "@/components/ui/data-table";
 import { AlertTriangle, ShieldCheck, Info } from "lucide-react";
+import { PageHeader } from "@/components/layout/page-header";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 const SeverityBarChart = lazy(() => import("@/components/quality/severity-bar-chart").then((m) => ({ default: m.SeverityBarChart })));
 import type { Market, Severity } from "@/lib/types/common";
 import type { QualityIssue } from "@/lib/types/quality";
@@ -87,8 +89,8 @@ export function QualityPage() {
   const totalPages = issues ? Math.ceil(issues.total / limit) : 0;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">数据质量</h2>
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <PageHeader icon={ShieldCheck} title="数据质量" description="校验问题汇总与明细" />
 
       {/* 汇总卡片 */}
       {summaryLoading ? (
@@ -107,12 +109,16 @@ export function QualityPage() {
 
       {/* 检查项分布 */}
       {summary && summary.by_check.length > 0 && (
-        <div className="border rounded-lg p-4">
-          <h3 className="font-medium mb-3">检查项分布</h3>
-          <Suspense fallback={<Skeleton className="h-[300px]" />}>
-            <SeverityBarChart byCheck={summary.by_check} />
-          </Suspense>
-        </div>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">检查项分布</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Suspense fallback={<Skeleton className="h-[300px]" />}>
+              <SeverityBarChart byCheck={summary.by_check} />
+            </Suspense>
+          </CardContent>
+        </Card>
       )}
 
       {/* 筛选器 */}
@@ -146,7 +152,11 @@ export function QualityPage() {
 
       {/* 问题列表 */}
       {issuesLoading ? (
-        <Skeleton className="h-96" />
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
       ) : issues && issues.items.length > 0 ? (
         <>
           <DataTable columns={columns} data={issues.items} />

@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { ResultTable } from "@/components/screener/result-table";
 import { PresetCards } from "@/components/screener/preset-cards";
 import { useScreenerStore } from "@/lib/store/screener-store";
+import { PageHeader } from "@/components/layout/page-header";
+import { BarChart3 } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
 
@@ -31,8 +33,8 @@ export function ScreenerPage() {
   const result: ScreenerResult | undefined = mutation.data;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">选股筛选</h2>
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <PageHeader icon={BarChart3} title="选股筛选" description="多因子量化选股" />
 
       {/* 预设卡片 */}
       {presetsData && presetsData.presets.length > 0 && (
@@ -97,7 +99,11 @@ export function ScreenerPage() {
 
       {/* 结果表格 */}
       {mutation.isPending ? (
-        <Skeleton className="h-96" />
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
       ) : result && result.results.length > 0 ? (
         <ResultTable results={result.results} />
       ) : result ? (

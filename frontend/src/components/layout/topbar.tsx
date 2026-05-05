@@ -1,6 +1,9 @@
+import { useState, useEffect } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { Menu, ChevronRight } from "lucide-react";
+import { Menu, ChevronRight, Sun, Moon, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useUiStore } from "@/lib/store/ui-store";
+import { useQueryClient } from "@tanstack/react-query";
 
 const titles: Record<string, string> = {
   "/dashboard": "仪表板",
@@ -13,6 +16,17 @@ const titles: Record<string, string> = {
 export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
   const { pathname } = useLocation();
   const title = titles[pathname] ?? "Stock Data";
+  const theme = useUiStore((s) => s.theme);
+  const setTheme = useUiStore((s) => s.setTheme);
+  const queryClient = useQueryClient();
+
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 
   return (
     <header className="h-12 bg-card border-b flex items-center px-4 md:px-6 justify-between shrink-0">
@@ -30,9 +44,29 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
           <span className="font-medium text-foreground">{title}</span>
         </nav>
       </div>
-      <time className="text-xs text-muted-foreground tabular-nums font-mono">
-        {new Date().toLocaleString("zh-CN", { hour12: false })}
-      </time>
+      <div className="flex items-center gap-1">
+        <time className="text-xs text-muted-foreground tabular-nums font-mono mr-2">
+          {now.toLocaleString("zh-CN", { hour12: false })}
+        </time>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => queryClient.invalidateQueries()}
+          title="刷新数据"
+        >
+          <RotateCw className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => setTheme(isDark ? "light" : "dark")}
+          title={isDark ? "切换亮色" : "切换暗色"}
+        >
+          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+      </div>
     </header>
   );
 }

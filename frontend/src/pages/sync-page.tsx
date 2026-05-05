@@ -8,6 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/page-header";
+import { RefreshCw } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { SyncProgressEntry, SyncLogEntry } from "@/lib/types/sync";
 
@@ -68,8 +70,8 @@ export function SyncPage() {
   const logTotalPages = log ? Math.ceil(log.total / limit) : 0;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">同步状态</h2>
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <PageHeader icon={RefreshCw} title="同步状态" description="数据同步进度与日志" />
 
       {/* 市场状态卡片 */}
       {statusLoading ? (
@@ -127,7 +129,11 @@ export function SyncPage() {
 
         <TabsContent value="progress" className="space-y-4">
           {progressLoading ? (
-            <Skeleton className="h-96" />
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </div>
           ) : progress && progress.items.length > 0 ? (
             <>
               <div className="border rounded-lg overflow-x-auto">
@@ -182,7 +188,11 @@ export function SyncPage() {
 
         <TabsContent value="log" className="space-y-4">
           {logLoading ? (
-            <Skeleton className="h-96" />
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </div>
           ) : log && log.items.length > 0 ? (
             <>
               <div className="border rounded-lg overflow-x-auto">
