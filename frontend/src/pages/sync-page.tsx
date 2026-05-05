@@ -82,26 +82,63 @@ export function SyncPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {(statusList ?? []).map((s) => (
+          {(statusList ?? []).map((s) => {
+            const syncDate = s.last_sync_time
+              ? new Date(s.last_sync_time).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+              : null;
+            const reportRange = s.report_date_latest && s.report_date_latest !== s.last_report_date
+              ? `${s.last_report_date} ~ ${s.report_date_latest}`
+              : s.last_report_date;
+            const staleMonths = s.last_report_date
+              ? Math.floor((Date.now() - new Date(s.last_report_date).getTime()) / (1000 * 60 * 60 * 24 * 30))
+              : 0;
+
+            return (
             <Card key={s.market}>
-              <CardContent className="p-4 space-y-2">
+              <CardContent className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-medium">{s.market}</h3>
-                  <span className="text-2xl font-bold">{s.total_stocks}</span>
+                  <h3 className="font-semibold text-sm">{s.market}</h3>
+                  <span className="text-2xl font-bold tabular-nums">{s.total_stocks.toLocaleString()}</span>
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                  <Badge variant="default">成功 {s.success}</Badge>
-                  {s.failed > 0 && <Badge variant="destructive">失败 {s.failed}</Badge>}
-                  {s.in_progress > 0 && <Badge variant="outline">进行中 {s.in_progress}</Badge>}
-                  {s.partial > 0 && <Badge variant="secondary">部分 {s.partial}</Badge>}
+                  <Badge variant="default" className="tabular-nums">成功 {s.success.toLocaleString()}</Badge>
+                  {s.failed > 0 && <Badge variant="destructive" className="tabular-nums">失败 {s.failed}</Badge>}
+                  {s.partial > 0 && <Badge variant="secondary" className="tabular-nums">部分 {s.partial}</Badge>}
+                  {s.in_progress > 0 && <Badge variant="outline" className="tabular-nums">进行中 {s.in_progress}</Badge>}
                 </div>
-                <div className="text-xs text-muted-foreground space-y-1">
-                  {s.last_sync_time && <p>最后同步: {s.last_sync_time}</p>}
-                  {s.last_report_date && <p>最新报告期: {s.last_report_date}</p>}
+                <div className="text-xs space-y-1">
+                  {syncDate && (
+                    <p className="text-muted-foreground">
+                      上次同步: <span className="tabular-nums">{syncDate}</span>
+                    </p>
+                  )}
+                  {s.last_report_date && (
+                    <p className="flex items-center gap-1.5">
+                      <span className="text-muted-foreground">报告覆盖:</span>
+                      <span className="tabular-nums font-medium">{reportRange}</span>
+                      {staleMonths > 4 && (
+                        <Badge variant="outline" className="text-[10px] h-4 px-1 border-yellow-500/50 text-yellow-600">
+                          偏旧
+                        </Badge>
+                      )}
+                    </p>
+                  )}
+                  {s.report_coverage_pct != null && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">覆盖率:</span>
+                      <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all"
+                          style={{ width: `${s.report_coverage_pct}%` }}
+                        />
+                      </div>
+                      <span className="tabular-nums text-muted-foreground">{s.report_coverage_pct}%</span>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
-          ))}
+          );})}
         </div>
       )}
 

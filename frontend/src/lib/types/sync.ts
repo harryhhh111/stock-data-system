@@ -9,6 +9,8 @@ export interface SyncStatusByMarket {
   partial: number;
   last_sync_time: string | null;
   last_report_date: string | null;
+  report_date_latest?: string | null;
+  report_coverage_pct?: number;
 }
 
 export interface SyncProgressEntry {

@@ -40,8 +40,9 @@ def get_status(market: str | None) -> dict:
             markets[m][st] = cnt
             markets[m]["total_stocks"] += cnt
 
-        # 补充 last_sync_time（MAX）和 last_report_date（中位数，避免个别异常财年拉偏）
+        # 补充时间信息
         for m in markets:
+            # last_sync_time: 取 MAX
             cur.execute(
                 "SELECT MAX(last_sync_time) FROM sync_progress WHERE market=%s",
                 (m,),
@@ -50,19 +51,37 @@ def get_status(market: str | None) -> dict:
             if row and row[0]:
                 markets[m]["last_sync_time"] = row[0].isoformat()
 
-            # 中位数：ORDER BY + OFFSET 取中间位置
+            # report_date 分布：中位数 + 最大值，以及各截止日的股票数
             cur.execute(
-                """SELECT last_report_date FROM sync_progress
+                """SELECT last_report_date, COUNT(*) FROM sync_progress
                    WHERE market=%s AND last_report_date IS NOT NULL
-                   ORDER BY last_report_date
-                   OFFSET (SELECT COUNT(*) FROM sync_progress
-                           WHERE market=%s AND last_report_date IS NOT NULL) / 2
-                   LIMIT 1""",
-                (m, m),
+                   GROUP BY last_report_date ORDER BY last_report_date""",
+                (m,),
             )
-            row = cur.fetchone()
-            if row and row[0]:
-                markets[m]["last_report_date"] = row[0].isoformat()
+            date_rows = cur.fetchall()
+            if date_rows:
+                total = sum(r[1] for r in date_rows)
+                # 中位数
+                cum = 0
+                median_date = None
+                for d, n in date_rows:
+                    cum += n
+                    if cum >= total / 2:
+                        median_date = d
+                        break
+                if median_date:
+                    markets[m]["last_report_date"] = median_date.isoformat()
+                # 最新常见报告期（覆盖 >10% 股票的最大日期）及其覆盖率
+                latest_common = None
+                latest_n = 0
+                for d, n in reversed(date_rows):
+                    if n / total >= 0.10:
+                        latest_common = d
+                        latest_n = n
+                        break
+                if latest_common and latest_common != median_date:
+                    markets[m]["report_date_latest"] = latest_common.isoformat()
+                    markets[m]["report_coverage_pct"] = round(latest_n / total * 100)
 
         cur.close()
 
