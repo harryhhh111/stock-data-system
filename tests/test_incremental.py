@@ -41,25 +41,24 @@ class TestDetermineStocksToSync:
         assert len(pending) == 3
         assert skipped == 0
 
-    # 使用近期日期避免触发 _is_stale（150 天阈值）
-    RECENT = date(2026, 3, 31)   # 35 天前，不 stale
-    STALE = date(2025, 9, 30)    # 217 天前，stale
+    RECENT = date(2026, 3, 31)       # Q1 2026，下一期 Q2(6/30) 截止 8/31，尚未到 → 不触发
+    Q3_2025 = date(2025, 9, 30)      # Q3 2025，下一期年报(12/31) 截止 4/30 → 已过 → 触发
+    Q4_2025 = date(2025, 12, 31)     # Q4 2025，下一期 Q1(3/31) 截止 4/30 → 已过 → 触发
     ALL_TABLES = ["income_statement", "balance_sheet", "cash_flow_statement"]
+
+    def _p(self, report_date, tables=None):
+        if tables is None:
+            tables = self.ALL_TABLES
+        return (report_date, tables)
 
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
     def test_all_stocks_have_same_dates_are_skipped(self, mock_db_max, mock_progress):
-        """DB 中最新报告期 = sync_progress 记录，且三表完整 + 不 stale → 跳过。"""
+        """Q1 报告期 + 下一期截止日未到 → 跳过。"""
         from core.incremental import determine_stocks_to_sync
 
-        mock_db_max.return_value = {
-            "000001": self.RECENT,
-            "000002": self.RECENT,
-        }
-        mock_progress.return_value = {
-            "000001": (self.RECENT, self.ALL_TABLES),
-            "000002": (self.RECENT, self.ALL_TABLES),
-        }
+        mock_db_max.return_value = {"000001": self.RECENT, "000002": self.RECENT}
+        mock_progress.return_value = {"000001": self._p(self.RECENT), "000002": self._p(self.RECENT)}
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
@@ -73,13 +72,10 @@ class TestDetermineStocksToSync:
         """DB 中有更新的报告期 → 需要同步。"""
         from core.incremental import determine_stocks_to_sync
 
-        mock_db_max.return_value = {
-            "000001": self.RECENT,
-            "000002": self.RECENT,
-        }
+        mock_db_max.return_value = {"000001": self.RECENT, "000002": self.RECENT}
         mock_progress.return_value = {
-            "000001": (date(2025, 12, 31), self.ALL_TABLES),  # DB 有 Q1 更新
-            "000002": (self.RECENT, self.ALL_TABLES),          # 相同，跳过
+            "000001": self._p(self.Q4_2025),  # DB 更新 → 同步
+            "000002": self._p(self.RECENT),    # 相同 → 跳过
         }
 
         stocks = [("000001", "CN_A"), ("000002", "CN_A")]
@@ -95,12 +91,8 @@ class TestDetermineStocksToSync:
         """即使日期相同，三表不完整也需补同步。"""
         from core.incremental import determine_stocks_to_sync
 
-        mock_db_max.return_value = {
-            "000001": self.RECENT,
-        }
-        mock_progress.return_value = {
-            "000001": (self.RECENT, ["income_statement"]),
-        }
+        mock_db_max.return_value = {"000001": self.RECENT}
+        mock_progress.return_value = {"000001": self._p(self.RECENT, tables=["income_statement"])}
 
         stocks = [("000001", "CN_A")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
@@ -110,16 +102,27 @@ class TestDetermineStocksToSync:
 
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
-    def test_stale_data_triggers_resync(self, mock_db_max, mock_progress):
-        """数据超过 5 个月未更新 → 强制重检，即使 db_max == progress_max。"""
+    def test_q3_next_deadline_passed_triggers_recheck(self, mock_db_max, mock_progress):
+        """Q3 报告(9/30)，年报截止(4/30)已过 → 应有年报数据，触发重检。"""
         from core.incremental import determine_stocks_to_sync
 
-        mock_db_max.return_value = {
-            "000001": self.STALE,
-        }
-        mock_progress.return_value = {
-            "000001": (self.STALE, self.ALL_TABLES),
-        }
+        mock_db_max.return_value = {"000001": self.Q3_2025}
+        mock_progress.return_value = {"000001": self._p(self.Q3_2025)}
+
+        stocks = [("000001", "CN_A")]
+        pending, skipped = determine_stocks_to_sync(stocks, force=False)
+
+        assert len(pending) == 1
+        assert skipped == 0
+
+    @patch("core.incremental.get_sync_progress_report_dates")
+    @patch("core.incremental.get_stocks_max_report_date")
+    def test_q4_next_deadline_passed_triggers_recheck(self, mock_db_max, mock_progress):
+        """Q4 年报(12/31)，Q1 截止(4/30)已过 → 应有 Q1 数据，触发重检。"""
+        from core.incremental import determine_stocks_to_sync
+
+        mock_db_max.return_value = {"000001": self.Q4_2025}
+        mock_progress.return_value = {"000001": self._p(self.Q4_2025)}
 
         stocks = [("000001", "CN_A")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
@@ -165,36 +168,25 @@ class TestDetermineStocksToSync:
 
         def db_max_side_effect(market):
             if market == "CN_A":
-                return {
-                    "000001": self.RECENT,
-                    "000002": date(2025, 12, 31),
-                }
+                return {"000001": self.RECENT, "000002": self.Q3_2025}
             elif market == "CN_HK":
-                return {
-                    "00700": self.RECENT,
-                }
+                return {"00700": self.RECENT}
             return {}
 
         def progress_side_effect(market):
             if market == "CN_A":
                 return {
-                    "000001": (self.RECENT, self.ALL_TABLES),             # 相同，不 stale → 跳过
-                    "000002": (date(2025, 6, 30), self.ALL_TABLES),      # DB 更新 → 同步
+                    "000001": (self.RECENT, self.ALL_TABLES),    # Q1，下一期未到 → 跳过
+                    "000002": (self.Q3_2025, self.ALL_TABLES),   # Q3，年报截止已过 → 重检
                 }
             elif market == "CN_HK":
-                return {
-                    "00700": (self.RECENT, self.ALL_TABLES),             # 相同，不 stale → 跳过
-                }
+                return {"00700": (self.RECENT, self.ALL_TABLES)}  # Q1 → 跳过
             return {}
 
         mock_db_max.side_effect = db_max_side_effect
         mock_progress.side_effect = progress_side_effect
 
-        stocks = [
-            ("000001", "CN_A"),
-            ("000002", "CN_A"),
-            ("00700", "CN_HK"),
-        ]
+        stocks = [("000001", "CN_A"), ("000002", "CN_A"), ("00700", "CN_HK")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
 
         assert len(pending) == 1
@@ -204,25 +196,26 @@ class TestDetermineStocksToSync:
     @patch("core.incremental.get_sync_progress_report_dates")
     @patch("core.incremental.get_stocks_max_report_date")
     def test_us_market(self, mock_db_max, mock_progress):
-        """美股增量判断（含 _is_stale 触发）。"""
+        """美股不适用季报日历重检逻辑。"""
         from core.incremental import determine_stocks_to_sync
 
         mock_db_max.return_value = {
-            "AAPL": self.RECENT,
-            "MSFT": self.STALE,
-            "GOOGL": self.RECENT,
+            "AAPL": date(2025, 9, 30),
+            "MSFT": date(2025, 6, 30),
+            "GOOGL": date(2025, 9, 30),
         }
         mock_progress.return_value = {
-            "AAPL": (self.RECENT, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
-            "MSFT": (self.STALE, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "AAPL": (date(2025, 9, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "MSFT": (date(2025, 6, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
         }
 
         stocks = [("AAPL", "US"), ("MSFT", "US"), ("GOOGL", "US")]
         pending, skipped = determine_stocks_to_sync(stocks, force=False)
 
-        # MSFT: stale → 重检; GOOGL: 无 progress → 首次; AAPL: 跳过
-        assert len(pending) == 2
-        assert skipped == 1
+        # GOOGL 无 progress → 首次; AAPL/MSFT 美股不触发重检 → 跳过
+        assert len(pending) == 1
+        assert pending[0] == ("GOOGL", "US")
+        assert skipped == 2
 
 
 class TestGetStocksMaxReportDate:

@@ -20,7 +20,7 @@ incremental.py — 增量同步工具
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from db import execute
@@ -109,7 +109,7 @@ def get_sync_progress_report_dates(market: str) -> dict[str, tuple[date, list[st
     """
     rows = execute(
         "SELECT stock_code, last_report_date, tables_synced FROM sync_progress "
-        "WHERE market = %s AND status = 'success' AND last_report_date IS NOT NULL",
+        "WHERE market = %s AND status IN ('success', 'partial') AND last_report_date IS NOT NULL",
         (market,),
         fetch=True,
     )
@@ -133,10 +133,48 @@ def _tables_complete(market: str, tables_synced: list[str]) -> bool:
     return all(t in tables_synced for t in expected)
 
 
-def _is_stale(last_report_date: date) -> bool:
-    """报告期距今超过 5 个月 → 下一期财报应已发布，但上次同步时 API 尚未返回。"""
-    cutoff = date.today() - timedelta(days=150)
-    return last_report_date < cutoff
+# 财报发布截止日（月份 + 日期）后的额外缓冲天数
+_REPORT_GRACE_DAYS = 5
+
+
+def _next_expected_report_date(last_report_date: date) -> date | None:
+    """根据当前报告期推算下一个应发布的报告期截止日。
+
+    A股/港股报告期: 03-31(Q1), 06-30(中报), 09-30(Q3), 12-31(年报)
+    发布截止: Q1→4/30, 中报→8/31, Q3→10/31, 年报→次年4/30
+
+    Returns:
+        下一报告期截止日 + 缓冲，如果该截止日已过则应已发布；None 表示无法判断
+    """
+    year = last_report_date.year
+    month = last_report_date.month
+
+    # 下一报告期 → (报告日, 法定截止月日)
+    if month == 3:    # Q1 → 中报 (6/30, 截止 8/31)
+        next_rpt = date(year, 6, 30)
+        deadline = date(year, 8, 31)
+    elif month == 6:  # 中报 → Q3 (9/30, 截止 10/31)
+        next_rpt = date(year, 9, 30)
+        deadline = date(year, 10, 31)
+    elif month == 9:  # Q3 → 年报 (12/31, 截止次年 4/30)
+        next_rpt = date(year, 12, 31)
+        deadline = date(year + 1, 4, 30)
+    elif month == 12: # 年报 → Q1 (3/31, 截止 4/30)
+        next_rpt = date(year + 1, 3, 31)
+        deadline = date(year + 1, 4, 30)
+    else:
+        # 非标准报告期（港股有些公司财年不同），跳过推算
+        return None
+
+    return deadline + timedelta(days=_REPORT_GRACE_DAYS)
+
+
+def _should_recheck(last_report_date: date) -> bool:
+    """下一期财报的法定截止日已过 → 应该有新数据。"""
+    deadline = _next_expected_report_date(last_report_date)
+    if deadline is None:
+        return False
+    return date.today() >= deadline
 
 
 def determine_stocks_to_sync(
@@ -184,21 +222,16 @@ def determine_stocks_to_sync(
             tables_synced = progress[1] if progress else []
 
             if db_max is None:
-                # 财务表中无数据 → 新股票，必须同步
                 pending.append((code, m))
             elif progress_max is None:
-                # sync_progress 无记录 → 首次同步
                 pending.append((code, m))
             elif db_max > progress_max:
-                # DB 中有更新的报告期（可能上次同步不完整）
                 pending.append((code, m))
             elif db_max == progress_max:
-                # 最新报告期相同，但检查是否三大报表都完整
                 if not _tables_complete(m, tables_synced):
-                    # 有表缺失（如 income_statement 被跳过），需补同步
                     pending.append((code, m))
-                elif _is_stale(progress_max):
-                    # 数据超过 4 个月未更新，可能有新报告期但 API 当时未返回
+                elif m in ("CN_A", "CN_HK") and _should_recheck(progress_max):
+                    # A股/港股按固定季报日历，下一报告期截止日已过 → 应有新数据
                     pending.append((code, m))
                 else:
                     skipped += 1
