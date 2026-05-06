@@ -54,6 +54,10 @@ export function mergeStats(
   let warnings7d = 0;
   let totalOpen = 0;
   let anomaliesToday = 0;
+  let breakdownErrors = 0;
+  let breakdownWarnings = 0;
+  let breakdownInfo = 0;
+  let lastCheckAt: string | null = null;
 
   const inProgress = {} as Record<Market, number>;
   const partial = {} as Record<Market, number>;
@@ -78,6 +82,17 @@ export function mergeStats(
     warnings7d += s.validation_issues.warnings_7d;
     totalOpen += s.validation_issues.total_open;
     anomaliesToday += s.anomalies_today;
+    if (s.validation_issues.breakdown) {
+      breakdownErrors += s.validation_issues.breakdown.errors;
+      breakdownWarnings += s.validation_issues.breakdown.warnings;
+      breakdownInfo += s.validation_issues.breakdown.info;
+    }
+    if (s.validation_issues.last_check_at) {
+      const d = new Date(s.validation_issues.last_check_at);
+      if (!lastCheckAt || d > new Date(lastCheckAt)) {
+        lastCheckAt = s.validation_issues.last_check_at;
+      }
+    }
   }
 
   allIssues.sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -98,7 +113,13 @@ export function mergeStats(
     total_stocks: total,
     sync_status: syncStatus,
     sync_trend: trend,
-    validation_issues: { errors_24h: errors24h, warnings_7d: warnings7d, total_open: totalOpen },
+    validation_issues: {
+      errors_24h: errors24h,
+      warnings_7d: warnings7d,
+      total_open: totalOpen,
+      breakdown: { errors: breakdownErrors, warnings: breakdownWarnings, info: breakdownInfo },
+      last_check_at: lastCheckAt,
+    },
     anomalies_today: anomaliesToday,
     freshness,
     recent_issues: recent10,

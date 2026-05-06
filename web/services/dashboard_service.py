@@ -114,36 +114,54 @@ def get_stats() -> dict:
                 ),
             })
 
-        # 5. 校验问题统计
+        # 5. 校验问题统计（只看近 5 年 report_date，忽略旧财报数据）
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND created_at >= now() - interval '24 hours'",
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND created_at >= now() - interval '24 hours'",
             (markets,)
         )
         errors_24h = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND severity = 'warning' AND created_at >= now() - interval '7 days'",
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND severity = 'warning' AND created_at >= now() - interval '7 days'",
             (markets,)
         )
         warnings_7d = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s)", (markets,))
-        total_open = cur.fetchone()[0]
+        # 近 5 年校验问题按严重程度分组
+        cur.execute(
+            "SELECT severity, COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' GROUP BY severity",
+            (markets,)
+        )
+        severity_counts = {r[0]: r[1] for r in cur.fetchall()}
+        validation_breakdown = {
+            "errors": severity_counts.get("error", 0),
+            "warnings": severity_counts.get("warning", 0),
+            "info": severity_counts.get("info", 0),
+        }
+
+        # 最近一次校验时间
+        cur.execute(
+            "SELECT MAX(created_at) FROM validation_results WHERE market = ANY(%s)",
+            (markets,)
+        )
+        last_val = cur.fetchone()[0]
 
         validation_issues = {
             "errors_24h": errors_24h,
             "warnings_7d": warnings_7d,
-            "total_open": total_open,
+            "total_open": sum(severity_counts.values()),
+            "breakdown": validation_breakdown,
+            "last_check_at": last_val.isoformat() if last_val else None,
         }
 
-        # 6. 今日异常数
+        # 6. 今日新增问题数（只看近 5 年 report_date）
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND severity = 'error' AND created_at::date = CURRENT_DATE",
+            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND created_at::date = CURRENT_DATE",
             (markets,)
         )
         anomalies_today = cur.fetchone()[0]
 
-        # 7. 最近 10 条问题
+        # 7. 最近 10 条问题（只看近 5 年 report_date）
         cur.execute(
             """
             SELECT vr.id, vr.stock_code, COALESCE(si.stock_name, vr.stock_code) AS stock_name,
@@ -152,6 +170,7 @@ def get_stats() -> dict:
             FROM validation_results vr
             LEFT JOIN stock_info si ON vr.stock_code = si.stock_code
             WHERE vr.market = ANY(%s)
+              AND vr.report_date >= CURRENT_DATE - interval '5 years'
             ORDER BY vr.created_at DESC
             LIMIT 10
             """,

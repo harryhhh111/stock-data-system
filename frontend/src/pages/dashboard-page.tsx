@@ -73,6 +73,7 @@ export function DashboardPage() {
         syncStatus={stats.sync_status}
         syncTrend={stats.sync_trend}
         anomaliesToday={stats.anomalies_today}
+        freshness={stats.freshness}
         validationIssues={stats.validation_issues}
       />
 

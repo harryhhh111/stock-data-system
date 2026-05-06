@@ -1,16 +1,25 @@
-"""Quality service — 数据质量检查。"""
+"""Quality service — 数据质量检查（只看近 5 年 report_date）。"""
 from db import Connection
+
+
+# 只关注近 5 年的财报数据
+_LOOKBACK_YEARS = 5
 
 
 def _latest_batch(cur) -> str:
     """获取最新 batch_id。"""
-    cur.execute("SELECT batch_id FROM validation_results ORDER BY batch_id DESC LIMIT 1")
+    cur.execute(
+        "SELECT batch_id FROM validation_results "
+        "WHERE report_date >= CURRENT_DATE - interval %s "
+        "ORDER BY batch_id DESC LIMIT 1",
+        (f"{_LOOKBACK_YEARS} years",)
+    )
     row = cur.fetchone()
     return row[0] if row else ""
 
 
 def get_summary() -> dict:
-    """质量问题汇总（只看最新 batch），返回 QualitySummary。"""
+    """质量问题汇总（只看最新 batch + 近 5 年），返回 QualitySummary。"""
     with Connection() as conn:
         cur = conn.cursor()
 
@@ -22,9 +31,10 @@ def get_summary() -> dict:
             """
             SELECT severity, COUNT(*) FROM validation_results
             WHERE batch_id = %s
+              AND report_date >= CURRENT_DATE - interval %s
             GROUP BY severity
             """,
-            (batch,),
+            (batch, f"{_LOOKBACK_YEARS} years"),
         )
         by_severity = [{"severity": r[0], "count": r[1]} for r in cur.fetchall()]
 
@@ -33,17 +43,22 @@ def get_summary() -> dict:
             SELECT check_name, severity, COUNT(*)
             FROM validation_results
             WHERE batch_id = %s
+              AND report_date >= CURRENT_DATE - interval %s
             GROUP BY check_name, severity
             ORDER BY COUNT(*) DESC
             """,
-            (batch,),
+            (batch, f"{_LOOKBACK_YEARS} years"),
         )
         by_check = [
             {"check_name": r[0], "label": r[0], "severity": r[1], "count": r[2]}
             for r in cur.fetchall()
         ]
 
-        cur.execute("SELECT MAX(created_at) FROM validation_results")
+        cur.execute(
+            "SELECT MAX(created_at) FROM validation_results "
+            "WHERE report_date >= CURRENT_DATE - interval %s",
+            (f"{_LOOKBACK_YEARS} years",)
+        )
         last = cur.fetchone()[0]
 
         cur.close()
@@ -62,7 +77,7 @@ def get_issues(
     limit: int,
     offset: int,
 ) -> dict:
-    """问题列表（只看最新 batch），返回 Paginated<QualityIssue>。"""
+    """问题列表（只看最新 batch + 近 5 年），返回 Paginated<QualityIssue>。"""
     with Connection() as conn:
         cur = conn.cursor()
 
@@ -70,8 +85,8 @@ def get_issues(
         if not batch:
             return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
-        conditions = ["vr.batch_id = %s"]
-        params: list = [batch]
+        conditions = ["vr.batch_id = %s", "vr.report_date >= CURRENT_DATE - interval %s"]
+        params: list = [batch, f"{_LOOKBACK_YEARS} years"]
 
         if severity:
             conditions.append("vr.severity = %s")

@@ -1,16 +1,25 @@
 import { cn } from "@/lib/utils/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Database, Activity, AlertTriangle, BarChart3, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Database, Activity, ShieldCheck, TrendingUp, TrendingDown, Minus, ArrowRight, Clock, CheckCircle, AlertTriangle } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { Market } from "@/lib/types/common";
-import type { SyncStatus, SyncTrend } from "@/lib/types/dashboard";
+import type { SyncStatus, SyncTrend, ValidationBreakdown, Freshness } from "@/lib/types/dashboard";
 
 interface Props {
   totalStocks: Record<Market, number>;
   syncStatus: Record<Market, SyncStatus>;
   syncTrend: Record<Market, SyncTrend[]>;
   anomaliesToday: number;
-  validationIssues: { errors_24h: number; warnings_7d: number; total_open: number };
+  freshness: Freshness[];
+  validationIssues: {
+    errors_24h: number;
+    warnings_7d: number;
+    total_open: number;
+    breakdown: ValidationBreakdown;
+    last_check_at: string | null;
+  };
 }
 
 const MARKET_LABEL: Record<Market, string> = {
@@ -24,6 +33,12 @@ const MARKET_COLOR: Record<Market, string> = {
   CN_HK: "bg-chart-2",
   US: "bg-chart-4",
 };
+
+const SEVERITY_CONFIG = {
+  errors: { label: "错误", color: "bg-red-500", textColor: "text-red-500", bar: "bg-red-500" },
+  warnings: { label: "警告", color: "bg-yellow-500", textColor: "text-yellow-500", bar: "bg-yellow-500" },
+  info: { label: "提示", color: "bg-blue-500", textColor: "text-blue-500", bar: "bg-blue-500" },
+} as const;
 
 function getTrendDirection(trend: SyncTrend[]): "up" | "down" | "flat" {
   if (trend.length < 2) return "flat";
@@ -42,22 +57,40 @@ function TrendIcon({ direction }: { direction: "up" | "down" | "flat" }) {
   return <Minus className="h-3.5 w-3.5 text-muted-foreground/50" />;
 }
 
-export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday, validationIssues }: Props) {
+/** 格式化时间为相对描述 */
+function formatLastCheck(iso: string | null): string {
+  if (!iso) return "尚未运行校验";
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffHrs = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffHrs / 24);
+  if (diffDays > 7) return `${diffDays} 天前`;
+  if (diffDays >= 1) return `${diffDays} 天前`;
+  if (diffHrs >= 1) return `${diffHrs} 小时前`;
+  if (diffMs < 60000) return "刚刚";
+  return `${Math.floor(diffMs / 60000)} 分钟前`;
+}
+
+export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday, freshness, validationIssues }: Props) {
   const markets = Object.keys(totalStocks) as Market[];
   const totalAll = Object.values(totalStocks).reduce((a, b) => a + b, 0);
   const syncAll = Object.values(syncStatus).reduce((s, m) => s + m.success, 0);
   const failAll = Object.values(syncStatus).reduce((s, m) => s + m.failed, 0);
   const syncRate = totalAll > 0 ? ((syncAll / totalAll) * 100) : 0;
 
+  const bd = validationIssues.breakdown;
+  const breakdownTotal = bd.errors + bd.warnings + bd.info;
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {/* 股票总数 + 市场分布 */}
+      {/* 1. 股票总数 + 市场分布 */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-base">
             <div className="flex items-center gap-2">
               <Database className="h-4 w-4 text-chart-1" />
-              股票总数
+              股票覆盖
             </div>
             <span className="text-2xl font-bold tabular-nums">{totalAll.toLocaleString()}</span>
           </CardTitle>
@@ -81,13 +114,13 @@ export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday,
         </CardContent>
       </Card>
 
-      {/* 同步状态 + 成功率 */}
+      {/* 2. 同步状态 + 成功率 */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-base">
             <div className="flex items-center gap-2">
               <Activity className="h-4 w-4 text-chart-2" />
-              同步状态
+              同步健康
             </div>
             <div className="flex items-center gap-2">
               <span className={cn(
@@ -134,67 +167,92 @@ export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday,
         </CardContent>
       </Card>
 
-      {/* 数据异常 */}
+      {/* 3. 数据校验 — 合并原"数据异常"+"数据质量" */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-base">
             <div className="flex items-center gap-2">
-              <AlertTriangle className={cn("h-4 w-4", anomaliesToday > 0 ? "text-red-500" : "text-muted-foreground")} />
-              数据异常
+              <ShieldCheck className="h-4 w-4 text-blue-500" />
+              数据校验
             </div>
-            <span className={cn(
-              "text-2xl font-bold tabular-nums",
-              anomaliesToday > 0 ? "text-red-500" : "text-muted-foreground"
-            )}>
-              {anomaliesToday}
-            </span>
+            <span className="text-2xl font-bold tabular-nums">{breakdownTotal.toLocaleString()}</span>
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-3">今日检测到的异常数据条目</p>
-          {anomaliesToday > 0 ? (
-            <div className="flex items-center gap-2 p-2 rounded-md bg-red-500/10 border border-red-500/20">
-              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
-              <span className="text-sm text-red-500">存在异常数据，请前往数据质量页面排查</span>
+        <CardContent className="space-y-4">
+          {/* Severity 分解 */}
+          <div className="space-y-2">
+            {(Object.entries(SEVERITY_CONFIG) as [keyof typeof SEVERITY_CONFIG, typeof SEVERITY_CONFIG[keyof typeof SEVERITY_CONFIG]][]).map(([key, cfg]) => {
+              const count = bd[key];
+              const pct = breakdownTotal > 0 ? (count / breakdownTotal) * 100 : 0;
+              return (
+                <div key={key} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">{cfg.label}</span>
+                    <span className={cn("font-medium tabular-nums", cfg.textColor)}>{count.toLocaleString()}</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-muted overflow-hidden">
+                    <div className={cn("h-full rounded-full transition-all", cfg.bar)} style={{ width: `${Math.max(pct, 2)}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 今日新增 + 最近校验时间 */}
+          <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
+            <div className="flex items-center gap-3">
+              <span>今日新增 <span className="font-medium tabular-nums text-foreground">{anomaliesToday}</span></span>
+              <span className="text-border">|</span>
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                最近校验: {formatLastCheck(validationIssues.last_check_at)}
+              </span>
             </div>
-          ) : (
-            <div className="flex items-center gap-2 p-2 rounded-md bg-green-500/10 border border-green-500/20">
-              <Activity className="h-4 w-4 text-green-500 shrink-0" />
-              <span className="text-sm text-green-500">数据正常，无异常</span>
-            </div>
-          )}
+            <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
+              <Link to="/quality">
+                查看详情 <ArrowRight className="ml-1 h-3 w-3" />
+              </Link>
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
-      {/* 待处理问题 */}
+      {/* 4. 数据新鲜度 */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-base">
             <div className="flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-chart-4" />
-              数据质量
+              <Clock className="h-4 w-4 text-chart-4" />
+              数据新鲜度
             </div>
-            <span className="text-2xl font-bold tabular-nums">{validationIssues.total_open.toLocaleString()}</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-3 gap-2">
-            <div className="text-center p-2 rounded-md bg-muted/50">
-              <p className="text-lg font-bold tabular-nums text-red-500">{validationIssues.errors_24h}</p>
-              <p className="text-xs text-muted-foreground">24h 错误</p>
-            </div>
-            <div className="text-center p-2 rounded-md bg-muted/50">
-              <p className="text-lg font-bold tabular-nums text-yellow-500">{validationIssues.warnings_7d}</p>
-              <p className="text-xs text-muted-foreground">7d 警告</p>
-            </div>
-            <div className="text-center p-2 rounded-md bg-muted/50">
-              <p className="text-lg font-bold tabular-nums">{validationIssues.total_open}</p>
-              <p className="text-xs text-muted-foreground">待处理</p>
-            </div>
-          </div>
-          {validationIssues.total_open > 0 && (
-            <div className="text-xs text-muted-foreground">
-              24h 内新增 {validationIssues.errors_24h} 条错误，7 天内新增 {validationIssues.warnings_7d} 条警告
+          {markets.map((m) => {
+            const f = freshness.find((x) => x.market === m);
+            if (!f) return null;
+            const finOk = f.financial_date && !f.financial_stale;
+            const qOk = f.quote_date && !f.quote_stale;
+            const allOk = finOk && qOk;
+            return (
+              <div key={m} className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground w-12">{MARKET_LABEL[m]}</span>
+                <div className="flex items-center gap-2">
+                  {allOk ? (
+                    <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                  ) : (
+                    <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
+                  )}
+                  <span className={cn("text-xs", allOk ? "text-green-500" : "text-yellow-500")}>
+                    {allOk ? "正常" : "有滞后"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+          {freshness.some((f) => f.financial_stale || f.quote_stale) && (
+            <div className="text-xs text-yellow-500 pt-2 border-t">
+              有数据滞后，请检查同步调度
             </div>
           )}
         </CardContent>

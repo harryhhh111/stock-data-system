@@ -32,6 +32,12 @@ export interface RecentIssue {
   created_at: string;
 }
 
+export interface ValidationBreakdown {
+  errors: number;
+  warnings: number;
+  info: number;
+}
+
 export interface DashboardStats {
   total_stocks: Record<Market, number>;
   sync_status: Record<Market, SyncStatus>;
@@ -40,6 +46,8 @@ export interface DashboardStats {
     errors_24h: number;
     warnings_7d: number;
     total_open: number;
+    breakdown: ValidationBreakdown;
+    last_check_at: string | null;
   };
   anomalies_today: number;
   freshness: Freshness[];
