@@ -378,7 +378,7 @@ FCF Yield > 5%
 | total_equity | 23% NULL，无法算 ROE | A/HK | 量化筛选器不可用 | ✅ 已修复（三层 fallback，降至 12.3%） |
 | 美股日线 | 仅 3,099 行，覆盖不全 | US | 美股估值指标不可用 | ✅ 已修复（683K 行，2021~2026） |
 | D&A 缺失 | Depreciation-only 公司缺摊销 | US | D&A 被低估 | ✅ 已修复（自动加 AmortizationOfIntangibleAssets） |
-| screener 不支持 US | CLI 只接受 CN_A/CN_HK | US | 美股选股不可用 | ✅ 已支持（get_us_universe + 三预设） |
+| screener 不支持 US | CLI 只接受 CN_A/CN_HK | US | 美股选股不可用 | ✅ 已支持（get_us_universe + 5 预设） |
 | IP 封禁 | 东方财富行情 API 从国内被封 | A/HK | 需用腾讯 fallback | ✅ 已有方案 |
 | SEC 限流 | SEC EDGAR 对请求频率有限制 | US | 美股同步可能失败 | ✅ 已有重试机制 |
 | 历史市值缺失 | 腾讯 K 线不返回市值 | A/HK | FCF Yield 仅最新一期可用 | 🔄 待回算（close × total_shares） |

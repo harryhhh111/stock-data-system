@@ -36,7 +36,7 @@
 |------|------|
 | [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（Phase 1~5） |
 | [quant/WEB_FRONTEND_PLAN.md](quant/WEB_FRONTEND_PLAN.md) | Web 前端仪表板设计方案 |
-| `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 3 个预设策略） |
+| `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 5 个预设策略） |
 | `quant/analyzer/` 代码 | 个股深度分析报告（盈利/负债/现金流/估值四维分析） |
 
 ---

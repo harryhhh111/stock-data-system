@@ -98,7 +98,8 @@ stock_data/
 
 ```python
 HARD_FILTERS = {
-    "market_cap_min": None,           # 最低市值（元），如 5e9 = 50 亿
+    "market_cap_min": None,           # 最低市值（统一门槛）
+    "market_cap_min_by_market": None, # 按市场设定最低市值，如 {"CN_A": 2e9, "US": 1e9}
     "exclude_st": True,               # 排除 ST/*ST
     "exclude_industries": [],         # 排除行业列表
     "pe_ttm_positive": True,          # PE > 0（排除亏损）
@@ -106,11 +107,18 @@ HARD_FILTERS = {
     "pb_max": None,                   # PB 上限
     "min_days_since_list": None,      # 最少上市天数
     "fcf_yield_min": None,            # 最低 FCF Yield
+    "roe_min": None,                  # 最低 ROE（单年）
+    "roe_consecutive_years": None,    # 连续 N 年 ROE 均达标（需配合 roe_min）
     "debt_ratio_max": None,           # 最高资产负债率
     "gross_margin_min": None,         # 最低毛利率
     "net_margin_min": None,           # 最低净利率
+    "dividend_yield_min": None,       # 最低股息率
 }
 ```
+
+**连续多年 ROE 过滤**：`roe_consecutive_years` 需要额外查询 `mv_financial_indicator` 最近 N 年的年度 ROE，要求每年均 >= `roe_min`。通过 `query.get_roe_history()` 查询，`filters.filter_consecutive_roe()` 过滤。
+
+**按市场市值门槛**：`market_cap_min_by_market` 优先于 `market_cap_min`，按 DataFrame 的 `market` 列分别过滤。各市场货币单位不同（CN_A: 人民币，CN_HK: 港元，US: 美元）。
 
 #### 打分因子（scorer.py）
 
@@ -135,23 +143,45 @@ HARD_FILTERS = {
 
 ```python
 PRESETS = {
+    "fcf_roe_value": {
+        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + 连续3年ROE > 10% + 排除金融地产",
+        "filters": {
+            "market_cap_min_by_market": {
+                "CN_A": 2e9,              # A 股 > 20 亿人民币
+                "CN_HK": 2e9,             # 港股 > 20 亿港元
+                "US": 1e9,                # 美股 > 10 亿美元
+            },
+            "exclude_st": True,
+            "exclude_industries": ["银行", "非银金融", "房地产"],
+            "fcf_yield_min": 0.10,        # FCF Yield > 10%
+            "roe_min": 0.10,              # ROE > 10%
+            "roe_consecutive_years": 3,   # 连续 3 年
+        },
+        "weights": {
+            "fcf_yield": 0.30,
+            "cfo_quality": 0.25,
+            "pb": 0.20,
+            "revenue_yoy": 0.15,
+            "gross_margin": 0.10,
+        },
+        "top_n": 30,
+    },
     "classic_value": {
         "description": "经典价值 — 高 FCF Yield + 低估值 + 稳定盈利",
         "filters": {
-            "market_cap_min": 5e9,        # 市值 > 50 亿
+            "market_cap_min": 5e9,
             "exclude_st": True,
             "pe_ttm_positive": True,
-            "pe_ttm_max": 20,             # PE < 20
-            "debt_ratio_max": 0.6,        # 资产负债率 < 60%
-            "gross_margin_min": 0.2,      # 毛利率 > 20%
+            "pe_ttm_max": 20,
+            "debt_ratio_max": 0.6,
+            "gross_margin_min": 0.2,
         },
         "weights": {
-            "fcf_yield": 0.25,
-            "pe_ttm": 0.20,
-            "gross_margin": 0.15,
-            "debt_ratio": 0.15,
-            "net_margin": 0.10,
-            "cfo_quality": 0.15,
+            "fcf_yield": 0.30,
+            "roe": 0.20,
+            "cfo_quality": 0.20,
+            "revenue_yoy": 0.15,
+            "pb": 0.15,
         },
         "top_n": 30,
     },
@@ -165,12 +195,11 @@ PRESETS = {
             "net_margin_min": 0.1,
         },
         "weights": {
-            "roe": 0.25,
-            "gross_margin": 0.20,
-            "net_margin": 0.15,
-            "debt_ratio": 0.15,
-            "fcf_yield": 0.15,
-            "cfo_quality": 0.10,
+            "roe": 0.30,
+            "fcf_yield": 0.25,
+            "cfo_quality": 0.20,
+            "pb": 0.15,
+            "revenue_yoy": 0.10,
         },
         "top_n": 30,
     },
@@ -183,22 +212,32 @@ PRESETS = {
             "pe_ttm_max": 30,
         },
         "weights": {
-            "revenue_yoy": 0.20,
-            "net_profit_yoy": 0.20,
-            "fcf_yield": 0.15,
-            "pe_ttm": 0.15,
-            "gross_margin": 0.15,
-            "debt_ratio": 0.15,
+            "revenue_yoy": 0.25,
+            "net_profit_yoy": 0.25,
+            "fcf_yield": 0.20,
+            "roe": 0.15,
+            "cfo_quality": 0.15,
         },
         "top_n": 30,
     },
-    "dividend": {
-        "description": "分红 — 暂不可用（分红数据待补全）",
-        "filters": {},
-        "weights": {},
-        "top_n": 0,
-        "disabled": True,
-        "reason": "dividend_split 表暂无数据",
+    "dividend_value": {
+        "description": "红利价值 — 高股息 + 稳定盈利 + 合理估值",
+        "filters": {
+            "market_cap_min": 10e9,
+            "exclude_st": True,
+            "dividend_yield_min": 0.02,
+            "pe_ttm_positive": True,
+            "pe_ttm_max": 25,
+            "debt_ratio_max": 0.6,
+        },
+        "weights": {
+            "dividend_yield": 0.25,
+            "fcf_yield": 0.25,
+            "cfo_quality": 0.20,
+            "roe": 0.15,
+            "pb": 0.15,
+        },
+        "top_n": 30,
     },
 }
 ```

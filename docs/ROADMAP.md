@@ -70,7 +70,7 @@
 - [x] P0-3 total_equity 修复（三层 fallback：NCI → total_assets - total_liabilities，23% → 12.3% NULL）
 - [x] P1-4 D&A 修复（Depreciation + AmortizationOfIntangibleAssets，含 MSFT 等）
 - [x] 物化视图刷新（mv_us_financial_indicator 0 → 37K，mv_us_fcf_yield 485 行）
-- [x] 选股筛选器 `screener/` 支持美股（硬过滤 + 多因子打分 + 三个预设策略）
+- [x] 选股筛选器 `screener/` 支持美股（硬过滤 + 多因子打分 + 5 个预设策略，含连续多年 ROE + 按市场市值门槛）
 - [x] ROE 修复（parent_equity 缺失时 fallback 到 total_equity，提升 CN_HK ROE 覆盖率）
 - [x] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析，支持 CN_A/CN_HK/US）
 - [x] Phase 1.5 筛选器改进（NaN 权重重分配、小行业 fallback、因子去共线性、US 列补全）
