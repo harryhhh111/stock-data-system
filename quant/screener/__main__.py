@@ -12,8 +12,8 @@
 import argparse
 import sys
 
-from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield
-from quant.screener.filters import apply_hard_filters
+from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield, get_roe_history
+from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
 from quant.screener.scorer import rank_factors
 from quant.screener.report import format_results, format_summary
 from quant.screener.presets import PRESETS, FACTOR_LABELS
@@ -159,6 +159,15 @@ def main():
 
     # 2. 硬过滤
     filtered, _, n_after_filter = apply_hard_filters(df, filters)
+
+    # 2.5 连续多年 ROE 过滤（需要额外查询）
+    roe_years = filters.get("roe_consecutive_years")
+    if roe_years and roe_years > 0:
+        roe_min = filters.get("roe_min", 0.10)
+        market_for_roe = args.market if args.market != "all" else None
+        roe_hist = get_roe_history(market_for_roe, years=roe_years)
+        filtered, _, n_after_filter = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
+        print(f"连续 {roe_years} 年 ROE ≥ {roe_min:.0%}: {n_after_filter} 只通过")
 
     if filtered.empty:
         print(f"\n无符合条件的股票（候选池: {n_before} → 过滤后: 0）")

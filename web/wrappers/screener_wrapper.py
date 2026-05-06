@@ -1,7 +1,7 @@
 """Screener wrapper — 复用 quant/screener 逻辑，返回结构化 dict。"""
 from quant.screener.presets import PRESETS, FACTOR_LABELS
-from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield
-from quant.screener.filters import apply_hard_filters
+from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield, get_roe_history
+from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
 from quant.screener.scorer import rank_factors
 
 
@@ -68,6 +68,14 @@ def run_screener(market: str, preset: str | None, top_n: int) -> dict:
 
     # 2. 硬过滤
     filtered, _, total_after_filter = apply_hard_filters(df, filters)
+
+    # 2.5 连续多年 ROE 过滤
+    roe_years = filters.get("roe_consecutive_years")
+    if roe_years and roe_years > 0:
+        roe_min = filters.get("roe_min", 0.10)
+        market_for_roe = market if market != "all" else None
+        roe_hist = get_roe_history(market_for_roe, years=roe_years)
+        filtered, _, total_after_filter = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
 
     if filtered.empty:
         return {

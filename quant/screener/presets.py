@@ -7,6 +7,7 @@ from typing import TypedDict
 
 class FilterConfig(TypedDict, total=False):
     market_cap_min: float | None          # 最低市值（元）
+    market_cap_min_by_market: dict[str, float] | None  # 按市场设定最低市值
     exclude_st: bool                      # 排除 ST/*ST
     exclude_industries: list[str]         # 排除行业列表
     pe_ttm_positive: bool                 # PE > 0
@@ -14,7 +15,8 @@ class FilterConfig(TypedDict, total=False):
     pb_max: float | None                  # PB 上限
     min_days_since_list: int | None       # 最少上市天数
     fcf_yield_min: float | None           # 最低 FCF Yield
-    roe_min: float | None                 # 最低 ROE
+    roe_min: float | None                 # 最低 ROE（单年）
+    roe_consecutive_years: int | None     # 连续 N 年 ROE 均达标
     debt_ratio_max: float | None          # 最高资产负债率
     gross_margin_min: float | None        # 最低毛利率
     net_margin_min: float | None          # 最低净利率
@@ -39,13 +41,18 @@ class PresetConfig(TypedDict):
 
 PRESETS: dict[str, PresetConfig] = {
     "fcf_roe_value": {
-        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + ROE > 10% + 低估值 + 排除金融地产",
+        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + 连续3年ROE > 10% + 排除金融地产",
         "filters": {
-            "market_cap_min": 1e10,           # 市值 > 100 亿
+            "market_cap_min_by_market": {
+                "CN_A": 2e9,                   # A 股 > 20 亿人民币
+                "CN_HK": 2e9,                  # 港股 > 20 亿港元
+                "US": 1e9,                     # 美股 > 10 亿美元
+            },
             "exclude_st": True,
             "exclude_industries": ["银行", "非银金融", "房地产"],
             "fcf_yield_min": 0.10,             # FCF Yield > 10%
             "roe_min": 0.10,                   # ROE > 10%
+            "roe_consecutive_years": 3,        # 连续 3 年 ROE > 10%
         },
         # ROE/FCF Yield 已被硬过滤，打分聚焦估值 + 现金流可持续性 + 成长
         "weights": {

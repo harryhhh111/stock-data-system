@@ -135,6 +135,41 @@ def compute_dividend_yield(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def get_roe_history(market: str | None = None, years: int = 3) -> pd.DataFrame:
+    """查询每只股票最近 N 年的年度 ROE。
+
+    Returns:
+        DataFrame with columns: stock_code, report_date, roe
+    """
+    market_filter = ""
+    if market and market != "all":
+        if market == "US":
+            table = "mv_us_financial_indicator"
+            market_filter = "AND s.market = 'US'"
+        else:
+            table = "mv_financial_indicator"
+            market_filter = f"AND s.market = '{market}'"
+    else:
+        table = "mv_financial_indicator"
+        market_filter = ""
+
+    sql = f"""
+    SELECT f.stock_code, f.report_date, f.roe
+    FROM (
+        SELECT stock_code, report_date, roe,
+               ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn
+        FROM {table}
+        WHERE report_type = 'annual' AND roe IS NOT NULL
+    ) f
+    JOIN stock_info s ON f.stock_code = s.stock_code
+    WHERE f.rn <= %s {market_filter}
+    ORDER BY f.stock_code, f.report_date DESC
+    """
+    with Connection() as conn:
+        df = pd.read_sql(sql, conn, params=(years,))
+    return df
+
+
 def get_us_universe() -> pd.DataFrame:
     """
     获取美股选股池数据，整合最新财务指标 + 行情 + TTM + FCF Yield。

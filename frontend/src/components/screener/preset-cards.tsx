@@ -1,9 +1,10 @@
 import { cn } from "@/lib/utils/cn";
-import { TrendingUp, Gem, Coins, Zap } from "lucide-react";
+import { TrendingUp, Gem, Coins, Zap, ShieldCheck } from "lucide-react";
 import type { Preset } from "@/lib/types/screener";
 
 const PRESET_ICONS: Record<string, typeof TrendingUp> = {
   classic_value: Gem,
+  fcf_roe_value: ShieldCheck,
   quality: TrendingUp,
   growth_value: Zap,
   dividend_value: Coins,
@@ -11,6 +12,7 @@ const PRESET_ICONS: Record<string, typeof TrendingUp> = {
 
 const PRESET_COLORS: Record<string, string> = {
   classic_value: "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10",
+  fcf_roe_value: "border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/10",
   quality: "border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10",
   growth_value: "border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10",
   dividend_value: "border-rose-500/30 bg-rose-500/5 hover:bg-rose-500/10",
@@ -18,6 +20,7 @@ const PRESET_COLORS: Record<string, string> = {
 
 const PRESET_ACTIVE: Record<string, string> = {
   classic_value: "border-amber-500 bg-amber-500/15 ring-1 ring-amber-500/30",
+  fcf_roe_value: "border-violet-500 bg-violet-500/15 ring-1 ring-violet-500/30",
   quality: "border-emerald-500 bg-emerald-500/15 ring-1 ring-emerald-500/30",
   growth_value: "border-blue-500 bg-blue-500/15 ring-1 ring-blue-500/30",
   dividend_value: "border-rose-500 bg-rose-500/15 ring-1 ring-rose-500/30",
@@ -31,7 +34,7 @@ interface Props {
 
 export function PresetCards({ presets, selected, onSelect }: Props) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
       {presets.map((preset) => {
         const Icon = PRESET_ICONS[preset.name] ?? Gem;
         const isActive = selected === preset.name;

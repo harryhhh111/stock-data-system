@@ -6,6 +6,43 @@ import pandas as pd
 from quant.screener.presets import FilterConfig
 
 
+def filter_consecutive_roe(
+    df: pd.DataFrame,
+    roe_history: pd.DataFrame,
+    min_years: int,
+    min_roe: float,
+) -> tuple[pd.DataFrame, int, int]:
+    """过滤：连续 N 年年度 ROE 均 >= min_roe 的股票。
+
+    Args:
+        df: 当前选股池（已经过其他硬过滤）
+        roe_history: get_roe_history() 返回的 DataFrame (stock_code, report_date, roe)
+        min_years: 要求连续的年数
+        min_roe: ROE 下限
+
+    Returns:
+        (filtered_df, n_before, n_after)
+    """
+    n_before = len(df)
+    if roe_history.empty or min_years <= 0:
+        return df, n_before, n_before
+
+    # 每只股票取最近 N 条年度记录
+    grouped = roe_history.groupby("stock_code")
+    # 只保留恰好有 >= min_years 条记录的股票
+    valid_codes = set()
+    for code, group in grouped:
+        if len(group) < min_years:
+            continue
+        # 已按 report_date DESC 排序，取前 N 条
+        recent = group.head(min_years)
+        if (recent["roe"] >= min_roe).all():
+            valid_codes.add(code)
+
+    result = df[df["stock_code"].isin(valid_codes)]
+    return result, n_before, len(result)
+
+
 def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     """
     对选股池应用硬过滤条件，返回符合条件的股票
@@ -20,8 +57,14 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     result = df.copy()
     n_before = len(result)
 
-    # 市值下限
-    if filters.get("market_cap_min") is not None:
+    # 市值下限（支持按市场设定不同门槛）
+    market_cap_by_market = filters.get("market_cap_min_by_market")
+    if market_cap_by_market and "market" in result.columns:
+        mask = pd.Series(False, index=result.index)
+        for mkt, cap_min in market_cap_by_market.items():
+            mask = mask | ((result["market"] == mkt) & (result["market_cap"] >= cap_min))
+        result = result[mask]
+    elif filters.get("market_cap_min") is not None:
         result = result[result["market_cap"] >= filters["market_cap_min"]]
 
     # 排除 ST/*ST
