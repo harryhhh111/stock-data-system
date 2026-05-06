@@ -40,6 +40,24 @@ def get_summary() -> dict:
 
         cur.execute(
             """
+            SELECT market, severity, COUNT(*)
+            FROM validation_results
+            WHERE batch_id = %s
+              AND report_date >= CURRENT_DATE - interval %s
+            GROUP BY market, severity
+            ORDER BY market, severity
+            """,
+            (batch, f"{_LOOKBACK_YEARS} years"),
+        )
+        by_market: dict[str, dict] = {}
+        for r in cur.fetchall():
+            mkt, sev, cnt = r[0], r[1], r[2]
+            if mkt not in by_market:
+                by_market[mkt] = {"market": mkt, "error": 0, "warning": 0, "info": 0}
+            by_market[mkt][sev] = cnt
+
+        cur.execute(
+            """
             SELECT check_name, severity, COUNT(*)
             FROM validation_results
             WHERE batch_id = %s
@@ -65,6 +83,7 @@ def get_summary() -> dict:
 
     return {
         "by_severity": by_severity,
+        "by_market": list(by_market.values()),
         "by_check": by_check,
         "last_check_at": last.isoformat() if last else None,
     }

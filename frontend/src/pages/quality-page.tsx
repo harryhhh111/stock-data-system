@@ -1,18 +1,18 @@
 import { useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { cn } from "@/lib/utils/cn";
 import { qualityApi } from "@/lib/api/client";
-import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DataTable } from "@/components/ui/data-table";
-import { AlertTriangle, ShieldCheck, Info } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Activity } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 const SeverityBarChart = lazy(() => import("@/components/quality/severity-bar-chart").then((m) => ({ default: m.SeverityBarChart })));
 import type { Market, Severity } from "@/lib/types/common";
-import type { QualityIssue } from "@/lib/types/quality";
+import type { QualityIssue, MarketSeverityCount } from "@/lib/types/quality";
 import type { ColumnDef } from "@tanstack/react-table";
 
 const SEVERITY_VARIANT: Record<Severity, "destructive" | "secondary" | "default"> = {
@@ -85,6 +85,20 @@ export function QualityPage() {
   const errors = summary?.by_severity.find((s) => s.severity === "error")?.count ?? 0;
   const warnings = summary?.by_severity.find((s) => s.severity === "warning")?.count ?? 0;
   const infos = summary?.by_severity.find((s) => s.severity === "info")?.count ?? 0;
+  const totalIssues = errors + warnings + infos;
+
+  const MARKET_LABEL: Record<string, string> = { CN_A: "A 股", CN_HK: "港股", US: "美股" };
+
+  function marketSummary(marketData: MarketSeverityCount[] | undefined) {
+    if (!marketData || marketData.length === 0) return null;
+    return marketData.map((m) => ({
+      ...m,
+      total: m.error + m.warning + m.info,
+      label: MARKET_LABEL[m.market] ?? m.market,
+    }));
+  }
+
+  const marketStats = marketSummary(summary?.by_market);
 
   const totalPages = issues ? Math.ceil(issues.total / limit) : 0;
 
@@ -94,16 +108,98 @@ export function QualityPage() {
 
       {/* 汇总卡片 */}
       {summaryLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-36" />
+          ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard title="错误" value={errors} icon={<AlertTriangle className="h-6 w-6" />} variant="danger" />
-          <StatCard title="警告" value={warnings} icon={<ShieldCheck className="h-6 w-6" />} variant="warning" />
-          <StatCard title="信息" value={infos} icon={<Info className="h-6 w-6" />} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 问题总数 */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center justify-between text-base">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className={cn("h-4 w-4", errors > 0 ? "text-red-500" : "text-muted-foreground")} />
+                  问题总数
+                </div>
+                <span className={cn("text-2xl font-bold tabular-nums", errors > 0 ? "text-red-500" : "text-muted-foreground")}>
+                  {totalIssues.toLocaleString()}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {marketStats?.map((m) => (
+                <div key={m.market} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">{m.label}</span>
+                    <div className="flex items-center gap-2 tabular-nums">
+                      {m.error > 0 && <span className="text-red-500 font-medium">{m.error} 错误</span>}
+                      {m.warning > 0 && <span className="text-yellow-500 text-xs">{m.warning} 警告</span>}
+                      {m.info > 0 && <span className="text-muted-foreground text-xs">{m.info} 信息</span>}
+                      {m.total === 0 && <span className="text-green-500 text-xs">正常</span>}
+                    </div>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-muted overflow-hidden flex">
+                    {m.total > 0 ? (
+                      <>
+                        <div className="h-full bg-red-500 transition-all" style={{ width: `${(m.error / Math.max(totalIssues, 1)) * 100}%` }} />
+                        <div className="h-full bg-yellow-500 transition-all" style={{ width: `${(m.warning / Math.max(totalIssues, 1)) * 100}%` }} />
+                        <div className="h-full bg-blue-400 transition-all" style={{ width: `${(m.info / Math.max(totalIssues, 1)) * 100}%` }} />
+                      </>
+                    ) : (
+                      <div className="h-full bg-green-500 w-full" />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          {/* 错误详情 */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center justify-between text-base">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-chart-2" />
+                  严重程度分布
+                </div>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {[
+                { label: "错误", count: errors, color: "text-red-500", bg: "bg-red-500" },
+                { label: "警告", count: warnings, color: "text-yellow-500", bg: "bg-yellow-500" },
+                { label: "信息", count: infos, color: "text-blue-400", bg: "bg-blue-400" },
+              ].map((s) => (
+                <div key={s.label} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${s.bg}`} />
+                    <span className="text-muted-foreground">{s.label}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-32 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div className={`h-full ${s.bg} transition-all`} style={{ width: `${totalIssues > 0 ? (s.count / totalIssues) * 100 : 0}%` }} />
+                    </div>
+                    <span className={`font-medium tabular-nums w-12 text-right ${s.color}`}>{s.count.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+
+              {/* 各市场错误明细 */}
+              {marketStats && marketStats.some((m) => m.error > 0) && (
+                <div className="pt-2 mt-2 border-t space-y-1">
+                  <p className="text-xs text-muted-foreground font-medium">各市场错误</p>
+                  {marketStats.filter((m) => m.error > 0).map((m) => (
+                    <div key={m.market} className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">{m.label}</span>
+                      <span className="text-red-500 font-medium tabular-nums">{m.error}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       )}
 
