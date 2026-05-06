@@ -90,7 +90,7 @@ export function QualityPage() {
   const MARKET_LABEL: Record<string, string> = { CN_A: "A 股", CN_HK: "港股", US: "美股" };
 
   function marketSummary(marketData: MarketSeverityCount[] | undefined) {
-    if (!marketData || marketData.length === 0) return null;
+    if (!marketData || marketData.length === 0) return [];
     return marketData.map((m) => ({
       ...m,
       total: m.error + m.warning + m.info,
@@ -123,9 +123,20 @@ export function QualityPage() {
                   <AlertTriangle className={cn("h-4 w-4", errors > 0 ? "text-red-500" : "text-muted-foreground")} />
                   问题总数
                 </div>
-                <span className={cn("text-2xl font-bold tabular-nums", errors > 0 ? "text-red-500" : "text-muted-foreground")}>
-                  {totalIssues.toLocaleString()}
-                </span>
+                <div className="flex items-center gap-3">
+                  {marketStats && marketStats.length > 0 ? (
+                    marketStats.map((m) => (
+                      <span key={m.market} className={cn("text-lg font-bold tabular-nums", m.error > 0 ? "text-red-500" : "text-muted-foreground")}>
+                        <span className="text-xs font-normal text-muted-foreground mr-1">{m.label}</span>
+                        {m.total.toLocaleString()}
+                      </span>
+                    ))
+                  ) : (
+                    <span className={cn("text-2xl font-bold tabular-nums", errors > 0 ? "text-red-500" : "text-muted-foreground")}>
+                      {totalIssues.toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -218,31 +229,37 @@ export function QualityPage() {
       )}
 
       {/* 筛选器 */}
-      <div className="flex items-center gap-3">
-        <Select value={severity} onValueChange={(v) => { setSeverity(v as Severity | "all"); setPage(0); }}>
-          <SelectTrigger className="w-32">
-            <SelectValue placeholder="严重程度" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="error">错误</SelectItem>
-            <SelectItem value="warning">警告</SelectItem>
-            <SelectItem value="info">信息</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={market} onValueChange={(v) => { setMarket(v as Market | "all"); setPage(0); }}>
-          <SelectTrigger className="w-32">
-            <SelectValue placeholder="市场" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="CN_A">A 股</SelectItem>
-            <SelectItem value="CN_HK">港股</SelectItem>
-            <SelectItem value="US">美股</SelectItem>
-          </SelectContent>
-        </Select>
-        <span className="text-sm text-muted-foreground ml-auto">
-          {issues ? `共 ${issues.total} 条` : ""}
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">严重程度</label>
+          <Select value={severity} onValueChange={(v) => { setSeverity(v as Severity | "all"); setPage(0); }}>
+            <SelectTrigger className="w-28">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="error">错误</SelectItem>
+              <SelectItem value="warning">警告</SelectItem>
+              <SelectItem value="info">信息</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">市场</label>
+          <Select value={market} onValueChange={(v) => { setMarket(v as Market | "all"); setPage(0); }}>
+            <SelectTrigger className="w-28">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="CN_A">A 股</SelectItem>
+              <SelectItem value="CN_HK">港股</SelectItem>
+              <SelectItem value="US">美股</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <span className="text-sm text-muted-foreground ml-auto tabular-nums">
+          {issues ? `共 ${issues.total.toLocaleString()} 条` : ""}
         </span>
       </div>
 
