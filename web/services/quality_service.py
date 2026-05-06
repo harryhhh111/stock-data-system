@@ -1,4 +1,4 @@
-"""Quality service — 数据质量检查（只看近 5 年 report_date）。"""
+"""Quality service — 数据质量检查（只看近 5 年 report_date，按市场汇总）。"""
 from db import Connection
 
 
@@ -6,35 +6,18 @@ from db import Connection
 _LOOKBACK_YEARS = 5
 
 
-def _latest_batch(cur) -> str:
-    """获取最新 batch_id。"""
-    cur.execute(
-        "SELECT batch_id FROM validation_results "
-        "WHERE report_date >= CURRENT_DATE - interval %s "
-        "ORDER BY batch_id DESC LIMIT 1",
-        (f"{_LOOKBACK_YEARS} years",)
-    )
-    row = cur.fetchone()
-    return row[0] if row else ""
-
-
 def get_summary() -> dict:
-    """质量问题汇总（只看最新 batch + 近 5 年），返回 QualitySummary。"""
+    """质量问题汇总（近 5 年所有校验结果，不限 batch），返回 QualitySummary。"""
     with Connection() as conn:
         cur = conn.cursor()
-
-        batch = _latest_batch(cur)
-        if not batch:
-            return {"by_severity": [], "by_check": [], "last_check_at": None}
 
         cur.execute(
             """
             SELECT severity, COUNT(*) FROM validation_results
-            WHERE batch_id = %s
-              AND report_date >= CURRENT_DATE - interval %s
+            WHERE report_date >= CURRENT_DATE - interval %s
             GROUP BY severity
             """,
-            (batch, f"{_LOOKBACK_YEARS} years"),
+            (f"{_LOOKBACK_YEARS} years",),
         )
         by_severity = [{"severity": r[0], "count": r[1]} for r in cur.fetchall()]
 
@@ -42,12 +25,11 @@ def get_summary() -> dict:
             """
             SELECT market, severity, COUNT(*)
             FROM validation_results
-            WHERE batch_id = %s
-              AND report_date >= CURRENT_DATE - interval %s
+            WHERE report_date >= CURRENT_DATE - interval %s
             GROUP BY market, severity
             ORDER BY market, severity
             """,
-            (batch, f"{_LOOKBACK_YEARS} years"),
+            (f"{_LOOKBACK_YEARS} years",),
         )
         by_market: dict[str, dict] = {}
         for r in cur.fetchall():
@@ -60,12 +42,11 @@ def get_summary() -> dict:
             """
             SELECT check_name, severity, COUNT(*)
             FROM validation_results
-            WHERE batch_id = %s
-              AND report_date >= CURRENT_DATE - interval %s
+            WHERE report_date >= CURRENT_DATE - interval %s
             GROUP BY check_name, severity
             ORDER BY COUNT(*) DESC
             """,
-            (batch, f"{_LOOKBACK_YEARS} years"),
+            (f"{_LOOKBACK_YEARS} years",),
         )
         by_check = [
             {"check_name": r[0], "label": r[0], "severity": r[1], "count": r[2]}
@@ -96,16 +77,12 @@ def get_issues(
     limit: int,
     offset: int,
 ) -> dict:
-    """问题列表（只看最新 batch + 近 5 年），返回 Paginated<QualityIssue>。"""
+    """问题列表（近 5 年所有校验结果），返回 Paginated<QualityIssue>。"""
     with Connection() as conn:
         cur = conn.cursor()
 
-        batch = _latest_batch(cur)
-        if not batch:
-            return {"items": [], "total": 0, "limit": limit, "offset": offset}
-
-        conditions = ["vr.batch_id = %s", "vr.report_date >= CURRENT_DATE - interval %s"]
-        params: list = [batch, f"{_LOOKBACK_YEARS} years"]
+        conditions = ["vr.report_date >= CURRENT_DATE - interval %s"]
+        params: list = [f"{_LOOKBACK_YEARS} years"]
 
         if severity:
             conditions.append("vr.severity = %s")
