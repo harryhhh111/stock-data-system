@@ -324,48 +324,22 @@ LEFT JOIN balance_sheet prev_a
     AND prev_a.report_type = 'annual'
     AND prev_a.report_date = (DATE_TRUNC('year', i.report_date) - INTERVAL '1 year' + INTERVAL '11 months')::date;
 
--- TTM（滚动十二个月）指标视图
+-- TTM（滚动十二个月）指标视图 — 公式法
+-- 使用公式：TTM = latest_cumulative + last_annual - prior_year_same_period
+-- 优先取最新报告（不限类型），若最新为 annual 直接使用（本身是 12 个月数据），
+-- 若最新为 quarterly/semi 则用公式法计算，无上年同期则 fallback 到最近一期 annual。
+-- ⚠️ 旧版 ROWS BETWEEN 3 PRECEDING 窗口叠加法已废弃（会导致 annual+quarterly 混合、数值虚高 3 倍）。
+-- 实际 DDL 见 scripts/materialized_views.sql，此处仅展示设计意图。
+
 CREATE MATERIALIZED VIEW mv_indicator_ttm AS
 SELECT
     stock_code,
     report_date,
-    MAX(notice_date) AS notice_date,
-    -- TTM 营收：最近4个单季之和
-    SUM(operating_revenue) OVER (
-        PARTITION BY stock_code
-        ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS revenue_ttm,
-    -- TTM 净利润
-    SUM(parent_net_profit) OVER (
-        PARTITION BY stock_code
-        ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS net_profit_ttm,
-    -- TTM 经营现金流
-    SUM(cfo_net) OVER (
-        PARTITION BY stock_code
-        ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS cfo_ttm,
-    -- TTM FCF
-    SUM(cfo_net - capex) OVER (
-        PARTITION BY stock_code
-        ORDER BY report_date
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ) AS fcf_ttm,
-    updated_at
-FROM (
-    SELECT DISTINCT ON (stock_code, report_date)
-        stock_code, report_date, report_type,
-        operating_revenue, parent_net_profit, cfo_net, capex,
-        notice_date, updated_at
-    FROM income_statement i
-    LEFT JOIN cash_flow_statement cf
-        ON i.stock_code = cf.stock_code AND i.report_date = cf.report_date AND i.report_type = cf.report_type
-    WHERE report_type = 'quarterly' OR report_type = 'annual'
-    ORDER BY stock_code, report_date
-) t;
+    ...
+FROM income_statement i
+LEFT JOIN cash_flow_statement cf ON ...
+-- 实现细节：四层 fallback（annual → 公式法 → last_annual → latest）
+-- 详见 scripts/materialized_views.sql
 
 CREATE UNIQUE INDEX idx_mv_indicator_pk ON mv_financial_indicator(stock_code, report_date, report_type);
 CREATE INDEX idx_mv_indicator_market ON mv_financial_indicator(market);
@@ -658,13 +632,13 @@ CREATE INDEX idx_quote_cap ON daily_quote(market_cap) WHERE market_cap IS NOT NU
 
 ```bash
 # 每日增量（A 股 + 港股）
-python -m sync --type daily --market all
+python -m core.sync --type daily --market all
 
 # 只同步 A 股
-python -m sync --type daily --market CN_A
+python -m core.sync --type daily --market CN_A
 
 # 全量历史回填（从 2020 年开始）
-python -m sync --type daily --market CN_A --force
+python -m core.sync --type daily --market CN_A --force
 ```
 
 ---

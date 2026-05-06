@@ -1,6 +1,6 @@
 # Stock Data System — 开发规范
 
-> 最后更新：2026-04-22
+> 最后更新：2026-05-06
 
 ---
 
@@ -188,9 +188,9 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 - 测试脚本临时文件（如 `test_*.py`）不要入库，验证完删除
 - 正式测试用例放在 `tests/` 目录
 
-### 6.5 sync/ 包规范
+### 6.5 core/sync/ 包规范
 
-`sync/` 包从 `sync.py`（1751 行）拆分而来，CLI 入口为 `python -m sync`。
+`core/sync/` 包从 `sync.py`（1751 行）拆分而来，CLI 入口为 `python -m core.sync`。
 
 **模块职责：**
 
@@ -201,16 +201,17 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 | `daily_quote.py` | 腾讯 K 线历史日线回填 | `__init__.py` CLI |
 | `share.py` | 股本数据同步 | `__init__.py` CLI |
 | `us_market.py` | 美股 SEC EDGAR 同步 + 重解析 | `__init__.py` CLI、`scheduler.py` |
-| `__init__.py` | CLI `main()` + 对外接口导出 | 直接调用、`python -m sync` |
-| `__main__.py` | `python -m sync` 支持 | 用户 CLI |
+| `stock_list.py` | 股票列表同步 | `__init__.py` CLI |
+| `__init__.py` | CLI `main()` + 对外接口导出 | 直接调用、`python -m core.sync` |
+| `__main__.py` | `python -m core.sync` 支持 | 用户 CLI |
 
 **新增同步任务规则：**
 
-1. 独立的同步函数放在新文件（如 `sync/my_task.py`）
+1. 独立的同步函数放在新文件（如 `core/sync/my_task.py`）
 2. SyncManager 方法（依赖 `self.force`）留在 `manager.py`
 3. CLI 参数在 `__init__.py` 的 `main()` 中注册
-4. 外部导入通过 `__init__.py` 的 `__all__` 导出（如 `from sync import sync_us_market`）
-5. `scheduler.py` 通过 `from sync import SyncManager` 使用
+4. 外部导入通过 `__init__.py` 的 `__all__` 导出（如 `from core.sync import sync_us_market`）
+5. `scheduler.py` 通过 `from core.sync import SyncManager` 使用（scheduler 在 core/ 内可从相对路径 `from sync import` 导入）
 
 ---
 
@@ -225,6 +226,6 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 | 1 | upsert 无 None 保护导致市值数据丢失 | `db.py` upsert 全量覆盖 | upsert 已实现 COALESCE 保护（`force_null_cols` 可显式覆盖） |
 | 2 | TTM 计算 annual+quarterly 混合导致数值虚高 3 倍 | 窗口函数不区分报告类型，annual 与 quarterly 被当作独立行叠加 | v1: 只用 annual → 导致数据陈旧（2026年还在用2024年报，无参考价值） | 
 |   | → v1 修复引入新问题：只用 annual 导致 TTM 数据陈旧 | annual 报告滞后于最新季报 6-12 个月 | v2（A/HK 已修）: 公式法 `latest_cumulative + last_annual - prior_year_cumulative` |
-|   | → US 美股尚未修复 | `mv_us_indicator_ttm` 仍用 ROWS BETWEEN 3 PRECEDING 叠加 annual+quarterly | **美股 TTM 仍有 ~75% 虚高**，详见 [US 开发规范]([US] DEV_GUIDELINES.md) |
+|   | → US 美股已同步修复 | `mv_us_indicator_ttm` 已改为公式法（2026-04-30），累计季度+年报混合叠加问题已解决 | ✅ 已修复（详见 [US 开发规范]([US] DEV_GUIDELINES.md)） |
 | 3 | 历史回填覆盖实时行情字段 | 方案文档未评估字段覆盖风险 | 新功能开发必须检查字段矩阵 |
 | 4 | 方案文档缺失导致设计缺陷 | 缺少系统级规范 | 强制先文档后开发 |

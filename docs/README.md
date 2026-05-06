@@ -16,14 +16,15 @@
 
 | 文档 | 内容 |
 |------|------|
-| [core/ARCHITECTURE.md](core/ARCHITECTURE.md) | 系统架构、设计决策、数据现状、CLI 用法 |
+| [core/ARCHITECTURE.md](core/ARCHITECTURE.md) | 系统架构、设计决策、数据源矩阵、CLI 用法 |
 | [core/SCHEMA.md](core/SCHEMA.md) | 数据库表结构、字段定义、物化视图 |
 | [core/DEV_GUIDELINES.md](core/DEV_GUIDELINES.md) | 开发规范、踩坑记录、最佳实践 |
-| [core/SCHEDULER_DESIGN.md](core/SCHEDULER_DESIGN.md) | 定时任务调度设计 |
-| [core/SEC_DATA_PITFALLS.md](core/SEC_DATA_PITFALLS.md) | SEC EDGAR 数据陷阱与解决方案 |
-| [core/[US] DEPLOY_OVERSEAS.md](core/[US] DEPLOY_OVERSEAS.md) | 海外部署指南 |
-| [core/DATA_STATUS_CN.md](core/DATA_STATUS_CN.md) | A 股/港股数据状态 |
-| [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据状态 |
+| [core/SCHEDULER_DESIGN.md](core/SCHEDULER_DESIGN.md) | 定时任务调度设计（三市场 cron） |
+| [core/[US] DEV_GUIDELINES.md](core/[US] DEV_GUIDELINES.md) | 美股特有开发规范、已知陷阱 |
+| [core/SEC_DATA_PITFALLS.md](core/SEC_DATA_PITFALLS.md) | SEC EDGAR 原始数据坑点清单 |
+| [core/[US] DEPLOY_OVERSEAS.md](core/[US] DEPLOY_OVERSEAS.md) | 海外服务器部署指南 |
+| [core/DATA_STATUS_CN.md](core/DATA_STATUS_CN.md) | A 股/港股数据现状（行数、覆盖率） |
+| [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据现状（行数、覆盖率、修复记录） |
 
 ---
 
@@ -58,21 +59,27 @@
 core/          ←→   量化无关的基础设施
 ├── fetchers/       外部 API 拉取（东方财富、腾讯、SEC）
 ├── transformers/   数据标准化、字段映射
-├── sync/           同步编排（CLI + 调度）
-├── scheduler.py    APScheduler 定时任务
+├── sync/           同步编排（CLI: python -m core.sync）
+├── scheduler.py    APScheduler 定时任务（CLI: python -m core.scheduler）
 ├── validate.py     数据质量校验
 └── incremental.py  增量同步逻辑
 
 quant/         ←→   面向用户的分析工具
-├── screener/       多因子选股筛选器
-├── analyzer/       个股深度分析
-└── web/            FastAPI JSON API（仪表板后端）
+├── screener/       多因子选股筛选器（CLI: python -m quant.screener）
+├── analyzer/       个股深度分析（CLI: python -m quant.analyzer）
+└── checks/         数据质量把关（FCF+ROE 检查）
+
+web/           ←→   FastAPI 纯 JSON API（仪表板后端）
+└── routes/         dashboard / sync / quality / screener / analyzer
+
+frontend/      ←→   React SPA 仪表板（独立部署 Cloudflare Pages）
+└── src/            shadcn/ui + ECharts + TanStack Query
 
 deployment/     ←→   部署相关文档
 └── Nginx + systemd + Cloudflare Pages 部署指南
 ```
 
-**根目录保留**：`config.py`, `db.py` — 全局配置与数据库连接池，被 `core/` 和 `quant/` 共同依赖。
+**根目录保留**：`config.py`, `db.py` — 全局配置与数据库连接池，被 `core/`、`quant/`、`web/` 共同依赖。
 
 ---
 

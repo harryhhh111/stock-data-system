@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-04-23（价值投资选股系统方向确认）
+> 最后更新：2026-05-06（文档整理 + 状态同步）
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -55,7 +55,7 @@
 
 - [x] 系统架构设计文档 `ARCHITECTURE.md`（已更新 sync/ 包结构）
 - [x] 开发规范文档 `DEV_GUIDELINES.md`
-- [x] `sync.py` 重构为 `sync/` 包（1751 行 → 8 个模块，CLI 改为 `python -m sync`）
+- [x] `sync.py` 重构为 `core/sync/` 包（1751 行 → 8 个模块，CLI 改为 `python -m core.sync`）
 - [x] 文档整理（完成/过时的归档到 archive/，核心文档更新数据）
 - [x] `mv_indicator_ttm` TTM 计算修复（annual + quarterly 混合 bug）
 - [x] `db.py` upsert None 保护实现（COALESCE + force_null_cols）

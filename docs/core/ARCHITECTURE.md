@@ -1,6 +1,6 @@
 # Stock Data System — 系统架构与规格
 
-> 最后更新：2026-04-28
+> 最后更新：2026-05-06
 
 ---
 
@@ -117,11 +117,21 @@ core/                    ←→   量化无关的基础设施
 └── incremental.py         增量同步判断
 
 quant/                   ←→   面向用户的分析工具
-├── screener/              多因子选股筛选器
-├── analyzer/              个股深度分析（待建）
-└── report/                报告生成（预留）
+├── screener/              多因子选股筛选器（CLI: python -m quant.screener）
+├── analyzer/              个股深度分析（CLI: python -m quant.analyzer）
+└── checks/                数据质量把关（FCF+ROE 检查）
 
-根目录保留：config.py, db.py — 全局配置与数据库连接池，被 core/ 和 quant/ 共同依赖。
+web/                      ←→   FastAPI 纯 JSON API
+├── routes/                API 路由（dashboard / sync / quality / screener / analyzer）
+├── services/              业务逻辑（数据库聚合查询）
+└── wrappers/              量化模块 CLI 包装器
+
+frontend/                 ←→   React SPA 仪表板
+├── src/pages/             页面组件（Dashboard / Sync / Quality / Screener / Analyzer）
+├── src/components/        UI 组件（shadcn/ui + ECharts）
+└── src/lib/               API 客户端 + TanStack Query hooks + 类型定义
+
+根目录保留：config.py, db.py — 全局配置与数据库连接池，被 core/ / quant/ / web/ 共同依赖。
 ```
 
 ### 3.4 模块职责
@@ -196,7 +206,7 @@ quant/                   ←→   面向用户的分析工具
 
 **美股：** 使用独立的一套 `mv_us_*` 视图，表结构类似但数据源为 `us_*` 表。
 
-> ⚠️ **美股 TTM 尚未修复**：`mv_us_indicator_ttm` 仍使用旧式 `ROWS BETWEEN 3 PRECEDING` 窗口叠加，annual（10-K）和 quarterly（10-Q）混合导致 TTM 虚高 ~75%。A/HK 的公式法待移植到美股。详见 [`[US] DEV_GUIDELINES.md`]([US] DEV_GUIDELINES.md)。
+> ✅ **美股 TTM 已修复**（2026-04-30）：`mv_us_indicator_ttm` 已改为公式法 `latest_cumulative + last_annual - prior_year`，与 A/HK 链路一致。详见 [`[US] DEV_GUIDELINES.md`]([US] DEV_GUIDELINES.md)。
 
 > ⚠️ **已知陷阱（A/HK）：** 
 > 1. **v1 坑**：TTM 用窗口函数 `ROWS BETWEEN 3 PRECEDING` 直接叠加 annual + quarterly，annual 被当作独立行重复计算，FCF Yield 夸大 3 倍。
@@ -363,7 +373,7 @@ FCF Yield > 5%
 | 类别 | 描述 | 市场 | 影响 | 状态 |
 |------|------|:---:|------|------|
 | TTM 计算 | 公式法已修复 annual+quarterly 混合问题 | A/HK | FCF Yield 准确 | ✅ 已修复 |
-| TTM 计算 | ROWS BETWEEN 3 PRECEDING 仍叠加 annual+quarterly | US | FCF Yield 虚高 ~75% | ❌ 待修复 |
+| TTM 计算 | ~~ROWS BETWEEN 3 PRECEDING 叠加 annual+quarterly~~ | US | ~~FCF Yield 虚高 ~75%~~ | ✅ 已修复（2026-04-30，公式法） |
 | 字段覆盖 | upsert 无 None 保护，历史回填覆盖市值数据 | 全部 | daily_quote 市值丢失 | ✅ 已修复（db.py COALESCE） |
 | total_equity | 23% NULL，无法算 ROE | A/HK | 量化筛选器不可用 | ✅ 已修复（三层 fallback，降至 12.3%） |
 | 美股日线 | 仅 3,099 行，覆盖不全 | US | 美股估值指标不可用 | ✅ 已修复（683K 行，2021~2026） |

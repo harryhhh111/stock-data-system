@@ -27,10 +27,10 @@ sudo apt install -y git
 ## 2. 部署代码
 
 ```bash
-cd /root
-git clone https://github.com/harryhhh111/stock-data-system.git stock_data
-cd stock_data
-python3.12 -m venv venv
+cd /home/ubuntu
+git clone https://github.com/harryhhh111/stock-data-system.git projects/stock_data
+cd projects/stock_data
+python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -55,15 +55,15 @@ python3 -c "from db import init_db; init_db()"
 项目根目录创建 `.env` 文件：
 
 ```env
-# 数据库（本地 PostgreSQL，不需要改）
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=stock_data
-DB_USER=stock_user
-DB_PASSWORD=你的密码
+# 数据库（本地 PostgreSQL）
+STOCK_DB_HOST=localhost
+STOCK_DB_PORT=5432
+STOCK_DB_NAME=stock_data
+STOCK_DB_USER=stock_user
+STOCK_DB_PASSWORD=你的密码
 
 # SEC EDGAR
-SEC_USER_AGENT=stock-data-system contact@example.com
+STOCK_SEC_USER_AGENT=stock-data-system contact@example.com
 
 # 市场过滤（海外服务器只跑美股）
 STOCK_MARKETS=US
@@ -82,20 +82,20 @@ STOCK_MARKETS=US
 ## 5. 初始化美股数据
 
 ```bash
-cd /root/stock_data
+cd /home/ubuntu/projects/stock_data
 source venv/bin/activate
 
 # 导入 S&P 500 股票列表
-python sync.py --type stock_list --market US
+python -m core.sync --type stock_list --market US
 
 # 拉取财务数据（income_statement, balance_sheet, cash_flow_statement）
-python sync.py --type financial --market US
+python -m core.sync --type financial --market US
 
 # 拉取美股行业分类（SEC SIC Code）
-python sync.py --type industry --market US
+python -m core.sync --type industry --market US
 
 # 拉取实时行情
-python sync.py --type daily --market US
+python -m core.sync --type daily --market US
 ```
 
 每一步可能需要较长时间（503 只 × SEC EDGAR 限流），建议分开跑。
@@ -103,19 +103,20 @@ python sync.py --type daily --market US
 ## 6. 定时任务
 
 ```bash
-cd /root/stock_data
+cd /home/ubuntu/projects/stock_data
 
 # 创建 systemd 服务
 sudo tee /etc/systemd/system/stock-scheduler.service <<EOF
 [Unit]
-Description=Stock Data Scheduler (US)
+Description=Stock Data Scheduler
 After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/stock_data
-ExecStart=/root/stock_data/venv/bin/python scheduler.py
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/stock_data
+EnvironmentFile=/home/ubuntu/projects/stock_data/.env
+ExecStart=/home/ubuntu/projects/stock_data/venv/bin/python -m core.scheduler
 Restart=on-failure
 RestartSec=60
 
@@ -135,16 +136,15 @@ sudo systemctl start stock-scheduler
 sudo systemctl status stock-scheduler
 
 # 手动跑一次同步测试
-cd /root/stock_data
+cd /home/ubuntu/projects/stock_data
 source venv/bin/activate
-python sync.py --type daily --market US --once
+python -m core.sync --type daily --market US
 ```
 
 ## 注意事项
 
-- 美股财务数据来自 SEC EDGAR，网络稳定但每次请求间隔需 ≥0.1s
+- 美股财务数据来自 SEC EDGAR，网络稳定但每次请求间隔需 ≥0.5s（推荐 2 req/s）
 - **scheduler.py 通过 `STOCK_MARKETS` 环境变量控制注册哪些任务**，海外服务器只需在 `.env` 中设置 `STOCK_MARKETS=US`，无需注释或修改任何代码
-- 如果后续想更优雅地支持按环境过滤，可以给 scheduler.py 加 `--market US` 参数，但目前注释掉是最简单的做法
 - 美股行情腾讯接口从海外访问延迟会稍高，但可用
 - Git push/pull 在海外服务器应该很稳定
-- 数据库 `config.py` 中如果 DB_HOST 是 localhost 则不需要改
+- 所有环境变量使用 `STOCK_` 前缀，由 `config.py` 自动加载
