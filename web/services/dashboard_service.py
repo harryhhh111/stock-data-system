@@ -33,23 +33,20 @@ def get_stats() -> dict:
         seven_days_ago = date.today() - timedelta(days=6)
         cur.execute(
             """
-            SELECT started_at::date AS d, status, COUNT(*)
+            SELECT started_at::date AS d,
+                   COALESCE(SUM(success_count), 0) AS success_total,
+                   COALESCE(SUM(fail_count), 0) AS fail_total
             FROM sync_log
             WHERE started_at::date >= %s
-            GROUP BY d, status
+            GROUP BY d
             ORDER BY d
             """,
             (seven_days_ago,),
         )
         trend_raw: dict[str, dict] = {}
-        for d, status, cnt in cur.fetchall():
+        for d, success_cnt, fail_cnt in cur.fetchall():
             ds = d.isoformat()
-            if ds not in trend_raw:
-                trend_raw[ds] = {"date": ds, "success": 0, "failed": 0}
-            if status == "success":
-                trend_raw[ds]["success"] += cnt
-            elif status in ("failed", "error"):
-                trend_raw[ds]["failed"] += cnt
+            trend_raw[ds] = {"date": ds, "success": int(success_cnt), "failed": int(fail_cnt)}
         sync_trend: dict[str, list] = {}
         for market in total_stocks:
             sync_trend[market] = []  # 按 market 分组，同步日志无 market 列则放入第一个 market

@@ -6,7 +6,6 @@ import { FreshnessPanel } from "@/components/dashboard/freshness-panel";
 import { RecentIssues } from "@/components/dashboard/recent-issues";
 import { PageHeader } from "@/components/layout/page-header";
 import { lazy, Suspense } from "react";
-const SyncPieChart = lazy(() => import("@/components/dashboard/sync-pie-chart").then((m) => ({ default: m.SyncPieChart })));
 const SyncTrendChart = lazy(() => import("@/components/dashboard/sync-trend-chart").then((m) => ({ default: m.SyncTrendChart })));
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,33 +72,20 @@ export function DashboardPage() {
         syncStatus={stats.sync_status}
         syncTrend={stats.sync_trend}
         anomaliesToday={stats.anomalies_today}
-        freshness={stats.freshness}
         validationIssues={stats.validation_issues}
       />
 
       {/* 图表 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">同步状态分布</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Suspense fallback={<Skeleton className="h-[300px]" />}>
-              <SyncPieChart syncStatus={stats.sync_status} />
-            </Suspense>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">7 天同步趋势</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Suspense fallback={<Skeleton className="h-[300px]" />}>
-              <SyncTrendChart syncTrend={stats.sync_trend} />
-            </Suspense>
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">7 天同步趋势</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Suspense fallback={<Skeleton className="h-[300px]" />}>
+            <SyncTrendChart syncTrend={stats.sync_trend} />
+          </Suspense>
+        </CardContent>
+      </Card>
 
       {/* 数据新鲜度 */}
       <FreshnessPanel freshness={stats.freshness} />

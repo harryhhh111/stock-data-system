@@ -131,6 +131,23 @@ def main():
 
         result = backfill_daily_hist(market=args.market, source=args.source)
 
+    # 写入 sync_log（仪表板 7 天趋势）
+    if args.type in ("financial", "daily", "daily-backfill"):
+        from datetime import datetime as dt
+        from ._utils import log_sync_result
+
+        # 统一 data_type 命名：daily_quote_CN_A / financial_CN_HK
+        type_label = {"daily": "daily_quote", "daily-backfill": "daily_quote_backfill", "financial": "financial"}.get(args.type, args.type)
+        data_type = f"{type_label}_{args.market}" if args.market else type_label
+        status = "success" if result.get("failed", 0) == 0 else "failed"
+        log_sync_result(
+            data_type=data_type,
+            status=status,
+            success_count=result.get("success", 0),
+            fail_count=result.get("failed", 0),
+            started_at=dt.now(),
+        )
+
     print("\n" + "=" * 50)
     for k, v in result.items():
         if isinstance(v, float):

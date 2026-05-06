@@ -2,17 +2,16 @@ import { cn } from "@/lib/utils/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Database, Activity, ShieldCheck, TrendingUp, TrendingDown, Minus, ArrowRight, Clock, CheckCircle, AlertTriangle } from "lucide-react";
+import { Database, Activity, ShieldCheck, TrendingUp, TrendingDown, Minus, ArrowRight, Clock } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Market } from "@/lib/types/common";
-import type { SyncStatus, SyncTrend, ValidationBreakdown, Freshness } from "@/lib/types/dashboard";
+import type { SyncStatus, SyncTrend, ValidationBreakdown } from "@/lib/types/dashboard";
 
 interface Props {
   totalStocks: Record<Market, number>;
   syncStatus: Record<Market, SyncStatus>;
   syncTrend: Record<Market, SyncTrend[]>;
   anomaliesToday: number;
-  freshness: Freshness[];
   validationIssues: {
     errors_24h: number;
     warnings_7d: number;
@@ -72,7 +71,7 @@ function formatLastCheck(iso: string | null): string {
   return `${Math.floor(diffMs / 60000)} 分钟前`;
 }
 
-export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday, freshness, validationIssues }: Props) {
+export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday, validationIssues }: Props) {
   const markets = Object.keys(totalStocks) as Market[];
   const totalAll = Object.values(totalStocks).reduce((a, b) => a + b, 0);
   const syncAll = Object.values(syncStatus).reduce((s, m) => s + m.success, 0);
@@ -83,7 +82,7 @@ export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday,
   const breakdownTotal = bd.errors + bd.warnings + bd.info;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       {/* 1. 股票总数 + 市场分布 */}
       <Card>
         <CardHeader className="pb-3">
@@ -214,47 +213,6 @@ export function StatsPanel({ totalStocks, syncStatus, syncTrend, anomaliesToday,
               </Link>
             </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* 4. 数据新鲜度 */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center justify-between text-base">
-            <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-chart-4" />
-              数据新鲜度
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {markets.map((m) => {
-            const f = freshness.find((x) => x.market === m);
-            if (!f) return null;
-            const finOk = f.financial_date && !f.financial_stale;
-            const qOk = f.quote_date && !f.quote_stale;
-            const allOk = finOk && qOk;
-            return (
-              <div key={m} className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground w-12">{MARKET_LABEL[m]}</span>
-                <div className="flex items-center gap-2">
-                  {allOk ? (
-                    <CheckCircle className="h-3.5 w-3.5 text-green-500" />
-                  ) : (
-                    <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
-                  )}
-                  <span className={cn("text-xs", allOk ? "text-green-500" : "text-yellow-500")}>
-                    {allOk ? "正常" : "有滞后"}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-          {freshness.some((f) => f.financial_stale || f.quote_stale) && (
-            <div className="text-xs text-yellow-500 pt-2 border-t">
-              有数据滞后，请检查同步调度
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>

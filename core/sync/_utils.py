@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import psycopg2
 import psycopg2.extras
@@ -178,6 +179,36 @@ def sync_one_stock(stock_code: str, market: str, save_snapshot: bool = True) -> 
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error("%s (%s) 同步失败: %s", stock_code, market, error_msg)
         return False, tables_synced, [t for t in expected_tables if t not in tables_synced], error_msg
+
+
+def log_sync_result(
+    data_type: str,
+    status: str,
+    success_count: int,
+    fail_count: int,
+    started_at: datetime,
+    error_detail: str | None = None,
+) -> None:
+    """写入 sync_log 记录（供仪表板 7 天同步趋势使用）。
+
+    Args:
+        data_type: 如 'daily_quote_CN_A', 'financial_CN_HK'
+        status: 'success' | 'failed'
+        success_count: 成功条目数
+        fail_count: 失败条目数
+        started_at: 同步开始时间
+        error_detail: 失败时的错误信息
+    """
+    try:
+        execute(
+            """INSERT INTO sync_log (data_type, status, started_at, finished_at,
+                                     success_count, fail_count, error_detail)
+               VALUES (%s, %s, %s, NOW(), %s, %s, %s)""",
+            (data_type, status, started_at, success_count, fail_count, error_detail),
+            commit=True,
+        )
+    except Exception as exc:
+        logger.warning("sync_log 写入失败（不影响同步）: %s", exc)
 
 
 def correct_market_cap(records: list[dict]) -> int:

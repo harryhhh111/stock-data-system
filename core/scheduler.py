@@ -176,6 +176,17 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
                 elapsed,
             )
 
+            # 写入 sync_log（仪表板 7 天趋势）
+            from core.sync._utils import log_sync_result
+
+            log_sync_result(
+                data_type=f"{job_type}_{market}",
+                status="success",
+                success_count=result.get("success", 0),
+                fail_count=result.get("failed", 0),
+                started_at=datetime.fromtimestamp(t0),
+            )
+
             # 同步完成后刷新物化视图
             _refresh_materialized_views(job_type, market)
 
@@ -237,6 +248,18 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
                 logger.info("[%s/%s] 等待 %.0f 秒后重试...", market, job_type, delay)
                 time.sleep(delay)
             else:
+                # 写入 sync_log（失败记录）
+                from core.sync._utils import log_sync_result
+
+                log_sync_result(
+                    data_type=f"{job_type}_{market}",
+                    status="failed",
+                    success_count=0,
+                    fail_count=1,
+                    started_at=datetime.fromtimestamp(t0),
+                    error_detail=error_msg,
+                )
+
                 _notify(
                     f"{market}/{job_type} 同步最终失败（重试 {attempt} 次）: {error_msg}",
                     level="error",
@@ -255,7 +278,7 @@ def _sync_daily_quote(market: str) -> dict:
     通过调用 sync.py 的 SyncManager.sync_daily_quote() 来完成。
     market 为规范名（CN_A / CN_HK / US）。
     """
-    from sync import SyncManager
+    from core.sync import SyncManager
 
     manager = SyncManager(
         max_workers=config.scheduler.sync_workers,
@@ -267,10 +290,10 @@ def _sync_daily_quote(market: str) -> dict:
 def _sync_financial(market: str) -> dict:
     """执行 A 股/港股增量同步。
 
-    通过调用 sync.py 的 SyncManager 来完成，不重写同步逻辑。
-    market 为规范名（CN_A / CN_HK），与 sync.py MARKET_CONFIG 键一致。
+    通过调用 core.sync 的 SyncManager 来完成，不重写同步逻辑。
+    market 为规范名（CN_A / CN_HK），与 MARKET_CONFIG 键一致。
     """
-    from sync import SyncManager
+    from core.sync import SyncManager
 
     manager = SyncManager(
         max_workers=config.scheduler.sync_workers,
@@ -286,7 +309,7 @@ def _sync_us() -> dict:
     支持从环境变量 STOCK_US_INDEXES 读取要同步的指数列表（逗号分隔）。
     默认只同步 SP500（向后兼容）。
     """
-    from sync import sync_us_market
+    from core.sync import sync_us_market
 
     # 从环境变量读取要同步的指数列表
     indexes_str = os.environ.get("STOCK_US_INDEXES", "SP500")
