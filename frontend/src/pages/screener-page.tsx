@@ -1,4 +1,4 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { screenerApi } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,12 +13,18 @@ import type { Market } from "@/lib/types/common";
 import type { ScreenerResult } from "@/lib/types/screener";
 
 export function ScreenerPage() {
-  const { market, setMarket, preset, setPreset, topN, setTopN } = useScreenerStore();
+  const market = useScreenerStore((s) => s.market);
+  const setMarket = useScreenerStore((s) => s.setMarket);
+  const preset = useScreenerStore((s) => s.preset);
+  const setPreset = useScreenerStore((s) => s.setPreset);
+  const topN = useScreenerStore((s) => s.topN);
+  const setTopN = useScreenerStore((s) => s.setTopN);
 
   const { data: presetsData } = useQuery({
     queryKey: ["screener", "presets", market],
     queryFn: () => screenerApi.presets(market),
     staleTime: 300_000,
+    placeholderData: keepPreviousData,
   });
 
   const mutation = useMutation({
