@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2 — 审核修订版）
+> 最后更新：2026-05-07（v2.1 — 修复 TTM 列名 + 回测流程顺序）
 
 ## Context
 
@@ -145,9 +145,9 @@ SELECT
     t.revenue_ttm, t.net_income_ttm AS net_profit_ttm,  -- 列名对齐: net_profit_ttm
     t.cfo_ttm, t.capex_ttm,
 
-    (t.net_cash_from_operations - t.capital_expenditures) AS fcf_ttm,
+    (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
     CASE WHEN q.market_cap > 0
-         THEN (t.net_cash_from_operations - t.capital_expenditures) / q.market_cap
+         THEN (t.cfo_ttm - t.capex_ttm) / q.market_cap
     END AS fcf_yield,
 
     NULL::numeric AS fcf_cfo_ttm,
@@ -262,10 +262,10 @@ while d <= end_date:
 1. 生成调仓日期列表（每月对齐到交易日）
 2. 对每个调仓日期 D:
    a. universe = get_point_in_time_universe(D, market="US")
-   b. 若有 roe_consecutive_years:
+   b. filtered = apply_hard_filters(universe, preset.filters)
+   c. 若有 roe_consecutive_years:
       roe_hist = get_roe_history_as_of(D, "US", years)
       filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, years, roe_min)
-   c. filtered = apply_hard_filters(universe, preset.filters)
    d. scored = rank_factors(filtered, preset.weights)
    e. top = scored.nlargest(top_n, "score")
    f. prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取价格
