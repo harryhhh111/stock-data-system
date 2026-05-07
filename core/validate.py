@@ -444,6 +444,12 @@ def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
             if total_assets != 0:
                 diff_ratio = abs(total_assets - rhs) / abs(total_assets)
                 if diff_ratio > tolerance_ratio:
+                    # 尝试用含少数股东权益的权益合计
+                    if minority_equity is not None:
+                        rhs2 = total_liab + total_equity + minority_equity
+                        diff2 = abs(total_assets - rhs2) / abs(total_assets)
+                        if diff2 <= tolerance_ratio:
+                            continue
                     issues.append(
                         ValidationIssue(
                             stock_code=stock_code,
