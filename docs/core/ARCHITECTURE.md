@@ -76,6 +76,7 @@
 | Layer 0: raw_snapshot | API 原始响应存档 | Upsert（同参数覆盖） | 东方财富 JSON |
 | Layer 1: stock_info | 股票基本信息 | Upsert | 代码、名称、市场 |
 | Layer 2: financial_reports | 三大报表 | Upsert | 利润表、资产负债表 |
+| Layer 2b: *_archive | 10 年前财报归档 | INSERT + DELETE | income_statement_archive 等 |
 | Layer 3: derived_indicators | 物化视图，衍生指标 | 定时刷新 | mv_indicator_ttm |
 | Layer 4: dividend | 分红送转 | Upsert | 每股派息、送股 |
 | Layer 5: index_constituent | 指数成分股 | Upsert | 沪深 300 |
@@ -130,6 +131,13 @@ frontend/                 ←→   React SPA 仪表板
 ├── src/pages/             页面组件（Dashboard / Sync / Quality / Screener / Analyzer）
 ├── src/components/        UI 组件（shadcn/ui + ECharts）
 └── src/lib/               API 客户端 + TanStack Query hooks + 类型定义
+
+scripts/                  ←→   SQL DDL + 维护脚本
+├── init_pg.sql            A/HK 主表 DDL
+├── us_tables.sql          美股 DDL
+├── archive_tables.sql     归档表 DDL（10 年前财报）
+├── archive_old_financials.py  归档脚本（每年执行）
+└── materialized_views.sql 物化视图 DDL
 
 根目录保留：config.py, db.py — 全局配置与数据库连接池，被 core/ / quant/ / web/ 共同依赖。
 ```

@@ -67,6 +67,10 @@ python scripts/reparse_hk_cf.py              # HK CAPEX fix
 python scripts/reparse_cn_a_income.py        # A-share income backfill
 python scripts/reparse_hk_income_balance.py  # HK income/balance backfill
 
+# Data maintenance
+python scripts/archive_old_financials.py              # archive financials older than 10 years
+python scripts/archive_old_financials.py --dry-run    # preview without executing
+
 # Config self-check
 python config.py
 ```
@@ -151,6 +155,7 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 ### Database
 - `scripts/init_pg.sql` — DDL for A-share/HK tables
 - `scripts/us_tables.sql` — DDL for US tables
+- `scripts/archive_tables.sql` — DDL for archive tables (10-year financial data)
 - `scripts/materialized_views.sql` — Materialized view definitions
 
 ### Documentation

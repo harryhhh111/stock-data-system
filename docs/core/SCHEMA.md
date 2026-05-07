@@ -17,6 +17,7 @@
 | Layer 0: raw_snapshot | API 原始响应存档 | Append-only |
 | Layer 1: stock_info | 股票基本信息（A 股/港股/美股） | Upsert |
 | Layer 2: financial_reports | 三大报表（A 股/港股共用，美股独立表） | Upsert |
+| Layer 2b: *_archive | 10 年前财报归档（结构同 Layer 2） | INSERT + DELETE |
 | Layer 3: derived_indicators | 物化视图，从报表计算（A 股/港股 + 美股） | 定时刷新 |
 | Layer 4: dividend_split | 分红送转事件 | Append-only |
 | Layer 5: index_constituent | 指数成分股 | Upsert |

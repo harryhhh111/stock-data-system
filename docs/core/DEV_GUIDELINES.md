@@ -144,7 +144,14 @@ ON CONFLICT (stock_code, trade_date) DO UPDATE SET
 - 刷新顺序必须在文档中明确
 - 刷新 SQL 必须收录到 `scripts/materialized_views.sql`
 
-### 5.3 生产环境
+### 5.3 数据归档
+
+- 10 年前的财报数据（1988~2016）已归档到 `income_statement_archive` / `balance_sheet_archive` / `cash_flow_statement_archive`
+- 归档表 DDL 见 `scripts/archive_tables.sql`，使用 `LIKE original INCLUDING ALL` 自动继承结构
+- 归档脚本 `scripts/archive_old_financials.py`，每年执行一次，自动跳过已归档数据
+- 归档后必须刷新物化视图：`mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield`
+
+### 5.4 生产环境
 
 - schema 变更需要用户确认后执行
 - 大批量数据操作（全量回填等）用 tmux 后台运行，不用 nohup
