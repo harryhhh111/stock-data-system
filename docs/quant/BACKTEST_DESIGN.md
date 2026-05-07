@@ -469,6 +469,15 @@ python -m quant.backtest --preset fcf_roe_value --start 2022-01 --format md
   └────────────────────────────────────┘
 ```
 
+## 已知数据限制
+
+| 限制 | 影响 | 解决方案 |
+|------|------|---------|
+| `daily_quote.market_cap` 仅 2026-04-07 起有数据 | 历史日期无 market_cap | 已用 `close × total_shares`（stock_share 表）回算 |
+| `daily_quote.pe_ttm` 同上 | 历史日期无 pe_ttm | 需 `pe_ttm_positive` / `pe_ttm_max` 过滤的策略在 2026-04 前无法使用 |
+| `us_cash_flow_statement` 部分股票无历史数据 | TTM 计算中 cfo_ttm / capex_ttm 为 NULL | fcf_yield 为 NULL 的股票会被 `fcf_yield_min` 过滤掉 |
+| stock_share 每股仅一条记录 | 假设股本不变 | 近似可接受，V2 可引入历史股本 |
+
 ## 不做的事（V1）
 
 - **CN_A / CN_HK 市场** — point-in-time 需 `notice_date`，逻辑不同，V2 扩展
