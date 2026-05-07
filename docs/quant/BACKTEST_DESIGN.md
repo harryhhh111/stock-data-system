@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2.4 — 修复等权分配逻辑 + CF PIT 约束 + annual YOY 缺失）
+> 最后更新：2026-05-07（v2.5 — 补全 BacktestResult + 最终净值计算 + SQL 参数说明）
 
 ## Context
 
@@ -176,6 +176,13 @@ LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
 WHERE s.market = %s;
 ```
 
+**参数说明**（共 8 个 `%s` 占位符，实际只有 2 个参数值）：
+```python
+params = (as_of_date, as_of_date, as_of_date, as_of_date, as_of_date,
+          market, as_of_date, market)
+# 即: as_of_date × 7, market × 1
+```
+
 **关键设计决策**：
 - TTM 在 SQL 层计算，与 `mv_us_indicator_ttm` 使用完全相同的 CTE 逻辑（含 ±7 天模糊匹配），避免 Python 复刻漂移
 - `report_data` CTE 中 income 和 CF 表均加 `filed_date <= %s` 约束，确保现金流数据无前视偏差
@@ -257,6 +264,19 @@ ORDER BY trade_date DESC LIMIT 1
 
 **核心函数**: `run_backtest(preset_name, start_date, end_date, rebalance_months, top_n) -> BacktestResult`
 
+```python
+class BacktestResult:
+    preset_name: str
+    start_date: date
+    end_date: date
+    rebalance_months: int
+    initial_capital: float
+    final_value: float
+    metrics: PerformanceMetrics
+    rebalance_history: list[Snapshot]    # 每次调仓的快照
+    final_holdings: list[str]            # end_date 持仓代码列表
+```
+
 #### 2.1 调仓日期生成
 
 ```python
@@ -281,6 +301,7 @@ while d <= end_date:
    a. universe = get_point_in_time_universe(D, market="US")
    b. filtered = apply_hard_filters(universe, preset.filters)
    c. 若有 roe_consecutive_years:
+      roe_min = preset.filters.get("roe_min", 0)
       roe_hist = get_roe_history_as_of(D, "US", years)
       filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, years, roe_min)
    d. scored = rank_factors(filtered, preset.weights)
@@ -288,7 +309,10 @@ while d <= end_date:
    f. prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取买入价格
    g. sell_prices = get_sell_prices(D, portfolio.holdings)  # 查卖出价格
    h. portfolio.rebalance(D, top["stock_code"].tolist(), prices, sell_prices)
-3. 在 end_date 计算最终净值，生成绩效报告
+3. 在 end_date 计算最终净值:
+   - 用 get_sell_prices(end_date, portfolio.holdings) 获取持仓最终价格
+   - total_value = cash + sum(shares * final_price)
+   - 生成 PerformanceMetrics + 返回 BacktestResult
 ```
 
 **价格传递**：engine 负责查价，通过 `prices` dict 传给 portfolio。卖出价格也由 engine 查询（调仓日当天或之前最近交易日的 close），传入 `sell_prices`。
