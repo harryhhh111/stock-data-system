@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2.2 — 修复等权分配 bug + 夏普/波动率 V1 近似说明）
+> 最后更新：2026-05-07（v2.3 — 补全 get_sell_prices 定义 + Snapshot.total_value 计算）
 
 ## Context
 
@@ -268,14 +268,30 @@ while d <= end_date:
       filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, years, roe_min)
    d. scored = rank_factors(filtered, preset.weights)
    e. top = scored.nlargest(top_n, "score")
-   f. prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取价格
-   g. # 同时取当前持仓中需要卖出的股票价格
-      sell_prices = get_sell_prices(D, portfolio.holdings)  # engine 查价
+   f. prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取买入价格
+   g. sell_prices = get_sell_prices(D, portfolio.holdings)  # 查卖出价格
    h. portfolio.rebalance(D, top["stock_code"].tolist(), prices, sell_prices)
 3. 在 end_date 计算最终净值，生成绩效报告
 ```
 
 **价格传递**：engine 负责查价，通过 `prices` dict 传给 portfolio。卖出价格也由 engine 查询（调仓日当天或之前最近交易日的 close），传入 `sell_prices`。
+
+#### 2.3 `get_sell_prices(as_of_date: date, holdings: dict[str, Position]) -> dict[str, float | None]`
+
+查询当前持仓在调仓日的价格，用于卖出清算。
+
+```sql
+-- 批量查询：每个 stock_code 取 trade_date <= D 的最新 close
+SELECT DISTINCT ON (stock_code) stock_code, close
+FROM daily_quote
+WHERE stock_code = ANY(%s) AND market = 'US' AND trade_date <= %s
+ORDER BY stock_code, trade_date DESC
+```
+
+返回值约定：
+- `{stock_code: close_price}` — 正常股票，调仓日有价格
+- `{stock_code: None}` — 退市/停牌，调仓日及之前均无行情记录
+- `portfolio.rebalance()` 中 `sell_prices[code] is None` 时按 0 清算
 
 ### 3. `portfolio.py` — 组合模型
 
@@ -308,14 +324,23 @@ class PerformanceMetrics:
 
 ```python
 def rebalance(self, date, target_codes, buy_prices, sell_prices):
+    # 0. 记录调仓前总市值（用于换手率计算）
+    prev_total_value = self.cash + sum(
+        pos.shares * sell_prices.get(code, pos.avg_cost)
+        for code, pos in self.positions.items()
+    )
+
     # 1. 卖出不在 target_codes 中的持仓
+    sold_value = 0.0
     for code in list(self.positions):
         if code not in target_codes:
             price = sell_prices.get(code)
             if price is None:
                 # 退市/停牌处理: 按 0 价格清算（完全亏损）
                 price = 0
-            self.cash += self.positions[code].shares * price
+            proceeds = self.positions[code].shares * price
+            sold_value += proceeds
+            self.cash += proceeds
             del self.positions[code]
 
     # 2. 等权重买入（只分配给真正需要买入的股票）
@@ -333,7 +358,13 @@ def rebalance(self, date, target_codes, buy_prices, sell_prices):
         # 允许微小浮点残差（< 0.01 USD）
 
     # 3. 记录快照
-    # ...
+    # total_value = 现金 + 所有持仓按调仓日价格估值
+    total_value = self.cash + sum(
+        pos.shares * buy_prices.get(code, sell_prices.get(code, pos.avg_cost))
+        for code, pos in self.positions.items()
+    )
+    turnover = sold_value / prev_total_value if prev_total_value > 0 else 0
+    self.history.append(Snapshot(date, total_value, list(self.positions.keys()), turnover))
 ```
 
 **现金精度**：等权重分配 `cash / N` 可能除不尽，V1 允许微小浮点误差（< 0.01 美元），最后一股少买一点。不做整股约束。
