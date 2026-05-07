@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2.3 — 补全 get_sell_prices 定义 + Snapshot.total_value 计算）
+> 最后更新：2026-05-07（v2.4 — 修复等权分配逻辑 + CF PIT 约束 + annual YOY 缺失）
 
 ## Context
 
@@ -57,6 +57,7 @@ report_data AS (
         ON i.stock_code = cf.stock_code
         AND i.report_date = cf.report_date
         AND i.report_type = cf.report_type
+        AND cf.filed_date <= %s    -- CF 表 PIT 约束（与 income 一致）
     WHERE i.report_type IN ('quarterly', 'annual')
       AND i.filed_date <= %s
 ),
@@ -119,7 +120,18 @@ ttm AS (
     LEFT JOIN last_annual la ON la.stock_code = l.stock_code
 ),
 
--- 3. 行情: D 当天或之前最近交易日
+-- 3. 同比增长率: latest_annual 的 revenue_yoy/net_profit_yoy 对 annual 报告为 NULL
+--    （mv_us_financial_indicator 只对 quarterly/semi 计算 YoY）
+--    需额外取 filed_date <= D 的最新 quarterly 的 YoY
+latest_quarterly_yoy AS (
+    SELECT DISTINCT ON (stock_code) stock_code, revenue_yoy, net_profit_yoy
+    FROM mv_us_financial_indicator
+    WHERE report_type = 'quarterly' AND filed_date <= %s
+      AND revenue_yoy IS NOT NULL
+    ORDER BY stock_code, report_date DESC
+),
+
+-- 4. 行情: D 当天或之前最近交易日
 latest_quote AS (
     SELECT DISTINCT ON (stock_code) *
     FROM daily_quote
@@ -128,7 +140,7 @@ latest_quote AS (
     ORDER BY stock_code, trade_date DESC
 )
 
--- 4. 组装最终结果
+-- 5. 组装最终结果
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
     (%s - s.list_date) AS days_since_list,  -- point-in-time 上市天数
@@ -138,7 +150,9 @@ SELECT
 
     la.roe, la.gross_margin, la.operating_margin, la.net_margin,
     la.debt_ratio, la.current_ratio, la.quick_ratio,
-    la.revenue_yoy, la.net_profit_yoy, la.eps_basic,
+    COALESCE(la.revenue_yoy, yoy.revenue_yoy) AS revenue_yoy,
+    COALESCE(la.net_profit_yoy, yoy.net_profit_yoy) AS net_profit_yoy,
+    la.eps_basic,
     la.total_assets, la.total_liab, la.total_equity AS parent_equity,
     la.fcf AS annual_fcf,
 
@@ -157,14 +171,17 @@ SELECT
 FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
 LEFT JOIN ttm t ON s.stock_code = t.stock_code
+LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
 LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
 WHERE s.market = %s;
 ```
 
 **关键设计决策**：
 - TTM 在 SQL 层计算，与 `mv_us_indicator_ttm` 使用完全相同的 CTE 逻辑（含 ±7 天模糊匹配），避免 Python 复刻漂移
+- `report_data` CTE 中 income 和 CF 表均加 `filed_date <= %s` 约束，确保现金流数据无前视偏差
 - `net_income_ttm AS net_profit_ttm` — 列名别名对齐 `get_us_universe()` 的命名
-- `days_since_list` 用 `report_date - list_date` 计算（point-in-time），而非 `CURRENT_DATE - list_date`
+- `days_since_list` 用 `as_of_date - list_date` 计算（point-in-time），而非 `CURRENT_DATE - list_date`
+- `revenue_yoy` / `net_profit_yoy` 取 `COALESCE(latest_annual, latest_quarterly_yoy)`，因为 `mv_us_financial_indicator` 只对 quarterly 报告计算 YoY，annual 报告这两个列为 NULL
 
 #### 1.2 返回列完整清单（与 `get_us_universe()` 对齐）
 
@@ -189,8 +206,8 @@ WHERE s.market = %s;
 | debt_ratio | latest_annual | ✅ |
 | current_ratio | latest_annual | ✅ |
 | quick_ratio | latest_annual | ✅ |
-| revenue_yoy | latest_annual | ✅ |
-| net_profit_yoy | latest_annual | ✅ |
+| revenue_yoy | COALESCE(latest_annual, latest_quarterly_yoy) | ✅ annual 时 fallback 到 quarterly |
+| net_profit_yoy | COALESCE(latest_annual, latest_quarterly_yoy) | ✅ annual 时 fallback 到 quarterly |
 | eps_basic | latest_annual | ✅ |
 | total_assets | latest_annual | ✅ |
 | total_liab | latest_annual | ✅ |
@@ -343,13 +360,18 @@ def rebalance(self, date, target_codes, buy_prices, sell_prices):
             self.cash += proceeds
             del self.positions[code]
 
-    # 2. 等权重买入（只分配给真正需要买入的股票）
-    to_buy = [c for c in target_codes
-              if c not in self.positions and buy_prices.get(c, 0) > 0]
-    if to_buy:
-        per_stock = self.cash / len(to_buy)
+    # 2. 等权重调整：所有目标持仓（含继续持有的）统一分配等额市值
+    #    过滤无价格的股票（退市/停牌无法买入）
+    valid_codes = [c for c in target_codes if buy_prices.get(c, 0) > 0]
+    if valid_codes:
+        per_stock = self.cash / len(valid_codes)
+        # 先清空所有持仓，再统一等权买入（确保等权，避免残留旧仓位偏差）
+        self.cash += sum(pos.shares * buy_prices.get(code, pos.avg_cost)
+                         for code, pos in self.positions.items()
+                         if code in valid_codes)
+        self.positions.clear()
         spent = 0.0
-        for code in to_buy:
+        for code in valid_codes:
             price = buy_prices[code]
             shares = per_stock / price
             self.positions[code] = Position(code, shares, price)
@@ -360,12 +382,14 @@ def rebalance(self, date, target_codes, buy_prices, sell_prices):
     # 3. 记录快照
     # total_value = 现金 + 所有持仓按调仓日价格估值
     total_value = self.cash + sum(
-        pos.shares * buy_prices.get(code, sell_prices.get(code, pos.avg_cost))
+        pos.shares * buy_prices.get(code, pos.avg_cost)
         for code, pos in self.positions.items()
     )
     turnover = sold_value / prev_total_value if prev_total_value > 0 else 0
     self.history.append(Snapshot(date, total_value, list(self.positions.keys()), turnover))
 ```
+
+**等权重逻辑**：每次调仓时，先将全部可用资金按 `cash / N` 等额分配给所有目标持仓。对继续持有的股票也重新按当前价买入，确保权重严格相等。此方式等价于"全部卖出 → 等权买入"，但只对 `valid_codes`（有买入价格的目标股）分配。
 
 **现金精度**：等权重分配 `cash / N` 可能除不尽，V1 允许微小浮点误差（< 0.01 美元），最后一股少买一点。不做整股约束。
 
