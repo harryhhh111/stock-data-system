@@ -280,23 +280,24 @@ class BacktestResult:
 #### 2.1 调仓日期生成
 
 ```python
-# CLI 输入 "2022-01" → 解析为 2022-01-01
-# engine 内部对齐到该月第一个交易日
-start = get_nearest_trade_date(date(2022, 1, 1))
-# 后续调仓日: start + 6mo → 对齐到交易日
+# CLI 输入 "2022-01" → start_month = date(2022, 1, 1)
+# engine 对每个调仓月取该月最后一个交易日（月末调仓，业界标准做法）
 rebalance_dates = []
-d = start
-while d <= end_date:
-    rebalance_dates.append(get_nearest_trade_date(d))
-    d = d + relativedelta(months=rebalance_months)
+cursor = start_month
+while cursor <= end_date:
+    month_end = get_month_end(cursor.year, cursor.month)
+    rebalance_dates.append(get_nearest_trade_date(month_end))
+    cursor = cursor + relativedelta(months=rebalance_months)
 ```
 
-规则：**月份输入统一解析为该月第一个交易日**（`get_nearest_trade_date(month_first_day)`）。
+规则：**月份输入统一解析为该月最后一个交易日**。
+`get_month_end(y, m)` 返回该月最后一天（`date(y, m, 1) + relativedelta(months=1) - timedelta(days=1)`）。
+`get_nearest_trade_date(month_end)` 用 `trade_date <= %s` 取月末或之前最近交易日。
 
 #### 2.2 回测流程
 
 ```
-1. 生成调仓日期列表（每月对齐到交易日）
+1. 生成调仓日期列表（每月末对齐到最后一个交易日）
 2. 对每个调仓日期 D:
    a. universe = get_point_in_time_universe(D, market="US")
    b. filtered = apply_hard_filters(universe, preset.filters)
