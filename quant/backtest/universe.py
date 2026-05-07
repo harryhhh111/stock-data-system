@@ -122,8 +122,10 @@ def get_point_in_time_universe(
         ORDER BY stock_code, trade_date DESC
     ),
     latest_shares AS (
-        SELECT stock_code, total_shares
+        SELECT DISTINCT ON (stock_code) stock_code, total_shares
         FROM stock_share
+        WHERE trade_date <= %s
+        ORDER BY stock_code, trade_date DESC
     )
 
     SELECT
@@ -164,14 +166,15 @@ def get_point_in_time_universe(
     WHERE s.market = %s;
     """
     params = (
-        as_of_date,           # latest_annual WHERE filed_date <=
-        as_of_date,           # report_data cf.filed_date <=
-        as_of_date,           # report_data i.filed_date <=
-        as_of_date,           # latest_quarterly_yoy WHERE filed_date <=
-        market,               # latest_quote WHERE market =
-        as_of_date,           # latest_quote WHERE trade_date <=
-        as_of_date,           # days_since_list: %s - list_date
-        market,               # WHERE s.market =
+        as_of_date,           # 1. latest_annual WHERE filed_date <=
+        as_of_date,           # 2. report_data cf.filed_date <=
+        as_of_date,           # 3. report_data i.filed_date <=
+        as_of_date,           # 4. latest_quarterly_yoy WHERE filed_date <=
+        market,               # 5. latest_quote WHERE market =
+        as_of_date,           # 6. latest_quote WHERE trade_date <=
+        as_of_date,           # 7. latest_shares WHERE trade_date <=
+        as_of_date,           # 8. days_since_list: %s - list_date
+        market,               # 9. WHERE s.market =
     )
     with Connection() as conn:
         df = pd.read_sql(sql, conn, params=params)

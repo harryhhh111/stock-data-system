@@ -32,19 +32,25 @@ class BacktestResult:
     final_holdings: list[str]
 
 
+def _get_month_end(d: date) -> date:
+    """返回 d 所在月份的最后一天。"""
+    return d + relativedelta(months=1) - relativedelta(days=1)
+
+
 def _generate_rebalance_dates(
-    start: date,
+    start_month: date,
     end: date,
     months: int,
 ) -> list[date]:
-    """生成调仓日期列表（每月第一个交易日）。"""
+    """生成调仓日期列表（每月末对齐到最后一个交易日）。"""
     dates: list[date] = []
-    d = start
-    while d <= end:
-        trade_date = get_nearest_trade_date(d)
-        if trade_date and trade_date <= end:
+    cursor = start_month
+    while cursor <= end:
+        month_end = _get_month_end(cursor)
+        trade_date = get_nearest_trade_date(month_end)
+        if trade_date and trade_date <= end and trade_date not in dates:
             dates.append(trade_date)
-        d = d + relativedelta(months=months)
+        cursor = cursor + relativedelta(months=months)
     return dates
 
 
@@ -81,13 +87,7 @@ def run_backtest(
     if end is None:
         end = date.today()
 
-    # 对齐起始日期
-    start_trade = get_nearest_trade_date(start)
-    if start_trade is None:
-        raise ValueError(f"无法找到 {start} 或之前的交易日")
-    start = start_trade
-
-    # 生成调仓日期
+    # 生成调仓日期（每月末对齐到最后一个交易日）
     rebalance_dates = _generate_rebalance_dates(start, end, months)
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
@@ -143,7 +143,7 @@ def run_backtest(
 
     return BacktestResult(
         preset_name=preset_name,
-        start_date=start,
+        start_date=rebalance_dates[0],
         end_date=end_trade or end,
         rebalance_months=months,
         initial_capital=initial_capital,
