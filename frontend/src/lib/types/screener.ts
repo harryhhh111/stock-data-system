@@ -23,6 +23,8 @@ export interface FilterConfig {
 export interface Preset {
   name: string;
   description: string;
+  conditions: string[];
+  scoring: string;
   filters: FilterConfig;
   weights: Record<string, FactorWeight>;
   top_n: number;

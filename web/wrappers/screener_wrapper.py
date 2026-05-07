@@ -11,7 +11,9 @@ def get_presets() -> dict:
         "presets": [
             {
                 "name": name,
-                "description": cfg["description"],
+                "description": cfg.get("description", name),
+                "conditions": cfg.get("conditions", []),
+                "scoring": cfg.get("scoring", ""),
                 "filters": cfg["filters"],
                 "weights": cfg["weights"],
                 "top_n": cfg["top_n"],

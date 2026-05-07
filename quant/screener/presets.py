@@ -30,6 +30,8 @@ class FactorWeight(TypedDict):
 
 class PresetConfig(TypedDict):
     description: str
+    conditions: list[str]
+    scoring: str
     filters: FilterConfig
     weights: dict[str, FactorWeight]
     top_n: int
@@ -41,7 +43,15 @@ class PresetConfig(TypedDict):
 
 PRESETS: dict[str, PresetConfig] = {
     "fcf_roe_value": {
-        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + 连续3年ROE > 10% + 排除金融地产（A股/港股≥15亿，美股≥10亿美元）",
+        "description": "FCF+ROE 深度价值",
+        "conditions": [
+            "市值 ≥ 15亿 (A股/港股)，≥ 10亿美元 (美股)",
+            "排除 ST/*ST",
+            "排除行业: 银行、非银金融、房地产",
+            "FCF Yield ≥ 10%",
+            "ROE ≥ 10%，连续 3 年年度 ROE 均达标",
+        ],
+        "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
         "filters": {
             "market_cap_min_by_market": {
                 "CN_A": 1.5e9,                 # A 股 > 15 亿人民币
@@ -65,7 +75,15 @@ PRESETS: dict[str, PresetConfig] = {
         "top_n": 30,
     },
     "classic_value": {
-        "description": "经典价值 — 高 FCF Yield + 低估值 + 稳定盈利",
+        "description": "经典价值",
+        "conditions": [
+            "市值 ≥ 50亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "PE(TTM) > 0 且 ≤ 20",
+            "资产负债率 ≤ 60%",
+            "毛利率 ≥ 20%",
+        ],
+        "scoring": "FCF Yield 30% · ROE 20% · CFO质量 20% · 营收同比 15% · PB 15%",
         "filters": {
             "market_cap_min": 5e9,
             "exclude_st": True,
@@ -86,7 +104,15 @@ PRESETS: dict[str, PresetConfig] = {
         "top_n": 30,
     },
     "quality": {
-        "description": "质量 — 高 ROE + 高毛利 + 低负债",
+        "description": "质量",
+        "conditions": [
+            "市值 ≥ 100亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "资产负债率 ≤ 50%",
+            "毛利率 ≥ 30%",
+            "净利率 ≥ 10%",
+        ],
+        "scoring": "ROE 30% · FCF Yield 25% · CFO质量 20% · PB 15% · 营收同比 10%",
         "filters": {
             "market_cap_min": 10e9,
             "exclude_st": True,
@@ -106,7 +132,13 @@ PRESETS: dict[str, PresetConfig] = {
         "top_n": 30,
     },
     "growth_value": {
-        "description": "成长价值 — 合理估值 + 高增长",
+        "description": "成长价值",
+        "conditions": [
+            "市值 ≥ 20亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "PE(TTM) > 0 且 ≤ 30",
+        ],
+        "scoring": "营收同比 25% · 净利润同比 25% · FCF Yield 20% · ROE 15% · CFO质量 15%",
         "filters": {
             "market_cap_min": 2e9,
             "exclude_st": True,
@@ -124,7 +156,15 @@ PRESETS: dict[str, PresetConfig] = {
         "top_n": 30,
     },
     "dividend_value": {
-        "description": "红利价值 — 高股息 + 稳定盈利 + 合理估值",
+        "description": "红利价值",
+        "conditions": [
+            "市值 ≥ 100亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "股息率 ≥ 2%",
+            "PE(TTM) > 0 且 ≤ 25",
+            "资产负债率 ≤ 60%",
+        ],
+        "scoring": "股息率 25% · FCF Yield 25% · CFO质量 20% · ROE 15% · PB 15%",
         "filters": {
             "market_cap_min": 10e9,
             "exclude_st": True,

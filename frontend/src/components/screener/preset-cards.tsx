@@ -51,11 +51,25 @@ export function PresetCards({ presets, selected, onSelect }: Props) {
           >
             <div className="flex items-center gap-2">
               <Icon className={cn("h-4 w-4", isActive ? "text-foreground" : "text-muted-foreground")} />
-              <span className={cn("text-sm font-medium", isActive && "text-foreground")}>
-                {preset.name.replace(/_/g, " ")}
+              <span className={cn("text-sm font-semibold", isActive && "text-foreground")}>
+                {preset.description}
               </span>
             </div>
-            <p className="text-xs text-muted-foreground">{preset.description}</p>
+            {preset.conditions.length > 0 && (
+              <ul className="text-xs text-muted-foreground space-y-0.5">
+                {preset.conditions.map((cond, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="text-muted-foreground/50 shrink-0 mt-0.5">▸</span>
+                    <span>{cond}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {preset.scoring && (
+              <p className="text-[10px] text-muted-foreground/70 mt-1 leading-relaxed">
+                {preset.scoring}
+              </p>
+            )}
             <div className="flex flex-wrap gap-1.5 mt-auto pt-2">
               <span className="text-[10px] tabular-nums text-muted-foreground bg-muted rounded px-1.5 py-0.5">
                 前 {preset.top_n} 名
