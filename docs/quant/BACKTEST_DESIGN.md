@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2.1 — 修复 TTM 列名 + 回测流程顺序）
+> 最后更新：2026-05-07（v2.2 — 修复等权分配 bug + 夏普/波动率 V1 近似说明）
 
 ## Context
 
@@ -295,12 +295,14 @@ class PerformanceMetrics:
     total_return: float         # 总收益率 = (final - initial) / initial
     annualized_return: float    # 年化收益率 = (1 + total)^(365/days) - 1 (CAGR)
     max_drawdown: float         # 最大回撤 = max(1 - value/peak)
-    sharpe_ratio: float         # 夏普比率 = mean(daily_returns) / std(daily_returns) * sqrt(252)
-    volatility: float           # 年化波动率 = std(daily_returns) * sqrt(252)
+    sharpe_ratio: float         # V1 近似: mean(rebal_returns) / std(rebal_returns) * sqrt(252/rebal_days)
+    volatility: float           # V1 近似: std(rebal_returns) * sqrt(252/rebal_days)
     num_rebalances: int
     avg_holding_count: float
     total_trades: int
 ```
+
+> **V1 夏普/波动率近似**：Snapshot 仅在调仓日记录，无日频净值序列。V1 基于调仓间隔收益率计算：`rebal_returns = [snap[i].value / snap[i-1].value - 1]`，年化因子为 `sqrt(252 / avg_rebal_days)`。这假设调仓日之间的收益均匀分布，是粗略近似。V2 可通过每日查询 `daily_quote` 计算精确日频净值。
 
 #### 3.1 `rebalance(date, target_codes, buy_prices, sell_prices)`
 
@@ -311,23 +313,22 @@ def rebalance(self, date, target_codes, buy_prices, sell_prices):
         if code not in target_codes:
             price = sell_prices.get(code)
             if price is None:
-                # 退市/停牌处理: 按最后已知成本价标记为 0（完全亏损）
+                # 退市/停牌处理: 按 0 价格清算（完全亏损）
                 price = 0
             self.cash += self.positions[code].shares * price
             del self.positions[code]
 
-    # 2. 等权重买入
-    if target_codes:
-        per_stock = self.cash / len(target_codes)
-        for code in target_codes:
-            if code in self.positions:
-                continue  # 已持有，不操作
-            price = buy_prices.get(code)
-            if price is None or price <= 0:
-                continue  # 无价格，跳过
+    # 2. 等权重买入（只分配给真正需要买入的股票）
+    to_buy = [c for c in target_codes
+              if c not in self.positions and buy_prices.get(c, 0) > 0]
+    if to_buy:
+        per_stock = self.cash / len(to_buy)
+        for code in to_buy:
+            price = buy_prices[code]
             shares = per_stock / price
             self.positions[code] = Position(code, shares, price)
-        self.cash = 0.0  # 允许微小浮点残差
+        self.cash -= sum(p.shares * p.avg_cost for p in self.positions.values())
+        # 允许微小浮点残差（< 0.01 USD）
 
     # 3. 记录快照
     # ...
