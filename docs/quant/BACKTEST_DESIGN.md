@@ -131,7 +131,7 @@ latest_quote AS (
 -- 4. 组装最终结果
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
-    (la.report_date - s.list_date) AS days_since_list,  -- point-in-time 上市天数
+    (%s - s.list_date) AS days_since_list,  -- point-in-time 上市天数
 
     q.close, q.market_cap, NULL::numeric AS float_market_cap,
     q.pe_ttm, q.pb, q.currency AS quote_currency,
@@ -323,11 +323,13 @@ def rebalance(self, date, target_codes, buy_prices, sell_prices):
               if c not in self.positions and buy_prices.get(c, 0) > 0]
     if to_buy:
         per_stock = self.cash / len(to_buy)
+        spent = 0.0
         for code in to_buy:
             price = buy_prices[code]
             shares = per_stock / price
             self.positions[code] = Position(code, shares, price)
-        self.cash -= sum(p.shares * p.avg_cost for p in self.positions.values())
+            spent += shares * price
+        self.cash -= spent
         # 允许微小浮点残差（< 0.01 USD）
 
     # 3. 记录快照
