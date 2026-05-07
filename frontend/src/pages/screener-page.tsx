@@ -7,10 +7,10 @@ import { Input } from "@/components/ui/input";
 import { ResultTable } from "@/components/screener/result-table";
 import { PresetCards } from "@/components/screener/preset-cards";
 import { useScreenerStore } from "@/lib/store/screener-store";
+import { useScreenerResultStore } from "@/lib/store/screener-result-store";
 import { PageHeader } from "@/components/layout/page-header";
 import { BarChart3 } from "lucide-react";
 import type { Market } from "@/lib/types/common";
-import type { ScreenerResult } from "@/lib/types/screener";
 
 export function ScreenerPage() {
   const market = useScreenerStore((s) => s.market);
@@ -19,6 +19,9 @@ export function ScreenerPage() {
   const setPreset = useScreenerStore((s) => s.setPreset);
   const topN = useScreenerStore((s) => s.topN);
   const setTopN = useScreenerStore((s) => s.setTopN);
+
+  const lastResult = useScreenerResultStore((s) => s.lastResult);
+  const setLastResult = useScreenerResultStore((s) => s.setLastResult);
 
   const { data: presetsData } = useQuery({
     queryKey: ["screener", "presets", market],
@@ -34,9 +37,10 @@ export function ScreenerPage() {
         preset: preset || undefined,
         top_n: topN,
       }),
+    onSuccess: (data) => setLastResult(data),
   });
 
-  const result: ScreenerResult | undefined = mutation.data;
+  const result = lastResult ?? mutation.data;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">

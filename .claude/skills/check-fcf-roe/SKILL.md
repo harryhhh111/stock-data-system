@@ -9,20 +9,20 @@ description: 股票 FCF Yield + ROE 质量把关。自动执行筛选 → 异常
 
 ### Step 0: 确定目标市场
 
-检查当前 `STOCK_MARKETS` 环境变量或让用户指定。A股/港股默认启用 10 亿市值门槛。
+检查当前 `STOCK_MARKETS` 环境变量或让用户指定。A股/港股默认启用 15 亿市值门槛，美股 10 亿美元。
 
 ### Step 1: 运行数据查询
 
 ```bash
-# 全市场（A股/港股自动加 10 亿市值门槛）
-python -m quant.checks.fcf_roe_check --market all --min-mcap 1e9 --json
+# 全市场（A股/港股默认 15 亿市值门槛）
+python -m quant.checks.fcf_roe_check --market all --min-mcap 1.5e9 --json
 
 # 单市场
-python -m quant.checks.fcf_roe_check --market CN_A --min-mcap 1e9 --json
-python -m quant.checks.fcf_roe_check --market CN_HK --min-mcap 1e9 --json
+python -m quant.checks.fcf_roe_check --market CN_A --min-mcap 1.5e9 --json
+python -m quant.checks.fcf_roe_check --market CN_HK --min-mcap 1.5e9 --json
 
-# 美股（无市值门槛）
-python -m quant.checks.fcf_roe_check --market US --json
+# 美股（10 亿美元门槛）
+python -m quant.checks.fcf_roe_check --market US --min-mcap 1e9 --json
 ```
 
 解析 JSON 结果，每个 market 有独立的 `fcf_screen_count`、`anomaly_count`、`roe_passed_count`。
@@ -65,7 +65,7 @@ ORDER BY trade_date DESC LIMIT 1;
 ```
 ## FCF+ROE 质量把关报告 — {MARKET}
 
-### 通过筛选: N 只 (市值 > 10亿, FCF Yield > 10%, ROE > 10% × 3年)
+### 通过筛选: N 只 (市值>15亿/10亿美元, FCF Yield>10%, ROE>10%×3年)
 ### 异常: M 只（已排除）
 - [代码] 异常类型 → 根因 → 修复建议
 
@@ -82,7 +82,7 @@ ORDER BY trade_date DESC LIMIT 1;
 
 | 参数 | CN_A / CN_HK | US |
 |------|-------------|-----|
-| 市值门槛 | 10 亿 | 无 |
+| 市值门槛 | 15 亿 | 10 亿美元 |
 | FCF Yield 阈值 | 10% | 10% |
 | ROE 阈值 | 10% | 10% |
 | ROE 连续年数 | 3 年 | 3 年 |
@@ -100,6 +100,6 @@ ORDER BY trade_date DESC LIMIT 1;
 
 ## 注意事项
 
-- 市值门槛排除了小市值股票，避免 FCF Yield 因市值数据波动而虚高
+- A股/港股 15 亿、美股 10 亿美元市值门槛，排除小市值股票避免 FCF Yield 虚高
 - 如果涉及尚未 reparse 的数据，标注"待 reparse 后重新核对"
 - 退出时如果有未解决的数据错误，告诉用户下一步建议

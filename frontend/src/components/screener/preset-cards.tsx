@@ -55,13 +55,13 @@ export function PresetCards({ presets, selected, onSelect }: Props) {
                 {preset.name.replace(/_/g, " ")}
               </span>
             </div>
-            <p className="text-xs text-muted-foreground line-clamp-2">{preset.description}</p>
-            <div className="flex gap-2 mt-auto pt-1">
+            <p className="text-xs text-muted-foreground">{preset.description}</p>
+            <div className="flex flex-wrap gap-1.5 mt-auto pt-2">
               <span className="text-[10px] tabular-nums text-muted-foreground bg-muted rounded px-1.5 py-0.5">
-                Top {preset.top_n}
+                前 {preset.top_n} 名
               </span>
               <span className="text-[10px] tabular-nums text-muted-foreground bg-muted rounded px-1.5 py-0.5">
-                {Object.keys(preset.weights).length} 因子
+                {Object.keys(preset.weights).length} 因子评分
               </span>
             </div>
           </button>

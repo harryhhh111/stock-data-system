@@ -5,11 +5,11 @@ import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, Chevrons
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const nav = [
+  { to: "/screener", label: "选股筛选", icon: BarChart3 },
+  { to: "/analyzer", label: "个股分析", icon: LineChart },
   { to: "/dashboard", label: "仪表板", icon: LayoutDashboard },
   { to: "/sync", label: "同步状态", icon: RefreshCw },
   { to: "/quality", label: "数据质量", icon: ShieldCheck },
-  { to: "/screener", label: "选股筛选", icon: BarChart3 },
-  { to: "/analyzer", label: "个股分析", icon: LineChart },
 ];
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

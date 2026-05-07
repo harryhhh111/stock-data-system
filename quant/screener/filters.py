@@ -57,12 +57,12 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     result = df.copy()
     n_before = len(result)
 
-    # 市值下限（支持按市场设定不同门槛）
+    # 市值下限（支持按市场设定不同门槛，未列出的市场不过滤）
     market_cap_by_market = filters.get("market_cap_min_by_market")
     if market_cap_by_market and "market" in result.columns:
-        mask = pd.Series(False, index=result.index)
+        mask = pd.Series(True, index=result.index)
         for mkt, cap_min in market_cap_by_market.items():
-            mask = mask | ((result["market"] == mkt) & (result["market_cap"] >= cap_min))
+            mask = mask & ~((result["market"] == mkt) & (result["market_cap"] < cap_min))
         result = result[mask]
     elif filters.get("market_cap_min") is not None:
         result = result[result["market_cap"] >= filters["market_cap_min"]]
