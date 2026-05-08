@@ -32,75 +32,6 @@ latest_annual AS (
     ORDER BY f.stock_code, f.report_date DESC
 ),
 
-report_data AS (
-    SELECT i.stock_code, i.report_date, i.report_type, i.notice_date,
-           i.total_revenue, i.net_profit,
-           cf.cfo_net, cf.capex
-    FROM income_statement i
-    LEFT JOIN cash_flow_statement cf
-        ON i.stock_code = cf.stock_code
-        AND i.report_date = cf.report_date
-        AND i.report_type = cf.report_type
-        AND cf.notice_date <= %s
-    WHERE i.report_type IN ('quarterly', 'semi', 'annual')
-      AND i.notice_date <= %s
-),
-latest_report AS (
-    SELECT DISTINCT ON (stock_code) *
-    FROM report_data
-    ORDER BY stock_code, report_date DESC
-),
-prev_year AS (
-    SELECT DISTINCT ON (l.stock_code)
-        l.stock_code,
-        p.total_revenue AS py_revenue, p.net_profit AS py_net_income,
-        p.cfo_net AS py_ocf, p.capex AS py_capex
-    FROM latest_report l
-    JOIN report_data p ON p.stock_code = l.stock_code
-        AND p.report_type = l.report_type
-        AND p.report_date BETWEEN l.report_date - INTERVAL '1 year' - INTERVAL '7 days'
-                              AND l.report_date - INTERVAL '1 year' + INTERVAL '7 days'
-    ORDER BY l.stock_code,
-        ABS(EXTRACT(EPOCH FROM (p.report_date -
-            (l.report_date - INTERVAL '1 year'))))
-),
-last_annual AS (
-    SELECT DISTINCT ON (l.stock_code)
-        l.stock_code,
-        a.total_revenue AS la_revenue, a.net_profit AS la_net_income,
-        a.cfo_net AS la_ocf, a.capex AS la_capex
-    FROM latest_report l
-    JOIN report_data a ON a.stock_code = l.stock_code
-        AND a.report_type = 'annual' AND a.report_date < l.report_date
-    ORDER BY l.stock_code, a.report_date DESC
-),
-ttm AS (
-    SELECT l.stock_code,
-        CASE WHEN l.report_type = 'annual' THEN l.total_revenue
-             WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-             THEN l.total_revenue + la.la_revenue - py.py_revenue
-             WHEN la.stock_code IS NOT NULL THEN la.la_revenue
-             ELSE l.total_revenue END AS revenue_ttm,
-        CASE WHEN l.report_type = 'annual' THEN l.net_profit
-             WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-             THEN l.net_profit + la.la_net_income - py.py_net_income
-             WHEN la.stock_code IS NOT NULL THEN la.la_net_income
-             ELSE l.net_profit END AS net_income_ttm,
-        CASE WHEN l.report_type = 'annual' THEN l.cfo_net
-             WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-             THEN l.cfo_net + la.la_ocf - py.py_ocf
-             WHEN la.stock_code IS NOT NULL THEN la.la_ocf
-             ELSE l.cfo_net END AS cfo_ttm,
-        CASE WHEN l.report_type = 'annual' THEN l.capex
-             WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
-             THEN l.capex + la.la_capex - py.py_capex
-             WHEN la.stock_code IS NOT NULL THEN la.la_capex
-             ELSE l.capex END AS capex_ttm
-    FROM latest_report l
-    LEFT JOIN prev_year py ON py.stock_code = l.stock_code
-    LEFT JOIN last_annual la ON la.stock_code = l.stock_code
-),
-
 latest_quarterly_yoy AS (
     SELECT DISTINCT ON (f.stock_code)
         f.stock_code, f.revenue_yoy, f.net_profit_yoy
@@ -135,8 +66,8 @@ SELECT
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     q.float_market_cap,
     -- PIT 计算 PE/PB：daily_quote 历史数据无估值字段，用财务数据推算
-    CASE WHEN t.net_income_ttm > 0
-         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
+    CASE WHEN t.net_profit_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_profit_ttm
     END AS pe_ttm,
     CASE WHEN COALESCE(la.parent_equity, la.total_equity) > 0
          THEN COALESCE(q.market_cap, q.close * sh.total_shares)
@@ -152,7 +83,7 @@ SELECT
     la.total_assets, la.total_liab, la.parent_equity,
     la.fcf AS annual_fcf,
 
-    t.revenue_ttm, t.net_income_ttm AS net_profit_ttm,
+    t.revenue_ttm, t.net_profit_ttm,
     t.cfo_ttm, t.capex_ttm,
 
     (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
@@ -163,11 +94,15 @@ SELECT
 
     NULL::numeric AS fcf_cfo_ttm,
     NULL::numeric AS fcf_capex_ttm,
-    NULL::date AS ttm_report_date
+    t.report_date AS ttm_report_date
 
 FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
-LEFT JOIN ttm t ON s.stock_code = t.stock_code
+LEFT JOIN LATERAL (
+    SELECT * FROM mv_indicator_ttm_hist
+    WHERE stock_code = s.stock_code AND notice_date <= %s
+    ORDER BY report_date DESC LIMIT 1
+) t ON true
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
 LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
 LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
@@ -182,13 +117,12 @@ def _get_point_in_time_universe_cn(
     """CN_A / CN_HK 市场 PIT 查询（统一按 notice_date <= as_of_date 过滤）。"""
     params = (
         as_of_date,           # 1. latest_annual notice_date <=
-        as_of_date,           # 2. report_data cf.notice_date <=
-        as_of_date,           # 3. report_data i.notice_date <=
-        as_of_date,           # 4. latest_quarterly_yoy notice_date <=
-        market,               # 5. latest_quote market =
-        as_of_date,           # 6. latest_quote trade_date <=
-        as_of_date,           # 7. days_since_list
-        market,               # 8. WHERE s.market =
+        as_of_date,           # 2. latest_quarterly_yoy notice_date <=
+        market,               # 3. latest_quote market =
+        as_of_date,           # 4. latest_quote trade_date <=
+        as_of_date,           # 5. days_since_list
+        as_of_date,           # 6. LATERAL ttm notice_date <=
+        market,               # 7. WHERE s.market =
     )
     with Connection() as conn:
         df = pd.read_sql(_CN_PIT_SQL, conn, params=params)
@@ -305,8 +239,8 @@ SELECT
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     NULL::numeric AS float_market_cap,
-    CASE WHEN t.net_income_ttm > 0
-         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
+    CASE WHEN t.net_profit_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_profit_ttm
     END AS pe_ttm,
     CASE WHEN la.total_equity > 0
          THEN COALESCE(q.market_cap, q.close * sh.total_shares) / la.total_equity

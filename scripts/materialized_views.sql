@@ -261,6 +261,120 @@ CREATE INDEX idx_mv_ttm_cfo ON mv_indicator_ttm(cfo_ttm);
 
 
 -- ============================================================
+-- mv_indicator_ttm_hist: TTM 历史版本（近 10 年，每期报告一条）
+--
+-- 与 mv_indicator_ttm 逻辑相同，但不只保留最新一期。
+-- 用于回测 PIT 查询：按 notice_date 过滤即可获得历史切面的 TTM，
+-- 无需每次从原始表重算 CTE 链。
+-- ============================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_indicator_ttm_hist CASCADE;
+
+CREATE MATERIALIZED VIEW mv_indicator_ttm_hist AS
+WITH report_data AS (
+    SELECT
+        i.stock_code,
+        i.report_date,
+        i.report_type,
+        i.notice_date,
+        i.total_revenue,
+        i.net_profit,
+        cf.cfo_net,
+        cf.capex,
+        i.updated_at
+    FROM income_statement i
+    LEFT JOIN cash_flow_statement cf
+        USING (stock_code, report_date, report_type)
+    WHERE i.report_date >= CURRENT_DATE - INTERVAL '10 years'
+      AND i.report_type IN ('quarterly', 'semi', 'annual')
+),
+prev_year AS (
+    SELECT
+        r.stock_code,
+        r.report_date,
+        p.total_revenue  AS py_revenue,
+        p.net_profit     AS py_net_income,
+        p.cfo_net        AS py_ocf,
+        p.capex          AS py_capex
+    FROM report_data r
+    JOIN report_data p
+        ON  p.stock_code  = r.stock_code
+        AND p.report_date = r.report_date - INTERVAL '1 year'
+        AND p.report_type = r.report_type
+),
+last_annual AS (
+    SELECT DISTINCT ON (r.stock_code, r.report_date)
+        r.stock_code,
+        r.report_date,
+        a.total_revenue  AS la_revenue,
+        a.net_profit     AS la_net_income,
+        a.cfo_net        AS la_ocf,
+        a.capex          AS la_capex
+    FROM report_data r
+    JOIN report_data a
+        ON  a.stock_code  = r.stock_code
+        AND a.report_type = 'annual'
+        AND a.report_date < r.report_date
+    ORDER BY r.stock_code, r.report_date, a.report_date DESC
+)
+SELECT
+    r.stock_code,
+    r.report_date,
+    r.report_type,
+    r.notice_date,
+    r.updated_at,
+
+    CASE WHEN r.report_type = 'annual'
+         THEN r.total_revenue
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN r.total_revenue + la.la_revenue - py.py_revenue
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_revenue
+         ELSE r.total_revenue
+    END AS revenue_ttm,
+
+    CASE WHEN r.report_type = 'annual'
+         THEN r.net_profit
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN r.net_profit + la.la_net_income - py.py_net_income
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_net_income
+         ELSE r.net_profit
+    END AS net_profit_ttm,
+
+    CASE WHEN r.report_type = 'annual'
+         THEN r.cfo_net
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN r.cfo_net + la.la_ocf - py.py_ocf
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_ocf
+         ELSE r.cfo_net
+    END AS cfo_ttm,
+
+    CASE WHEN r.report_type = 'annual'
+         THEN r.capex
+         WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
+         THEN r.capex + la.la_capex - py.py_capex
+         WHEN la.stock_code IS NOT NULL
+         THEN la.la_capex
+         ELSE r.capex
+    END AS capex_ttm
+
+FROM report_data r
+LEFT JOIN prev_year py
+    ON  py.stock_code  = r.stock_code
+    AND py.report_date = r.report_date
+LEFT JOIN last_annual la
+    ON  la.stock_code  = r.stock_code
+    AND la.report_date = r.report_date;
+
+CREATE UNIQUE INDEX idx_mv_ttm_hist_pk
+    ON mv_indicator_ttm_hist(stock_code, report_date);
+CREATE INDEX idx_mv_ttm_hist_notice
+    ON mv_indicator_ttm_hist(notice_date);
+
+
+-- ============================================================
 -- mv_us_financial_indicator: 美股单期财务指标
 -- ============================================================
 
