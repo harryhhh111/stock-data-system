@@ -102,6 +102,8 @@ def main() -> None:
     parser.add_argument("--months", type=int, default=6, help="调仓间隔月数（默认 6）")
     parser.add_argument("--top", type=int, default=None, help="每次持有股票数（默认用预设）")
     parser.add_argument("--capital", type=float, default=1_000_000, help="初始资金（默认 100 万）")
+    parser.add_argument("--market", choices=["US", "CN_A", "CN_HK"], default="US",
+                        help="市场代码（默认 US）")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     args = parser.parse_args()
@@ -117,6 +119,7 @@ def main() -> None:
             months=args.months,
             top_n=args.top,
             initial_capital=args.capital,
+            market=args.market,
         )
     except ValueError as e:
         print(f"错误: {e}", file=sys.stderr)

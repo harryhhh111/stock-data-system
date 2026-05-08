@@ -41,13 +41,14 @@ def _generate_rebalance_dates(
     start_month: date,
     end: date,
     months: int,
+    market: str = "US",
 ) -> list[date]:
     """生成调仓日期列表（每月末对齐到最后一个交易日）。"""
     dates: list[date] = []
     cursor = start_month
     while cursor <= end:
         month_end = _get_month_end(cursor)
-        trade_date = get_nearest_trade_date(month_end)
+        trade_date = get_nearest_trade_date(month_end, market=market)
         if trade_date and trade_date <= end and trade_date not in dates:
             dates.append(trade_date)
         cursor = cursor + relativedelta(months=months)
@@ -61,6 +62,7 @@ def run_backtest(
     months: int = 6,
     top_n: int | None = None,
     initial_capital: float = 1_000_000,
+    market: str = "US",
 ) -> BacktestResult:
     """运行因子策略回测。
 
@@ -71,6 +73,7 @@ def run_backtest(
         months: 调仓间隔月数（默认 6）
         top_n: 每次调仓持有的股票数（默认用预设配置）
         initial_capital: 初始资金（默认 100 万美元）
+        market: 市场代码（"US", "CN_A", "CN_HK"）
 
     Returns:
         BacktestResult
@@ -88,7 +91,7 @@ def run_backtest(
         end = date.today()
 
     # 生成调仓日期（每月末对齐到最后一个交易日）
-    rebalance_dates = _generate_rebalance_dates(start, end, months)
+    rebalance_dates = _generate_rebalance_dates(start, end, months, market=market)
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
@@ -98,20 +101,20 @@ def run_backtest(
 
     for i, rb_date in enumerate(rebalance_dates):
         # 1. 获取 point-in-time 选股池
-        universe = get_point_in_time_universe(rb_date)
+        universe = get_point_in_time_universe(rb_date, market=market)
 
         # 2. 硬过滤
         filtered, _, _ = apply_hard_filters(universe, filters)
 
         # 3. 连续 ROE 过滤
         if roe_years and roe_years > 0:
-            roe_hist = get_roe_history_as_of(rb_date, "US", roe_years)
+            roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
             filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
 
         if filtered.empty:
             # 无候选股票，保留现有持仓
             sell_codes = list(portfolio.positions.keys())
-            sell_p = get_sell_prices(rb_date, sell_codes) if sell_codes else {}
+            sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
             portfolio.rebalance(rb_date, [], {}, sell_p)
             continue
 
@@ -125,16 +128,16 @@ def run_backtest(
         buy_prices = {k: float(v) for k, v in buy_prices.items() if v is not None and v > 0}
 
         sell_codes = list(portfolio.positions.keys())
-        sell_p = get_sell_prices(rb_date, sell_codes) if sell_codes else {}
+        sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
 
         # 6. 调仓
         portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
 
     # 最终净值
-    end_trade = get_nearest_trade_date(end)
+    end_trade = get_nearest_trade_date(end, market=market)
     if end_trade and portfolio.positions:
         final_codes = list(portfolio.positions.keys())
-        final_prices = get_sell_prices(end_trade, final_codes)
+        final_prices = get_sell_prices(end_trade, final_codes, market=market)
         final_value = portfolio.compute_final_value(end_trade, final_prices)
     else:
         final_value = portfolio.cash
