@@ -36,6 +36,26 @@ def _parse_date(val: Any) -> str | None:
     return str(val)[:10]
 
 
+def _compute_notice_date(report_date: str) -> str | None:
+    """港股基于季报日历推算公告日期（法定截止日 + 5 天缓冲）。
+
+    Q1(3/31) → 9/5 | 中报(6/30) → 11/5 | Q3(9/30) → 次年 5/5 | 年报(12/31) → 次年 5/5
+    """
+    try:
+        d = pd.Timestamp(report_date)
+    except (ValueError, TypeError):
+        return None
+    y, m = d.year, d.month
+    if m == 3:
+        return f"{y}-09-05"
+    elif m == 6:
+        return f"{y}-11-05"
+    elif m in (9, 12):
+        return f"{y + 1}-05-05"
+    else:
+        return (d + pd.Timedelta(days=120)).strftime("%Y-%m-%d")
+
+
 def _safe_float(val: Any) -> float | None:
     """安全转换为 float，无效值返回 None。"""
     if val is None or pd.isna(val):
@@ -144,6 +164,7 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
+                "notice_date": _compute_notice_date(report_date),
                 "currency": "HKD",
             }
 
@@ -179,6 +200,7 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
+                "notice_date": _compute_notice_date(report_date),
                 "currency": "HKD",
             }
 
@@ -209,6 +231,7 @@ class EastmoneyHkTransformer(BaseTransformer):
                 "stock_code": str(row.get("SECURITY_CODE", "")).strip(),
                 "report_date": report_date,
                 "report_type": report_type,
+                "notice_date": _compute_notice_date(report_date),
                 "currency": "HKD",
             }
 

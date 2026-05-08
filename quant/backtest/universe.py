@@ -7,33 +7,13 @@ V1: US（filed_date）; V2: CN_A（notice_date）/ CN_HK（日历推算）
 from __future__ import annotations
 
 import warnings
-from datetime import date, timedelta
+from datetime import date
 
 import pandas as pd
 from db import Connection
 
 # psycopg2 连接对象传给 pd.read_sql 会触发此警告，可安全忽略
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy")
-
-
-def _compute_hk_available_date(report_date: date) -> date:
-    """港股报告基于季报日历的"可获取日"（截止日 + 5 天缓冲）。
-
-    港股 API 不提供 notice_date，用法定截止日推算 PIT：
-      Q1(3/31) → 中报截止 8/31 + 5  → 9/5
-      中报(6/30) → Q3 截止 10/31 + 5 → 11/5
-      Q3(9/30) → 年报截止次年 4/30 + 5 → 5/5
-      年报(12/31) → Q1 截止次年 4/30 + 5 → 5/5
-    """
-    y, m = report_date.year, report_date.month
-    if m == 3:
-        return date(y, 9, 5)
-    elif m == 6:
-        return date(y, 11, 5)
-    elif m in (9, 12):
-        return date(y + 1, 5, 5)
-    else:
-        return report_date + timedelta(days=120)
 
 
 # ── CN_A / CN_HK PIT 查询 ────────────────────────────────────
@@ -48,7 +28,7 @@ latest_annual AS (
         AND f.report_date = i.report_date
         AND f.report_type = i.report_type
     WHERE f.report_type = 'annual'
-      AND (i.notice_date <= %s OR %s = 'CN_HK')
+      AND i.notice_date <= %s
     ORDER BY f.stock_code, f.report_date DESC
 ),
 
@@ -61,9 +41,9 @@ report_data AS (
         ON i.stock_code = cf.stock_code
         AND i.report_date = cf.report_date
         AND i.report_type = cf.report_type
-        AND (cf.notice_date <= %s OR %s = 'CN_HK')
+        AND cf.notice_date <= %s
     WHERE i.report_type IN ('quarterly', 'semi', 'annual')
-      AND (i.notice_date <= %s OR %s = 'CN_HK')
+      AND i.notice_date <= %s
 ),
 latest_report AS (
     SELECT DISTINCT ON (stock_code) *
@@ -130,7 +110,7 @@ latest_quarterly_yoy AS (
         AND f.report_date = i.report_date
         AND f.report_type = i.report_type
     WHERE f.report_type = 'quarterly'
-      AND (i.notice_date <= %s OR %s = 'CN_HK')
+      AND i.notice_date <= %s
       AND f.revenue_yoy IS NOT NULL
     ORDER BY f.stock_code, f.report_date DESC
 ),
@@ -163,7 +143,6 @@ SELECT
     la.eps_basic,
     la.total_assets, la.total_liab, la.parent_equity,
     la.fcf AS annual_fcf,
-    la.report_date,
 
     t.revenue_ttm, t.net_income_ttm AS net_profit_ttm,
     t.cfo_ttm, t.capex_ttm,
@@ -192,39 +171,22 @@ def _get_point_in_time_universe_cn(
     as_of_date: date,
     market: str,
 ) -> pd.DataFrame:
-    """CN_A / CN_HK 市场 PIT 查询。
-
-    CN_A: SQL 层按 notice_date <= as_of_date 过滤
-    CN_HK: SQL 层不过滤 notice_date（数据为 NULL），Python 层用日历推算过滤
-    """
+    """CN_A / CN_HK 市场 PIT 查询（统一按 notice_date <= as_of_date 过滤）。"""
     params = (
         as_of_date,           # 1. latest_annual notice_date <=
-        market,               # 2. latest_annual CN_HK bypass
-        as_of_date,           # 3. report_data cf.notice_date <=
-        market,               # 4. report_data cf CN_HK bypass
-        as_of_date,           # 5. report_data i.notice_date <=
-        market,               # 6. report_data i CN_HK bypass
-        as_of_date,           # 7. latest_quarterly_yoy notice_date <=
-        market,               # 8. latest_quarterly_yoy CN_HK bypass
-        market,               # 9. latest_quote market =
-        as_of_date,           # 10. latest_quote trade_date <=
-        as_of_date,           # 11. days_since_list
-        market,               # 12. WHERE s.market =
+        as_of_date,           # 2. report_data cf.notice_date <=
+        as_of_date,           # 3. report_data i.notice_date <=
+        as_of_date,           # 4. latest_quarterly_yoy notice_date <=
+        market,               # 5. latest_quote market =
+        as_of_date,           # 6. latest_quote trade_date <=
+        as_of_date,           # 7. days_since_list
+        market,               # 8. WHERE s.market =
     )
     with Connection() as conn:
         df = pd.read_sql(_CN_PIT_SQL, conn, params=params)
 
-    if market == "CN_HK" and not df.empty:
-        df["_avail"] = df["report_date"].apply(
-            lambda d: _compute_hk_available_date(d) if d is not None else None
-        )
-        df = df[df["_avail"].isna() | (df["_avail"] <= as_of_date)]
-        df = df.drop(columns=["_avail"])
-
     if "notice_date" in df.columns:
         df = df.drop(columns=["notice_date"])
-    if "report_date" in df.columns:
-        df = df.drop(columns=["report_date"])
 
     return df
 
@@ -434,19 +396,13 @@ def get_roe_history_as_of(
             JOIN stock_info s ON f.stock_code = s.stock_code
             WHERE f.report_type = 'annual' AND f.roe IS NOT NULL
               AND s.market = %s
-              AND (i.notice_date <= %s OR %s = 'CN_HK')
+              AND i.notice_date <= %s
         ) f
         WHERE f.rn <= %s
         ORDER BY f.stock_code, f.report_date DESC
         """
         with Connection() as conn:
-            df = pd.read_sql(sql, conn, params=(market, as_of_date, market, years))
-        if market == "CN_HK" and not df.empty:
-            df["_avail"] = df["report_date"].apply(
-                lambda d: _compute_hk_available_date(d) if d is not None else None
-            )
-            df = df[df["_avail"].isna() | (df["_avail"] <= as_of_date)]
-            df = df.drop(columns=["_avail"])
+            df = pd.read_sql(sql, conn, params=(market, as_of_date, years))
         return df
 
     # US
