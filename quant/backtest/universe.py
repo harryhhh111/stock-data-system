@@ -288,8 +288,7 @@ latest_quarterly_yoy AS (
 latest_quote AS (
     SELECT DISTINCT ON (stock_code) stock_code, close, market_cap, pe_ttm, pb, currency
     FROM daily_quote
-    WHERE market = %s AND trade_date <= %s
-      AND close IS NOT NULL
+    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
     ORDER BY stock_code, trade_date DESC
 ),
 latest_shares AS (
@@ -350,14 +349,14 @@ def _get_point_in_time_universe_us(
 ) -> pd.DataFrame:
     """US 市场 PIT 查询（手动 TTM CTE + filed_date 过滤）。"""
     params = (
-        as_of_date,           # 1. latest_annual WHERE filed_date <=
+        as_of_date,           # 1. latest_annual filed_date <=
         as_of_date,           # 2. report_data cf.filed_date <=
         as_of_date,           # 3. report_data i.filed_date <=
-        as_of_date,           # 4. latest_quarterly_yoy WHERE filed_date <=
-        market,               # 5. latest_quote WHERE market =
-        as_of_date,           # 6. latest_quote WHERE trade_date <=
-        as_of_date,           # 7. latest_shares WHERE trade_date <=
-        as_of_date,           # 8. days_since_list: %s - list_date
+        as_of_date,           # 4. latest_quarterly_yoy filed_date <=
+        market,               # 5. latest_quote market =
+        as_of_date,           # 6. latest_quote trade_date <=
+        as_of_date,           # 7. latest_shares trade_date <=
+        as_of_date,           # 8. days_since_list
         market,               # 9. WHERE s.market =
     )
     with Connection() as conn:
