@@ -54,8 +54,8 @@ PRESETS: dict[str, PresetConfig] = {
         "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
         "filters": {
             "market_cap_min_by_market": {
-                "CN_A": 1.5e9,                 # A 股 > 15 亿人民币
-                "CN_HK": 1.5e9,                # 港股 > 15 亿港元
+                "CN_A": 2.5e9,                 # A 股 > 25 亿人民币
+                "CN_HK": 2.5e9,                # 港股 > 25 亿港元
                 "US": 1e9,                     # 美股 > 10 亿美元
             },
             "exclude_st": True,
