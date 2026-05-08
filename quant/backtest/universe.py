@@ -134,7 +134,15 @@ SELECT
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     q.float_market_cap,
-    q.pe_ttm, q.pb, q.currency AS quote_currency,
+    -- PIT 计算 PE/PB：daily_quote 历史数据无估值字段，用财务数据推算
+    CASE WHEN t.net_income_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
+    END AS pe_ttm,
+    CASE WHEN COALESCE(la.parent_equity, la.total_equity) > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares)
+              / COALESCE(la.parent_equity, la.total_equity)
+    END AS pb,
+    q.currency AS quote_currency,
 
     la.roe, la.gross_margin, la.operating_margin, la.net_margin,
     la.debt_ratio, la.current_ratio, la.quick_ratio,
@@ -298,7 +306,13 @@ SELECT
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     NULL::numeric AS float_market_cap,
-    q.pe_ttm, q.pb, q.currency AS quote_currency,
+    CASE WHEN t.net_income_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
+    END AS pe_ttm,
+    CASE WHEN la.total_equity > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / la.total_equity
+    END AS pb,
+    q.currency AS quote_currency,
 
     la.roe, la.gross_margin, la.operating_margin, la.net_margin,
     la.debt_ratio, la.current_ratio, la.quick_ratio,
