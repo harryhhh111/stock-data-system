@@ -1,14 +1,14 @@
 import { LayoutDashboard } from "lucide-react";
 import { useDashboardStats, mergeStats } from "@/lib/hooks/use-dashboard";
 import { ErrorBanner } from "@/components/dashboard/error-banner";
-import { StatsPanel } from "@/components/dashboard/stats-panel";
-import { FreshnessPanel } from "@/components/dashboard/freshness-panel";
-import { RecentIssues } from "@/components/dashboard/recent-issues";
+import { KpiBar } from "@/components/dashboard/kpi-bar";
+import { MarketMatrix } from "@/components/dashboard/market-matrix";
+import { MiniTrendChart } from "@/components/dashboard/mini-trend-chart";
+import { IssueFeed } from "@/components/dashboard/issue-feed";
+import { QualitySection } from "@/components/dashboard/quality-section";
 import { PageHeader } from "@/components/layout/page-header";
-import { lazy, Suspense } from "react";
-const SyncTrendChart = lazy(() => import("@/components/dashboard/sync-trend-chart").then((m) => ({ default: m.SyncTrendChart })));
 import { Skeleton } from "@/components/ui/skeleton";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 export function DashboardPage() {
   const { cn, us, isLoading, errors } = useDashboardStats();
@@ -18,33 +18,43 @@ export function DashboardPage() {
     return (
       <div className="space-y-6">
         <PageHeader icon={LayoutDashboard} title="仪表板" description="全市场数据概览" />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* KPI skeleton */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Card key={i}>
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <Skeleton className="h-4 w-24" />
-                  <Skeleton className="h-7 w-20" />
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-1.5 w-full" />
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-1.5 w-full" />
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-1.5 w-full" />
+              <CardContent className="p-4 space-y-2">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-8 w-28" />
+                <Skeleton className="h-3 w-full" />
               </CardContent>
             </Card>
           ))}
         </div>
+        {/* Market matrix skeleton */}
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <Skeleton className="h-4 w-32" />
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-6 w-full" />
+            ))}
+          </CardContent>
+        </Card>
+        {/* Trend + Issues skeleton */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {Array.from({ length: 2 }).map((_, i) => (
-            <Card key={i}>
-              <CardHeader className="pb-2"><Skeleton className="h-5 w-32" /></CardHeader>
-              <CardContent><Skeleton className="h-[300px]" /></CardContent>
-            </Card>
-          ))}
+          <Card>
+            <CardContent className="p-4">
+              <Skeleton className="h-4 w-32 mb-4" />
+              <Skeleton className="h-[220px] w-full" />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <Skeleton className="h-4 w-32" />
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full" />
+              ))}
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
@@ -54,9 +64,7 @@ export function DashboardPage() {
     return (
       <div className="space-y-6">
         <PageHeader icon={LayoutDashboard} title="仪表板" description="全市场数据概览" />
-        <div className="text-center text-muted-foreground py-20">
-          无法连接 API 服务器
-        </div>
+        <div className="text-center text-muted-foreground py-20">无法连接 API 服务器</div>
       </div>
     );
   }
@@ -66,32 +74,23 @@ export function DashboardPage() {
       <PageHeader icon={LayoutDashboard} title="仪表板" description="全市场数据概览" />
       <ErrorBanner errors={errors} />
 
-      {/* 核心指标面板 */}
-      <StatsPanel
-        totalStocks={stats.total_stocks}
-        syncStatus={stats.sync_status}
-        syncTrend={stats.sync_trend}
-        anomaliesToday={stats.anomalies_today}
+      {/* 第一层：KPI 概览 */}
+      <KpiBar stats={stats} />
+
+      {/* 第二层：市场健康矩阵 */}
+      <MarketMatrix stats={stats} />
+
+      {/* 第三层：趋势 + 问题（左右分栏） */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MiniTrendChart syncTrend={stats.sync_trend} />
+        <IssueFeed issues={stats.recent_issues} />
+      </div>
+
+      {/* 第四层：数据质量 */}
+      <QualitySection
         validationIssues={stats.validation_issues}
+        anomaliesToday={stats.anomalies_today}
       />
-
-      {/* 图表 */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">7 天同步趋势</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Suspense fallback={<Skeleton className="h-[300px]" />}>
-            <SyncTrendChart syncTrend={stats.sync_trend} />
-          </Suspense>
-        </CardContent>
-      </Card>
-
-      {/* 数据新鲜度 */}
-      <FreshnessPanel freshness={stats.freshness} />
-
-      {/* 最近问题 */}
-      <RecentIssues issues={stats.recent_issues} />
     </div>
   );
 }

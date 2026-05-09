@@ -899,13 +899,21 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
                 %(actual_value)s, %(expected_value)s, %(message)s, %(suggestion)s)
     """
     rows = []
-    for issue in report.issues:
-        # Sanitize non-ASCII chars for SQL_ASCII DB encoding
-        def _sanitize(val):
-            if val is None:
-                return None
-            return val.encode("ascii", errors="replace").decode("ascii")
 
+    # 检测数据库编码，只在 SQL_ASCII 时才做 ASCII sanitize
+    with Connection() as _enc_conn:
+        _cur = _enc_conn.cursor()
+        _cur.execute("SHOW server_encoding")
+        _db_encoding = (_cur.fetchone() or ["UTF8"])[0]
+
+    def _sanitize(val):
+        if val is None:
+            return None
+        if _db_encoding == "SQL_ASCII":
+            return val.encode("ascii", errors="replace").decode("ascii")
+        return val
+
+    for issue in report.issues:
         rows.append(
             {
                 "batch_id": batch_id,

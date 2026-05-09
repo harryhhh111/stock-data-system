@@ -23,7 +23,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api/cn": {
-        target: "http://localhost:8000",
+        target: "http://134.175.237.24:8000",
         rewrite: (p) => p.replace(/^\/api\/cn/, ""),
       },
       "/api/us": {
