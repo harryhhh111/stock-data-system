@@ -45,21 +45,20 @@ def backfill_daily_hist(market: str, source: str = "auto", start_date: str = "20
             if last_date:
                 data_span = (last_date - first_date).days if first_date else 0
                 if last_date >= datetime.now().date() - timedelta(days=7) and data_span >= 30:
-                    # 最近有数据且覆盖充分：先判断是否需要补齐 start_date ~ first_date 的缺口
                     if first_date >= old_start:
-                        # 最早数据晚于旧默认起点，需要回填前期缺口
-                        stocks.append((code, start_date))
-                        logger.debug("缺口回填: %s (%s ~ %s)", code, first_date, start_date)
+                        # 最早数据晚于旧默认起点，只补 start_date ~ first_date 的缺口
+                        gap_end = (first_date - timedelta(days=1)).strftime("%Y-%m-%d")
+                        stocks.append((code, start_date, gap_end))
+                        logger.debug("缺口回填: %s (%s ~ %s)", code, start_date, gap_end)
                     else:
                         # 已经覆盖早期数据，只做增量
-                        stocks.append(
-                            (code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"))
-                        )
+                        inc_start = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                        stocks.append((code, inc_start, None))
                         total_result["skipped"] += 1
                 else:
-                    stocks.append((code, start_date))
+                    stocks.append((code, start_date, None))
             else:
-                stocks.append((code, start_date))
+                stocks.append((code, start_date, None))
 
         mkt_total = len(stocks)
         mkt_success = 0
@@ -76,7 +75,7 @@ def backfill_daily_hist(market: str, source: str = "auto", start_date: str = "20
             exchange_suffixes = fetcher.fetch_us_exchange_suffixes()
             logger.info("美股交易所后缀: %d 只", len(exchange_suffixes))
 
-        for i, (code, start_date) in enumerate(stocks):
+        for i, (code, fetch_start, fetch_end) in enumerate(stocks):
             try:
                 if mkt == "US":
                     suffix = exchange_suffixes.get(code, "")
@@ -84,9 +83,9 @@ def backfill_daily_hist(market: str, source: str = "auto", start_date: str = "20
                         logger.warning("无交易所后缀，跳过: %s", code)
                         mkt_failed += 1
                         continue
-                    records = fetch_tencent_hist(code, mkt, start_date=start_date, exchange_suffix=suffix)
+                    records = fetch_tencent_hist(code, mkt, start_date=fetch_start, end_date=fetch_end, exchange_suffix=suffix)
                 else:
-                    records = fetch_tencent_hist(code, mkt, start_date=start_date)
+                    records = fetch_tencent_hist(code, mkt, start_date=fetch_start, end_date=fetch_end)
                 if records:
                     correct_market_cap(records)
                     upsert("daily_quote", records, ["stock_code", "trade_date"])
