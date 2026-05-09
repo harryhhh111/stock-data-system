@@ -11,20 +11,24 @@ from db import upsert, execute
 from ._utils import logger, correct_market_cap, refresh_views_after_sync
 
 
-def backfill_daily_hist(market: str, source: str = "auto") -> dict:
+def backfill_daily_hist(market: str, source: str = "auto", start_date: str = "2016-01-04") -> dict:
     """使用腾讯 K 线接口回填历史日线。
 
     Args:
         market: "CN_A" / "CN_HK" / "US" / "all"
         source: 数据源（"tencent" / "akshare" / "auto"，默认 auto）
+        start_date: 回填起始日期（默认 2016-01-04）
     """
     from core.fetchers.daily_quote import fetch_tencent_hist, DailyQuoteFetcher
 
     markets = ["CN_A", "CN_HK", "US"] if market == "all" else [market]
     total_result = {"total": 0, "success": 0, "failed": 0, "skipped": 0, "markets": {}}
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    # 旧的默认起始（用于判断是否需要补齐前期缺口）
+    old_start = datetime.strptime("2021-01-04", "%Y-%m-%d").date()
 
     for mkt in markets:
-        logger.info("开始回填历史日线: market=%s (source=%s)", mkt, source)
+        logger.info("开始回填历史日线: market=%s (source=%s, start=%s)", mkt, source, start_date)
 
         rows = execute(
             "SELECT si.stock_code, MAX(dq.trade_date), MIN(dq.trade_date) "
@@ -39,18 +43,23 @@ def backfill_daily_hist(market: str, source: str = "auto") -> dict:
         stocks = []
         for code, last_date, first_date in rows:
             if last_date:
-                # 如果最近 7 天内有数据但历史覆盖不足（<30 天跨度），
-                # 说明只有 spot 快照而无历史回填，需全量回填
                 data_span = (last_date - first_date).days if first_date else 0
                 if last_date >= datetime.now().date() - timedelta(days=7) and data_span >= 30:
-                    stocks.append(
-                        (code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"))
-                    )
-                    total_result["skipped"] += 1
+                    # 最近有数据且覆盖充分：先判断是否需要补齐 start_date ~ first_date 的缺口
+                    if first_date >= old_start:
+                        # 最早数据晚于旧默认起点，需要回填前期缺口
+                        stocks.append((code, start_date))
+                        logger.debug("缺口回填: %s (%s ~ %s)", code, first_date, start_date)
+                    else:
+                        # 已经覆盖早期数据，只做增量
+                        stocks.append(
+                            (code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"))
+                        )
+                        total_result["skipped"] += 1
                 else:
-                    stocks.append((code, "2021-01-04"))
+                    stocks.append((code, start_date))
             else:
-                stocks.append((code, "2021-01-04"))
+                stocks.append((code, start_date))
 
         mkt_total = len(stocks)
         mkt_success = 0

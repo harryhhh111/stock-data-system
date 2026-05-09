@@ -9,12 +9,14 @@ class FilterConfig(TypedDict, total=False):
     market_cap_min: float | None          # 最低市值（元）
     market_cap_min_by_market: dict[str, float] | None  # 按市场设定最低市值
     exclude_st: bool                      # 排除 ST/*ST
-    exclude_industries: list[str]         # 排除行业列表
+    exclude_industries: list[str]         # 排除行业列表（全局）
+    exclude_industries_by_market: dict[str, list[str]] | None  # 按市场设定排除行业
     pe_ttm_positive: bool                 # PE > 0
     pe_ttm_max: float | None              # PE 上限
     pb_max: float | None                  # PB 上限
     min_days_since_list: int | None       # 最少上市天数
-    fcf_yield_min: float | None           # 最低 FCF Yield
+    fcf_yield_min: float | None           # 最低 FCF Yield（全局，被 by_market 覆盖）
+    fcf_yield_min_by_market: dict[str, float] | None  # 按市场设定最低 FCF Yield
     roe_min: float | None                 # 最低 ROE（单年）
     roe_consecutive_years: int | None     # 连续 N 年 ROE 均达标
     debt_ratio_max: float | None          # 最高资产负债率
@@ -47,8 +49,8 @@ PRESETS: dict[str, PresetConfig] = {
         "conditions": [
             "市值 ≥ 15亿 (A股/港股)，≥ 10亿美元 (美股)",
             "排除 ST/*ST",
-            "排除行业: 银行、非银金融、房地产",
-            "FCF Yield ≥ 10%",
+            "排除行业: 银行/非银金融/房地产 (A股)，银行/保险/其他金融/地产 (港股)",
+            "FCF Yield ≥ 12% (A股/港股)，≥ 10% (美股)",
             "ROE ≥ 10%，连续 3 年年度 ROE 均达标",
         ],
         "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
@@ -59,8 +61,15 @@ PRESETS: dict[str, PresetConfig] = {
                 "US": 1e9,                     # 美股 > 10 亿美元
             },
             "exclude_st": True,
-            "exclude_industries": ["银行", "非银金融", "房地产"],
-            "fcf_yield_min": 0.10,             # FCF Yield > 10%
+            "exclude_industries_by_market": {
+                "CN_A": ["银行", "非银金融", "房地产"],          # 申万行业
+                "CN_HK": ["银行", "保险", "其他金融", "地产"],    # 港交所行业
+            },
+            "fcf_yield_min_by_market": {
+                "CN_A": 0.12,                  # A 股 FCF Yield > 12%
+                "CN_HK": 0.12,                 # 港股 FCF Yield > 12%
+                "US": 0.10,                    # 美股 FCF Yield > 10%
+            },
             "roe_min": 0.10,                   # ROE > 10%
             "roe_consecutive_years": 3,        # 连续 3 年 ROE > 10%
         },

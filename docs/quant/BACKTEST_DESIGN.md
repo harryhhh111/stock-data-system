@@ -1,26 +1,36 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-07（v2.5 — 补全 BacktestResult + 最终净值计算 + SQL 参数说明）
+> 最后更新：2026-05-09（v3.0 — V2 多市场支持 + 按市场区分筛选 + capex 回填 + 10 年日线回填）
 
 ## Context
 
 用户在选股筛选器中有 5 个预设策略（如 `fcf_roe_value`），希望验证策略的历史表现：在过去的某个时间点运行筛选器，买入选出的股票，每半年调仓一次（卖出被剔除的、买入新入选的），持有到今天，查看组合收益。
 
-核心挑战：当前 `mv_us_indicator_ttm` 只存最新一期 TTM（per-stock），历史 TTM 必须按 `filed_date` 从原始季度数据重新计算，避免前视偏差（look-ahead bias）。
+核心挑战：point-in-time (PIT) 查询——在任意历史日期 D 只能使用 D 当天已知的数据（`notice_date ≤ D` 或 `filed_date ≤ D`），避免前视偏差。
 
-### V1 范围限制
+### V2 多市场支持
 
-- **仅支持 US 美股市场**。CN_A/CN_HK 的 point-in-time 需要使用 `notice_date`（而非 `filed_date`），逻辑完全不同，留待 V2。
-- `market` 参数在 V1 中硬编码为 `"US"`，代码中保留参数接口以便 V2 扩展。
+| 市场 | PIT 列 | TTM 数据源 | 财务表 |
+|------|--------|-----------|--------|
+| US | `filed_date` (SEC) | 手动 CTE 计算 | `us_income_statement`, `us_cash_flow_statement` |
+| CN_A | `notice_date` (公告日) | `mv_indicator_ttm_hist` (物化视图) | `income_statement`, `cash_flow_statement` |
+| CN_HK | `notice_date` (日历推算 → API 回填) | `mv_indicator_ttm_hist` | 同 CN_A |
+
+### V3 按市场区分的筛选条件
+
+所有筛选条件支持按市场设定不同阈值，避免不同市场行业分类/数据特性导致的误判：
+- `market_cap_min_by_market` — 按市场设定市值门槛
+- `fcf_yield_min_by_market` — 按市场设定 FCF Yield 门槛
+- `exclude_industries_by_market` — 按市场设定排除行业（港股行业分类不同于 A 股申万）
 
 ## 架构概览
 
 ```
 quant/backtest/
 ├── __init__.py
-├── __main__.py      # CLI: python -m quant.backtest --preset fcf_roe_value --start 2022-01
+├── __main__.py      # CLI: python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
 ├── engine.py        # 回测主循环：调仓日期 → 切面选股 → 模拟交易 → 记录净值
-├── universe.py      # 历史切面查询：point-in-time 因子数据（filed_date ≤ D）
+├── universe.py      # 历史切面查询：point-in-time 因子数据（US/CN_A/CN_HK 三套 SQL）
 └── portfolio.py     # 组合模型：等权重持仓、P&L、绩效指标
 ```
 
@@ -30,9 +40,94 @@ quant/backtest/
 
 #### 1.1 `get_point_in_time_universe(as_of_date: date, market: str = "US") -> pd.DataFrame`
 
-在任意日期 D 构建选股池，保证无前视偏差。**整条查询用一条 SQL 完成**（TTM 也在 SQL 层计算，不在 Python 层复刻），通过 `pd.read_sql` 拿到最终 DataFrame。
+在任意日期 D 构建选股池，保证无前视偏差。根据 market 参数路由到三套不同的 SQL 实现：
 
-**SQL 结构**（CTE 组合）：
+- **US**: 手动 TTM CTE 链（4 层 fallback），从 `us_income_statement` + `us_cash_flow_statement` 实时计算
+- **CN_A / CN_HK**: 使用 `mv_indicator_ttm_hist` 物化视图（预计算 TTM 历史数据），通过 LATERAL join 取每个 stock 的最近一期 TTM
+
+#### 1.1a CN_A / CN_HK PIT 查询
+
+CN 市场使用预计算的物化视图 `mv_indicator_ttm_hist`（存储所有历史报告期的 TTM 数据，覆盖 10 年），避免每次回测实时计算 TTM。
+
+```sql
+WITH
+latest_annual AS (
+    SELECT DISTINCT ON (f.stock_code) f.*, i.notice_date
+    FROM mv_financial_indicator f
+    JOIN income_statement i
+        ON f.stock_code = i.stock_code
+        AND f.report_date = i.report_date
+        AND f.report_type = i.report_type
+    WHERE f.report_type = 'annual' AND i.notice_date <= %s
+    ORDER BY f.stock_code, f.report_date DESC
+),
+latest_quarterly_yoy AS (
+    SELECT DISTINCT ON (f.stock_code) f.stock_code, f.revenue_yoy, f.net_profit_yoy
+    FROM mv_financial_indicator f
+    JOIN income_statement i
+        ON f.stock_code = i.stock_code
+        AND f.report_date = i.report_date
+        AND f.report_type = i.report_type
+    WHERE f.report_type = 'quarterly' AND i.notice_date <= %s
+      AND f.revenue_yoy IS NOT NULL
+    ORDER BY f.stock_code, f.report_date DESC
+),
+latest_quote AS (
+    SELECT DISTINCT ON (stock_code) stock_code, close, market_cap,
+           float_market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY stock_code, trade_date DESC
+),
+latest_shares AS (
+    SELECT DISTINCT ON (stock_code) stock_code, total_shares
+    FROM stock_share
+    ORDER BY stock_code, trade_date DESC
+)
+SELECT
+    s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
+    (%s - s.list_date) AS days_since_list,
+    q.close,
+    COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
+    q.float_market_cap,
+    -- PIT PE/PB: daily_quote 历史数据无估值字段，从财务数据推算
+    CASE WHEN t.net_profit_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_profit_ttm
+    END AS pe_ttm,
+    CASE WHEN COALESCE(la.parent_equity, la.total_equity) > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares)
+              / COALESCE(la.parent_equity, la.total_equity)
+    END AS pb,
+    ...,
+    -- TTM 直接从物化视图获取
+    t.revenue_ttm, t.net_profit_ttm, t.cfo_ttm, t.capex_ttm,
+    (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
+    CASE WHEN COALESCE(q.market_cap, q.close * sh.total_shares) > 0
+         THEN (t.cfo_ttm - t.capex_ttm) / COALESCE(q.market_cap, q.close * sh.total_shares)
+    END AS fcf_yield
+FROM stock_info s
+LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
+LEFT JOIN LATERAL (
+    SELECT * FROM mv_indicator_ttm_hist
+    WHERE stock_code = s.stock_code AND notice_date <= %s
+    ORDER BY report_date DESC LIMIT 1
+) t ON true
+LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
+LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
+LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
+WHERE s.market = %s;
+```
+
+**关键设计决策**：
+- CN_A/CN_HK 共用一个 SQL（参数化 market），而非重复三份
+- `mv_indicator_ttm_hist` 预计算所有历史 TTM（10 年窗口），回测性能从 13s → 4s（~70% 提升）
+- LATERAL join 确保每个 stock 取各自最新的 TTM 记录（而非全表 DISTINCT ON）
+- PE/PB 在 SQL 层计算（`market_cap / net_profit_ttm`），因为 CN daily_quote 历史数据无估值字段
+- PB 分母用 `COALESCE(parent_equity, total_equity)` 兼容港股无归母权益的情况
+
+#### 1.1b US PIT 查询
+
+US 市场手动计算 TTM（因 SEC 数据无预计算的 TTM 物化视图）。
 
 ```sql
 -- 参数: %s = as_of_date
@@ -262,7 +357,9 @@ ORDER BY trade_date DESC LIMIT 1
 
 ### 2. `engine.py` — 回测主循环
 
-**核心函数**: `run_backtest(preset_name, start_date, end_date, rebalance_months, top_n) -> BacktestResult`
+**核心函数**: `run_backtest(preset_name, start_date, end_date, rebalance_months, top_n, initial_capital, market) -> BacktestResult`
+
+`market` 参数（默认 `"US"`）线程化到所有下游调用：`get_point_in_time_universe`、`get_roe_history_as_of`、`get_sell_prices`、`get_nearest_trade_date`。
 
 ```python
 class BacktestResult:
@@ -434,16 +531,30 @@ turnover = 卖出市值 / 调仓前总市值
 ### 4. `__main__.py` — CLI 入口
 
 ```bash
-# 基本用法：从 2022-01 开始，每 6 个月调仓
-python -m quant.backtest --preset fcf_roe_value --start 2022-01
+# 基本用法
+python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
+python -m quant.backtest --preset fcf_roe_value --market CN_HK --start 2022-01
+python -m quant.backtest --preset fcf_roe_value --market US --start 2022-01
 
 # 自定义参数
-python -m quant.backtest --preset classic_value --start 2021-06 --months 3 --top 20
+python -m quant.backtest --preset classic_value --market CN_A --start 2021-06 --months 3 --top 20
 
 # 输出格式
-python -m quant.backtest --preset fcf_roe_value --start 2022-01 --format json
-python -m quant.backtest --preset fcf_roe_value --start 2022-01 --format md
+python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --format json
+python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --format text
 ```
+
+**参数说明**：
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--preset` | (必填) | 预设策略名 |
+| `--start` | (必填) | 起始月份 YYYY-MM |
+| `--end` | 今天 | 结束日期 YYYY-MM-DD |
+| `--months` | 6 | 调仓间隔月数 |
+| `--top` | 预设值 | 每次持有股票数 |
+| `--capital` | 1,000,000 | 初始资金 |
+| `--market` | US | 市场代码 (US/CN_A/CN_HK) |
+| `--format` | text | 输出格式 (text/json) |
 
 **输出示例**:
 ```
@@ -472,60 +583,90 @@ python -m quant.backtest --preset fcf_roe_value --start 2022-01 --format md
 
 ## 已知数据限制
 
-| 限制 | 影响 | 解决方案 |
-|------|------|---------|
-| `daily_quote.market_cap` 仅 2026-04-07 起有数据 | 历史日期无 market_cap | 已用 `close × total_shares`（stock_share 表）回算 |
-| `daily_quote.pe_ttm` 同上 | 历史日期无 pe_ttm | 需 `pe_ttm_positive` / `pe_ttm_max` 过滤的策略在 2026-04 前无法使用 |
-| `us_cash_flow_statement` 部分股票无历史数据 | TTM 计算中 cfo_ttm / capex_ttm 为 NULL | fcf_yield 为 NULL 的股票会被 `fcf_yield_min` 过滤掉 |
-| stock_share 每股仅一条记录 | 假设股本不变 | 近似可接受，V2 可引入历史股本 |
+| 限制 | 影响 | 状态 |
+|------|------|------|
+| `daily_quote` 仅 2021-01 起有数据 | 回测只能覆盖 2021+，无法回测 10 年 | 🔧 修复中：`scripts/backfill_hist_quote.py` 回填到 2016-01 |
+| `stock_share` 仅有最新快照（无历史） | 历史市值用最新总股本估算（前视偏差轻微） | ⏳ 待后续定期同步 |
+| 港股 capex 历史数据缺失 | 18% 港股 FCF Yield 为 NULL（semi-annual 缺 capex） | ✅ 已修复：回填 16295 条 + 刷新物化视图 |
+| 港股行业分类与 A 股不同 | `exclude_industries` 失效，金融/地产股漏网 | ✅ 已修复：`exclude_industries_by_market` |
+| `daily_quote.pe_ttm` CN 历史数据为空 | 无法用 PE 过滤 A 股/港股历史回测 | ✅ 已修复：SQL 层从财务数据推算 PE/PB |
 
-## 不做的事（V1）
+## 按市场区分的筛选条件设计
 
-- **CN_A / CN_HK 市场** — point-in-time 需 `notice_date`，逻辑不同，V2 扩展
-- **基准对比（SPY/QQQ）** — 无基准数据，后续可加
+由于不同市场的行业分类体系、数据质量标准不同，预设策略的筛选条件支持按市场设定：
+
+```python
+# FilterConfig 支持的按市场字段
+FilterConfig = {
+    "market_cap_min_by_market": {"CN_A": 2.5e9, "CN_HK": 2.5e9, "US": 1e9},
+    "fcf_yield_min_by_market": {"CN_A": 0.12, "CN_HK": 0.12, "US": 0.10},
+    "exclude_industries_by_market": {
+        "CN_A": ["银行", "非银金融", "房地产"],          # 申万行业
+        "CN_HK": ["银行", "保险", "其他金融", "地产"],    # 港交所行业
+    },
+    # 全局字段（所有市场相同）：
+    "exclude_st": True,
+    "roe_min": 0.10,
+    "roe_consecutive_years": 3,
+}
+```
+
+处理逻辑位于 `quant/screener/filters.py` 的 `apply_hard_filters()`，每个 by_market 字段独立处理，对未列出的市场不过滤。
+
+## 不做的事
+
+- **基准对比（SPY/QQQ/沪深300）** — 无基准数据
 - **交易成本/滑点** — 假设零成本
-- **分红再投资** — US 股票分红数据暂无
-- **Web UI** — 先做 CLI，验证逻辑后再加前端
-- **多策略同时回测对比** — 后续扩展
+- **分红再投资** — 暂无完整分红历史数据
+- **Web UI** — 先 CLI，验证逻辑后续扩展
 - **月度/周度调仓** — 默认 6 个月，CLI 可调
-- **停牌保留持仓** — V1 假设所有股票在调仓日均有收盘价，无价格则按退市处理
+- **停牌保留持仓** — 无价格按退市处理
 - **整股约束** — 允许碎股（fractional shares）
-- **新股上市过滤** — `min_days_since_list` 由 `apply_hard_filters()` 处理，point-in-time 版 `days_since_list` 已正确计算
+- **ROE 极端值过滤** — ROE > 100% 的异常值（权益接近零）后续专门处理
 
 ## 关键文件
 
 | 文件 | 用途 | 操作 |
 |------|------|------|
 | `quant/backtest/__init__.py` | 包初始化 | 新建 |
-| `quant/backtest/__main__.py` | CLI 入口 | 新建 |
-| `quant/backtest/engine.py` | 回测主循环 | 新建 |
-| `quant/backtest/universe.py` | 历史切面查询（SQL PIT） | 新建 |
+| `quant/backtest/__main__.py` | CLI 入口（含 --market 参数） | 新建 |
+| `quant/backtest/engine.py` | 回测主循环（market 线程化） | 新建 |
+| `quant/backtest/universe.py` | 历史切面查询（US/CN_A/CN_HK 三套 SQL） | 新建 |
 | `quant/backtest/portfolio.py` | 组合模型 + 绩效 | 新建 |
-| `quant/screener/filters.py` | 硬过滤（复用） | 不修改 |
-| `quant/screener/scorer.py` | 因子打分（复用） | 不修改 |
-| `quant/screener/presets.py` | 预设配置（复用） | 不修改 |
-| `scripts/materialized_views.sql` | TTM 公式参考 | 不修改 |
+| `quant/screener/filters.py` | 硬过滤（含按市场区分逻辑） | 修改 |
+| `quant/screener/presets.py` | 预设配置（含 by_market 字段） | 修改 |
+| `core/sync/daily_quote.py` | 日线回填（自定义起始日期） | 修改 |
+| `scripts/materialized_views.sql` | mv_indicator_ttm_hist 物化视图定义 | 新增 |
+| `scripts/backfill_hist_quote.py` | 历史日线回填脚本（2016+） | 新建 |
+
+## 数据修复记录
+
+### 2026-05-09: 港股 capex 回填
+- 问题：`cash_flow_statement` 中 semi-annual 报告 24%（12834条）缺 capex，导致 TTM FCF 无法计算
+- 修复：SQL 回填 16295 条记录（用同年其他报告期的 capex 最大值），剩余 2720 条无法回填
+- 刷新 `mv_indicator_ttm_hist` 物化视图
+- 效果：港股回测 +37.6%（修复前 -5.3%），A 股回测 +125.3%（修复前 +99.4%）
+
+### 2026-05-09: 历史日线回填
+- 当前 `daily_quote` 仅覆盖 2021-01-04 ~ 今，需扩展到 2016-01-04 以支持 10 年回测
+- 修改 `backfill_daily_hist()` 支持自定义 `start_date` + 缺口检测逻辑
+- `scripts/backfill_hist_quote.py` — 独立回填脚本，支持分市场执行
 
 ## 验证
 
 ```bash
-# 基础功能验证
-python -m quant.backtest --preset fcf_roe_value --start 2022-01
+# A 股回测
+python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
 
-# 不同预设
-python -m quant.backtest --preset classic_value --start 2022-01
+# 港股回测
+python -m quant.backtest --preset fcf_roe_value --market CN_HK --start 2022-01
 
-# 不同调仓频率
-python -m quant.backtest --preset fcf_roe_value --start 2022-01 --months 3
+# 筛选器验证行业排除
+python -m quant.screener --preset fcf_roe_value --market CN_HK
 
-# 确认无前视偏差：回测 2022-01 的选股结果应只包含 filed_date ≤ 2022-01-31 的财报
+# 确认无前视偏差：选股结果中所有 notice_date <= 调仓日期
 
-# 确认列名兼容：返回 DataFrame 应能直接传给 apply_hard_filters() 和 rank_factors()
+# 历史日线回填
+python scripts/backfill_hist_quote.py CN_HK
+python scripts/backfill_hist_quote.py CN_A
 ```
-
-## 实施顺序
-
-1. `portfolio.py` — 纯逻辑，无 DB 依赖，可独立测试
-2. `universe.py` — SQL PIT 查询，核心难点
-3. `engine.py` — 组装 universe + filters + scorer + portfolio
-4. `__main__.py` — CLI 入口 + 输出格式化

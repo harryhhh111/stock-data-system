@@ -71,10 +71,17 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if filters.get("exclude_st", False):
         result = result[~result["stock_name"].str.contains(r"ST|\*ST", na=False, regex=True)]
 
-    # 排除行业
-    exclude_industries = filters.get("exclude_industries", [])
-    if exclude_industries:
-        result = result[~result["industry"].isin(exclude_industries)]
+    # 排除行业（支持按市场设定不同排除列表）
+    exclude_by_market = filters.get("exclude_industries_by_market")
+    if exclude_by_market and "market" in result.columns:
+        mask = pd.Series(True, index=result.index)
+        for mkt, inds in exclude_by_market.items():
+            mask = mask & ~((result["market"] == mkt) & (result["industry"].isin(inds)))
+        result = result[mask]
+    else:
+        exclude_industries = filters.get("exclude_industries", [])
+        if exclude_industries:
+            result = result[~result["industry"].isin(exclude_industries)]
 
     # PE > 0
     if filters.get("pe_ttm_positive", False):
@@ -92,8 +99,14 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if filters.get("min_days_since_list") is not None:
         result = result[result["days_since_list"] >= filters["min_days_since_list"]]
 
-    # FCF Yield 下限
-    if filters.get("fcf_yield_min") is not None:
+    # FCF Yield 下限（支持按市场设定不同门槛）
+    fcf_min_by_market = filters.get("fcf_yield_min_by_market")
+    if fcf_min_by_market and "market" in result.columns:
+        mask = pd.Series(True, index=result.index)
+        for mkt, fcf_min in fcf_min_by_market.items():
+            mask = mask & ~((result["market"] == mkt) & (result["fcf_yield"] < fcf_min))
+        result = result[mask]
+    elif filters.get("fcf_yield_min") is not None:
         result = result[result["fcf_yield"] >= filters["fcf_yield_min"]]
 
     # 资产负债率上限
