@@ -239,8 +239,8 @@ SELECT
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     NULL::numeric AS float_market_cap,
-    CASE WHEN t.net_profit_ttm > 0
-         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_profit_ttm
+    CASE WHEN t.net_income_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
     END AS pe_ttm,
     CASE WHEN la.total_equity > 0
          THEN COALESCE(q.market_cap, q.close * sh.total_shares) / la.total_equity
