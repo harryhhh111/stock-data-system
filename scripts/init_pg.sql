@@ -236,11 +236,13 @@ CREATE INDEX IF NOT EXISTS idx_idx_stock ON index_constituent(stock_code);
 CREATE TABLE IF NOT EXISTS stock_share (
     stock_code      VARCHAR(20) NOT NULL,
     trade_date      DATE NOT NULL,
+    market          VARCHAR(10) NOT NULL DEFAULT 'CN_A',
     total_shares    DECIMAL(20,2),
     float_shares    DECIMAL(20,2),
     restricted_shares DECIMAL(20,2),
+    source          VARCHAR(100),
 
-    PRIMARY KEY (stock_code, trade_date),
+    PRIMARY KEY (stock_code, trade_date, market),
     CONSTRAINT fk_share_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE
 );
 
