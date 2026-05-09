@@ -591,11 +591,11 @@ python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --
 | 港股行业分类与 A 股不同 | `exclude_industries` 失效，金融/地产股漏网 | ✅ 已修复：`exclude_industries_by_market` |
 | `daily_quote.pe_ttm` CN 历史数据为空 | 无法用 PE 过滤 A 股/港股历史回测 | ✅ 已修复：SQL 层从财务数据推算 PE/PB |
 
-## V4 性能优化：筛选与取价分离
+## V4 性能优化：LATERAL join + 流程精简
 
 ### 问题
 
-当前每次调仓执行一次完整的 `_US_PIT_SQL`（~750ms），查询所有 ~1000 只 US 股票的财务+行情数据。但最终只用 top 30 只做交易。9 次调仓 = 9 次重复全量查询 ≈ 7s 纯 SQL。
+当前每次调仓执行一次完整的 `_US_PIT_SQL`（~750ms），查询所有 ~1000 只 US 股票的财务+行情数据。9 次调仓 ≈ 7s 纯 SQL。
 
 瓶颈分析（EXPLAIN ANALYZE）：
 
@@ -607,34 +607,16 @@ python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --
 | `latest_quarterly_yoy` | 37ms | 同表再扫一遍 |
 | `latest_quote` | 220ms | `daily_quote` 136K 行排序（external merge, 磁盘 4MB） |
 
-### 核心洞察
+### 优化方案
 
-筛选和取价是两个独立关注点：
+**唯一改动**：将 `_CN_PIT_SQL` 和 `_US_PIT_SQL` 中的 `latest_quote` 和 `latest_shares` CTE 从 `DISTINCT ON` 全表扫描改为 LATERAL join。
 
-- **筛选**（确定买哪些股票）：需要财务数据（ROE、FCF、毛利率等）+ market_cap（市值门槛过滤）。`rank_factors` **不需要** close / market_cap 作为打分因子，打分只用财务比率。
-- **取价**（确定买卖价格）：只需要 close，且只对交易涉及的股票（~60 只）。
+不新建函数，不改 engine.py 流程。现有 `get_point_in_time_universe()` 返回的 DataFrame 已含 close 列，engine.py 买价直接从 universe 取，卖价用现有 `get_sell_prices()`。
 
-当前实现把两者耦合在一个大查询里，导致每次调仓查 1000 只股票的行情数据，只用 30 只。
-
-### 优化流程
-
-```
-当前（每次调仓）:
-  US_PIT_SQL (1000 只, 750ms) → filter → score → top 30 → trade
-
-优化后（每次调仓）:
-  步骤 1: screening_query (1000 只财务+market_cap, ~200ms) → filter → score → new_targets
-  步骤 2: trade_codes = old_holdings ∪ new_targets → ~60 只
-  步骤 3: get_trade_prices(trade_codes, date) → ~5ms
-  步骤 4: rebalance
-```
-
-### 改动 1: 筛选查询用 LATERAL join 替换全表扫描
-
-当前 `latest_quote` CTE 扫描 `daily_quote` 全表（136K 行）并排序（220ms）。改为 LATERAL join，利用 `pk_daily_quote (stock_code, trade_date)` 索引做 1002 次 index seek：
+#### latest_quote: DISTINCT ON → LATERAL
 
 ```sql
--- 当前: 全表扫描 + 排序
+-- 当前: 全表扫描 + 排序（220ms）
 latest_quote AS (
     SELECT DISTINCT ON (stock_code) stock_code, close, market_cap
     FROM daily_quote
@@ -648,7 +630,7 @@ LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
 -- 优化: LATERAL index seek
 FROM stock_info s
 LEFT JOIN LATERAL (
-    SELECT close, market_cap
+    SELECT close, market_cap, pe_ttm, pb, currency
     FROM daily_quote
     WHERE stock_code = s.stock_code
       AND market = %s AND trade_date <= %s AND close IS NOT NULL
@@ -656,74 +638,53 @@ LEFT JOIN LATERAL (
 ) q ON true
 ```
 
-同理优化 `latest_shares` CTE（991 行，影响较小）。
+1002 次 index seek（走 `pk_daily_quote (stock_code, trade_date)`）替代 136K 行扫描+排序。
 
-**CN 查询同理优化**：`_CN_PIT_SQL` 的 `latest_quote` 和 `latest_shares` 也用 LATERAL join。
+#### latest_shares: DISTINCT ON → LATERAL
 
-### 改动 2: 取价查询只查交易涉及的股票
-
-新增 `get_trade_prices()` 函数，只查询指定股票的价格：
-
-```python
-def get_trade_prices(
-    as_of_date: date,
-    stock_codes: list[str],
-    market: str = "US",
-) -> dict[str, float]:
-    """批量查询指定股票在日期 D 的价格。"""
-    sql = """
-    SELECT DISTINCT ON (stock_code) stock_code, close
-    FROM daily_quote
-    WHERE stock_code = ANY(%s) AND market = %s AND trade_date <= %s
+```sql
+-- 当前
+latest_shares AS (
+    SELECT DISTINCT ON (stock_code) stock_code, total_shares
+    FROM stock_share
     ORDER BY stock_code, trade_date DESC
-    """
-    # 返回 {code: float(close)}
+)
+...
+FROM stock_info s
+LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
+
+-- 优化
+FROM stock_info s
+LEFT JOIN LATERAL (
+    SELECT total_shares FROM stock_share
+    WHERE stock_code = s.stock_code AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 1
+) sh ON true
 ```
 
-### 改动 3: engine.py 主循环重构
+**CN 查询同理优化**。
 
-```python
-for rb_date in rebalance_dates:
-    # 1. 筛选（不查价格，只查财务+market_cap）
-    universe = get_screening_data(rb_date, market=market)
-    filtered, _, _ = apply_hard_filters(universe, filters)
-    if roe_years:
-        roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
-        filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
-    if filtered.empty:
-        portfolio.rebalance(rb_date, [], {}, sell_p)
-        continue
-    scored = rank_factors(filtered, weights)
-    top = scored.nlargest(top_n, "score")
-    new_targets = top["stock_code"].tolist()
+### 不改的东西
 
-    # 2. 合并需要价格的股票
-    old_holdings = list(portfolio.positions.keys())
-    trade_codes = list(set(old_holdings) | set(new_targets))
-
-    # 3. 取价（只查 ~60 只）
-    prices = get_trade_prices(rb_date, trade_codes, market=market)
-
-    # 4. 交易
-    buy_prices = {c: prices[c] for c in new_targets if prices.get(c, 0) > 0}
-    sell_prices = {c: prices.get(c) for c in old_holdings}
-    portfolio.rebalance(rb_date, new_targets, buy_prices, sell_prices)
-```
+- **engine.py 流程不变**：仍用 `get_point_in_time_universe()` → `apply_hard_filters()` → `rank_factors()` → `get_sell_prices()` → `rebalance()`
+- **不新建 `get_screening_data()`**：现有 `get_point_in_time_universe()` 已经返回筛选所需的全部数据（含 close 列用于算 market_cap），无需拆分
+- **不新建 `get_trade_prices()`**：现有 `get_sell_prices()` 已经做"只查指定股票价格"这件事，买价从 universe 的 close 列取
 
 ### 预期效果
 
 | 指标 | 当前 | 优化后 |
 |------|------|--------|
-| 筛选查询（每次调仓） | 750ms | ~200ms |
-| 取价查询（每次调仓） | 内嵌在筛选查询中 | ~5ms |
-| 9 次调仓总 SQL | ~6.75s | ~1.8s |
-| 总回测时间 | ~10s | ~3s |
+| `latest_quote` CTE | 220ms（全表扫描+排序） | ~10ms（index seek） |
+| `latest_shares` CTE | ~1ms（991 行，影响小） | ~1ms |
+| 单次 PIT 查询 | 750ms | ~540ms |
+| 9 次调仓总 SQL | ~6.75s | ~4.9s |
+| 总回测时间 | ~10s | ~7s |
 
 ### 后续优化（不在本次范围）
 
-- **US TTM 物化视图**：与 CN 的 `mv_indicator_ttm_hist` 类似，预计算 US 历史 TTM，消除 report_data CTE 的 285ms 开销
+- **US TTM 物化视图**：与 CN 的 `mv_indicator_ttm_hist` 类似，预计算 US 历史 TTM，消除 report_data CTE 的 285ms 开销（最大瓶颈）
 - **索引优化**：`mv_us_financial_indicator (report_type, filed_date)` 复合索引
-- **筛选结果跨调仓缓存**：年度财务数据变化慢，相邻调仓可复用
+- **筛选与取价分离**：如需进一步优化，可将 universe 查询拆分为"筛选用（不含 daily_quote）"+"取价用（只查交易涉及的股票）"，但需要新建函数
 
 ## 按市场区分的筛选条件设计
 
