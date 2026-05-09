@@ -46,18 +46,6 @@ latest_quarterly_yoy AS (
     ORDER BY f.stock_code, f.report_date DESC
 ),
 
-latest_quote AS (
-    SELECT DISTINCT ON (stock_code) stock_code, close, market_cap,
-           float_market_cap, pe_ttm, pb, currency
-    FROM daily_quote
-    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY stock_code, trade_date DESC
-),
-latest_shares AS (
-    SELECT DISTINCT ON (stock_code) stock_code, total_shares
-    FROM stock_share
-    ORDER BY stock_code, trade_date DESC
-)
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
     (%s - s.list_date) AS days_since_list,
@@ -104,8 +92,18 @@ LEFT JOIN LATERAL (
     ORDER BY report_date DESC LIMIT 1
 ) t ON true
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
-LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
-LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
+LEFT JOIN LATERAL (
+    SELECT close, market_cap, float_market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE stock_code = s.stock_code
+      AND market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY trade_date DESC LIMIT 1
+) q ON true
+LEFT JOIN LATERAL (
+    SELECT total_shares FROM stock_share
+    WHERE stock_code = s.stock_code AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 1
+) sh ON true
 WHERE s.market = %s;
 """
 
@@ -118,11 +116,12 @@ def _get_point_in_time_universe_cn(
     params = (
         as_of_date,           # 1. latest_annual notice_date <=
         as_of_date,           # 2. latest_quarterly_yoy notice_date <=
-        market,               # 3. latest_quote market =
-        as_of_date,           # 4. latest_quote trade_date <=
-        as_of_date,           # 5. days_since_list
-        as_of_date,           # 6. LATERAL ttm notice_date <=
-        market,               # 7. WHERE s.market =
+        as_of_date,           # 3. days_since_list
+        as_of_date,           # 4. LATERAL ttm notice_date <=
+        market,               # 5. LATERAL q market =
+        as_of_date,           # 6. LATERAL q trade_date <=
+        as_of_date,           # 7. LATERAL sh trade_date <=
+        market,               # 8. WHERE s.market =
     )
     with Connection() as conn:
         df = pd.read_sql(_CN_PIT_SQL, conn, params=params)
@@ -217,19 +216,6 @@ latest_quarterly_yoy AS (
     WHERE report_type = 'quarterly' AND filed_date <= %s
       AND revenue_yoy IS NOT NULL
     ORDER BY stock_code, report_date DESC
-),
-
-latest_quote AS (
-    SELECT DISTINCT ON (stock_code) stock_code, close, market_cap, pe_ttm, pb, currency
-    FROM daily_quote
-    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY stock_code, trade_date DESC
-),
-latest_shares AS (
-    SELECT DISTINCT ON (stock_code) stock_code, total_shares
-    FROM stock_share
-    WHERE trade_date <= %s
-    ORDER BY stock_code, trade_date DESC
 )
 
 SELECT
@@ -271,8 +257,18 @@ FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
 LEFT JOIN ttm t ON s.stock_code = t.stock_code
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
-LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
-LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
+LEFT JOIN LATERAL (
+    SELECT close, market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE stock_code = s.stock_code
+      AND market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY trade_date DESC LIMIT 1
+) q ON true
+LEFT JOIN LATERAL (
+    SELECT total_shares FROM stock_share
+    WHERE stock_code = s.stock_code AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 1
+) sh ON true
 WHERE s.market = %s;
 """
 
@@ -287,10 +283,10 @@ def _get_point_in_time_universe_us(
         as_of_date,           # 2. report_data cf.filed_date <=
         as_of_date,           # 3. report_data i.filed_date <=
         as_of_date,           # 4. latest_quarterly_yoy filed_date <=
-        market,               # 5. latest_quote market =
-        as_of_date,           # 6. latest_quote trade_date <=
-        as_of_date,           # 7. latest_shares trade_date <=
-        as_of_date,           # 8. days_since_list
+        as_of_date,           # 5. days_since_list
+        market,               # 6. LATERAL q market =
+        as_of_date,           # 7. LATERAL q trade_date <=
+        as_of_date,           # 8. LATERAL sh trade_date <=
         market,               # 9. WHERE s.market =
     )
     with Connection() as conn:

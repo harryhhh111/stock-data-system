@@ -123,12 +123,13 @@ def run_backtest(
         top = scored.nlargest(top_n, "score")
 
         # 5. 获取买入/卖出价格
-        buy_prices = dict(zip(top["stock_code"], top["close"]))
-        # 移除无价格的
-        buy_prices = {k: float(v) for k, v in buy_prices.items() if v is not None and v > 0}
-
+        new_targets = top["stock_code"].tolist()
         sell_codes = list(portfolio.positions.keys())
-        sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
+        trade_codes = list(set(new_targets) | set(sell_codes))
+        all_prices = get_sell_prices(rb_date, trade_codes, market=market) if trade_codes else {}
+
+        buy_prices = {c: p for c, p in all_prices.items() if c in new_targets and p is not None and p > 0}
+        sell_p = {c: all_prices.get(c) for c in sell_codes}
 
         # 6. 调仓
         portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
