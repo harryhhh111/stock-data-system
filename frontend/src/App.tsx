@@ -5,6 +5,7 @@ import { SyncPage } from "@/pages/sync-page";
 import { QualityPage } from "@/pages/quality-page";
 import { ScreenerPage } from "@/pages/screener-page";
 import { AnalyzerPage } from "@/pages/analyzer-page";
+import { BacktestPage } from "@/pages/backtest-page";
 import { Button } from "@/components/ui/button";
 import { FileQuestion } from "lucide-react";
 
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="quality" element={<QualityPage />} />
         <Route path="screener" element={<ScreenerPage />} />
         <Route path="analyzer" element={<AnalyzerPage />} />
+        <Route path="backtest" element={<BacktestPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

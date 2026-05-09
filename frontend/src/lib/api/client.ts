@@ -152,3 +152,23 @@ export const analyzerApi = {
     );
   },
 };
+
+// ── Backtest ──
+export const backtestApi = {
+  presets: () =>
+    apiFetch<{ presets: import("@/lib/types/backtest").BacktestPreset[] }>(
+      "/backtest/presets",
+    ),
+
+  run: (params: import("@/lib/types/backtest").BacktestParams) =>
+    apiFetch<{ task_id: string; status: string }>("/backtest/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  status: (taskId: string) =>
+    apiFetch<import("@/lib/types/backtest").BacktestTask>(
+      `/backtest/status/${taskId}`,
+    ),
+};

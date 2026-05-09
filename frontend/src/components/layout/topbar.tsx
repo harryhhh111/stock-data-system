@@ -10,6 +10,7 @@ const titles: Record<string, string> = {
   "/sync": "同步状态",
   "/quality": "数据质量",
   "/screener": "选股筛选",
+  "/backtest": "策略回测",
   "/analyzer": "个股分析",
 };
 

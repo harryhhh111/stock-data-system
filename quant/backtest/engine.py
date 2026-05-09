@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Callable
 
 from dateutil.relativedelta import relativedelta
 
@@ -63,6 +64,7 @@ def run_backtest(
     top_n: int | None = None,
     initial_capital: float = 1_000_000,
     market: str = "US",
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> BacktestResult:
     """运行因子策略回测。
 
@@ -133,6 +135,10 @@ def run_backtest(
 
         # 6. 调仓
         portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+
+        if progress_callback:
+            pct = round((i + 1) / len(rebalance_dates) * 100, 1)
+            progress_callback(pct, f"调仓 {i + 1}/{len(rebalance_dates)}: {rb_date}")
 
     # 最终净值
     end_trade = get_nearest_trade_date(end, market=market)
