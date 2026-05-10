@@ -62,6 +62,11 @@ export function mergeStats(
   const inProgress = {} as Record<Market, number>;
   const partial = {} as Record<Market, number>;
 
+  // Quote sync merge
+  const quoteToday: DashboardStats["quote_sync_today"] = {};
+  const quoteTrendMap = new Map<string, { date: string; success: number; failed: number }>();
+  const quoteCoverageMap = new Map<Market, DashboardStats["quote_coverage"][0]>();
+
   for (const s of [cn, us]) {
     if (!s) continue;
     for (const [m, c] of Object.entries(s.total_stocks) as [Market, number][]) {
@@ -91,6 +96,29 @@ export function mergeStats(
       const d = new Date(s.validation_issues.last_check_at);
       if (!lastCheckAt || d > new Date(lastCheckAt)) {
         lastCheckAt = s.validation_issues.last_check_at;
+      }
+    }
+
+    // Merge quote sync today
+    for (const [m, v] of Object.entries(s.quote_sync_today ?? {}) as [Market, DashboardStats["quote_sync_today"][Market]][]) {
+      if (!quoteToday[m]) quoteToday[m] = { success: 0, failed: 0 };
+      quoteToday[m].success += v.success;
+      quoteToday[m].failed += v.failed;
+    }
+
+    // Merge quote sync trend by date
+    for (const t of s.quote_sync_trend ?? []) {
+      const cur = quoteTrendMap.get(t.date) ?? { date: t.date, success: 0, failed: 0 };
+      cur.success += t.success;
+      cur.failed += t.failed;
+      quoteTrendMap.set(t.date, cur);
+    }
+
+    // Merge quote coverage: keep the one with larger count per market
+    for (const c of s.quote_coverage ?? []) {
+      const existing = quoteCoverageMap.get(c.market);
+      if (!existing || c.count > existing.count) {
+        quoteCoverageMap.set(c.market, c);
       }
     }
   }
@@ -123,5 +151,8 @@ export function mergeStats(
     anomalies_today: anomaliesToday,
     freshness,
     recent_issues: recent10,
+    quote_sync_today: quoteToday,
+    quote_sync_trend: Array.from(quoteTrendMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
+    quote_coverage: Array.from(quoteCoverageMap.values()),
   };
 }

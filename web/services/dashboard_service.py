@@ -186,6 +186,83 @@ def get_stats() -> dict:
                 "created_at": row[7],
             })
 
+        # 8. 行情同步统计
+        # 8a. 今日行情同步（按市场）
+        cur.execute(
+            """
+            SELECT
+                CASE
+                    WHEN data_type = 'daily_quote_us' THEN 'US'
+                    ELSE REPLACE(data_type, 'daily_quote_', '')
+                END AS market,
+                COALESCE(SUM(success_count), 0) AS success,
+                COALESCE(SUM(fail_count), 0) AS failed
+            FROM sync_log
+            WHERE data_type LIKE 'daily_quote%%'
+              AND started_at::date = CURRENT_DATE
+            GROUP BY market
+            """
+        )
+        quote_today = {}
+        for m, succ, fail in cur.fetchall():
+            quote_today[m] = {"success": int(succ), "failed": int(fail)}
+
+        # 8b. 近 7 天行情同步趋势
+        seven_days_ago = date.today() - timedelta(days=6)
+        cur.execute(
+            """
+            SELECT started_at::date AS d,
+                   CASE
+                       WHEN data_type = 'daily_quote_us' THEN 'US'
+                       ELSE REPLACE(data_type, 'daily_quote_', '')
+                   END AS market,
+                   COALESCE(SUM(success_count), 0) AS success_total,
+                   COALESCE(SUM(fail_count), 0) AS fail_total
+            FROM sync_log
+            WHERE data_type LIKE 'daily_quote%%'
+              AND started_at::date >= %s
+            GROUP BY d, market
+            ORDER BY d, market
+            """,
+            (seven_days_ago,),
+        )
+        quote_trend_raw: dict[str, dict] = {}
+        for d, m, succ, fail in cur.fetchall():
+            ds = d.isoformat()
+            if ds not in quote_trend_raw:
+                quote_trend_raw[ds] = {"date": ds, "success": 0, "failed": 0}
+            quote_trend_raw[ds]["success"] += int(succ)
+            quote_trend_raw[ds]["failed"] += int(fail)
+        quote_sync_trend = sorted(quote_trend_raw.values(), key=lambda x: x["date"])
+
+        # 8c. 各市场最新行情日期的覆盖数
+        cur.execute(
+            """
+            SELECT market, MAX(trade_date) AS latest_date
+            FROM daily_quote
+            WHERE market = ANY(%s)
+            GROUP BY market
+            """,
+            (markets,),
+        )
+        quote_latest_dates = {r[0]: r[1] for r in cur.fetchall()}
+
+        quote_coverage = []
+        for market in markets:
+            latest = quote_latest_dates.get(market)
+            count = 0
+            if latest:
+                cur.execute(
+                    "SELECT COUNT(*) FROM daily_quote WHERE market = %s AND trade_date = %s",
+                    (market, latest),
+                )
+                count = cur.fetchone()[0]
+            quote_coverage.append({
+                "market": market,
+                "latest_date": latest.isoformat() if latest else None,
+                "count": count,
+            })
+
         cur.close()
 
     return {
@@ -196,4 +273,7 @@ def get_stats() -> dict:
         "anomalies_today": anomalies_today,
         "freshness": freshness,
         "recent_issues": recent_issues,
+        "quote_sync_today": quote_today,
+        "quote_sync_trend": quote_sync_trend,
+        "quote_coverage": quote_coverage,
     }

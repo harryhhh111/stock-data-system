@@ -46,7 +46,7 @@ def run_backtest_task(task_id: str, params: dict) -> None:
 
     try:
         start = _parse_month(params["start"])
-        end = date.fromisoformat(params["end"]) if params.get("end") else None
+        end = _parse_month_end(params["end"]) if params.get("end") else None
 
         def on_progress(pct: float, label: str):
             update_task(task_id, progress_pct=pct, progress_label=label)
@@ -81,3 +81,11 @@ def _parse_month(s: str) -> date:
     """解析 YYYY-MM 为该月第一天。"""
     parts = s.split("-")
     return date(int(parts[0]), int(parts[1]), 1)
+
+
+def _parse_month_end(s: str) -> date:
+    """解析 YYYY-MM 为该月最后一天。"""
+    from dateutil.relativedelta import relativedelta
+    parts = s.split("-")
+    d = date(int(parts[0]), int(parts[1]), 1)
+    return d + relativedelta(months=1) - relativedelta(days=1)

@@ -38,6 +38,17 @@ export interface ValidationBreakdown {
   info: number;
 }
 
+export interface QuoteSyncToday {
+  success: number;
+  failed: number;
+}
+
+export interface QuoteCoverage {
+  market: Market;
+  latest_date: string | null;
+  count: number;
+}
+
 export interface DashboardStats {
   total_stocks: Record<Market, number>;
   sync_status: Record<Market, SyncStatus>;
@@ -52,4 +63,7 @@ export interface DashboardStats {
   anomalies_today: number;
   freshness: Freshness[];
   recent_issues: RecentIssue[];
+  quote_sync_today: Record<Market, QuoteSyncToday>;
+  quote_sync_trend: SyncTrend[];
+  quote_coverage: QuoteCoverage[];
 }

@@ -19,6 +19,16 @@ def _parse_month(s: str) -> date:
     return date(int(parts[0]), int(parts[1]), 1)
 
 
+def _parse_month_end(s: str) -> date:
+    """解析 YYYY-MM 为该月最后一天。"""
+    from dateutil.relativedelta import relativedelta
+    parts = s.split("-")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(f"日期格式应为 YYYY-MM，收到: {s}")
+    d = date(int(parts[0]), int(parts[1]), 1)
+    return d + relativedelta(months=1) - relativedelta(days=1)
+
+
 def _format_pct(v: float) -> str:
     return f"{v:+.1%}" if v >= 0 else f"{v:.1%}"
 
@@ -98,7 +108,7 @@ def main() -> None:
     )
     parser.add_argument("--preset", required=True, help="预设策略名")
     parser.add_argument("--start", required=True, help="起始月份 YYYY-MM")
-    parser.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（默认今天）")
+    parser.add_argument("--end", default=None, help="结束月份 YYYY-MM（默认今天）")
     parser.add_argument("--months", type=int, default=6, help="调仓间隔月数（默认 6）")
     parser.add_argument("--top", type=int, default=None, help="每次持有股票数（默认用预设）")
     parser.add_argument("--capital", type=float, default=1_000_000, help="初始资金（默认 100 万）")
@@ -109,7 +119,7 @@ def main() -> None:
     args = parser.parse_args()
 
     start = _parse_month(args.start)
-    end = date.fromisoformat(args.end) if args.end else None
+    end = _parse_month_end(args.end) if args.end else None
 
     try:
         result = run_backtest(

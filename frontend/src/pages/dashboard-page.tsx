@@ -6,6 +6,7 @@ import { MarketMatrix } from "@/components/dashboard/market-matrix";
 import { MiniTrendChart } from "@/components/dashboard/mini-trend-chart";
 import { IssueFeed } from "@/components/dashboard/issue-feed";
 import { QualitySection } from "@/components/dashboard/quality-section";
+import { QuoteSyncPanel } from "@/components/dashboard/quote-sync-panel";
 import { PageHeader } from "@/components/layout/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
@@ -37,6 +38,17 @@ export function DashboardPage() {
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-6 w-full" />
             ))}
+          </CardContent>
+        </Card>
+        {/* Quote sync skeleton */}
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <Skeleton className="h-4 w-32 mb-2" />
+            <div className="grid grid-cols-3 gap-4">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-20 w-full" />
+              ))}
+            </div>
           </CardContent>
         </Card>
         {/* Trend + Issues skeleton */}
@@ -80,7 +92,15 @@ export function DashboardPage() {
       {/* 第二层：市场健康矩阵 */}
       <MarketMatrix stats={stats} />
 
-      {/* 第三层：趋势 + 问题（左右分栏） */}
+      {/* 第三层：行情同步 */}
+      <QuoteSyncPanel
+        quoteSyncToday={stats.quote_sync_today}
+        quoteSyncTrend={stats.quote_sync_trend}
+        quoteCoverage={stats.quote_coverage}
+        totalStocks={stats.total_stocks}
+      />
+
+      {/* 第四层：趋势 + 问题（左右分栏） */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <MiniTrendChart syncTrend={stats.sync_trend} />
         <IssueFeed issues={stats.recent_issues} />
