@@ -44,7 +44,7 @@ latest_quarterly_yoy AS (
       AND i.notice_date <= %s
       AND f.revenue_yoy IS NOT NULL
     ORDER BY f.stock_code, f.report_date DESC
-),
+)
 
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
