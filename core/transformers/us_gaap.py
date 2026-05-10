@@ -116,10 +116,14 @@ INCOME_TAG_PRIORITY: dict[str, list[str]] = {
     "interest_expense": ["InterestExpense", "InterestExpenseDebt", "InterestExpenseOnDebt"],
     "interest_income": ["InterestIncome", "InvestmentIncomeInterest"],
     "other_income_expense": ["OtherIncomeExpense", "OtherNonOperatingIncomeExpense"],
-    "income_before_tax": ["IncomeBeforeTax"],
+    "income_before_tax": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "IncomeBeforeTax",
+    ],
     "income_tax_expense": ["IncomeTaxExpenseBenefit"],
     "net_income": ["NetIncomeLoss"],
-    "net_income_common": ["NetIncomeAvailableToCommonStockholdersBasic"],
+    "net_income_common": ["NetIncomeLossAvailableToCommonStockholdersBasic", "NetIncomeAvailableToCommonStockholdersBasic"],
     "preferred_dividends": ["PreferredStockDividendsAndOtherAdjustments"],
     "eps_basic": ["EarningsPerShareBasic"],
     "eps_diluted": ["EarningsPerShareDiluted"],
@@ -331,15 +335,21 @@ class USGAAPTransformer(BaseTransformer):
             all_keys.update(_INCOME_DB_COLS)
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
-        # net_income_common fallback: 优先用原始 tag，取不到则用 net_income - preferred_dividends
+        # net_income / net_income_common 互相 fallback
         for r in records:
+            # Forward: net_income_common = net_income - preferred_dividends
             if r.get("net_income_common") is None and r.get("net_income") is not None:
                 pref = r.get("preferred_dividends")
                 r["net_income_common"] = r["net_income"] - pref if pref else r["net_income"]
-            # Same fallback for standalone
+            # Reverse: net_income = net_income_common (when NetIncomeLoss tag missing)
+            if r.get("net_income") is None and r.get("net_income_common") is not None:
+                r["net_income"] = r["net_income_common"]
+            # Same fallbacks for standalone
             if r.get("net_income_common_standalone") is None and r.get("net_income_standalone") is not None:
                 pref = r.get("preferred_dividends_standalone")
                 r["net_income_common_standalone"] = r["net_income_standalone"] - (pref if pref else 0)
+            if r.get("net_income_standalone") is None and r.get("net_income_common_standalone") is not None:
+                r["net_income_standalone"] = r["net_income_common_standalone"]
 
         logger.debug("利润表转换: %s, %d 条记录", stock_code, len(records))
         return records

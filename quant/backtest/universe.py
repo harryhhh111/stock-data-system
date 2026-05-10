@@ -143,47 +143,40 @@ latest_annual AS (
     ORDER BY stock_code, report_date DESC
 ),
 
-report_data AS (
+-- Income TTM (independent from CF)
+income_data AS (
     SELECT i.stock_code, i.report_date, i.report_type, i.filed_date,
-           i.revenues, i.net_income,
-           cf.net_cash_from_operations, cf.capital_expenditures
+           i.revenues, i.net_income
     FROM us_income_statement i
-    LEFT JOIN us_cash_flow_statement cf
-        ON i.stock_code = cf.stock_code
-        AND i.report_date = cf.report_date
-        AND i.report_type = cf.report_type
-        AND cf.filed_date <= %s
     WHERE i.report_type IN ('quarterly', 'annual')
       AND i.filed_date <= %s
 ),
-latest_report AS (
+latest_income AS (
     SELECT DISTINCT ON (stock_code) *
-    FROM report_data
+    FROM income_data
     ORDER BY stock_code, report_date DESC
 ),
-prev_year AS (
+income_prev_year AS (
     SELECT DISTINCT ON (l.stock_code)
         l.stock_code,
-        p.revenues AS py_revenue, p.net_income AS py_net_income,
-        p.net_cash_from_operations AS py_ocf, p.capital_expenditures AS py_capex
-    FROM latest_report l
-    JOIN report_data p ON p.stock_code = l.stock_code
+        p.revenues AS py_revenue, p.net_income AS py_net_income
+    FROM latest_income l
+    JOIN income_data p ON p.stock_code = l.stock_code
         AND p.report_type = l.report_type
         AND p.report_date BETWEEN l.report_date - INTERVAL '1 year' - INTERVAL '7 days'
                               AND l.report_date - INTERVAL '1 year' + INTERVAL '7 days'
     ORDER BY l.stock_code, ABS(EXTRACT(EPOCH FROM (p.report_date - (l.report_date - INTERVAL '1 year'))))
 ),
-last_annual AS (
+income_last_annual AS (
     SELECT DISTINCT ON (l.stock_code)
         l.stock_code,
-        a.revenues AS la_revenue, a.net_income AS la_net_income,
-        a.net_cash_from_operations AS la_ocf, a.capital_expenditures AS la_capex
-    FROM latest_report l
-    JOIN report_data a ON a.stock_code = l.stock_code
+        a.revenues AS la_revenue, a.net_income AS la_net_income
+    FROM latest_income l
+    JOIN income_data a ON a.stock_code = l.stock_code
         AND a.report_type = 'annual' AND a.report_date < l.report_date
     ORDER BY l.stock_code, a.report_date DESC
 ),
-ttm AS (
+income_ttm AS (
     SELECT l.stock_code,
         CASE WHEN l.report_type = 'annual' THEN l.revenues
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
@@ -194,7 +187,46 @@ ttm AS (
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.net_income + la.la_net_income - py.py_net_income
              WHEN la.stock_code IS NOT NULL THEN la.la_net_income
-             ELSE l.net_income END AS net_income_ttm,
+             ELSE l.net_income END AS net_income_ttm
+    FROM latest_income l
+    LEFT JOIN income_prev_year py ON py.stock_code = l.stock_code
+    LEFT JOIN income_last_annual la ON la.stock_code = l.stock_code
+),
+
+-- Cash flow TTM (independent from income)
+cf_data AS (
+    SELECT stock_code, report_date, report_type, filed_date,
+           net_cash_from_operations, capital_expenditures
+    FROM us_cash_flow_statement
+    WHERE report_type IN ('quarterly', 'annual') AND filed_date <= %s
+),
+latest_cf AS (
+    SELECT DISTINCT ON (stock_code) *
+    FROM cf_data
+    ORDER BY stock_code, report_date DESC
+),
+cf_prev_year AS (
+    SELECT DISTINCT ON (l.stock_code)
+        l.stock_code,
+        p.net_cash_from_operations AS py_ocf, p.capital_expenditures AS py_capex
+    FROM latest_cf l
+    JOIN cf_data p ON p.stock_code = l.stock_code
+        AND p.report_type = l.report_type
+        AND p.report_date BETWEEN l.report_date - INTERVAL '1 year' - INTERVAL '7 days'
+                              AND l.report_date - INTERVAL '1 year' + INTERVAL '7 days'
+    ORDER BY l.stock_code, ABS(EXTRACT(EPOCH FROM (p.report_date - (l.report_date - INTERVAL '1 year'))))
+),
+cf_last_annual AS (
+    SELECT DISTINCT ON (l.stock_code)
+        l.stock_code,
+        a.net_cash_from_operations AS la_ocf, a.capital_expenditures AS la_capex
+    FROM latest_cf l
+    JOIN cf_data a ON a.stock_code = l.stock_code
+        AND a.report_type = 'annual' AND a.report_date < l.report_date
+    ORDER BY l.stock_code, a.report_date DESC
+),
+cf_ttm AS (
+    SELECT l.stock_code,
         CASE WHEN l.report_type = 'annual' THEN l.net_cash_from_operations
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.net_cash_from_operations + la.la_ocf - py.py_ocf
@@ -205,9 +237,9 @@ ttm AS (
              THEN l.capital_expenditures + la.la_capex - py.py_capex
              WHEN la.stock_code IS NOT NULL THEN la.la_capex
              ELSE l.capital_expenditures END AS capex_ttm
-    FROM latest_report l
-    LEFT JOIN prev_year py ON py.stock_code = l.stock_code
-    LEFT JOIN last_annual la ON la.stock_code = l.stock_code
+    FROM latest_cf l
+    LEFT JOIN cf_prev_year py ON py.stock_code = l.stock_code
+    LEFT JOIN cf_last_annual la ON la.stock_code = l.stock_code
 ),
 
 latest_quarterly_yoy AS (
@@ -225,8 +257,8 @@ SELECT
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     NULL::numeric AS float_market_cap,
-    CASE WHEN t.net_income_ttm > 0
-         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_income_ttm
+    CASE WHEN inc.net_income_ttm > 0
+         THEN COALESCE(q.market_cap, q.close * sh.total_shares) / inc.net_income_ttm
     END AS pe_ttm,
     CASE WHEN la.total_equity > 0
          THEN COALESCE(q.market_cap, q.close * sh.total_shares) / la.total_equity
@@ -241,12 +273,12 @@ SELECT
     la.total_assets, la.total_liab, la.total_equity AS parent_equity,
     la.fcf AS annual_fcf,
 
-    t.revenue_ttm, t.net_income_ttm AS net_profit_ttm,
-    t.cfo_ttm, t.capex_ttm,
+    inc.revenue_ttm, inc.net_income_ttm AS net_profit_ttm,
+    cf.cfo_ttm, cf.capex_ttm,
 
-    (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
+    (cf.cfo_ttm - cf.capex_ttm) AS fcf_ttm,
     CASE WHEN COALESCE(q.market_cap, q.close * sh.total_shares) > 0
-         THEN (t.cfo_ttm - t.capex_ttm) / COALESCE(q.market_cap, q.close * sh.total_shares)
+         THEN (cf.cfo_ttm - cf.capex_ttm) / COALESCE(q.market_cap, q.close * sh.total_shares)
     END AS fcf_yield,
 
     NULL::numeric AS fcf_cfo_ttm,
@@ -255,7 +287,8 @@ SELECT
 
 FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
-LEFT JOIN ttm t ON s.stock_code = t.stock_code
+LEFT JOIN income_ttm inc ON s.stock_code = inc.stock_code
+LEFT JOIN cf_ttm cf ON s.stock_code = cf.stock_code
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
 LEFT JOIN LATERAL (
     SELECT close, market_cap, pe_ttm, pb, currency
@@ -280,8 +313,8 @@ def _get_point_in_time_universe_us(
     """US 市场 PIT 查询（手动 TTM CTE + filed_date 过滤）。"""
     params = (
         as_of_date,           # 1. latest_annual filed_date <=
-        as_of_date,           # 2. report_data cf.filed_date <=
-        as_of_date,           # 3. report_data i.filed_date <=
+        as_of_date,           # 2. income_data filed_date <=
+        as_of_date,           # 3. cf_data filed_date <=
         as_of_date,           # 4. latest_quarterly_yoy filed_date <=
         as_of_date,           # 5. days_since_list
         market,               # 6. LATERAL q market =
