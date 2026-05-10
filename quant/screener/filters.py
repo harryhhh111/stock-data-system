@@ -62,7 +62,8 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if market_cap_by_market and "market" in result.columns:
         mask = pd.Series(True, index=result.index)
         for mkt, cap_min in market_cap_by_market.items():
-            mask = mask & ~((result["market"] == mkt) & (result["market_cap"] < cap_min))
+            # 用 ~(x >= y) 而非 (x < y)，因为 NaN < y 为 False，会导致 NaN 被放行
+            mask = mask & ~((result["market"] == mkt) & ~(result["market_cap"] >= cap_min))
         result = result[mask]
     elif filters.get("market_cap_min") is not None:
         result = result[result["market_cap"] >= filters["market_cap_min"]]
@@ -104,7 +105,8 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     if fcf_min_by_market and "market" in result.columns:
         mask = pd.Series(True, index=result.index)
         for mkt, fcf_min in fcf_min_by_market.items():
-            mask = mask & ~((result["market"] == mkt) & (result["fcf_yield"] < fcf_min))
+            # 用 ~(x >= y) 而非 (x < y)，因为 NaN < y 为 False，会导致 NaN 被放行
+            mask = mask & ~((result["market"] == mkt) & ~(result["fcf_yield"] >= fcf_min))
         result = result[mask]
     elif filters.get("fcf_yield_min") is not None:
         result = result[result["fcf_yield"] >= filters["fcf_yield_min"]]
