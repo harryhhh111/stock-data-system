@@ -101,6 +101,7 @@ SELECT
         cf.cfo_net - cf.capex
     END AS fcf,
 
+    i.notice_date,
     i.updated_at
 FROM income_statement i
 JOIN balance_sheet b
@@ -126,6 +127,7 @@ CREATE UNIQUE INDEX idx_mv_indicator_pk ON mv_financial_indicator(stock_code, re
 CREATE INDEX idx_mv_indicator_market ON mv_financial_indicator(market);
 CREATE INDEX idx_mv_indicator_roe ON mv_financial_indicator(roe);
 CREATE INDEX idx_mv_indicator_fcf ON mv_financial_indicator(fcf);
+CREATE INDEX idx_mv_indicator_notice ON mv_financial_indicator(notice_date);
 
 
 -- ============================================================

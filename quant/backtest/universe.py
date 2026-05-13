@@ -21,14 +21,10 @@ warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy")
 _CN_PIT_SQL = """
 WITH
 latest_annual AS (
-    SELECT DISTINCT ON (f.stock_code) f.*, i.notice_date
+    SELECT DISTINCT ON (f.stock_code) f.*
     FROM mv_financial_indicator f
-    JOIN income_statement i
-        ON f.stock_code = i.stock_code
-        AND f.report_date = i.report_date
-        AND f.report_type = i.report_type
     WHERE f.report_type = 'annual'
-      AND i.notice_date <= %s
+      AND f.notice_date <= %s
     ORDER BY f.stock_code, f.report_date DESC
 ),
 
@@ -36,12 +32,8 @@ latest_quarterly_yoy AS (
     SELECT DISTINCT ON (f.stock_code)
         f.stock_code, f.revenue_yoy, f.net_profit_yoy
     FROM mv_financial_indicator f
-    JOIN income_statement i
-        ON f.stock_code = i.stock_code
-        AND f.report_date = i.report_date
-        AND f.report_type = i.report_type
     WHERE f.report_type = 'quarterly'
-      AND i.notice_date <= %s
+      AND f.notice_date <= %s
       AND f.revenue_yoy IS NOT NULL
     ORDER BY f.stock_code, f.report_date DESC
 )
@@ -365,14 +357,10 @@ def get_roe_history_as_of(
                    ROW_NUMBER() OVER (PARTITION BY f.stock_code
                                       ORDER BY f.report_date DESC) AS rn
             FROM mv_financial_indicator f
-            JOIN income_statement i
-                ON f.stock_code = i.stock_code
-                AND f.report_date = i.report_date
-                AND f.report_type = i.report_type
             JOIN stock_info s ON f.stock_code = s.stock_code
             WHERE f.report_type = 'annual' AND f.roe IS NOT NULL
               AND s.market = %s
-              AND i.notice_date <= %s
+              AND f.notice_date <= %s
         ) f
         WHERE f.rn <= %s
         ORDER BY f.stock_code, f.report_date DESC
