@@ -254,7 +254,7 @@ class SyncManager:
             for e in errors:
                 logger.info("  - %s", e)
 
-        refresh_views_after_sync("financial")
+        refresh_views_after_sync("financial", market)
         return result
 
     # ── 指数成分同步 ────────────────────────────────────
@@ -400,7 +400,7 @@ class SyncManager:
             for e in errors:
                 logger.info("  - %s", e)
 
-        refresh_views_after_sync("dividend")
+        refresh_views_after_sync("dividend", market)
         return {
             "total": total, "success": success, "failed": failed, "elapsed": elapsed,
         }

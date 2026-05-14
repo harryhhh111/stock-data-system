@@ -139,5 +139,5 @@ def backfill_daily_hist(market: str, source: str = "auto", start_date: str = "20
             "elapsed_min": round(elapsed / 60, 1),
         }
 
-    refresh_views_after_sync("daily")
+    refresh_views_after_sync("daily", market)
     return total_result

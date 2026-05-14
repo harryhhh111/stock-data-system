@@ -103,7 +103,7 @@ External APIs → fetchers/ (rate-limit, circuit-breaker, retry)
 
 - **A-share and HK share the same schema** (income_statement, balance_sheet, cash_flow_statement), differentiated by `market` column. US has separate tables (us_income_statement, etc.).
 - **UPSERT with COALESCE protection**: `db.py` upsert never overwrites existing values with None. Use `force_null_cols` parameter to explicitly allow null overrides.
-- **UPSERT conflict keys**: financial tables use `(stock_code, report_date, report_type)`, daily_quote uses `(stock_code, trade_date, market)`, stock_info uses `(stock_code, market)`.
+- **UPSERT conflict keys**: financial tables use `(stock_code, report_date, report_type)`, daily_quote uses `(stock_code, trade_date)`, stock_info uses `(stock_code)`, stock_share uses `(stock_code, trade_date, market)`.
 - **Raw snapshot layer**: Original API responses stored as JSONB in `raw_snapshot` table for traceability and reparse without re-fetching.
 - **Materialized views**: Derived indicators (TTM, FCF Yield) computed from base tables. **TTM must use only annual data** — mixing annual+quarterly causes 3x inflation.
 - **Multi-environment deployment**: Domestic server runs CN_A+CN_HK, overseas server runs US. Controlled by `STOCK_MARKETS` env var.
