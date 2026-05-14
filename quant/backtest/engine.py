@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Callable
 
+import pandas as pd
 from dateutil.relativedelta import relativedelta
 
 from quant.backtest.portfolio import Portfolio, PerformanceMetrics, Snapshot
@@ -56,6 +57,77 @@ def _generate_rebalance_dates(
     return dates
 
 
+_QUOTE_SQL = """
+SELECT s.stock_code, q.close, q.market_cap, q.pe_ttm, q.pb, q.currency
+FROM stock_info s
+LEFT JOIN LATERAL (
+    SELECT close, market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE stock_code = s.stock_code
+      AND market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY trade_date DESC LIMIT 1
+) q ON true
+WHERE s.market = %s
+"""
+
+
+def _query_quote(as_of_date: date, market: str) -> pd.DataFrame:
+    """查询调仓日行情，stock_info 驱动 LATERAL 走索引。"""
+    from db import Connection
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(_QUOTE_SQL, (market, as_of_date, market))
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        cur.close()
+    df = pd.DataFrame(rows, columns=cols)
+    for col in ["close", "market_cap", "pe_ttm", "pb"]:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
+    return df.set_index("stock_code")
+
+
+def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
+    """将预加载的财务数据与行情合并，计算市场相关字段。"""
+    result = base.merge(quote, on="stock_code", how="left", suffixes=("", "_q"))
+
+    # currency
+    if "currency_q" in result.columns:
+        result["currency"] = result["currency_q"].fillna(
+            result["currency"] if "currency" in result.columns else None
+        )
+
+    # market_cap
+    result["market_cap"] = result["market_cap"].fillna(
+        result["close"] * result["total_shares"]
+    )
+
+    # PE / PB
+    pos_cap = result["market_cap"] > 0
+    result.loc[pos_cap & (result["net_profit_ttm"] > 0), "pe_ttm"] = (
+        result["market_cap"] / result["net_profit_ttm"]
+    )
+    equity = result["parent_equity"].fillna(result["total_equity"])
+    result.loc[pos_cap & (equity > 0), "pb"] = result["market_cap"] / equity
+
+    # FCF yield
+    result["fcf_ttm"] = result["cfo_ttm"] - result["capex_ttm"]
+    result.loc[pos_cap, "fcf_yield"] = result["fcf_ttm"] / result["market_cap"]
+
+    # 占位列
+    result["fcf_cfo_ttm"] = None
+    result["fcf_capex_ttm"] = None
+    result["ttm_report_date"] = result["report_date"]
+    result["float_market_cap"] = None
+    result["quote_currency"] = result["currency"]
+
+    result = result.drop(
+        columns=[c for c in result.columns if c.endswith("_q")],
+        errors="ignore",
+    )
+    return result
+
+
 def run_backtest(
     preset_name: str,
     start: date,
@@ -97,20 +169,37 @@ def run_backtest(
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
+    # CN 市场：预加载财报到内存，行情走 LATERAL 索引查询
+    preloader = None
+    if market in ("CN_A", "CN_HK"):
+        from quant.backtest.preloader import PITPreloader
+        preloader = PITPreloader(market)
+        preloader.load()
+        if progress_callback:
+            progress_callback(0.0, "数据预加载完成")
+
     portfolio = Portfolio(initial_capital)
     roe_years = filters.get("roe_consecutive_years", 0)
     roe_min = filters.get("roe_min", 0)
 
     for i, rb_date in enumerate(rebalance_dates):
         # 1. 获取 point-in-time 选股池
-        universe = get_point_in_time_universe(rb_date, market=market)
+        if preloader is not None:
+            base = preloader.get_universe(rb_date)
+            quote = _query_quote(rb_date, market)
+            universe = _build_universe(base, quote)
+        else:
+            universe = get_point_in_time_universe(rb_date, market=market)
 
         # 2. 硬过滤
         filtered, _, _ = apply_hard_filters(universe, filters)
 
         # 3. 连续 ROE 过滤
         if roe_years and roe_years > 0:
-            roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
+            if preloader is not None:
+                roe_hist = preloader.get_roe_history(rb_date, roe_years)
+            else:
+                roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
             filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
 
         if filtered.empty:
