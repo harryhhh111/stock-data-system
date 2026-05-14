@@ -57,32 +57,30 @@ def _generate_rebalance_dates(
     return dates
 
 
-_QUOTE_SQL = """
-SELECT s.stock_code, q.close, q.market_cap, q.pe_ttm, q.pb, q.currency
-FROM stock_info s
-LEFT JOIN LATERAL (
-    SELECT close, market_cap, pe_ttm, pb, currency
-    FROM daily_quote
-    WHERE stock_code = s.stock_code
-      AND market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY trade_date DESC LIMIT 1
-) q ON true
-WHERE s.market = %s
+_BATCH_QUOTE_SQL = """
+SELECT stock_code, trade_date, close, market_cap, pe_ttm, pb, currency
+FROM daily_quote
+WHERE market = %s AND trade_date = ANY(%s::date[]) AND close IS NOT NULL
 """
 
 
-def _query_quote(conn, as_of_date: date, market: str) -> pd.DataFrame:
-    """查询调仓日行情，复用连接，stock_info 驱动 LATERAL 走索引。"""
+def _batch_query_quote(conn, dates: list[date], market: str) -> dict[date, pd.DataFrame]:
+    """一次查询所有调仓日的行情，按日期拆分为 {date: DataFrame}。"""
     cur = conn.cursor()
-    cur.execute(_QUOTE_SQL, (market, as_of_date, market))
+    cur.execute(_BATCH_QUOTE_SQL, (market, dates))
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
     cur.close()
+
     df = pd.DataFrame(rows, columns=cols)
     for col in ["close", "market_cap", "pe_ttm", "pb"]:
         if col in df.columns:
             df[col] = df[col].astype(float)
-    return df.set_index("stock_code")
+
+    result = {}
+    for d, group in df.groupby("trade_date"):
+        result[d] = group.set_index("stock_code")
+    return result
 
 
 def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
@@ -176,6 +174,10 @@ def run_backtest(
         preloader = PITPreloader(market)
         preloader.load()
         db_conn = get_connection()
+        # 一次 SQL 查完所有调仓日行情
+        quote_by_date = _batch_query_quote(db_conn, rebalance_dates, market)
+        release_connection(db_conn)
+        db_conn = None
         if progress_callback:
             progress_callback(0.0, "数据预加载完成")
 
@@ -183,56 +185,52 @@ def run_backtest(
     roe_years = filters.get("roe_consecutive_years", 0)
     roe_min = filters.get("roe_min", 0)
 
-    try:
-        for i, rb_date in enumerate(rebalance_dates):
-            # 1. 获取 point-in-time 选股池
+    for i, rb_date in enumerate(rebalance_dates):
+        # 1. 获取 point-in-time 选股池
+        if preloader is not None:
+            base = preloader.get_universe(rb_date)
+            quote = quote_by_date.get(rb_date, pd.DataFrame())
+            universe = _build_universe(base, quote)
+        else:
+            universe = get_point_in_time_universe(rb_date, market=market)
+
+        # 2. 硬过滤
+        filtered, _, _ = apply_hard_filters(universe, filters)
+
+        # 3. 连续 ROE 过滤
+        if roe_years and roe_years > 0:
             if preloader is not None:
-                base = preloader.get_universe(rb_date)
-                quote = _query_quote(db_conn, rb_date, market)
-                universe = _build_universe(base, quote)
+                roe_hist = preloader.get_roe_history(rb_date, roe_years)
             else:
-                universe = get_point_in_time_universe(rb_date, market=market)
+                roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
+            filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
 
-            # 2. 硬过滤
-            filtered, _, _ = apply_hard_filters(universe, filters)
-
-            # 3. 连续 ROE 过滤
-            if roe_years and roe_years > 0:
-                if preloader is not None:
-                    roe_hist = preloader.get_roe_history(rb_date, roe_years)
-                else:
-                    roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
-                filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
-
-            if filtered.empty:
-                # 无候选股票，保留现有持仓
-                sell_codes = list(portfolio.positions.keys())
-                sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
-                portfolio.rebalance(rb_date, [], {}, sell_p)
-                continue
-
-            # 4. 打分
-            scored = rank_factors(filtered, weights)
-            top = scored.nlargest(top_n, "score")
-
-            # 5. 获取买入/卖出价格
-            new_targets = top["stock_code"].tolist()
+        if filtered.empty:
+            # 无候选股票，保留现有持仓
             sell_codes = list(portfolio.positions.keys())
-            trade_codes = list(set(new_targets) | set(sell_codes))
-            all_prices = get_sell_prices(rb_date, trade_codes, market=market) if trade_codes else {}
+            sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
+            portfolio.rebalance(rb_date, [], {}, sell_p)
+            continue
 
-            buy_prices = {c: p for c, p in all_prices.items() if c in new_targets and p is not None and p > 0}
-            sell_p = {c: all_prices.get(c) for c in sell_codes}
+        # 4. 打分
+        scored = rank_factors(filtered, weights)
+        top = scored.nlargest(top_n, "score")
 
-            # 6. 调仓
-            portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+        # 5. 获取买入/卖出价格
+        new_targets = top["stock_code"].tolist()
+        sell_codes = list(portfolio.positions.keys())
+        trade_codes = list(set(new_targets) | set(sell_codes))
+        all_prices = get_sell_prices(rb_date, trade_codes, market=market) if trade_codes else {}
 
-            if progress_callback:
-                pct = round((i + 1) / len(rebalance_dates) * 100, 1)
-                progress_callback(pct, f"调仓 {i + 1}/{len(rebalance_dates)}: {rb_date}")
-    finally:
-        if db_conn is not None:
-            release_connection(db_conn)
+        buy_prices = {c: p for c, p in all_prices.items() if c in new_targets and p is not None and p > 0}
+        sell_p = {c: all_prices.get(c) for c in sell_codes}
+
+        # 6. 调仓
+        portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+
+        if progress_callback:
+            pct = round((i + 1) / len(rebalance_dates) * 100, 1)
+            progress_callback(pct, f"调仓 {i + 1}/{len(rebalance_dates)}: {rb_date}")
 
     # 最终净值
     end_trade = get_nearest_trade_date(end, market=market)
