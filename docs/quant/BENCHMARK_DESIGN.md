@@ -1,6 +1,6 @@
 # 回测基准对比 (Benchmark Comparison) 设计
 
-> 最后更新：2026-05-14（v1.3 — 修复首次调仓前 look-ahead + trade_dates 冗余 + 实现细节补全）
+> 最后更新：2026-05-15（v1.4 — 修复 bench_nav 未定义变量 + 移除冗余 ffill）
 
 ## Context
 
@@ -17,6 +17,10 @@
 - 策略与基准的相关性（Correlation）
 
 ## 评审历史
+
+**v1.4（2026-05-15）** 采纳的评审意见：
+
+1. **bench_nav 未定义变量**：`bench_prices.get(d, last)` 中 `last` 未定义，且 v1.3 已改为 `trade_dates = sorted(bench_prices.keys())`，`d` 必在 bench_prices 中，无需 ffill。简化为直接索引。
 
 **v1.3（2026-05-14）** 采纳的评审意见：
 
@@ -218,8 +222,8 @@ bench_prices = _load_benchmark_prices(benchmark, market, start, end)
 # trade_dates 中第一个有基准数据的日期
 strategy_start = trade_dates[0]
 base_close = bench_prices.get(strategy_start) or next(iter(bench_prices.values()))
-bench_nav = {d: bench_prices.get(d, last) / base_close for d in trade_dates}
-# 缺失日期用前一天 close 前向填充
+# trade_dates = sorted(bench_prices.keys())，d 必在 bench_prices 中，无需 ffill
+bench_nav = {d: bench_prices[d] / base_close for d in trade_dates}
 ```
 
 #### 3e. 日期对齐
@@ -420,6 +424,7 @@ python -m quant.backtest --preset fcf_roe_value --start 2020-01 --market US
 
 ## 已解决的讨论点
 
+- ~~bench_nav 未定义变量~~（v1.3 评审 #1）→ v1.4 移除 ffill，直接索引
 - ~~首次调仓前 look-ahead~~（v1.2 评审 #1）→ v1.3 加 `d < first_rebal_date` 前置判断，NAV=1.0
 - ~~trade_dates 冗余查询~~（v1.2 评审 #2）→ v1.3 直接用 `sorted(bench_prices.keys())`
 - ~~benchmark_max_drawdown 缺公式~~（v1.2 评审 #3）→ v1.3 补回撤计算
