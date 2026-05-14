@@ -1,6 +1,6 @@
 # 回测基准对比 (Benchmark Comparison) 设计
 
-> 最后更新：2026-05-14（v1.2 — 修复 Snapshot 数据结构 + backfill 边界 + 数据量估计）
+> 最后更新：2026-05-14（v1.3 — 修复首次调仓前 look-ahead + trade_dates 冗余 + 实现细节补全）
 
 ## Context
 
@@ -17,6 +17,13 @@
 - 策略与基准的相关性（Correlation）
 
 ## 评审历史
+
+**v1.3（2026-05-14）** 采纳的评审意见：
+
+1. **首次调仓前 look-ahead bias**：`_compute_daily_nav` 在 `d < rebalance_history[0].date` 时会用未来调仓的持仓做 mark-to-market，但实际应为 100% 现金（NAV = 1.0）。修复加前置判断。
+2. **trade_dates 冗余查询**：原方案 `SELECT DISTINCT trade_date` 会扫描 daily_quote 全表。直接用 `sorted(bench_prices.keys())` 替代，省一次查询且天然对齐。
+3. **benchmark_max_drawdown 公式补全**：dataclass 有字段但公式段缺，补上。
+4. **information_ratio std() 重复计算**：提取 `excess_std` 变量。
 
 **v1.2（2026-05-14）** 采纳的评审意见：
 
@@ -183,8 +190,13 @@ def _compute_daily_nav(
     每个交易日：找出 ≤d 的最近一次调仓快照 → cash + Σ(shares × close)。
     """
     daily_nav = {}
+    first_rebal_date = rebalance_history[0].date
     rb_idx = 0
     for d in trade_dates:
+        # 首次调仓前：100% 现金，NAV = 1.0（避免 look-ahead）
+        if d < first_rebal_date:
+            daily_nav[d] = 1.0
+            continue
         # 推进到 d 当天或之前的最后一次调仓
         while rb_idx + 1 < len(rebalance_history) and rebalance_history[rb_idx + 1].date <= d:
             rb_idx += 1
@@ -212,16 +224,13 @@ bench_nav = {d: bench_prices.get(d, last) / base_close for d in trade_dates}
 
 #### 3e. 日期对齐
 
-**重要**：策略和基准都使用同一个 `trade_dates` 列表（从 daily_quote 取 `market='US'` 在区间内的所有交易日），保证 NAV 索引完全一致。SPY 在 NYSE 交易，和美股个股日历一致。
+**重要**：策略和基准都使用同一个 `trade_dates` 列表，保证 NAV 索引完全一致。SPY 在 NYSE 交易，和美股个股日历一致，所以**直接复用 `bench_prices` 的日期**作为 `trade_dates`，省去一次额外的 `daily_quote` 扫描：
 
 ```python
-trade_dates = [d for d, in execute(
-    "SELECT DISTINCT trade_date FROM daily_quote "
-    "WHERE market='US' AND trade_date BETWEEN %s AND %s "
-    "ORDER BY trade_date",
-    (start, end), fetch=True,
-)]
+trade_dates = sorted(bench_prices.keys())
 ```
+
+这同时保证策略和基准的日期天然对齐。如果未来加非 SPY 基准且日历与美股不一致，再补完整查询。
 
 ### Step 4: 对比指标计算
 
@@ -256,18 +265,29 @@ strategy_annualized = (1 + strategy_total) ** (1 / years) - 1
 benchmark_annualized = (1 + benchmark_total) ** (1 / years) - 1
 annualized_alpha = strategy_annualized - benchmark_annualized
 
+# 基准最大回撤（与策略 max_drawdown 同算法）
+bench_peak = 0
+bench_max_dd = 0
+for nav in bench_navs:
+    if nav > bench_peak:
+        bench_peak = nav
+    dd = 1 - nav / bench_peak if bench_peak > 0 else 0
+    if dd > bench_max_dd:
+        bench_max_dd = dd
+
 # 日频收益率（基于 mark-to-market NAV）
 s_ret = pd.Series(strategy_navs).pct_change().dropna()
 b_ret = pd.Series(bench_navs).pct_change().dropna()
 excess_ret = s_ret - b_ret
+excess_std = excess_ret.std()
 
 # 日频 → 年化（×√252）
 # 注：pd.Series.std() / cov() / var() 默认 ddof=1（样本估计），
 #     分子分母 ddof 一致，比值不受影响
-tracking_error = excess_ret.std() * (252 ** 0.5)
+tracking_error = excess_std * (252 ** 0.5)
 information_ratio = (
-    (excess_ret.mean() / excess_ret.std()) * (252 ** 0.5)
-    if excess_ret.std() > 0 else 0
+    (excess_ret.mean() / excess_std) * (252 ** 0.5)
+    if excess_std > 0 else 0
 )
 
 beta = (s_ret.cov(b_ret) / b_ret.var()) if b_ret.var() > 0 else 0
@@ -400,6 +420,10 @@ python -m quant.backtest --preset fcf_roe_value --start 2020-01 --market US
 
 ## 已解决的讨论点
 
+- ~~首次调仓前 look-ahead~~（v1.2 评审 #1）→ v1.3 加 `d < first_rebal_date` 前置判断，NAV=1.0
+- ~~trade_dates 冗余查询~~（v1.2 评审 #2）→ v1.3 直接用 `sorted(bench_prices.keys())`
+- ~~benchmark_max_drawdown 缺公式~~（v1.2 评审 #3）→ v1.3 补回撤计算
+- ~~std() 重复计算~~（v1.2 评审 #4）→ v1.3 提取 `excess_std` 变量
 - ~~Snapshot 数据结构~~（v1.1 评审 #1）→ v1.2 加 `cash` + `holdings` 字段（向后兼容）
 - ~~backfill 边界情况~~（v1.1 评审 #2）→ v1.2 验证步骤显式检查覆盖范围
 - ~~持仓行情数据量~~（v1.1 评审 #3）→ v1.2 注明 100~250K 行量级
