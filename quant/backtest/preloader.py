@@ -33,7 +33,7 @@ class PITPreloader:
     def load(self) -> None:
         """加载并预排序全部静态数据。"""
         with Connection() as conn:
-            # ── 财务指标（只取回测用到的列，省 ~30% 加载时间）──
+            # ── 财务指标：只取 annual+quarterly，2015 年起（回测最多往前看 3 年 ROE）──
             self.fin = _copy_df(
                 conn,
                 "SELECT stock_code, report_date, report_type, notice_date,"
@@ -41,7 +41,9 @@ class PITPreloader:
                 "  debt_ratio, current_ratio, quick_ratio,"
                 "  parent_equity, total_equity, total_assets, total_liab,"
                 "  eps_basic, eps_diluted, revenue_yoy, net_profit_yoy, fcf"
-                " FROM mv_financial_indicator",
+                " FROM mv_financial_indicator"
+                " WHERE report_type IN ('annual', 'quarterly')"
+                "  AND notice_date >= '2015-01-01'",
                 str_cols=("stock_code", "report_type"),
             )
             self.fin["notice_date"] = pd.to_datetime(
