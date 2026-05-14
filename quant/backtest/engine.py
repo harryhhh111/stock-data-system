@@ -165,21 +165,19 @@ def run_backtest(
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
-    # CN 市场：预加载财报到内存，行情走 LATERAL 索引查询（复用连接）
+    # 预加载财报到内存，行情走批量查询
     preloader = None
     db_conn = None
-    if market in ("CN_A", "CN_HK"):
-        from quant.backtest.preloader import PITPreloader
-        from db import get_connection, release_connection
-        preloader = PITPreloader(market)
-        preloader.load()
-        db_conn = get_connection()
-        # 一次 SQL 查完所有调仓日行情
-        quote_by_date = _batch_query_quote(db_conn, rebalance_dates, market)
-        release_connection(db_conn)
-        db_conn = None
-        if progress_callback:
-            progress_callback(0.0, "数据预加载完成")
+    from quant.backtest.preloader import PITPreloader
+    from db import get_connection, release_connection
+    preloader = PITPreloader(market)
+    preloader.load()
+    db_conn = get_connection()
+    quote_by_date = _batch_query_quote(db_conn, rebalance_dates, market)
+    release_connection(db_conn)
+    db_conn = None
+    if progress_callback:
+        progress_callback(0.0, "数据预加载完成")
 
     portfolio = Portfolio(initial_capital)
     roe_years = filters.get("roe_consecutive_years", 0)
