@@ -10,6 +10,7 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 
 from quant.backtest.portfolio import Portfolio, PerformanceMetrics, Snapshot
+from quant.backtest.preloader import PITPreloader
 from quant.backtest.universe import (
     get_point_in_time_universe,
     get_roe_history_as_of,
@@ -19,6 +20,8 @@ from quant.backtest.universe import (
 from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
 from quant.screener.presets import PRESETS
 from quant.screener.scorer import rank_factors
+
+from db import Connection
 
 
 @dataclass
@@ -166,16 +169,10 @@ def run_backtest(
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
     # 预加载财报到内存，行情走批量查询
-    preloader = None
-    db_conn = None
-    from quant.backtest.preloader import PITPreloader
-    from db import get_connection, release_connection
     preloader = PITPreloader(market)
     preloader.load()
-    db_conn = get_connection()
-    quote_by_date = _batch_query_quote(db_conn, rebalance_dates, market)
-    release_connection(db_conn)
-    db_conn = None
+    with Connection() as conn:
+        quote_by_date = _batch_query_quote(conn, rebalance_dates, market)
     if progress_callback:
         progress_callback(0.0, "数据预加载完成")
 

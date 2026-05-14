@@ -78,7 +78,7 @@ class PITPreloader:
             self.shares = _copy_df(
                 conn,
                 "SELECT stock_code, trade_date, total_shares FROM stock_share"
-                " WHERE market = 'US' OR market IN ('CN_A', 'CN_HK')",
+                f" WHERE market = '{self.market}'",
                 str_cols=("stock_code",),
             )
             self.shares["trade_date"] = pd.to_datetime(
