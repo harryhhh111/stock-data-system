@@ -248,6 +248,7 @@ SELECT
     i.stock_code,
     i.report_date,
     i.report_type,
+    i.notice_date,
     s.market,
     s.currency,
 
@@ -315,7 +316,7 @@ LEFT JOIN cash_flow_statement cf
     AND i.report_type = cf.report_type
 LEFT JOIN stock_info s ON i.stock_code = s.stock_code
 LEFT JOIN stock_share si ON i.stock_code = si.stock_code
-    AND si.effective_date <= i.report_date
+    AND si.trade_date <= i.report_date
 LEFT JOIN income_statement prev_q
     ON i.stock_code = prev_q.stock_code
     AND prev_q.report_date = (i.report_date - INTERVAL '1 year')
@@ -418,12 +419,12 @@ CREATE INDEX idx_idx_stock ON index_constituent(stock_code);
 ```sql
 CREATE TABLE stock_share (
     stock_code      VARCHAR(20) NOT NULL,
-    effective_date  DATE NOT NULL,
+    trade_date  DATE NOT NULL,
     total_shares    DECIMAL(20,2),           -- 总股本
     float_shares    DECIMAL(20,2),           -- 流通股本
     restricted_shares DECIMAL(20,2),         -- 限售股本
 
-    PRIMARY KEY (stock_code, effective_date),
+    PRIMARY KEY (stock_code, trade_date),
     CONSTRAINT fk_share_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code)
 );
 ```

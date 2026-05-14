@@ -73,13 +73,22 @@ stock_data/
 │   │   ├── scorer.py              # 多因子打分
 │   │   ├── presets.py             # 预设策略
 │   │   └── report.py              # 输出格式化
-│   └── analyzer/                  # 个股分析（Phase 1.2 ✅，支持 CN/HK/US）
-│       ├── __init__.py
-│       ├── __main__.py            # CLI 入口
-│       ├── financial.py           # 财务健康度分析
-│       ├── valuation.py           # 估值分析
-│       ├── trend.py               # 历史趋势
-│       └── report.py              # 输出格式化
+│   ├── analyzer/                  # 个股分析（Phase 1.2 ✅，支持 CN/HK/US）
+│   │   ├── __init__.py
+│   │   ├── __main__.py            # CLI 入口
+│   │   ├── financial.py           # 财务健康度分析
+│   │   ├── valuation.py           # 估值分析
+│   │   ├── trend.py               # 历史趋势
+│   │   └── report.py              # 输出格式化
+│   ├── backtest/                  # 因子回测（Phase 2.0 ✅）
+│   │   ├── __init__.py
+│   │   ├── __main__.py            # CLI 入口
+│   │   ├── engine.py              # 回测主循环（预加载 + 批量行情）
+│   │   ├── preloader.py           # 数据预加载（COPY CSV → 内存 PIT）
+│   │   ├── universe.py            # 历史 PIT 切面查询
+│   │   └── portfolio.py           # 组合模型 + 绩效
+│   └── checks/                    # 数据质量检查
+│       └── fcf_roe_check.py       # FCF+ROE 质量把关
 │
 ├── config.py                      # 全局配置（被两层共享）
 ├── db.py                          # 数据库连接池（被两层共享）
@@ -560,15 +569,20 @@ Phase 1.0 ✅          Phase 1.1 ✅          Phase 1.2 ✅
                                     │
                                     ▼
 Phase 2.0（后期）
-┌──────────────────┐
-│ 美股完善 + 分红   │
-│                  │
-│ • 美股 TTM 公式法 │
-│ • ~~分红数据同步~~✅│
-│ • ~~分红策略预设~~✅│
-│ • 美股 analyzer   │
-│ • 历史市值回算    │
-└──────────────────┘
+┌────────────────────────────────┐
+│ 因子回测 ✅ + 美股完善          │
+│                                │
+│ • ~~因子策略回测系统~~ ✅        │
+│   - PITPreloader 内存预加载     │
+│   - 批量行情查询               │
+│   - US/CN_A/CN_HK 三市场支持   │
+│   - CLI + Web 前端            │
+│ • 美股 TTM 公式法 ✅            │
+│ • ~~分红数据同步~~ ✅           │
+│ • ~~分红策略预设~~ ✅           │
+│ • 美股 analyzer ✅             │
+│ • 历史市值回算                  │
+└────────────────────────────────┘
 ```
 
 ### 每个 Phase 的验收标准
@@ -614,5 +628,5 @@ scripts/materialized_views.sql       ← ROE 修复在此修改
 Phase 1 完成后更新 ROADMAP.md：
 - Phase 5 的「筛选器/分析工具」标记完成
 - 新增 Phase 5.5「数据补全：美股日线 + 分红」
-- Phase 6「高级分析」保持不变
+- Phase 6「高级分析」新增因子回测系统 ✅
 - 新增 Phase 1.5「筛选器改进：行业感知 + 去相关 + 历史分位」

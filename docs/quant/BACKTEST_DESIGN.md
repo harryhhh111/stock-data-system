@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-09（v4.0 — 筛选与取价分离 + LATERAL join 优化）
+> 最后更新：2026-05-14（v5.0 — 内存预加载 + 批量行情查询，回测 90s → 10s）
 
 ## Context
 
@@ -29,8 +29,9 @@
 quant/backtest/
 ├── __init__.py
 ├── __main__.py      # CLI: python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
-├── engine.py        # 回测主循环：调仓日期 → 切面选股 → 模拟交易 → 记录净值
-├── universe.py      # 历史切面查询：point-in-time 因子数据（US/CN_A/CN_HK 三套 SQL）
+├── engine.py        # 回测主循环：预加载 → 调仓日期 → 切面选股 → 模拟交易 → 记录净值
+├── preloader.py     # 数据预加载：一次 COPY CSV 加载财报/TTM/股本到内存，pandas 做 PIT 过滤
+├── universe.py      # 历史切面查询：point-in-time 因子数据（US/CN_A/CN_HK 三套 SQL，回退用）
 └── portfolio.py     # 组合模型：等权重持仓、P&L、绩效指标
 ```
 
@@ -49,48 +50,35 @@ quant/backtest/
 
 CN 市场使用预计算的物化视图 `mv_indicator_ttm_hist`（存储所有历史报告期的 TTM 数据，覆盖 10 年），避免每次回测实时计算 TTM。
 
+**V5 改进**：`notice_date` 已加入 `mv_financial_indicator`，不再需要 JOIN `income_statement`；`latest_quote` 和 `latest_shares` 改为 LATERAL join（避免 daily_quote 全表扫描）。
+
 ```sql
 WITH
 latest_annual AS (
-    SELECT DISTINCT ON (f.stock_code) f.*, i.notice_date
+    SELECT DISTINCT ON (f.stock_code) f.*
     FROM mv_financial_indicator f
-    JOIN income_statement i
-        ON f.stock_code = i.stock_code
-        AND f.report_date = i.report_date
-        AND f.report_type = i.report_type
-    WHERE f.report_type = 'annual' AND i.notice_date <= %s
+    WHERE f.report_type = 'annual'
+      AND f.notice_date <= %s
     ORDER BY f.stock_code, f.report_date DESC
 ),
+
 latest_quarterly_yoy AS (
-    SELECT DISTINCT ON (f.stock_code) f.stock_code, f.revenue_yoy, f.net_profit_yoy
+    SELECT DISTINCT ON (f.stock_code)
+        f.stock_code, f.revenue_yoy, f.net_profit_yoy
     FROM mv_financial_indicator f
-    JOIN income_statement i
-        ON f.stock_code = i.stock_code
-        AND f.report_date = i.report_date
-        AND f.report_type = i.report_type
-    WHERE f.report_type = 'quarterly' AND i.notice_date <= %s
+    WHERE f.report_type = 'quarterly'
+      AND f.notice_date <= %s
       AND f.revenue_yoy IS NOT NULL
     ORDER BY f.stock_code, f.report_date DESC
-),
-latest_quote AS (
-    SELECT DISTINCT ON (stock_code) stock_code, close, market_cap,
-           float_market_cap, pe_ttm, pb, currency
-    FROM daily_quote
-    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY stock_code, trade_date DESC
-),
-latest_shares AS (
-    SELECT DISTINCT ON (stock_code) stock_code, total_shares
-    FROM stock_share
-    ORDER BY stock_code, trade_date DESC
 )
+
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
     (%s - s.list_date) AS days_since_list,
+
     q.close,
     COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
     q.float_market_cap,
-    -- PIT PE/PB: daily_quote 历史数据无估值字段，从财务数据推算
     CASE WHEN t.net_profit_ttm > 0
          THEN COALESCE(q.market_cap, q.close * sh.total_shares) / t.net_profit_ttm
     END AS pe_ttm,
@@ -98,13 +86,23 @@ SELECT
          THEN COALESCE(q.market_cap, q.close * sh.total_shares)
               / COALESCE(la.parent_equity, la.total_equity)
     END AS pb,
-    ...,
-    -- TTM 直接从物化视图获取
+    q.currency AS quote_currency,
+
+    la.roe, la.gross_margin, la.operating_margin, la.net_margin,
+    la.debt_ratio, la.current_ratio, la.quick_ratio,
+    COALESCE(la.revenue_yoy, yoy.revenue_yoy) AS revenue_yoy,
+    COALESCE(la.net_profit_yoy, yoy.net_profit_yoy) AS net_profit_yoy,
+    la.eps_basic, la.total_assets, la.total_liab, la.parent_equity,
+    la.fcf AS annual_fcf,
+
     t.revenue_ttm, t.net_profit_ttm, t.cfo_ttm, t.capex_ttm,
     (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
     CASE WHEN COALESCE(q.market_cap, q.close * sh.total_shares) > 0
          THEN (t.cfo_ttm - t.capex_ttm) / COALESCE(q.market_cap, q.close * sh.total_shares)
-    END AS fcf_yield
+    END AS fcf_yield,
+
+    t.report_date AS ttm_report_date
+
 FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
 LEFT JOIN LATERAL (
@@ -113,27 +111,40 @@ LEFT JOIN LATERAL (
     ORDER BY report_date DESC LIMIT 1
 ) t ON true
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
-LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
-LEFT JOIN latest_shares sh ON s.stock_code = sh.stock_code
+LEFT JOIN LATERAL (
+    SELECT close, market_cap, float_market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE stock_code = s.stock_code
+      AND market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY trade_date DESC LIMIT 1
+) q ON true
+LEFT JOIN LATERAL (
+    SELECT total_shares FROM stock_share
+    WHERE stock_code = s.stock_code AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 1
+) sh ON true
 WHERE s.market = %s;
 ```
 
+**参数**（共 8 个 `%s`，实际 2 个值：`as_of_date` × 5，`market` × 3）：
+```python
+params = (as_of_date, as_of_date, as_of_date, as_of_date,
+          market, as_of_date, as_of_date, market)
+```
+
 **关键设计决策**：
-- CN_A/CN_HK 共用一个 SQL（参数化 market），而非重复三份
-- `mv_indicator_ttm_hist` 预计算所有历史 TTM（10 年窗口），回测性能从 13s → 4s（~70% 提升）
-- LATERAL join 确保每个 stock 取各自最新的 TTM 记录（而非全表 DISTINCT ON）
-- PE/PB 在 SQL 层计算（`market_cap / net_profit_ttm`），因为 CN daily_quote 历史数据无估值字段
-- PB 分母用 `COALESCE(parent_equity, total_equity)` 兼容港股无归母权益的情况
+- `notice_date` 已加入 `mv_financial_indicator`（V5），不需要 JOIN `income_statement`
+- CN_A/CN_HK 共用一个 SQL（参数化 market），而非重复两份
+- `mv_indicator_ttm_hist` 预计算所有历史 TTM，LATERAL join 取每个 stock 各自最新记录
+- `latest_quote` 和 `latest_shares` 用 LATERAL index seek 替代全表 DISTINCT ON（避免 daily_quote 136K 行排序）
+- PE/PB 在 SQL 层计算，因为 CN daily_quote 历史数据无估值字段
 
 #### 1.1b US PIT 查询
 
-US 市场手动计算 TTM（因 SEC 数据无预计算的 TTM 物化视图）。
+US 市场手动计算 TTM。V5 中 income 和 cash flow 的 TTM 计算分离为独立 CTE（`income_data`/`cf_data`），避免 LEFT JOIN 笛卡尔积。
 
 ```sql
--- 参数: %s = as_of_date
-
 WITH
--- 1. 财务指标: filed_date <= D 的最新 annual
 latest_annual AS (
     SELECT DISTINCT ON (stock_code) *
     FROM mv_us_financial_indicator
@@ -141,149 +152,153 @@ latest_annual AS (
     ORDER BY stock_code, report_date DESC
 ),
 
--- 2. TTM 计算: 复用 mv_us_indicator_ttm 的四层 fallback 逻辑
---    但把 "最新一期" 改成 "filed_date <= D 的最新一期"
-report_data AS (
+-- Income TTM (独立于 CF 计算)
+income_data AS (
     SELECT i.stock_code, i.report_date, i.report_type, i.filed_date,
-           i.revenues, i.net_income,
-           cf.net_cash_from_operations, cf.capital_expenditures
+           i.revenues, i.net_income
     FROM us_income_statement i
-    LEFT JOIN us_cash_flow_statement cf
-        ON i.stock_code = cf.stock_code
-        AND i.report_date = cf.report_date
-        AND i.report_type = cf.report_type
-        AND cf.filed_date <= %s    -- CF 表 PIT 约束（与 income 一致）
     WHERE i.report_type IN ('quarterly', 'annual')
       AND i.filed_date <= %s
 ),
-latest_report AS (
+latest_income AS (
     SELECT DISTINCT ON (stock_code) *
-    FROM report_data
+    FROM income_data
     ORDER BY stock_code, report_date DESC
 ),
-prev_year AS (
-    -- 同比上一期: ±7 天模糊匹配（与 mv_us_indicator_ttm 一致）
-    SELECT DISTINCT ON (l.stock_code)
-        l.stock_code,
-        p.revenues AS py_revenue, p.net_income AS py_net_income,
-        p.net_cash_from_operations AS py_ocf, p.capital_expenditures AS py_capex
-    FROM latest_report l
-    JOIN report_data p ON p.stock_code = l.stock_code
+income_prev_year AS (
+    SELECT DISTINCT ON (l.stock_code) l.stock_code,
+        p.revenues AS py_revenue, p.net_income AS py_net_income
+    FROM latest_income l
+    JOIN income_data p ON p.stock_code = l.stock_code
         AND p.report_type = l.report_type
         AND p.report_date BETWEEN l.report_date - INTERVAL '1 year' - INTERVAL '7 days'
                               AND l.report_date - INTERVAL '1 year' + INTERVAL '7 days'
     ORDER BY l.stock_code, ABS(EXTRACT(EPOCH FROM (p.report_date - (l.report_date - INTERVAL '1 year'))))
 ),
-last_annual AS (
-    SELECT DISTINCT ON (l.stock_code)
-        l.stock_code,
-        a.revenues AS la_revenue, a.net_income AS la_net_income,
-        a.net_cash_from_operations AS la_ocf, a.capital_expenditures AS la_capex
-    FROM latest_report l
-    JOIN report_data a ON a.stock_code = l.stock_code
+income_last_annual AS (
+    SELECT DISTINCT ON (l.stock_code) l.stock_code,
+        a.revenues AS la_revenue, a.net_income AS la_net_income
+    FROM latest_income l
+    JOIN income_data a ON a.stock_code = l.stock_code
         AND a.report_type = 'annual' AND a.report_date < l.report_date
     ORDER BY l.stock_code, a.report_date DESC
 ),
-ttm AS (
+income_ttm AS (
     SELECT l.stock_code,
-        -- Revenue TTM (四层 fallback: annual → formula → last_annual → latest)
         CASE WHEN l.report_type = 'annual' THEN l.revenues
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.revenues + la.la_revenue - py.py_revenue
              WHEN la.stock_code IS NOT NULL THEN la.la_revenue
              ELSE l.revenues END AS revenue_ttm,
-        -- Net Income TTM (同上)
         CASE WHEN l.report_type = 'annual' THEN l.net_income
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.net_income + la.la_net_income - py.py_net_income
              WHEN la.stock_code IS NOT NULL THEN la.la_net_income
-             ELSE l.net_income END AS net_income_ttm,
-        -- CFO TTM
+             ELSE l.net_income END AS net_income_ttm
+    FROM latest_income l
+    LEFT JOIN income_prev_year py ON py.stock_code = l.stock_code
+    LEFT JOIN income_last_annual la ON la.stock_code = l.stock_code
+),
+
+-- Cash flow TTM (独立于 income 计算)
+cf_data AS (
+    SELECT stock_code, report_date, report_type, filed_date,
+           net_cash_from_operations, capital_expenditures
+    FROM us_cash_flow_statement
+    WHERE report_type IN ('quarterly', 'annual') AND filed_date <= %s
+),
+latest_cf AS (
+    SELECT DISTINCT ON (stock_code) * FROM cf_data
+    ORDER BY stock_code, report_date DESC
+),
+cf_prev_year AS ( /* 同上 ±7 天模糊匹配 */ ),
+cf_last_annual AS ( /* 同上取最近 annual */ ),
+cf_ttm AS (
+    SELECT l.stock_code,
         CASE WHEN l.report_type = 'annual' THEN l.net_cash_from_operations
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.net_cash_from_operations + la.la_ocf - py.py_ocf
              WHEN la.stock_code IS NOT NULL THEN la.la_ocf
              ELSE l.net_cash_from_operations END AS cfo_ttm,
-        -- Capex TTM
         CASE WHEN l.report_type = 'annual' THEN l.capital_expenditures
              WHEN py.stock_code IS NOT NULL AND la.stock_code IS NOT NULL
              THEN l.capital_expenditures + la.la_capex - py.py_capex
              WHEN la.stock_code IS NOT NULL THEN la.la_capex
              ELSE l.capital_expenditures END AS capex_ttm
-    FROM latest_report l
-    LEFT JOIN prev_year py ON py.stock_code = l.stock_code
-    LEFT JOIN last_annual la ON la.stock_code = l.stock_code
+    FROM latest_cf l
+    LEFT JOIN cf_prev_year py ON py.stock_code = l.stock_code
+    LEFT JOIN cf_last_annual la ON la.stock_code = l.stock_code
 ),
 
--- 3. 同比增长率: latest_annual 的 revenue_yoy/net_profit_yoy 对 annual 报告为 NULL
---    （mv_us_financial_indicator 只对 quarterly/semi 计算 YoY）
---    需额外取 filed_date <= D 的最新 quarterly 的 YoY
 latest_quarterly_yoy AS (
     SELECT DISTINCT ON (stock_code) stock_code, revenue_yoy, net_profit_yoy
     FROM mv_us_financial_indicator
     WHERE report_type = 'quarterly' AND filed_date <= %s
       AND revenue_yoy IS NOT NULL
     ORDER BY stock_code, report_date DESC
-),
-
--- 4. 行情: D 当天或之前最近交易日
-latest_quote AS (
-    SELECT DISTINCT ON (stock_code) *
-    FROM daily_quote
-    WHERE market = %s AND trade_date <= %s
-      AND market_cap IS NOT NULL AND market_cap > 0
-    ORDER BY stock_code, trade_date DESC
 )
 
--- 5. 组装最终结果
 SELECT
     s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
-    (%s - s.list_date) AS days_since_list,  -- point-in-time 上市天数
-
-    q.close, q.market_cap, NULL::numeric AS float_market_cap,
-    q.pe_ttm, q.pb, q.currency AS quote_currency,
-
+    (%s - s.list_date) AS days_since_list,
+    q.close,
+    COALESCE(q.market_cap, q.close * sh.total_shares) AS market_cap,
+    NULL::numeric AS float_market_cap,
+    q.currency AS quote_currency,
     la.roe, la.gross_margin, la.operating_margin, la.net_margin,
     la.debt_ratio, la.current_ratio, la.quick_ratio,
     COALESCE(la.revenue_yoy, yoy.revenue_yoy) AS revenue_yoy,
     COALESCE(la.net_profit_yoy, yoy.net_profit_yoy) AS net_profit_yoy,
-    la.eps_basic,
-    la.total_assets, la.total_liab, la.total_equity AS parent_equity,
+    la.eps_basic, la.total_assets, la.total_liab, la.total_equity AS parent_equity,
     la.fcf AS annual_fcf,
-
-    t.revenue_ttm, t.net_income_ttm AS net_profit_ttm,  -- 列名对齐: net_profit_ttm
-    t.cfo_ttm, t.capex_ttm,
-
-    (t.cfo_ttm - t.capex_ttm) AS fcf_ttm,
-    CASE WHEN q.market_cap > 0
-         THEN (t.cfo_ttm - t.capex_ttm) / q.market_cap
+    inc.revenue_ttm, inc.net_income_ttm AS net_profit_ttm,
+    cf.cfo_ttm, cf.capex_ttm,
+    (cf.cfo_ttm - cf.capex_ttm) AS fcf_ttm,
+    CASE WHEN COALESCE(q.market_cap, q.close * sh.total_shares) > 0
+         THEN (cf.cfo_ttm - cf.capex_ttm) / COALESCE(q.market_cap, q.close * sh.total_shares)
     END AS fcf_yield,
-
-    NULL::numeric AS fcf_cfo_ttm,
-    NULL::numeric AS fcf_capex_ttm,
+    NULL::numeric AS fcf_cfo_ttm, NULL::numeric AS fcf_capex_ttm,
     NULL::date AS ttm_report_date
-
 FROM stock_info s
 LEFT JOIN latest_annual la ON s.stock_code = la.stock_code
-LEFT JOIN ttm t ON s.stock_code = t.stock_code
+LEFT JOIN income_ttm inc ON s.stock_code = inc.stock_code
+LEFT JOIN cf_ttm cf ON s.stock_code = cf.stock_code
 LEFT JOIN latest_quarterly_yoy yoy ON s.stock_code = yoy.stock_code
-LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
+LEFT JOIN LATERAL (
+    SELECT close, market_cap, pe_ttm, pb, currency
+    FROM daily_quote
+    WHERE stock_code = s.stock_code
+      AND market = %s AND trade_date <= %s AND close IS NOT NULL
+    ORDER BY trade_date DESC LIMIT 1
+) q ON true
+LEFT JOIN LATERAL (
+    SELECT total_shares FROM stock_share
+    WHERE stock_code = s.stock_code AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 1
+) sh ON true
 WHERE s.market = %s;
 ```
 
-**参数说明**（共 8 个 `%s` 占位符，实际只有 2 个参数值）：
+**参数说明**（共 9 个 `%s` 占位符）：
 ```python
-params = (as_of_date, as_of_date, as_of_date, as_of_date, as_of_date,
-          market, as_of_date, market)
-# 即: as_of_date × 7, market × 1
+params = (
+    as_of_date,  # 1. latest_annual filed_date
+    as_of_date,  # 2. income_data filed_date
+    as_of_date,  # 3. cf_data filed_date
+    as_of_date,  # 4. latest_quarterly_yoy filed_date
+    as_of_date,  # 5. days_since_list
+    market,      # 6. LATERAL q market
+    as_of_date,  # 7. LATERAL q trade_date
+    as_of_date,  # 8. LATERAL sh trade_date
+    market,      # 9. WHERE s.market
+)
 ```
 
 **关键设计决策**：
-- TTM 在 SQL 层计算，与 `mv_us_indicator_ttm` 使用完全相同的 CTE 逻辑（含 ±7 天模糊匹配），避免 Python 复刻漂移
-- `report_data` CTE 中 income 和 CF 表均加 `filed_date <= %s` 约束，确保现金流数据无前视偏差
-- `net_income_ttm AS net_profit_ttm` — 列名别名对齐 `get_us_universe()` 的命名
-- `days_since_list` 用 `as_of_date - list_date` 计算（point-in-time），而非 `CURRENT_DATE - list_date`
-- `revenue_yoy` / `net_profit_yoy` 取 `COALESCE(latest_annual, latest_quarterly_yoy)`，因为 `mv_us_financial_indicator` 只对 quarterly 报告计算 YoY，annual 报告这两个列为 NULL
+- income 和 CF 的 TTM 计算分离为独立 CTE，避免 `LEFT JOIN` 笛卡尔积导致数据膨胀
+- `latest_quote` 和 `latest_shares` 用 LATERAL index seek 替代全表 DISTINCT ON
+- TTM 逻辑：annual→公式法（latest + last_annual - prev_year）→ last_annual fallback，含 ±7 天模糊匹配
+- `net_income_ttm AS net_profit_ttm` — 列名别名对齐命名约定
 
 #### 1.2 返回列完整清单（与 `get_us_universe()` 对齐）
 
@@ -327,20 +342,33 @@ params = (as_of_date, as_of_date, as_of_date, as_of_date, as_of_date,
 
 #### 1.3 `get_roe_history_as_of(as_of_date: date, market: str, years: int) -> pd.DataFrame`
 
-Point-in-time 版本的连续年 ROE 查询，用于 `roe_consecutive_years` 过滤。
+Point-in-time 版本的连续年 ROE 查询，用于 `roe_consecutive_years` 过滤。V5 中 CN 版本直接用 `mv_financial_indicator.notice_date`，不需要 JOIN `income_statement`。
 
 ```sql
+-- CN_A / CN_HK: 直接用 notice_date（V5 已加入 mv_financial_indicator）
+SELECT f.stock_code, f.report_date, f.roe
+FROM (
+    SELECT f.stock_code, f.report_date, f.roe,
+           ROW_NUMBER() OVER (PARTITION BY f.stock_code ORDER BY f.report_date DESC) AS rn
+    FROM mv_financial_indicator f
+    JOIN stock_info s ON f.stock_code = s.stock_code
+    WHERE f.report_type = 'annual' AND f.roe IS NOT NULL
+      AND s.market = %s AND f.notice_date <= %s
+) f
+WHERE f.rn <= %s
+ORDER BY f.stock_code, f.report_date DESC;
+
+-- US: 用 filed_date
 SELECT f.stock_code, f.report_date, f.roe
 FROM (
     SELECT stock_code, report_date, roe,
            ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn
     FROM mv_us_financial_indicator
-    WHERE report_type = 'annual' AND roe IS NOT NULL
-      AND filed_date <= %s          -- point-in-time 约束
+    WHERE report_type = 'annual' AND roe IS NOT NULL AND filed_date <= %s
 ) f
 JOIN stock_info s ON f.stock_code = s.stock_code
 WHERE f.rn <= %s AND s.market = %s
-ORDER BY f.stock_code, f.report_date DESC
+ORDER BY f.stock_code, f.report_date DESC;
 ```
 
 返回值格式与现有 `get_roe_history()` 完全一致：`(stock_code, report_date, roe)`，可直接传给 `filter_consecutive_roe()`。
@@ -359,7 +387,7 @@ ORDER BY trade_date DESC LIMIT 1
 
 **核心函数**: `run_backtest(preset_name, start_date, end_date, rebalance_months, top_n, initial_capital, market) -> BacktestResult`
 
-`market` 参数（默认 `"US"`）线程化到所有下游调用：`get_point_in_time_universe`、`get_roe_history_as_of`、`get_sell_prices`、`get_nearest_trade_date`。
+`market` 参数（默认 `"US"`）线程化到所有下游调用。
 
 ```python
 class BacktestResult:
@@ -388,32 +416,37 @@ while cursor <= end_date:
 ```
 
 规则：**月份输入统一解析为该月最后一个交易日**。
-`get_month_end(y, m)` 返回该月最后一天（`date(y, m, 1) + relativedelta(months=1) - timedelta(days=1)`）。
-`get_nearest_trade_date(month_end)` 用 `trade_date <= %s` 取月末或之前最近交易日。
 
-#### 2.2 回测流程
+#### 2.2 V5 回测流程（预加载 + 批量行情）
+
+V5 核心优化：数据预加载到内存（`PITPreloader`），PIT 过滤在 pandas 完成；行情一次批量查询覆盖所有调仓日。
 
 ```
-1. 生成调仓日期列表（每月末对齐到最后一个交易日）
-2. 对每个调仓日期 D:
-   a. universe = get_point_in_time_universe(D, market="US")
-   b. filtered = apply_hard_filters(universe, preset.filters)
-   c. 若有 roe_consecutive_years:
-      roe_min = preset.filters.get("roe_min", 0)
-      roe_hist = get_roe_history_as_of(D, "US", years)
-      filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, years, roe_min)
-   d. scored = rank_factors(filtered, preset.weights)
-   e. top = scored.nlargest(top_n, "score")
-   f. prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取买入价格
-   g. sell_prices = get_sell_prices(D, portfolio.holdings)  # 查卖出价格
-   h. portfolio.rebalance(D, top["stock_code"].tolist(), prices, sell_prices)
-3. 在 end_date 计算最终净值:
-   - 用 get_sell_prices(end_date, portfolio.holdings) 获取持仓最终价格
-   - total_value = cash + sum(shares * final_price)
-   - 生成 PerformanceMetrics + 返回 BacktestResult
+0. 初始化:
+   a. preloader = PITPreloader(market)
+   b. preloader.load()                         # COPY CSV 加载全部财务/TTM/股本到内存
+   c. quote_by_date = _batch_query_quote(all_dates)  # 一次 SQL 查完所有调仓日行情
+
+1. 对每个调仓日期 D:
+   a. base = preloader.get_universe(D)         # 内存 PIT：drop_duplicates 取最新财报
+   b. quote = quote_by_date[D]                 # 从预查询结果取当日行情
+   c. universe = _build_universe(base, quote)  # merge + 计算 PE/PB/FCF yield
+   d. filtered = apply_hard_filters(universe, preset.filters)
+   e. 若有 roe_consecutive_years:
+      roe_hist = preloader.get_roe_history(D, years)  # 内存 PIT ROE
+      filtered = filter_consecutive_roe(filtered, roe_hist, years, roe_min)
+   f. scored = rank_factors(filtered, preset.weights)
+   g. top = scored.nlargest(top_n, "score")
+   h. all_prices = get_sell_prices(D, target_codes ∪ sell_codes)
+   i. portfolio.rebalance(D, target_codes, buy_prices, sell_prices)
+2. 最终净值: get_sell_prices(end, portfolio.holdings) → compute_final_value
 ```
 
-**价格传递**：engine 负责查价，通过 `prices` dict 传给 portfolio。卖出价格也由 engine 查询（调仓日当天或之前最近交易日的 close），传入 `sell_prices`。
+**关键设计决策**：
+- **所有市场都走 preloader**：US 通过 `_compute_ttm` 在 pandas 计算 TTM（与 SQL CTE 逻辑一致），CN 用物化视图
+- **批量行情查询**：一次 SQL `WHERE trade_date = ANY(%s::date[])` 替代 N 次 LATERAL，17 个调仓日从 49s 降至 3s
+- **preloader 仅在回测开始前执行一次**：`load()` 耗时 ~3-5s，之后每个调仓日 PIT 只需 ~0.1s（pandas 过滤）
+- **`universe.py` 保留为回退路径**：engine 中 `if preloader is not None` 分支仍然存在，但当前所有市场都初始化 preloader
 
 #### 2.3 `get_sell_prices(as_of_date: date, holdings: dict[str, Position]) -> dict[str, float | None]`
 
@@ -591,125 +624,114 @@ python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --
 | 港股行业分类与 A 股不同 | `exclude_industries` 失效，金融/地产股漏网 | ✅ 已修复：`exclude_industries_by_market` |
 | `daily_quote.pe_ttm` CN 历史数据为空 | 无法用 PE 过滤 A 股/港股历史回测 | ✅ 已修复：SQL 层从财务数据推算 PE/PB |
 
-## V4 性能优化：筛选与取价分离
+## V5 性能优化：内存预加载 + 批量行情
 
-### 问题
+### 优化历程
 
-当前回测每次调仓执行一次完整的 `_US_PIT_SQL`（~750ms），查询所有 ~1000 只 US 股票的财务+行情数据。但最终只用 top 30 只做交易。9 次调仓 = 9 次重复全量查询 ≈ 7s 纯 SQL。
-
-瓶颈分析（EXPLAIN ANALYZE）：
-
-| CTE | 耗时 | 原因 |
-|-----|------|------|
-| `report_data` | 285ms | `us_income_statement` 64K 行 seq scan + nested loop join `us_cash_flow_statement` |
-| `latest_report` | ~100ms | 64K 行排序（external merge, 磁盘 3.3MB） |
-| `latest_annual` | 23ms | `mv_us_financial_indicator` parallel seq scan |
-| `latest_quarterly_yoy` | 37ms | 同表再扫一遍 |
-| `latest_quote` | 220ms | `daily_quote` 136K 行排序（external merge, 磁盘 4MB） |
-
-核心问题：**筛选**（确定买哪些股票）和**取价**（确定买卖价格）耦合在同一个大查询里，每次调仓查 1000 只股票的行情数据，只用 30 只。
+| 版本 | 优化 | CN_A 8 年回测 | 说明 |
+|------|------|:---:|------|
+| V1 | 原始 PIT SQL（DISTINCT ON 全表） | ~90s | 每次调仓执行完整 PIT 查询 |
+| V2 | notice_date 入 mv_financial_indicator | ~60s | 省掉 JOIN income_statement |
+| V3 | LATERAL join（替换 DISTINCT ON） | ~24s | 避免 daily_quote 全表扫描 |
+| V4 | 批量行情查询 | ~13s | 一次 SQL 覆盖所有调仓日 |
+| **V5** | **内存预加载（PITPreloader）** | **~10s** | 财报/TTM 一次 COPY CSV 到内存 |
 
 ### 核心洞察
 
-| 阶段 | 需要什么 | 不需要什么 |
-|------|---------|-----------|
-| 筛选（过滤+打分） | 财务数据（ROE、FCF、毛利率等）+ market_cap（市值门槛） | 不需要对所有 1000 只股票取 close |
-| 交易（买+卖） | close 价格 | 不需要财务数据 |
+回测中同一份财报数据被重复查询 17 次（每次调仓执行相同的 DISTINCT ON，仅 `notice_date <= D` 条件不同）。8 年 CN_A 回测：17 次调仓 = 17 次 SQL PIT 查询，每次扫描 `mv_financial_indicator` 165K 行 → 共扫描 2.8M 行。
 
-`apply_hard_filters` 需要 market_cap（市值门槛），`rank_factors` 需要 fcf_yield、pb、pe_ttm（均依赖 market_cap）。但这些只需要 **通过筛选的 ~200 只股票** 的 market_cap，不需要全部 1000 只的。
+**方案**：启动时 COPY CSV 加载全部财报到 pandas DataFrame，之后每个调仓日用 pandas `drop_duplicates` 做 PIT 过滤（内存操作，每调仓日 ~0.1s）。
 
-### 优化流程
-
-```
-当前（每次调仓）:
-  get_point_in_time_universe(D)           -- 查 1000 只全量数据（750ms）
-  → apply_hard_filters                    -- 过滤到 ~200 只
-  → rank_factors → top 30                 -- 打分取 top
-  → 买价从 universe 的 close 列取
-  → get_sell_prices(D, old_holdings)      -- 查旧持仓价格
-  → rebalance
-
-优化后（每次调仓）:
-  get_point_in_time_universe(D)           -- 查 1000 只财务数据 + market_cap（~200ms）
-  → apply_hard_filters                    -- 过滤到 ~200 只
-  → rank_factors → top 30                 -- 打分取 top
-  → 买价: get_sell_prices(D, new_targets) -- 只查 top 30 的价格（~5ms）
-  → 卖价: get_sell_prices(D, old_holdings) -- 查旧持仓价格（~5ms）
-  → rebalance
-```
-
-关键区别：
-- **筛选查询不查 daily_quote 全表**。market_cap 从 `stock_share`（991 行）+ 每只股票最新 close（LATERAL index seek）计算，不扫描 daily_quote 136K 行
-- **买价不再从 universe 结果取**，而是调用 `get_sell_prices()` 只查 top 30 只的价格
-- `get_sell_prices()` 已有，不新建函数
-
-### 改动 1: universe.py — 筛选查询去掉 daily_quote 全表扫描
-
-将 `_CN_PIT_SQL` 和 `_US_PIT_SQL` 中的 `latest_quote` CTE 从 DISTINCT ON 全表扫描改为 LATERAL join：
-
-```sql
--- 当前: 全表扫描 + 排序（220ms）
-latest_quote AS (
-    SELECT DISTINCT ON (stock_code) stock_code, close, market_cap
-    FROM daily_quote
-    WHERE market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY stock_code, trade_date DESC
-)
-...
-FROM stock_info s
-LEFT JOIN latest_quote q ON s.stock_code = q.stock_code
-
--- 优化: LATERAL index seek（每只股票只取最新一条）
-FROM stock_info s
-LEFT JOIN LATERAL (
-    SELECT close, market_cap, pe_ttm, pb, currency
-    FROM daily_quote
-    WHERE stock_code = s.stock_code
-      AND market = %s AND trade_date <= %s AND close IS NOT NULL
-    ORDER BY trade_date DESC LIMIT 1
-) q ON true
-```
-
-1002 次 index seek（走 `pk_daily_quote (stock_code, trade_date)`）替代 136K 行扫描+排序。
-
-同理优化 `latest_shares` CTE（影响较小但保持一致）。
-
-**CN 查询同理优化**。
-
-### 改动 2: engine.py — 买价从 get_sell_prices() 取，不从 universe 取
+### preloader.py 设计
 
 ```python
-# 当前:
-buy_prices = dict(zip(top["stock_code"], top["close"]))  # 从 universe 取
-sell_prices = get_sell_prices(rb_date, sell_codes, market=market)
+class PITPreloader:
+    """一次性加载财务 / TTM / 股本 / 信息到内存，pandas 做 PIT。"""
 
-# 优化:
-new_targets = top["stock_code"].tolist()
-buy_p = get_sell_prices(rb_date, new_targets, market=market)   # 只查 top 30
-sell_p = get_sell_prices(rb_date, sell_codes, market=market)   # 查旧持仓
+    def load(self):
+        # COPY CSV 加载 4 张表到 pandas DataFrame：
+        #   fin:     165K 行（annual+quarterly, notice_date >= 2015-01-01）
+        #   ttm:     mv_indicator_ttm_hist 全量
+        #   shares:  stock_share（按 market 过滤）
+        #   info:    stock_info（按 market 过滤）
+        # 预排序: sort_values(["stock_code", "date"], ascending=[True, False])
+
+    def get_universe(self, as_of_date: date) -> pd.DataFrame:
+        # 对每个数据源做内存 PIT:
+        #   annual     = fin[(report_type=='annual') & (notice_date <= D)]
+        #   latest     = annual.drop_duplicates("stock_code", keep="first")
+        #   quarterly  = 同上逻辑
+        #   ttm_valid  = ttm[ttm["notice_date"] <= D]
+        #   shares     = shares[shares["trade_date"] <= D]
+        # merge 到 stock_info 底表，填充 revenue_yoy/net_profit_yoy 的 COALESCE
+
+    def get_roe_history(self, as_of_date: date, years: int) -> pd.DataFrame:
+        # 内存做 groupby cumcount，取每只股票最近 N 年年报 ROE
+
+    def _compute_ttm(self, df, as_of_date, cols) -> pd.DataFrame:
+        # US 专用：pandas 实现 TTM 公式法（与 SQL CTE 逻辑一致）
 ```
 
-### 预期效果
+### 批量行情查询
 
-| 指标 | 当前 | 优化后 |
-|------|------|--------|
-| 筛选查询（每次调仓） | 750ms（含 daily_quote 全表扫描） | ~200ms（LATERAL index seek） |
-| 买价查询 | 内嵌在筛选查询中（查了 1000 只的价格） | ~5ms（只查 top 30 只） |
-| 卖价查询 | ~5ms（只查旧持仓） | ~5ms（不变） |
-| 9 次调仓总 SQL | ~6.75s | ~1.8s |
-| 总回测时间 | ~10s | ~3s |
+```python
+_BATCH_QUOTE_SQL = """
+SELECT stock_code, trade_date, close, market_cap, pe_ttm, pb, currency
+FROM daily_quote
+WHERE market = %s AND trade_date = ANY(%s::date[]) AND close IS NOT NULL
+"""
 
-### 不改的东西
+def _batch_query_quote(conn, dates, market) -> dict[date, pd.DataFrame]:
+    # 一次查询返回所有调仓日行情，按 trade_date 拆成 {date: DataFrame}
+```
 
-- `get_sell_prices()` 复用，不新建函数
-- `portfolio.py` 不修改
-- `__main__.py` 不修改
-- 筛选逻辑（`apply_hard_filters` / `rank_factors`）不修改
+17 次 LATERAL index seek 被替换为 1 次批量查询，行情查询从 ~49s 降至 ~3s。
 
-### 后续优化（不在本次范围）
+### _build_universe
 
-- **US TTM 物化视图**：与 CN 的 `mv_indicator_ttm_hist` 类似，预计算 US 历史 TTM，消除 report_data CTE 的 285ms 开销（最大瓶颈）
-- **索引优化**：`mv_us_financial_indicator (report_type, filed_date)` 复合索引
+将 preloader 的财务结果与批量行情 merge：
+
+```python
+def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
+    result = base.merge(quote, on="stock_code", how="left")
+    # 填充 market_cap = fillna(close * total_shares)
+    # 计算 PE = market_cap / net_profit_ttm (net_profit_ttm > 0)
+    # 计算 PB = market_cap / COALESCE(parent_equity, total_equity)
+    # 计算 fcf_ttm = cfo_ttm - capex_ttm
+    # 计算 fcf_yield = fcf_ttm / market_cap
+```
+
+### 关键子优化
+
+| 优化 | 说明 |
+|------|------|
+| SQL WHERE 过滤 | `notice_date >= '2015-01-01'` + 排除半年报，264K → 165K 行 |
+| 列裁剪 | 只 SELECT 回测需要的列（不是 SELECT *） |
+| COPY CSV | `copy_expert` 比 `pd.read_sql` 快 ~2x |
+| dtype=str | 只对 stock_code 等列设 str，数值列让 pandas 自动推断 |
+| ROE 预筛选 | `filter_consecutive_roe` 只检查已通过硬过滤的股票，4s → 0.002s |
+| NaN 过滤修复 | `~(value >= threshold)` 替代 `(value < threshold)`，避免 NaN 被放行 |
+
+### 性能分解（CN_A 8 年回测，17 调仓日）
+
+| 阶段 | 耗时 |
+|------|:---:|
+| preloader.load() — COPY CSV × 4 | ~2.8s |
+| batch_query_quote — 1 次 SQL | ~3s |
+| 17 × get_universe (pandas PIT) | ~1.7s |
+| 17 × _build_universe (merge+计算) | ~0.5s |
+| 17 × filter_consecutive_roe | ~0.03s |
+| 17 × rank_factors + nlargest | ~0.3s |
+| 17 × get_sell_prices | ~1.5s |
+| 其他 | ~0.2s |
+| **总计** | **~10s** |
+
+### US 市场
+
+US 通过 `PITPreloader._load_us()` 实现同样架构：
+- 财报：`mv_us_financial_indicator`（annual+quarterly, filed_date >= 2015）
+- TTM：从 `us_income_statement` + `us_cash_flow_statement` 通过 `_compute_ttm()` 在 pandas 实时计算（与 SQL CTE 四层 fallback 逻辑一致）
+- 避免了每次调仓执行 TTM CTE 链（原 ~750ms/次）
 
 ## 按市场区分的筛选条件设计
 
@@ -750,13 +772,13 @@ FilterConfig = {
 |------|------|------|
 | `quant/backtest/__init__.py` | 包初始化 | 新建 |
 | `quant/backtest/__main__.py` | CLI 入口（含 --market 参数） | 新建 |
-| `quant/backtest/engine.py` | 回测主循环（market 线程化） | 新建 |
-| `quant/backtest/universe.py` | 历史切面查询（US/CN_A/CN_HK 三套 SQL） | 新建 |
+| `quant/backtest/engine.py` | 回测主循环（预加载 + 批量行情 + 调仓） | 新建 |
+| `quant/backtest/preloader.py` | PITPreloader：COPY CSV 加载到内存，pandas PIT（V5 核心） | 新建 |
+| `quant/backtest/universe.py` | 历史切面查询（US/CN_A/CN_HK 三套 SQL，回退用） | 新建 |
 | `quant/backtest/portfolio.py` | 组合模型 + 绩效 | 新建 |
-| `quant/screener/filters.py` | 硬过滤（含按市场区分逻辑） | 修改 |
+| `quant/screener/filters.py` | 硬过滤（含按市场区分逻辑、NaN 过滤修复） | 修改 |
 | `quant/screener/presets.py` | 预设配置（含 by_market 字段） | 修改 |
-| `core/sync/daily_quote.py` | 日线回填（自定义起始日期） | 修改 |
-| `scripts/materialized_views.sql` | mv_indicator_ttm_hist 物化视图定义 | 新增 |
+| `scripts/materialized_views.sql` | mv_indicator_ttm_hist + notice_date 索引 | 修改 |
 | `scripts/backfill_hist_quote.py` | 历史日线回填脚本（2016+） | 新建 |
 
 ## 数据修复记录
