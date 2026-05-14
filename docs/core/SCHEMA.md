@@ -419,13 +419,17 @@ CREATE INDEX idx_idx_stock ON index_constituent(stock_code);
 ```sql
 CREATE TABLE stock_share (
     stock_code      VARCHAR(20) NOT NULL,
-    trade_date  DATE NOT NULL,
-    total_shares    DECIMAL(20,2),           -- 总股本
-    float_shares    DECIMAL(20,2),           -- 流通股本
-    restricted_shares DECIMAL(20,2),         -- 限售股本
+    trade_date      DATE NOT NULL,
+    market          VARCHAR(10) NOT NULL DEFAULT 'CN_A',
+    total_shares    BIGINT,                  -- 总股本（股）
+    float_shares    BIGINT,                  -- 流通股本（股）
+    currency        VARCHAR(10),
+    change_reason   VARCHAR(100),            -- 股本变动原因
+    source          VARCHAR(100),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    PRIMARY KEY (stock_code, trade_date),
-    CONSTRAINT fk_share_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code)
+    CONSTRAINT uk_share UNIQUE (stock_code, trade_date, market),
+    CONSTRAINT fk_share_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE
 );
 ```
 
@@ -563,6 +567,7 @@ validation_results (
 | `tables_synced` | 已同步的表列表 |
 | `status` | `success` / `failed` |
 | `last_report_date` | 上次同步时的最新报告期（增量判断依据） |
+| `error_detail` | 错误详情 |
 
 ## 物化视图刷新策略
 
@@ -613,6 +618,7 @@ CREATE TABLE daily_quote (
 
 CREATE INDEX idx_quote_date ON daily_quote(trade_date);
 CREATE INDEX idx_quote_market_date ON daily_quote(market, trade_date);
+CREATE INDEX idx_quote_mkt_stk_date ON daily_quote(market, stock_code, trade_date DESC);
 CREATE INDEX idx_quote_cap ON daily_quote(market_cap) WHERE market_cap IS NOT NULL;
 ```
 
