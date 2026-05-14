@@ -55,6 +55,7 @@ def _print_report(r: BacktestResult) -> None:
     if r.rebalance_history:
         print("  ┌─ 调仓记录 ─────────────────────────────────┐")
         initial_val = r.rebalance_history[0].total_value
+        bench_navs = r.benchmark_daily_nav
         for snap in r.rebalance_history:
             nav = snap.total_value / initial_val if initial_val > 0 else 0
             n = len(snap.positions)
@@ -62,8 +63,38 @@ def _print_report(r: BacktestResult) -> None:
                 label = f"换手 {snap.turnover:.0%}"
             else:
                 label = f"买入 {n} 只"
-            print(f"  │ {snap.date}  {label:<10}  净值 {nav:.3f}  │")
+            bench_str = ""
+            if bench_navs:
+                # 找当天或之前最近的基准 NAV
+                bench_nav = bench_navs.get(snap.date)
+                if bench_nav is None:
+                    candidates = [d for d in bench_navs if d <= snap.date]
+                    if candidates:
+                        bench_nav = bench_navs[max(candidates)]
+                if bench_nav is not None:
+                    bench_str = f"  基准 {bench_nav:.3f}"
+            print(f"  │ {snap.date}  {label:<10}  净值 {nav:.3f}{bench_str}  │")
         print("  └────────────────────────────────────────────┘")
+
+    # 基准对比
+    if r.benchmark_comparison:
+        bc = r.benchmark_comparison
+        print()
+        print("═" * 50)
+        print(f"  基准对比 ({bc.benchmark_ticker}):")
+        print("═" * 50)
+        print(f"  基准总收益:        {_format_pct(bc.benchmark_total_return)}")
+        print(f"  基准年化:          {_format_pct(bc.benchmark_annualized)}")
+        print(f"  基准最大回撤:      {_format_pct(-bc.benchmark_max_drawdown)}")
+        print("  " + "─" * 48)
+        print(f"  策略超额收益:      {_format_pct(bc.excess_return)}")
+        print(f"  年化 Alpha:        {_format_pct(bc.annualized_alpha)}")
+        print(f"  Information Ratio: {bc.information_ratio:+.2f}")
+        print(f"  Beta:              {bc.beta:.2f}")
+        print(f"  跟踪误差:          {bc.tracking_error:.1%}")
+        print(f"  相关系数:          {bc.correlation:.2f}")
+        print()
+        print("  注：IR / Beta / TE 基于日频 NAV 计算（252 个交易日/年）")
 
     if r.final_holdings:
         print(f"\n  最终持仓 ({len(r.final_holdings)} 只):")
@@ -97,6 +128,20 @@ def _print_json(r: BacktestResult) -> None:
             for s in r.rebalance_history
         ],
     }
+    if r.benchmark_comparison:
+        bc = r.benchmark_comparison
+        data["benchmark"] = {
+            "ticker": bc.benchmark_ticker,
+            "total_return": bc.benchmark_total_return,
+            "annualized": bc.benchmark_annualized,
+            "max_drawdown": bc.benchmark_max_drawdown,
+            "excess_return": bc.excess_return,
+            "annualized_alpha": bc.annualized_alpha,
+            "information_ratio": bc.information_ratio,
+            "tracking_error": bc.tracking_error,
+            "beta": bc.beta,
+            "correlation": bc.correlation,
+        }
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
@@ -114,6 +159,8 @@ def main() -> None:
     parser.add_argument("--capital", type=float, default=1_000_000, help="初始资金（默认 100 万）")
     parser.add_argument("--market", choices=["US", "CN_A", "CN_HK"], default="US",
                         help="市场代码（默认 US）")
+    parser.add_argument("--benchmark", default="SPY",
+                        help="基准 ticker（默认 SPY；用 '' 禁用）")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     args = parser.parse_args()
@@ -130,6 +177,7 @@ def main() -> None:
             top_n=args.top,
             initial_capital=args.capital,
             market=args.market,
+            benchmark=args.benchmark if args.benchmark else None,
         )
     except ValueError as e:
         print(f"错误: {e}", file=sys.stderr)

@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
-from quant.backtest.portfolio import Portfolio, PerformanceMetrics, Snapshot
+from quant.backtest.portfolio import (
+    Portfolio,
+    PerformanceMetrics,
+    Snapshot,
+    BenchmarkComparison,
+    compute_benchmark_comparison,
+)
 from quant.backtest.preloader import PITPreloader
 from quant.backtest.universe import (
     get_point_in_time_universe,
@@ -35,6 +41,9 @@ class BacktestResult:
     metrics: PerformanceMetrics
     rebalance_history: list[Snapshot]
     final_holdings: list[str]
+    benchmark_comparison: BenchmarkComparison | None = None
+    strategy_daily_nav: dict[date, float] = field(default_factory=dict)
+    benchmark_daily_nav: dict[date, float] = field(default_factory=dict)
 
 
 def _get_month_end(d: date) -> date:
@@ -127,6 +136,91 @@ def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# ── 基准对比辅助函数 ─────────────────────────────────────────
+
+def _load_benchmark_prices(
+    ticker: str, market: str, start: date, end: date
+) -> dict[date, float]:
+    """加载基准日线，返回 {trade_date: close}。"""
+    sql = """
+    SELECT trade_date, close FROM daily_quote
+    WHERE stock_code = %s AND market = %s
+      AND trade_date BETWEEN %s AND %s
+    ORDER BY trade_date
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (ticker, market, start, end))
+        rows = cur.fetchall()
+        cur.close()
+    return {r[0]: float(r[1]) for r in rows}
+
+
+def _load_daily_quotes_for_codes(
+    codes: list[str], market: str, start: date, end: date
+) -> dict[tuple[str, date], float]:
+    """返回 {(stock_code, trade_date): close}。预期 100K~250K 行。"""
+    if not codes:
+        return {}
+    sql = """
+    SELECT stock_code, trade_date, close FROM daily_quote
+    WHERE stock_code = ANY(%s) AND market = %s
+      AND trade_date BETWEEN %s AND %s AND close IS NOT NULL
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (list(codes), market, start, end))
+        rows = cur.fetchall()
+        cur.close()
+    return {(r[0], r[1]): float(r[2]) for r in rows}
+
+
+def _compute_daily_nav(
+    rebalance_history: list[Snapshot],
+    daily_quotes: dict[tuple[str, date], float],
+    trade_dates: list[date],
+    initial_capital: float,
+) -> dict[date, float]:
+    """日频 mark-to-market 计算策略净值。
+
+    每个交易日：找出 ≤d 的最近一次调仓快照 → cash + Σ(shares × close)。
+    缺失日线数据时用每只股票的最近已知收盘价 forward-fill（避免假性归零）。
+    """
+    daily_nav: dict[date, float] = {}
+    if not rebalance_history:
+        return daily_nav
+
+    first_rebal_date = rebalance_history[0].date
+    rb_idx = 0
+    # 每只股票的最近已知收盘价 forward-fill
+    last_close: dict[str, float] = {}
+
+    for d in trade_dates:
+        # 首次调仓前：100% 现金，NAV = 1.0（避免 look-ahead）
+        if d < first_rebal_date:
+            daily_nav[d] = 1.0
+            continue
+        # 推进到 d 当天或之前的最后一次调仓
+        while (
+            rb_idx + 1 < len(rebalance_history)
+            and rebalance_history[rb_idx + 1].date <= d
+        ):
+            rb_idx += 1
+        snap = rebalance_history[rb_idx]
+
+        # 计算持仓市值：当天 close 优先，缺失则用上一交易日的 close
+        position_value = 0.0
+        for code, shares in snap.holdings.items():
+            price = daily_quotes.get((code, d))
+            if price is not None:
+                last_close[code] = price
+            else:
+                price = last_close.get(code, 0.0)
+            position_value += shares * price
+        daily_nav[d] = (snap.cash + position_value) / initial_capital
+    return daily_nav
+
+
 def run_backtest(
     preset_name: str,
     start: date,
@@ -135,6 +229,7 @@ def run_backtest(
     top_n: int | None = None,
     initial_capital: float = 1_000_000,
     market: str = "US",
+    benchmark: str | None = "SPY",
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> BacktestResult:
     """运行因子策略回测。
@@ -147,6 +242,7 @@ def run_backtest(
         top_n: 每次调仓持有的股票数（默认用预设配置）
         initial_capital: 初始资金（默认 100 万美元）
         market: 市场代码（"US", "CN_A", "CN_HK"）
+        benchmark: 基准 ticker（US 默认 SPY；None 或空字符串禁用）
 
     Returns:
         BacktestResult
@@ -238,6 +334,42 @@ def run_backtest(
 
     metrics = portfolio.get_performance()
 
+    # 基准对比（v1.5：默认 SPY for US）
+    bench_comparison: BenchmarkComparison | None = None
+    strategy_daily_nav: dict[date, float] = {}
+    benchmark_daily_nav: dict[date, float] = {}
+
+    if benchmark and portfolio.history:
+        bt_start = portfolio.history[0].date
+        bt_end = portfolio.history[-1].date
+        bench_prices = _load_benchmark_prices(benchmark, market, bt_start, bt_end)
+        if bench_prices:
+            # 日期对齐：直接用 bench_prices 的交易日列表
+            trade_dates = sorted(bench_prices.keys())
+
+            # 加载所有曾经持仓过的股票日频行情
+            all_codes: set[str] = set()
+            for snap in portfolio.history:
+                all_codes.update(snap.holdings.keys())
+            daily_quotes = _load_daily_quotes_for_codes(
+                list(all_codes), market, bt_start, bt_end
+            )
+
+            # 策略日频 NAV
+            strategy_daily_nav = _compute_daily_nav(
+                portfolio.history, daily_quotes, trade_dates, initial_capital
+            )
+
+            # 基准日频 NAV（基准 NAV[bt_start] = 1.0）
+            base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
+            benchmark_daily_nav = {
+                d: bench_prices[d] / base_close for d in trade_dates
+            }
+
+            bench_comparison = compute_benchmark_comparison(
+                benchmark, strategy_daily_nav, benchmark_daily_nav
+            )
+
     return BacktestResult(
         preset_name=preset_name,
         start_date=rebalance_dates[0],
@@ -248,4 +380,7 @@ def run_backtest(
         metrics=metrics,
         rebalance_history=portfolio.history,
         final_holdings=list(portfolio.positions.keys()),
+        benchmark_comparison=bench_comparison,
+        strategy_daily_nav=strategy_daily_nav,
+        benchmark_daily_nav=benchmark_daily_nav,
     )
