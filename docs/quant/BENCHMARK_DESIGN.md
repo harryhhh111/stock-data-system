@@ -1,6 +1,6 @@
 # 回测基准对比 (Benchmark Comparison) 设计
 
-> 最后更新：2026-05-14（v1.1 — 采纳同事评审意见：alpha 公式 / 日频 NAV / 日期对齐）
+> 最后更新：2026-05-14（v1.2 — 修复 Snapshot 数据结构 + backfill 边界 + 数据量估计）
 
 ## Context
 
@@ -18,12 +18,19 @@
 
 ## 评审历史
 
+**v1.2（2026-05-14）** 采纳的评审意见：
+
+1. **Snapshot 数据结构不足**：现有 `Snapshot.positions` 是 `list[str]`（只有代码），没有 `cash` 字段，无法做日频 mark-to-market。新增 Step 0：扩展 Snapshot 加入 `cash` 和 `holdings: dict[str, float]`。
+2. **backfill 边界情况**：如果 daily_quote 已有 SPY 近期数据，`backfill_daily_hist` 走增量路径会跳过历史回填。验证步骤明确"先确认覆盖范围"。
+3. **持仓行情数据量**：原文档"5 年 1250 行"只算了基准。策略持仓在调仓中轮换，5 年可能涉及 100+ 只股票 × 1250 天 ≈ 125K 行。文档明确量级。
+4. **cov/var ddof 一致性**：`pd.Series.cov()` 和 `var()` 都用样本（ddof=1），分子分母一致，beta 不受影响。但文档加注释。
+
 **v1.1（2026-05-14）** 采纳的评审意见：
 
-1. **Alpha 公式修正**：原公式 `(1 + excess_return)^(1/years) - 1` 把"差值"当"复利"开方，无金融含义。改为分别年化后做差。
-2. **IR / TE 改为日频**：调仓频率采样数据点过少（5 年半年调仓只有 10 个点），std 估计噪声极大。策略改为日频 mark-to-market，基准用日频 close，`periods_per_year = 252`。
-3. **日期对齐明确**：策略 NAV 和基准 NAV 都使用 `get_nearest_trade_date()` 对齐到同一交易日，避免边界情况错位。
-4. **验证脚本输出改进**：用 f-string 格式化代替原始 `print(rows)`。
+1. Alpha 公式：`(1 + excess_return)^(1/years) - 1` → 分别年化后做差
+2. IR / TE 改为日频（252 个交易日/年），策略 mark-to-market
+3. 日期对齐：策略和基准用同一 `trade_dates` 列表
+4. 验证脚本输出改进
 
 ## 现状
 
@@ -35,17 +42,52 @@
 
 **回测引擎**：
 
-- `PerformanceMetrics` 只算策略本身的指标（total_return, annualized_return, max_drawdown, sharpe_ratio, volatility）
+- `PerformanceMetrics` 只算策略本身的指标
 - 无任何基准对比逻辑
-- **NAV 只在调仓日记录**（`Portfolio.history`），无日频净值
+- `Snapshot` 只记录调仓日的总市值 + 代码列表，**没有 cash 和 shares**
+- `Portfolio` 内部有 `cash: float` 和 `positions: dict[str, Position]`（含 shares），但调仓后没存进 history
 
 **Schema 支持度**：
 
-- `stock_info` + `daily_quote` 可以直接存 SPY（把 ETF 当 `market='US'` 的股票存储）
+- `stock_info` + `daily_quote` 可以直接存 SPY（把 ETF 当 `market='US'` 的股票）
 - `fetch_us_spot()` 和 `backfill_daily_hist()` 都从 `stock_info WHERE market='US'` 读取，加 SPY 后自动同步
-- 唯一注意：US 财务 sync (`sync_us_market`) 会找不到 SPY 的 CIK，会跳过财务同步（预期行为，ETF 无 SEC 财报）
+- 注意：US 财务 sync (`sync_us_market`) 会找不到 SPY 的 CIK，会跳过（预期行为，ETF 无 SEC 财报）
 
 ## 设计方案
+
+### Step 0: Snapshot 扩展（前置改造，v1.2 新增）
+
+为支持日频 mark-to-market，扩展现有 `Snapshot`：
+
+```python
+# quant/backtest/portfolio.py
+@dataclass
+class Snapshot:
+    date: date
+    total_value: float
+    positions: list[str]   # 保留：当前持仓代码列表（用于显示）
+    turnover: float
+    # ── v1.2 新增 ────────────────────────────────────────
+    cash: float = 0.0
+    holdings: dict[str, float] = field(default_factory=dict)  # {code: shares}
+```
+
+`Portfolio.rebalance()` 在 append Snapshot 时填入：
+
+```python
+self.history.append(Snapshot(
+    date=rebal_date,
+    total_value=total_value,
+    positions=list(self.positions.keys()),
+    turnover=turnover,
+    cash=self.cash,
+    holdings={c: p.shares for c, p in self.positions.items()},
+))
+```
+
+`compute_final_value()` 同样填入。
+
+**向后兼容**：`positions` 类型不变，老代码 `len(s.positions)` 仍然工作；`cash` 和 `holdings` 有 default，不影响现有构造方式。
 
 ### Step 1: 数据准备（一次性）
 
@@ -60,8 +102,11 @@ ON CONFLICT (stock_code) DO NOTHING;
 历史回填：
 
 ```bash
+# 默认 start_date=2016-01-04；如要更早历史用 --start-date 2010-01-01
 python -m core.sync --type daily-backfill --market US
 ```
+
+**注意（v1.2）**：`backfill_daily_hist` 对全新股票（`daily_quote` 无任何记录）会做完整历史回填。但如果在 INSERT 后、backfill 前不小心跑了 spot 同步（如 scheduler 自动触发），daily_quote 已有近 7 天数据 + data_span < 30 天，会走"无 first_date / 全量回填" 分支（line 58-59），仍然 OK。但若 data_span ≥ 30 天，则会走增量路径，可能跳过早期历史。验证步骤会显式检查覆盖范围。
 
 可扩展加 QQQ / IWM 作为可选基准。
 
@@ -88,32 +133,43 @@ def _load_benchmark_prices(
     return {r[0]: float(r[1]) for r in rows}
 ```
 
-数据量小（5 年约 1250 个交易日），不需要 preloader 抽象。
+数据量：5 年约 1250 个交易日，一个基准约 1250 行。
 
 ### Step 3: 策略 + 基准日频 NAV 计算
 
-**关键改动（v1.1）**：策略 NAV 改为日频 mark-to-market，避免调仓频率算 IR/TE 的噪声问题。
+#### 3a. 收集所有曾经持仓过的股票代码
 
-#### 3a. 加载日频持仓行情
+策略在调仓中会换股，5 年可能涉及多组不同的持仓。先扫一遍 `rebalance_history` 收集所有出现过的代码：
 
-每次调仓后，记录当时的持仓快照 `(date, {stock_code: shares})`。回测结束后，一次性 SQL 拉取所有持仓股票在整段回测期间的日线 close：
+```python
+all_codes: set[str] = set()
+for snap in portfolio.history:
+    all_codes.update(snap.holdings.keys())
+```
+
+**数据量估计（v1.2）**：单次调仓 ~30 只，5 年 10 次调仓 + 部分轮换 → 100~200 只 distinct 股票。100 × 1250 ≈ 125K 行；200 × 1250 ≈ 250K 行。一次 SQL 拉取可接受，但不是"小数据"。
+
+#### 3b. 一次性加载日频行情
 
 ```python
 def _load_daily_quotes_for_codes(
     codes: list[str], market: str, start: date, end: date
 ) -> dict[tuple[str, date], float]:
-    """返回 {(stock_code, trade_date): close}。"""
+    """返回 {(stock_code, trade_date): close}。预期 100K~250K 行。"""
     sql = """
     SELECT stock_code, trade_date, close FROM daily_quote
     WHERE stock_code = ANY(%s) AND market = %s
       AND trade_date BETWEEN %s AND %s AND close IS NOT NULL
     """
-    # ... 返回字典
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (list(codes), market, start, end))
+        rows = cur.fetchall()
+        cur.close()
+    return {(r[0], r[1]): float(r[2]) for r in rows}
 ```
 
-#### 3b. 计算策略日频 NAV
-
-遍历每个交易日，根据当时的持仓快照计算净值：
+#### 3c. 计算策略日频 NAV
 
 ```python
 def _compute_daily_nav(
@@ -124,37 +180,48 @@ def _compute_daily_nav(
 ) -> dict[date, float]:
     """日频 mark-to-market 计算策略净值。
 
-    每个交易日：找出最近一次调仓后的持仓 + 当天的 close → 计算净值。
+    每个交易日：找出 ≤d 的最近一次调仓快照 → cash + Σ(shares × close)。
     """
     daily_nav = {}
     rb_idx = 0
     for d in trade_dates:
-        # 找到 d 当天或之前最近一次调仓的持仓
+        # 推进到 d 当天或之前的最后一次调仓
         while rb_idx + 1 < len(rebalance_history) and rebalance_history[rb_idx + 1].date <= d:
             rb_idx += 1
         snap = rebalance_history[rb_idx]
         # 净值 = 现金 + Σ(持仓股数 × 当日 close)
+        # 注意：依赖 v1.2 新增的 snap.holdings (dict) 和 snap.cash
         position_value = sum(
             shares * daily_quotes.get((code, d), 0)
-            for code, shares in snap.positions.items()
+            for code, shares in snap.holdings.items()
         )
         daily_nav[d] = (snap.cash + position_value) / initial_capital
     return daily_nav
 ```
 
-#### 3c. 加载基准日频 NAV
+#### 3d. 基准日频 NAV
 
 ```python
 bench_prices = _load_benchmark_prices(benchmark, market, start, end)
-base_close = bench_prices[strategy_start_date]  # 第一个交易日的 close
-bench_nav = {d: c / base_close for d, c in bench_prices.items()}
+# trade_dates 中第一个有基准数据的日期
+strategy_start = trade_dates[0]
+base_close = bench_prices.get(strategy_start) or next(iter(bench_prices.values()))
+bench_nav = {d: bench_prices.get(d, last) / base_close for d in trade_dates}
+# 缺失日期用前一天 close 前向填充
 ```
 
-#### 3d. 日期对齐
+#### 3e. 日期对齐
 
-**重要**：策略和基准都使用同一个 `trade_dates` 列表（从 daily_quote 取 `market='US'` 的所有交易日），保证两者的 NAV 索引完全一致。SPY 在 NYSE 交易，和美股个股日历一致，不会出现日期错位。
+**重要**：策略和基准都使用同一个 `trade_dates` 列表（从 daily_quote 取 `market='US'` 在区间内的所有交易日），保证 NAV 索引完全一致。SPY 在 NYSE 交易，和美股个股日历一致。
 
-如果某天基准日线缺失（理论上不会发生），用 `pd.Series.ffill()` 前向填充。
+```python
+trade_dates = [d for d, in execute(
+    "SELECT DISTINCT trade_date FROM daily_quote "
+    "WHERE market='US' AND trade_date BETWEEN %s AND %s "
+    "ORDER BY trade_date",
+    (start, end), fetch=True,
+)]
+```
 
 ### Step 4: 对比指标计算
 
@@ -184,7 +251,7 @@ strategy_total = strategy_navs[-1] - 1
 benchmark_total = bench_navs[-1] - 1
 excess_return = strategy_total - benchmark_total
 
-# Alpha 公式修正：分别年化后做差（标准金融做法）
+# Alpha 公式：分别年化后做差（标准金融做法）
 strategy_annualized = (1 + strategy_total) ** (1 / years) - 1
 benchmark_annualized = (1 + benchmark_total) ** (1 / years) - 1
 annualized_alpha = strategy_annualized - benchmark_annualized
@@ -195,9 +262,13 @@ b_ret = pd.Series(bench_navs).pct_change().dropna()
 excess_ret = s_ret - b_ret
 
 # 日频 → 年化（×√252）
+# 注：pd.Series.std() / cov() / var() 默认 ddof=1（样本估计），
+#     分子分母 ddof 一致，比值不受影响
 tracking_error = excess_ret.std() * (252 ** 0.5)
-information_ratio = (excess_ret.mean() / excess_ret.std()) * (252 ** 0.5) \
-                    if excess_ret.std() > 0 else 0
+information_ratio = (
+    (excess_ret.mean() / excess_ret.std()) * (252 ** 0.5)
+    if excess_ret.std() > 0 else 0
+)
 
 beta = (s_ret.cov(b_ret) / b_ret.var()) if b_ret.var() > 0 else 0
 correlation = s_ret.corr(b_ret)
@@ -261,14 +332,15 @@ US 默认 SPY。CN 暂时不支持（数据库无基准数据）。
 
 | 文件 | 改动 |
 |------|------|
-| `quant/backtest/engine.py` | `_load_benchmark_prices()` + `_load_daily_quotes_for_codes()` + `_compute_daily_nav()` + 基准 NAV 计算 |
-| `quant/backtest/portfolio.py` | `BenchmarkComparison` dataclass + `compute_benchmark_comparison()` 函数（修正后的 alpha + 日频 IR/TE） |
+| `quant/backtest/portfolio.py` | **Step 0**：Snapshot 加 `cash` + `holdings` 字段，`rebalance()` 和 `compute_final_value()` 填入 |
+| `quant/backtest/portfolio.py` | `BenchmarkComparison` dataclass + `compute_benchmark_comparison()` 函数 |
+| `quant/backtest/engine.py` | `_load_benchmark_prices()` + `_load_daily_quotes_for_codes()` + `_compute_daily_nav()` |
 | `quant/backtest/__main__.py` | CLI 参数 + 报告输出 |
 | （DB 一次性）| `INSERT INTO stock_info` + `python -m core.sync --type daily-backfill --market US` |
 
 ## 不修改的内容
 
-- `preloader.py` 暂不动（基准数据查询轻量，无需预加载抽象）
+- `preloader.py` 不动（基准数据查询轻量，无需预加载抽象）
 - 策略本身的指标计算不变（沿用 `PerformanceMetrics`）
 - CN 市场基准（数据库无 CSI 300 / HSCEI 数据）
 
@@ -289,7 +361,7 @@ print('SPY inserted')
 # 2. 回填历史日线
 python -m core.sync --type daily-backfill --market US 2>&1 | tail -5
 
-# 3. 验证数据
+# 3. ⚠️ 必查：基准覆盖范围是否覆盖回测起点（v1.2 新增）
 python3 -c "
 from db import execute
 rows = execute(
@@ -298,6 +370,7 @@ rows = execute(
 )
 r = rows[0]
 print(f'SPY 日线: {r[0]} ~ {r[1]}, 共 {r[2]} 条')
+assert r[0] <= __import__('datetime').date(2016, 1, 1), '回填范围不够，需要 --start-date 更早'
 "
 
 # 4. 跑回测验证基准对比输出
@@ -305,6 +378,10 @@ python -m quant.backtest --preset fcf_roe_value --start 2021-01 --market US
 
 # 5. 禁用基准（兼容性检查）
 python -m quant.backtest --preset fcf_roe_value --start 2021-01 --market US --benchmark ''
+
+# 6. 不同时段（验证 IR/TE 稳定）
+python -m quant.backtest --preset fcf_roe_value --start 2018-01 --market US
+python -m quant.backtest --preset fcf_roe_value --start 2020-01 --market US
 ```
 
 ## 不做的事（后续可扩展）
@@ -313,7 +390,7 @@ python -m quant.backtest --preset fcf_roe_value --start 2021-01 --market US --be
 - **多基准对比**：先做单基准，后续可在报告中并列显示 SPY / QQQ / IWM
 - **滚动 Alpha / 滚动 Beta**：先做整体指标，滚动版本是独立的可视化需求
 - **因子归因（Brinson）**：独立任务，复杂度高
-- **基准包含分红再投资**：SPY 报价是不含分红的，长期看会少算 ~1.5%/年。如需精确对比，应用 SPY 的 adjusted close 或 SPYTR（总回报版本）
+- **基准包含分红再投资**：SPY 报价是不含分红的，长期看会少算 ~1.5%/年
 
 ## 开放问题（剩余讨论点）
 
@@ -323,6 +400,11 @@ python -m quant.backtest --preset fcf_roe_value --start 2021-01 --market US --be
 
 ## 已解决的讨论点
 
-- ~~基准频率~~（v1.0 #4）→ v1.1 改为日频 NAV，IR/TE/Beta 基于 252 个交易日/年
-- ~~Alpha 公式~~（v1.0 评审 #1）→ v1.1 改为分别年化后做差
-- ~~日期对齐~~（v1.0 评审 #3）→ v1.1 明确策略和基准用同一 trade_dates 列表
+- ~~Snapshot 数据结构~~（v1.1 评审 #1）→ v1.2 加 `cash` + `holdings` 字段（向后兼容）
+- ~~backfill 边界情况~~（v1.1 评审 #2）→ v1.2 验证步骤显式检查覆盖范围
+- ~~持仓行情数据量~~（v1.1 评审 #3）→ v1.2 注明 100~250K 行量级
+- ~~cov/var ddof~~（v1.1 评审 #4）→ v1.2 代码注释说明用样本统计
+- ~~基准频率~~（v1.0 #4）→ v1.1 日频 NAV，IR/TE/Beta 基于 252
+- ~~Alpha 公式~~（v1.0 评审 #1）→ v1.1 分别年化后做差
+- ~~日期对齐~~（v1.0 评审 #3）→ v1.1 用同一 trade_dates 列表
+- ~~验证脚本 print~~（v1.0 评审 #4）→ v1.1 f-string 格式化
