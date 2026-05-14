@@ -27,6 +27,12 @@ def filter_consecutive_roe(
     if roe_history.empty or min_years <= 0:
         return df, n_before, n_before
 
+    # 只检查通过了硬过滤的股票，避免遍历全市场 ~5000 只
+    codes_in_df = df["stock_code"].unique()
+    roe_history = roe_history[roe_history["stock_code"].isin(codes_in_df)]
+    if roe_history.empty:
+        return df, n_before, 0
+
     # 每只股票取最近 N 条年度记录
     grouped = roe_history.groupby("stock_code")
     # 只保留恰好有 >= min_years 条记录的股票
