@@ -114,11 +114,21 @@ External APIs → fetchers/ (rate-limit, circuit-breaker, retry)
 
 ## Development Workflow
 
-All feature development must follow: **Discuss → Plan doc (in `docs/`) → User confirms → Implement → Validate → Commit (code + docs together).**
+All feature development must follow: **Discuss → Plan doc (in `docs/`) → User confirms → Implement → Self-review → Validate → Commit (code + docs together).**
 
 - Never skip the plan doc step. Each new feature needs a doc in `docs/` with: data source evaluation, field mapping, risk assessment, conflict analysis with existing features.
 - When modifying DB schema: update `scripts/*.sql` AND `docs/SCHEMA.md`. Changes must be backward-compatible.
 - When adding new data sources: evaluate field overlap with existing sources and document in `docs/ARCHITECTURE.md`.
+
+### Self-review checklist（实现完成后、验证前必做）
+
+在跑测试/回测之前，逐条检查本轮改动的代码：
+
+1. **默认值的金融含义**：每个 `dict.get(key, default)` / `fillna(value)` / `or 0` 的 fallback 值在金融场景下是否正确？（例：缺失价格 fallback 到 `0` = 假设完全亏损，通常应该是 forward-fill 或跳过）
+2. **NaN / None 传播路径**：过滤条件中用 `~(x >= threshold)` 而非 `(x < threshold)`，避免 NaN 被错误放行。pandas 中 `NaN < 0.1` 为 `False`，会导致 NaN 通过硬过滤。
+3. **跨市场兼容性**：代码是否隐式假设了某个市场？（交易日历、货币单位、行业分类体系、交易所缩写）如果在 A 股跑通了但逻辑里有 `market == "US"` 分支，US 路径需要单独验证。
+4. **日期/时间假设**：是否假设了两个序列的日期完全一致？不同市场假期不同，调仓日和基准交易日可能错位。用 `set intersection` 对齐比假设一致更安全。
+5. **边界数据量**：空 DataFrame（选不出股票）、单只股票、单次调仓、`years <= 0` 等极端情况是否会导致除零或 NaN 指标。
 
 ## Critical Rules
 
@@ -151,6 +161,9 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 
 ### Quant Layer (`quant/`)
 - `quant/screener/` — Multi-factor stock screener: hard filters + weighted scoring + preset strategies
+- `quant/backtest/` — Factor strategy backtester: PIT preloader + batch quotes + benchmark comparison
+- `quant/analyzer/` — Single-stock deep analysis (financial health, valuation, cash flow quality)
+- `quant/checks/` — Data quality checks (e.g., FCF + ROE screening validation)
 
 ### Database
 - `scripts/init_pg.sql` — DDL for A-share/HK tables
