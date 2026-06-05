@@ -141,7 +141,12 @@ def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
 def _load_benchmark_prices(
     ticker: str, market: str, start: date, end: date
 ) -> dict[date, float]:
-    """加载基准日线，返回 {trade_date: close}。"""
+    """加载基准日线，返回 {trade_date: close}。
+
+    ticker 是 A 股指数代码时（如 000300），自动使用 CN_IDX 市场查询。
+    """
+    # A 股指数 code 统一用 CN_IDX
+    idx_market = _benchmark_market(ticker, market)
     sql = """
     SELECT trade_date, close FROM daily_quote
     WHERE stock_code = %s AND market = %s
@@ -150,10 +155,18 @@ def _load_benchmark_prices(
     """
     with Connection() as conn:
         cur = conn.cursor()
-        cur.execute(sql, (ticker, market, start, end))
+        cur.execute(sql, (ticker, idx_market, start, end))
         rows = cur.fetchall()
         cur.close()
     return {r[0]: float(r[1]) for r in rows}
+
+
+def _benchmark_market(ticker: str, strategy_market: str) -> str:
+    """判断基准 ticker 对应的 daily_quote market。"""
+    # A 股/港股指数统一用 CN_IDX
+    if ticker in ("000300", "399006", "HSI"):
+        return "CN_IDX"
+    return strategy_market
 
 
 def _load_daily_quotes_for_codes(
@@ -229,7 +242,7 @@ def run_backtest(
     top_n: int | None = None,
     initial_capital: float = 1_000_000,
     market: str = "US",
-    benchmark: str | None = "SPY",
+    benchmark: str | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> BacktestResult:
     """运行因子策略回测。
@@ -242,7 +255,7 @@ def run_backtest(
         top_n: 每次调仓持有的股票数（默认用预设配置）
         initial_capital: 初始资金（默认 100 万美元）
         market: 市场代码（"US", "CN_A", "CN_HK"）
-        benchmark: 基准 ticker（US 默认 SPY；None 或空字符串禁用）
+        benchmark: 基准 ticker（None=按市场自动选择，空字符串=禁用）
 
     Returns:
         BacktestResult
@@ -258,6 +271,11 @@ def run_backtest(
 
     if end is None:
         end = date.today()
+
+    # 按市场自动选择基准（None 用默认，空字符串禁用）
+    if benchmark is None:
+        _DEFAULT_BENCHMARKS = {"US": "SPY", "CN_A": "000300", "CN_HK": "HSI"}
+        benchmark = _DEFAULT_BENCHMARKS.get(market)
 
     # 生成调仓日期（每月末对齐到最后一个交易日）
     rebalance_dates = _generate_rebalance_dates(start, end, months, market=market)

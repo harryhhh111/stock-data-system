@@ -10,6 +10,7 @@ interface BacktestState {
   months: number;
   topN: number | null;
   capital: number;
+  benchmark: string;
   setPresetName: (v: string) => void;
   setMarket: (v: Market) => void;
   setStart: (v: string) => void;
@@ -17,6 +18,7 @@ interface BacktestState {
   setMonths: (v: number) => void;
   setTopN: (v: number | null) => void;
   setCapital: (v: number) => void;
+  setBenchmark: (v: string) => void;
 }
 
 export const useBacktestStore = create<BacktestState>()(
@@ -29,6 +31,7 @@ export const useBacktestStore = create<BacktestState>()(
       months: 6,
       topN: null,
       capital: 1_000_000,
+      benchmark: "",
       setPresetName: (v) => set({ presetName: v }),
       setMarket: (v) => set({ market: v }),
       setStart: (v) => set({ start: v }),
@@ -36,6 +39,7 @@ export const useBacktestStore = create<BacktestState>()(
       setMonths: (v) => set({ months: v }),
       setTopN: (v) => set({ topN: v }),
       setCapital: (v) => set({ capital: v }),
+      setBenchmark: (v) => set({ benchmark: v }),
     }),
     { name: "backtest-filters" },
   ),

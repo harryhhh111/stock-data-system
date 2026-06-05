@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS stock_info (
 
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT chk_stock_info_market CHECK (market IN ('CN_A', 'CN_HK', 'US'))
+    CONSTRAINT chk_stock_info_market CHECK (market IN ('CN_A', 'CN_HK', 'US', 'CN_IDX'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_market ON stock_info(market);
@@ -330,7 +330,8 @@ CREATE TABLE IF NOT EXISTS daily_quote (
 
     CONSTRAINT pk_daily_quote PRIMARY KEY (stock_code, trade_date),
     CONSTRAINT fk_quote_stock FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
-    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK', 'US'))
+    CONSTRAINT chk_daily_quote_market CHECK (market IN ('CN_A', 'CN_HK', 'US', 'CN_IDX'))
+    -- 注: CN_IDX 用于 A 股指数行情（如 000300 沪深300），数据由 scripts/sync_index_quote.py 同步
 );
 
 CREATE INDEX IF NOT EXISTS idx_quote_date ON daily_quote(trade_date);

@@ -14,7 +14,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { TrendingUp, Loader2, RotateCcw } from "lucide-react";
 import { fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
-import type { BacktestResult, BacktestSnapshot, TurnoverDetail } from "@/lib/types/backtest";
+import type { BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison } from "@/lib/types/backtest";
 
 const MARKETS: { value: Market; label: string }[] = [
   { value: "CN_A", label: "A 股" },
@@ -112,29 +112,101 @@ function CollapsibleRebalanceRow({ snap, isFirst }: { snap: BacktestSnapshot & T
   );
 }
 
+function BenchmarkKpiSection({ bc }: { bc: BenchmarkComparison }) {
+  return (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold">基准对比 ({bc.benchmark_ticker})</h3>
+      {bc.benchmark_description && (
+        <p className="text-xs text-muted-foreground -mt-3">{bc.benchmark_description}</p>
+      )}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <KpiCard label="基准总收益" value={fmtPct(bc.benchmark_total_return)} highlight />
+        <KpiCard label="基准年化" value={fmtPct(bc.benchmark_annualized)} highlight />
+        <KpiCard label="基准最大回撤" value={fmtPct(bc.benchmark_max_drawdown)} />
+        <KpiCard label="超额收益" value={fmtPct(bc.excess_return)} highlight />
+        <KpiCard label="年化 Alpha" value={fmtPct(bc.annualized_alpha)} highlight />
+        <KpiCard label="IR" value={bc.information_ratio.toFixed(2)} />
+        <KpiCard label="Beta" value={bc.beta.toFixed(2)} />
+        <KpiCard label="跟踪误差" value={fmtPct(bc.tracking_error)} />
+        <KpiCard label="相关系数" value={bc.correlation.toFixed(2)} />
+      </div>
+    </div>
+  );
+}
+
+
 function ResultView({ result }: { result: BacktestResult }) {
   const m = result.metrics;
   const details = computeTurnoverDetails(result.rebalance_history);
-  const navSeries = result.rebalance_history.map((s) => s.total_value / result.initial_capital);
+  const bc = result.benchmark_comparison;
 
-  const chartOption = {
-    xAxis: { type: "category" as const, data: result.rebalance_history.map((s) => s.date) },
-    yAxis: { type: "value" as const, axisLabel: { formatter: (v: number) => v.toFixed(2) } },
-    series: [{
-      type: "line" as const,
-      data: navSeries,
-      smooth: true,
-      areaStyle: { opacity: 0.12, color: "#3b82f6" },
-      lineStyle: { color: "#3b82f6", width: 2 },
-      itemStyle: { color: "#3b82f6" },
-    }],
-    tooltip: { trigger: "axis" as const },
-    grid: { left: 60, right: 20, top: 10, bottom: 30 },
-  };
+  // 使用日频 NAV（如果有的话），否则回退到调仓快照
+  const hasDailyNav = result.strategy_daily_nav && Object.keys(result.strategy_daily_nav).length > 0;
+  const hasBenchmarkNav = result.benchmark_daily_nav && Object.keys(result.benchmark_daily_nav).length > 0;
+
+  const chartOption = (() => {
+    if (hasDailyNav) {
+      const sNav = result.strategy_daily_nav!;
+      const dates = Object.keys(sNav).sort();
+      const sValues = dates.map((d) => sNav[d]);
+      const series: any[] = [{
+        name: "策略净值",
+        type: "line" as const,
+        data: sValues,
+        smooth: true,
+        areaStyle: { opacity: 0.12, color: "#3b82f6" },
+        lineStyle: { color: "#3b82f6", width: 2 },
+        itemStyle: { color: "#3b82f6" },
+        symbol: "none" as const,
+      }];
+
+      if (hasBenchmarkNav) {
+        const bNav = result.benchmark_daily_nav!;
+        // 日期对齐：用 benchmark 的日期列表或策略的
+        const bValues = dates.map((d) => bNav[d] ?? null);
+        series.push({
+          name: `基准 (${bc?.benchmark_ticker ?? ""})`,
+          type: "line" as const,
+          data: bValues,
+          smooth: true,
+          lineStyle: { color: "#9ca3af", width: 2, type: "dashed" as const },
+          itemStyle: { color: "#9ca3af" },
+          symbol: "none" as const,
+          connectNulls: true,
+        });
+      }
+
+      return {
+        xAxis: { type: "category" as const, data: dates, axisLabel: { rotate: 30, fontSize: 11 } },
+        yAxis: { type: "value" as const, axisLabel: { formatter: (v: number) => v.toFixed(2) } },
+        series,
+        tooltip: { trigger: "axis" as const },
+        legend: { data: series.map((s: any) => s.name), bottom: 0 },
+        grid: { left: 60, right: 20, top: 10, bottom: 40 },
+      };
+    }
+
+    // 回退到调仓快照
+    const navSeries = result.rebalance_history.map((s) => s.total_value / result.initial_capital);
+    return {
+      xAxis: { type: "category" as const, data: result.rebalance_history.map((s) => s.date) },
+      yAxis: { type: "value" as const, axisLabel: { formatter: (v: number) => v.toFixed(2) } },
+      series: [{
+        type: "line" as const,
+        data: navSeries,
+        smooth: true,
+        areaStyle: { opacity: 0.12, color: "#3b82f6" },
+        lineStyle: { color: "#3b82f6", width: 2 },
+        itemStyle: { color: "#3b82f6" },
+      }],
+      tooltip: { trigger: "axis" as const },
+      grid: { left: 60, right: 20, top: 10, bottom: 30 },
+    };
+  })();
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      {/* KPI 卡片 */}
+      {/* 策略 KPI 卡片 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard label="总收益率" value={fmtPct(m.total_return)} highlight />
         <KpiCard label="年化收益率" value={fmtPct(m.annualized_return)} highlight />
@@ -146,11 +218,14 @@ function ResultView({ result }: { result: BacktestResult }) {
         <KpiCard label="总交易" value={String(m.total_trades) + " 笔"} />
       </div>
 
+      {/* 基准对比 KPI */}
+      {bc && <BenchmarkKpiSection bc={bc} />}
+
       {/* 权益曲线 */}
       <Card>
-        <CardHeader><CardTitle>权益曲线</CardTitle></CardHeader>
+        <CardHeader><CardTitle>权益曲线{hasDailyNav ? " (日频)" : " (调仓日)"}</CardTitle></CardHeader>
         <CardContent>
-          <EChartsWrapper option={chartOption} style={{ height: 360 }} />
+          <EChartsWrapper option={chartOption} style={{ height: 400 }} />
         </CardContent>
       </Card>
 
@@ -181,9 +256,14 @@ function ResultView({ result }: { result: BacktestResult }) {
         <CardHeader><CardTitle>最终持仓 ({result.final_holdings.length})</CardTitle></CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-1.5">
-            {result.final_holdings.map((c) => (
-              <Badge key={c} variant="secondary">{c}</Badge>
-            ))}
+            {result.final_holdings.map((c) => {
+              const name = result.stock_names?.[c];
+              return (
+                <Badge key={c} variant="secondary" title={name}>
+                  {name ? `${c} ${name}` : c}
+                </Badge>
+              );
+            })}
           </div>
         </CardContent>
       </Card>
@@ -224,6 +304,7 @@ export function BacktestPage() {
         months: store.months,
         top_n: store.topN ?? undefined,
         initial_capital: store.capital,
+        benchmark: store.benchmark || null,
       }),
     onSuccess: (data) => setActiveTaskId(data.task_id),
   });
@@ -293,6 +374,16 @@ export function BacktestPage() {
         <div className="w-32">
           <label className="text-xs text-muted-foreground mb-1 block">初始资金</label>
           <Input type="number" value={store.capital} onChange={(e) => store.setCapital(Number(e.target.value))} disabled={isRunning} />
+        </div>
+
+        <div className="w-24">
+          <label className="text-xs text-muted-foreground mb-1 block">基准</label>
+          <Input
+            value={store.benchmark}
+            onChange={(e) => store.setBenchmark(e.target.value)}
+            disabled={isRunning}
+            placeholder="SPY"
+          />
         </div>
 
         <Button onClick={() => mutation.mutate()} disabled={isRunning || mutation.isPending}>

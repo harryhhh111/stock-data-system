@@ -159,8 +159,8 @@ def main() -> None:
     parser.add_argument("--capital", type=float, default=1_000_000, help="初始资金（默认 100 万）")
     parser.add_argument("--market", choices=["US", "CN_A", "CN_HK"], default="US",
                         help="市场代码（默认 US）")
-    parser.add_argument("--benchmark", default="SPY",
-                        help="基准 ticker（默认 SPY；用 '' 禁用）")
+    parser.add_argument("--benchmark", default=None,
+                        help="基准 ticker（默认按市场自动选择；用 '' 禁用）")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     args = parser.parse_args()

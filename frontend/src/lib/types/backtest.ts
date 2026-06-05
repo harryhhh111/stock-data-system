@@ -8,6 +8,7 @@ export interface BacktestParams {
   months: number;
   top_n?: number;
   initial_capital: number;
+  benchmark?: string | null;
 }
 
 export interface PerformanceMetrics {
@@ -28,6 +29,20 @@ export interface BacktestSnapshot {
   turnover: number;
 }
 
+export interface BenchmarkComparison {
+  benchmark_ticker: string;
+  benchmark_description: string;
+  benchmark_total_return: number;
+  benchmark_annualized: number;
+  benchmark_max_drawdown: number;
+  excess_return: number;
+  annualized_alpha: number;
+  information_ratio: number;
+  tracking_error: number;
+  beta: number;
+  correlation: number;
+}
+
 export interface BacktestResult {
   preset_name: string;
   start_date: string;
@@ -38,6 +53,10 @@ export interface BacktestResult {
   metrics: PerformanceMetrics;
   rebalance_history: BacktestSnapshot[];
   final_holdings: string[];
+  benchmark_comparison?: BenchmarkComparison | null;
+  strategy_daily_nav?: Record<string, number> | null;
+  benchmark_daily_nav?: Record<string, number> | null;
+  stock_names?: Record<string, string>;
 }
 
 export type BacktestTaskStatus = "CREATED" | "RUNNING" | "DONE" | "FAILED";
