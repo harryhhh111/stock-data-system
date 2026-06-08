@@ -419,6 +419,18 @@ def run_backtest(
     if preset_name not in PRESETS:
         raise ValueError(f"未知预设: {preset_name}，可选: {list(PRESETS.keys())}")
 
+    # 海龟交易：完全独立引擎
+    if preset_name == "turtle":
+        from quant.backtest.turtle import run_turtle_backtest
+        return run_turtle_backtest(
+            start=start,
+            end=end,
+            market=market,
+            initial_capital=initial_capital,
+            benchmark=benchmark,
+            progress_callback=progress_callback,
+        )
+
     preset = PRESETS[preset_name]
     if top_n is None:
         top_n = preset.get("top_n", 30)
