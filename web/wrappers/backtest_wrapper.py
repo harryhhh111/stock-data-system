@@ -122,6 +122,7 @@ def run_backtest_task(task_id: str, params: dict) -> None:
             initial_capital=params.get("initial_capital", 1_000_000),
             market=market,
             benchmark=benchmark,
+            timing=params.get("timing", False),
             progress_callback=on_progress,
         )
         update_task(task_id, status="DONE", result=_serialize(result, market),

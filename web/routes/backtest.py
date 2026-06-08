@@ -19,6 +19,7 @@ class BacktestRunParams(BaseModel):
     top_n: int | None = None
     initial_capital: float = 1_000_000
     benchmark: str | None = None  # None=按市场自动选择，""=禁用
+    timing: bool = False  # 200日均线择时轮动
 
 
 @router.get("/backtest/presets")

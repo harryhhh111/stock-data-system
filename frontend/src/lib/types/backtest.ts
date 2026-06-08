@@ -9,6 +9,7 @@ export interface BacktestParams {
   top_n?: number;
   initial_capital: number;
   benchmark?: string | null;
+  timing?: boolean;
 }
 
 export interface PerformanceMetrics {

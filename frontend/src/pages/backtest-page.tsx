@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { backtestApi } from "@/lib/api/client";
 import { useBacktestStore } from "@/lib/store/backtest-store";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -305,6 +306,7 @@ export function BacktestPage() {
         top_n: store.topN ?? undefined,
         initial_capital: store.capital,
         benchmark: store.benchmark || null,
+        timing: store.timing,
       }),
     onSuccess: (data) => setActiveTaskId(data.task_id),
   });
@@ -384,6 +386,18 @@ export function BacktestPage() {
             disabled={isRunning}
             placeholder="SPY"
           />
+        </div>
+
+        <div className="flex items-center gap-2 pt-5">
+          <Checkbox
+            id="timing-toggle"
+            checked={store.timing}
+            onCheckedChange={(v) => store.setTiming(v === true)}
+            disabled={isRunning}
+          />
+          <label htmlFor="timing-toggle" className="text-xs text-muted-foreground cursor-pointer select-none">
+            200MA择时
+          </label>
         </div>
 
         <Button onClick={() => mutation.mutate()} disabled={isRunning || mutation.isPending}>

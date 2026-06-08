@@ -46,31 +46,46 @@ class PITPreloader:
                 "  parent_equity, total_equity, total_assets, total_liab,"
                 "  eps_basic, eps_diluted, revenue_yoy, net_profit_yoy, fcf"
                 " FROM mv_financial_indicator"
-                " WHERE report_type IN ('annual', 'quarterly')"
-                "  AND notice_date >= '2015-01-01'",
+                " WHERE report_type IN ('annual', 'quarterly')",
                 str_cols=("stock_code", "report_type"),
             )
             self.fin["notice_date"] = pd.to_datetime(
                 self.fin["notice_date"], errors="coerce"
-            ).dt.date
+            )
             self.fin["report_date"] = pd.to_datetime(
                 self.fin["report_date"], errors="coerce"
-            ).dt.date
+            )
+            # 填充缺失 notice_date：用 report_date + 4 个月近似公告日
+            null_fin_notice = self.fin["notice_date"].isna()
+            self.fin.loc[null_fin_notice, "notice_date"] = (
+                self.fin.loc[null_fin_notice, "report_date"] + pd.DateOffset(months=4)
+            )
+            # 统一转为 date 用于 PIT 比较（Timestamp 无法直接 <= date）
+            self.fin["notice_date"] = self.fin["notice_date"].dt.date
+            self.fin["report_date"] = self.fin["report_date"].dt.date
             self.fin = self.fin.sort_values(
                 ["stock_code", "report_date"], ascending=[True, False]
             )
 
             self.ttm = _copy_df(
                 conn,
-                "SELECT * FROM mv_indicator_ttm_hist",
+                "SELECT t.* FROM mv_indicator_ttm_hist t"
+                " JOIN stock_info s ON s.stock_code = t.stock_code"
+                f" WHERE s.market = '{self.market}'",
                 str_cols=("stock_code", "report_type"),
             )
             self.ttm["notice_date"] = pd.to_datetime(
                 self.ttm["notice_date"], errors="coerce"
-            ).dt.date
+            )
             self.ttm["report_date"] = pd.to_datetime(
                 self.ttm["report_date"], errors="coerce"
-            ).dt.date
+            )
+            null_ttm_notice = self.ttm["notice_date"].isna()
+            self.ttm.loc[null_ttm_notice, "notice_date"] = (
+                self.ttm.loc[null_ttm_notice, "report_date"] + pd.DateOffset(months=4)
+            )
+            self.ttm["notice_date"] = self.ttm["notice_date"].dt.date
+            self.ttm["report_date"] = self.ttm["report_date"].dt.date
             self.ttm = self.ttm.sort_values(
                 ["stock_code", "report_date"], ascending=[True, False]
             )

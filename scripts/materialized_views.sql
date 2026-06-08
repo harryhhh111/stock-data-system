@@ -287,7 +287,7 @@ WITH report_data AS (
     FROM income_statement i
     LEFT JOIN cash_flow_statement cf
         USING (stock_code, report_date, report_type)
-    WHERE i.report_date >= CURRENT_DATE - INTERVAL '10 years'
+    WHERE i.report_date >= CURRENT_DATE - INTERVAL '20 years'
       AND i.report_type IN ('quarterly', 'semi', 'annual')
 ),
 prev_year AS (

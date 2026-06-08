@@ -161,6 +161,7 @@ def main() -> None:
                         help="市场代码（默认 US）")
     parser.add_argument("--benchmark", default=None,
                         help="基准 ticker（默认按市场自动选择；用 '' 禁用）")
+    parser.add_argument("--timing", action="store_true", help="启用 200 日均线择时轮动（牛持基准，熊持策略）")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     args = parser.parse_args()
@@ -178,6 +179,7 @@ def main() -> None:
             initial_capital=args.capital,
             market=args.market,
             benchmark=args.benchmark if args.benchmark else None,
+            timing=args.timing,
         )
     except ValueError as e:
         print(f"错误: {e}", file=sys.stderr)

@@ -118,8 +118,10 @@ def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
     equity = result["parent_equity"].fillna(result["total_equity"])
     result.loc[pos_cap & (equity > 0), "pb"] = result["market_cap"] / equity
 
-    # FCF yield
+    # FCF yield：TTM → 年报FCF → 净利润×0.7 近似
     result["fcf_ttm"] = result["cfo_ttm"] - result["capex_ttm"]
+    result["fcf_ttm"] = result["fcf_ttm"].fillna(result["fcf"])
+    result["fcf_ttm"] = result["fcf_ttm"].fillna(result["net_profit_ttm"] * 0.7)
     result.loc[pos_cap, "fcf_yield"] = result["fcf_ttm"] / result["market_cap"]
 
     # 占位列
@@ -234,6 +236,51 @@ def _compute_daily_nav(
     return daily_nav
 
 
+def _check_200ma_signal(
+    ticker: str, market: str, as_of_date: date
+) -> bool:
+    """200 日均线择时：True = 牛市（持有基准），False = 熊市（执行策略）。
+
+    在 as_of_date 时刻，查询 ticker 过去 250 个交易日收盘价，
+    计算 200 日均线。价格 > 均线 → 牛市信号。
+    """
+    sql = """
+    SELECT close FROM daily_quote
+    WHERE stock_code = %s AND market = %s AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT 250
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (ticker, _benchmark_market(ticker, market), as_of_date))
+        rows = cur.fetchall()
+        cur.close()
+    if len(rows) < 200:
+        return True  # 数据不足时默认牛市
+    closes = [float(r[0]) for r in reversed(rows)]
+    ma200 = sum(closes[-200:]) / 200
+    return closes[-1] > ma200
+
+
+def _get_sell_prices_mixed(
+    rb_date: date,
+    codes: list[str],
+    benchmark: str | None,
+    market: str,
+) -> dict[str, float | None]:
+    """查询价格，自动区分策略股票（用原市场）和基准 ticker（用 CN_IDX）。"""
+    if not codes:
+        return {}
+    bench_codes = [c for c in codes if c == benchmark]
+    strategy_codes = [c for c in codes if c != benchmark]
+    result = {}
+    if strategy_codes:
+        result.update(get_sell_prices(rb_date, strategy_codes, market=market))
+    if bench_codes:
+        bm = _benchmark_market(benchmark, market) if benchmark else market
+        result.update(get_sell_prices(rb_date, bench_codes, market=bm))
+    return result
+
+
 def run_backtest(
     preset_name: str,
     start: date,
@@ -243,6 +290,7 @@ def run_backtest(
     initial_capital: float = 1_000_000,
     market: str = "US",
     benchmark: str | None = None,
+    timing: bool = False,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> BacktestResult:
     """运行因子策略回测。
@@ -256,6 +304,7 @@ def run_backtest(
         initial_capital: 初始资金（默认 100 万美元）
         market: 市场代码（"US", "CN_A", "CN_HK"）
         benchmark: 基准 ticker（None=按市场自动选择，空字符串=禁用）
+        timing: 启用 200 日均线择时轮动（牛持基准，熊持策略）
 
     Returns:
         BacktestResult
@@ -295,47 +344,67 @@ def run_backtest(
     roe_min = filters.get("roe_min", 0)
 
     for i, rb_date in enumerate(rebalance_dates):
-        # 1. 获取 point-in-time 选股池
-        if preloader is not None:
-            base = preloader.get_universe(rb_date)
-            quote = quote_by_date.get(rb_date, pd.DataFrame())
-            universe = _build_universe(base, quote)
+        # 0. 200 日均线择时判断
+        if timing and benchmark:
+            is_bull = _check_200ma_signal(benchmark, market, rb_date)
         else:
-            universe = get_point_in_time_universe(rb_date, market=market)
+            is_bull = False
 
-        # 2. 硬过滤
-        filtered, _, _ = apply_hard_filters(universe, filters)
-
-        # 3. 连续 ROE 过滤
-        if roe_years and roe_years > 0:
-            if preloader is not None:
-                roe_hist = preloader.get_roe_history(rb_date, roe_years)
-            else:
-                roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
-            filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
-
-        if filtered.empty:
-            # 无候选股票，保留现有持仓
+        if timing and is_bull:
+            # 牛市：全仓持有基准
+            buy_prices = _get_sell_prices_mixed(rb_date, [benchmark], benchmark, market)
+            buy_prices = {k: v for k, v in buy_prices.items() if v and v > 0}
             sell_codes = list(portfolio.positions.keys())
-            sell_p = get_sell_prices(rb_date, sell_codes, market=market) if sell_codes else {}
-            portfolio.rebalance(rb_date, [], {}, sell_p)
-            continue
+            sell_p = _get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
+            portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+        else:
+            # 熊市（或无择时）：正常因子策略
 
-        # 4. 打分
-        scored = rank_factors(filtered, weights)
-        top = scored.nlargest(top_n, "score")
+            # 1. 获取 point-in-time 选股池
+            if preloader is not None:
+                base = preloader.get_universe(rb_date)
+                quote = quote_by_date.get(rb_date, pd.DataFrame())
+                universe = _build_universe(base, quote)
+            else:
+                universe = get_point_in_time_universe(rb_date, market=market)
 
-        # 5. 获取买入/卖出价格
-        new_targets = top["stock_code"].tolist()
-        sell_codes = list(portfolio.positions.keys())
-        trade_codes = list(set(new_targets) | set(sell_codes))
-        all_prices = get_sell_prices(rb_date, trade_codes, market=market) if trade_codes else {}
+            # 2. 硬过滤
+            filtered, _, _ = apply_hard_filters(universe, filters)
 
-        buy_prices = {c: p for c, p in all_prices.items() if c in new_targets and p is not None and p > 0}
-        sell_p = {c: all_prices.get(c) for c in sell_codes}
+            # 3. 连续 ROE 过滤
+            if roe_years and roe_years > 0:
+                if preloader is not None:
+                    roe_hist = preloader.get_roe_history(rb_date, roe_years)
+                else:
+                    roe_hist = get_roe_history_as_of(rb_date, market, roe_years)
+                filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
 
-        # 6. 调仓
-        portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+            if filtered.empty:
+                # 无候选股票，保留现有持仓
+                sell_codes = list(portfolio.positions.keys())
+                sell_p = _get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
+                portfolio.rebalance(rb_date, [], {}, sell_p)
+                continue
+
+            # 4. 打分
+            scored = rank_factors(filtered, weights)
+            top = scored.nlargest(top_n, "score")
+
+            # 5. 获取买入/卖出价格
+            new_targets = top["stock_code"].tolist()
+            sell_codes = list(portfolio.positions.keys())
+            trade_codes = list(set(new_targets) | set(sell_codes))
+            all_prices = _get_sell_prices_mixed(rb_date, trade_codes, benchmark, market)
+
+            buy_prices = {c: p for c, p in all_prices.items() if c in new_targets and p is not None and p > 0}
+            sell_p = {c: p for c, p in all_prices.items() if c in sell_codes and p is not None}
+            # 已无价格（退市）的持仓用买入均价兜底
+            for c in sell_codes:
+                if c not in sell_p:
+                    sell_p[c] = portfolio.positions[c].avg_cost
+
+            # 6. 调仓
+            portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
 
         if progress_callback:
             pct = round((i + 1) / len(rebalance_dates) * 100, 1)
@@ -345,7 +414,7 @@ def run_backtest(
     end_trade = get_nearest_trade_date(end, market=market)
     if end_trade and portfolio.positions:
         final_codes = list(portfolio.positions.keys())
-        final_prices = get_sell_prices(end_trade, final_codes, market=market)
+        final_prices = _get_sell_prices_mixed(end_trade, final_codes, benchmark, market)
         final_value = portfolio.compute_final_value(end_trade, final_prices)
     else:
         final_value = portfolio.cash
