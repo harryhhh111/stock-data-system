@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
@@ -281,6 +282,112 @@ def _get_sell_prices_mixed(
     return result
 
 
+def _compute_price_factors(
+    codes: list[str], as_of_date: date, market: str
+) -> pd.DataFrame:
+    """计算价格动量/反转因子，返回以 stock_code 为 index 的 DataFrame。
+
+    需要 historical daily_quote，每次查询 ~500 只 × 252 天 = ~126K 行。
+    """
+    if not codes:
+        return pd.DataFrame()
+
+    start_date = as_of_date - timedelta(days=400)  # 预留节假日余量
+    sql = """
+    SELECT stock_code, trade_date, close
+    FROM daily_quote
+    WHERE stock_code = ANY(%s) AND market = %s AND trade_date BETWEEN %s AND %s
+    ORDER BY stock_code, trade_date
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (list(codes), market, start_date, as_of_date))
+        rows = cur.fetchall()
+        cur.close()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=["stock_code", "date", "close"])
+    df["close"] = df["close"].astype(float)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["stock_code", "date"])
+
+    results = {}
+    for code, group in df.groupby("stock_code"):
+        closes = group.set_index("date")["close"]
+        n = len(closes)
+        if n < 10:
+            continue
+
+        latest = closes.iloc[-1]
+        ret = closes.pct_change().dropna()
+
+        results[code] = {
+            "momentum_1m": float(latest / closes.iloc[max(0, n - 21)] - 1) if n >= 21 else None,
+            "momentum_3m": float(latest / closes.iloc[max(0, n - 63)] - 1) if n >= 63 else None,
+            "momentum_6m": float(latest / closes.iloc[max(0, n - 126)] - 1) if n >= 126 else None,
+            "momentum_12m_1m": float(closes.iloc[max(0, n - 22)] / closes.iloc[max(0, n - 252)] - 1) if n >= 252 else None,
+            "volatility_1m": float(ret.tail(21).std()) if len(ret) >= 21 else None,
+            # 均值回归因子：短期反转（最近1个月跌最多的）
+            "mean_reversion": float(-(latest / closes.iloc[max(0, n - 21)] - 1)) if n >= 21 else None,
+            # 布林带位置：(close - MA20) / (2 * std)
+            "bollinger_pct": float((latest - closes.tail(20).mean()) / (2 * closes.tail(20).std())) if n >= 20 and closes.tail(20).std() > 0 else None,
+        }
+
+    result_df = pd.DataFrame.from_dict(results, orient="index")
+    result_df.index.name = "stock_code"
+    return result_df
+
+
+def _index_momentum(code: str, as_of_date: date, lookback: int = 20) -> float | None:
+    """查询指数过去 N 个交易日的动量。"""
+    sql = """
+    SELECT close FROM daily_quote
+    WHERE stock_code = %s AND market = 'CN_IDX' AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT %s
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (code, as_of_date, lookback + 1))
+        rows = cur.fetchall()
+        cur.close()
+    if len(rows) < lookback + 1:
+        return None
+    latest = float(rows[0][0])
+    oldest = float(rows[-1][0])
+    return (latest - oldest) / oldest if oldest > 0 else None
+
+
+def _twenty_eighty_targets(
+    as_of_date: date, market: str
+) -> list[str]:
+    """二八轮动：比较大盘/小盘指数 60 日动量，返回目标持仓代码。"""
+    LOOKBACK = 60
+
+    _TWENTY_EIGHTY_PAIRS: dict[str, tuple[str, str]] = {
+        "CN_A": ("000300", "399905"),  # 沪深300 vs 中证500
+        "US": ("SPY", "IWM"),          # S&P 500 vs Russell 2000
+        "CN_HK": ("HSI", "HSI"),       # 港股暂无小盘指数，只持恒生
+    }
+    pair = _TWENTY_EIGHTY_PAIRS.get(market)
+    if not pair:
+        return []
+
+    mom_a = _index_momentum(pair[0], as_of_date, LOOKBACK)
+    mom_b = _index_momentum(pair[1], as_of_date, LOOKBACK)
+
+    if mom_a is None and mom_b is None:
+        return []
+    if mom_a is not None and mom_b is None:
+        return [pair[0]] if mom_a >= 0 else []
+    if mom_b is not None and mom_a is None:
+        return [pair[1]] if mom_b >= 0 else []
+
+    # 两者都有数据：选强者（双负时选跌得少的）
+    return [pair[0]] if mom_a >= mom_b else [pair[1]]
+
+
 def run_backtest(
     preset_name: str,
     start: date,
@@ -344,6 +451,19 @@ def run_backtest(
     roe_min = filters.get("roe_min", 0)
 
     for i, rb_date in enumerate(rebalance_dates):
+        # 0. 二八轮动：直接决定持仓指数
+        if preset_name == "twenty_eighty":
+            targets = _twenty_eighty_targets(rb_date, market)
+            sell_codes = list(portfolio.positions.keys())
+            sell_p = _get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
+            buy_prices = _get_sell_prices_mixed(rb_date, targets, benchmark, market)
+            buy_prices = {k: v for k, v in buy_prices.items() if v and v > 0}
+            portfolio.rebalance(rb_date, targets, buy_prices, sell_p)
+            if progress_callback:
+                pct = round((i + 1) / len(rebalance_dates) * 100, 1)
+                progress_callback(pct, f"调仓 {i + 1}/{len(rebalance_dates)}: {rb_date}")
+            continue
+
         # 0. 200 日均线择时判断
         if timing and benchmark:
             is_bull = _check_200ma_signal(benchmark, market, rb_date)
@@ -386,11 +506,20 @@ def run_backtest(
                 portfolio.rebalance(rb_date, [], {}, sell_p)
                 continue
 
-            # 4. 打分
+            # 4. 计算价格因子（动量/反转），合并到 filtered
+            price_factors = _compute_price_factors(
+                filtered["stock_code"].tolist(), rb_date, market
+            )
+            if not price_factors.empty:
+                filtered = filtered.merge(
+                    price_factors, left_on="stock_code", right_index=True, how="left"
+                )
+
+            # 5. 打分
             scored = rank_factors(filtered, weights)
             top = scored.nlargest(top_n, "score")
 
-            # 5. 获取买入/卖出价格
+            # 6. 获取买入/卖出价格
             new_targets = top["stock_code"].tolist()
             sell_codes = list(portfolio.positions.keys())
             trade_codes = list(set(new_targets) | set(sell_codes))
@@ -403,7 +532,7 @@ def run_backtest(
                 if c not in sell_p:
                     sell_p[c] = portfolio.positions[c].avg_cost
 
-            # 6. 调仓
+            # 7. 调仓
             portfolio.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
 
         if progress_callback:

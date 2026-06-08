@@ -112,34 +112,6 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 30,
     },
-    "quality": {
-        "description": "质量",
-        "conditions": [
-            "市值 ≥ 100亿 (A股/港股/美股)",
-            "排除 ST/*ST",
-            "资产负债率 ≤ 50%",
-            "毛利率 ≥ 30%",
-            "净利率 ≥ 10%",
-        ],
-        "scoring": "ROE 30% · FCF Yield 25% · CFO质量 20% · PB 15% · 营收同比 10%",
-        "filters": {
-            "market_cap_min": 10e9,
-            "exclude_st": True,
-            "debt_ratio_max": 0.5,
-            "gross_margin_min": 0.3,
-            "net_margin_min": 0.1,
-        },
-        # 硬过滤已涵盖 debt_ratio/gross_margin/net_margin，
-        # 打分聚焦盈利质量+现金流+成长+估值
-        "weights": {
-            "roe":           {"weight": 0.30, "ascending": False},
-            "fcf_yield":     {"weight": 0.25, "ascending": False},
-            "cfo_quality":   {"weight": 0.20, "ascending": False},
-            "pb":            {"weight": 0.15, "ascending": True},
-            "revenue_yoy":   {"weight": 0.10, "ascending": False},
-        },
-        "top_n": 30,
-    },
     "growth_value": {
         "description": "成长价值",
         "conditions": [
@@ -193,6 +165,98 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 30,
     },
+    "twenty_eighty": {
+        "description": "二八轮动",
+        "conditions": [
+            "比较沪深300 vs 中证500 60日动量",
+            "买入动量强者（月频调仓）",
+            "（US: SPY vs IWM）",
+        ],
+        "scoring": "60日动量比较 — 永远满仓动量强者",
+        "filters": {},
+        "weights": {},
+        "top_n": 1,
+    },
+    "multi_factor": {
+        "description": "多因子综合",
+        "conditions": [
+            "市值 ≥ 25亿 (A股/港股)，≥ 10亿美元 (美股)",
+            "排除 ST/*ST",
+            "PE(TTM) > 0",
+            "资产负债率 ≤ 60%",
+        ],
+        "scoring": "FCF Yield 15% · ROE 15% · 动量6月 15% · 营收同比 10% · 毛利率 10% · PB 10% · CFO质量 10% · 动量1月 5% · 股息率 10%",
+        "filters": {
+            "market_cap_min_by_market": {
+                "CN_A": 2.5e9,
+                "CN_HK": 2.5e9,
+                "US": 1e9,
+            },
+            "exclude_st": True,
+            "pe_ttm_positive": True,
+            "debt_ratio_max": 0.6,
+        },
+        "weights": {
+            "fcf_yield":      {"weight": 0.15, "ascending": False},
+            "roe":            {"weight": 0.15, "ascending": False},
+            "momentum_6m":    {"weight": 0.15, "ascending": False},
+            "revenue_yoy":    {"weight": 0.10, "ascending": False},
+            "gross_margin":   {"weight": 0.10, "ascending": False},
+            "pb":             {"weight": 0.10, "ascending": True},
+            "cfo_quality":    {"weight": 0.10, "ascending": False},
+            "momentum_1m":    {"weight": 0.05, "ascending": False},
+            "dividend_yield": {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 30,
+    },
+    "momentum": {
+        "description": "动量效应",
+        "conditions": [
+            "市值 ≥ 50亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "PE(TTM) > 0",
+        ],
+        "scoring": "动量6月 30% · 动量12-1月 25% · 动量3月 20% · 营收同比 15% · FCF Yield 10%",
+        "filters": {
+            "market_cap_min": 5e9,
+            "exclude_st": True,
+            "pe_ttm_positive": True,
+        },
+        "weights": {
+            "momentum_6m":     {"weight": 0.30, "ascending": False},
+            "momentum_12m_1m": {"weight": 0.25, "ascending": False},
+            "momentum_3m":     {"weight": 0.20, "ascending": False},
+            "revenue_yoy":     {"weight": 0.15, "ascending": False},
+            "fcf_yield":       {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 30,
+    },
+    "value_reversal": {
+        "description": "价值反转",
+        "conditions": [
+            "市值 ≥ 20亿 (A股/港股/美股)",
+            "排除 ST/*ST",
+            "PE(TTM) > 0 且 ≤ 30",
+            "资产负债率 ≤ 70%",
+        ],
+        "scoring": "短期反转 30% · 布林带下轨 20% · 低波动 15% · FCF Yield 15% · PB 10% · 股息率 10%",
+        "filters": {
+            "market_cap_min": 2e9,
+            "exclude_st": True,
+            "pe_ttm_positive": True,
+            "pe_ttm_max": 30,
+            "debt_ratio_max": 0.7,
+        },
+        "weights": {
+            "mean_reversion":  {"weight": 0.30, "ascending": False},
+            "bollinger_pct":   {"weight": 0.20, "ascending": True},  # 越低越好（靠近布林下轨）
+            "volatility_1m":   {"weight": 0.15, "ascending": True},  # 越低越好
+            "fcf_yield":       {"weight": 0.15, "ascending": False},
+            "pb":              {"weight": 0.10, "ascending": True},
+            "dividend_yield":  {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 30,
+    },
 }
 
 
@@ -201,8 +265,15 @@ PRESETS: dict[str, PresetConfig] = {
 # ───────────────────────────────────────────────
 
 FACTOR_LABELS: dict[str, str] = {
-    "fcf_yield":      "FCF Yield",
-    "dividend_yield": "股息率",
+    "fcf_yield":       "FCF Yield",
+    "dividend_yield":  "股息率",
+    "momentum_1m":     "动量(1月)",
+    "momentum_3m":     "动量(3月)",
+    "momentum_6m":     "动量(6月)",
+    "momentum_12m_1m": "动量(12-1月)",
+    "mean_reversion":  "短期反转",
+    "bollinger_pct":   "布林带位置",
+    "volatility_1m":   "波动率(1月)",
     "pe_ttm":         "PE(TTM)",
     "pb":             "PB",
     "roe":            "ROE",

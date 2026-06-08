@@ -29,6 +29,7 @@ _TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 # 数据源类型: "ak_zh" (akshare A股), "tx_hk" (腾讯港股)
 SUPPORTED_INDEXES: dict[str, tuple[str, str, str]] = {
     "000300": ("沪深300", "ak_zh", "sh000300"),
+    "399905": ("中证500", "ak_zh", "sz399905"),
     "399006": ("创业板指", "ak_zh", "sz399006"),
     "HSI": ("恒生指数", "tx_hk", "hkHSI"),
 }
@@ -128,7 +129,7 @@ def sync_index_quote(index_code: str, full: bool = False) -> int:
         if row and row[0]:
             start_date = row[0] + timedelta(days=1)
         else:
-            start_date = date(2020, 1, 1)
+            start_date = date(2015, 1, 1)
 
     if start_date >= date.today():
         logger.info("%s (%s): 数据已是最新 (%s)", index_code, name, start_date)
