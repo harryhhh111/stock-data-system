@@ -178,7 +178,7 @@ def main() -> None:
             top_n=args.top,
             initial_capital=args.capital,
             market=args.market,
-            benchmark=args.benchmark if args.benchmark else None,
+            benchmark=args.benchmark,
             timing=args.timing,
         )
     except ValueError as e:
