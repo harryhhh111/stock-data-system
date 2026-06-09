@@ -19,10 +19,14 @@ logger = logging.getLogger(__name__)
 # (申万行业列表, 名称关键词正则, 相关性)
 _MAPPING_CN_A: dict[str, tuple[list[str], str | None, float]] = {
     "XAU": (["有色金属"], r"金|黄金|矿业", 0.468),
+    "SI":  (["有色金属"], r"银|白银", 0.350),
+    "HG":  (["有色金属"], r"铜|铜陵|江西铜|云南铜", 0.601),
 }
 
 _MAPPING_CN_HK: dict[str, tuple[list[str], str | None, float]] = {
     "XAU": (["黄金及贵金属"], None, 0.602),
+    "SI":  (["黄金及贵金属"], None, 0.475),
+    "HG":  (["一般金属及矿石"], None, 0.540),
     "CL":  (["石油及天然气"], None, 0.402),
 }
 

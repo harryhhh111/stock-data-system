@@ -241,6 +241,56 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 15,
     },
+    "silver_value": {
+        "description": "白银周期+深度价值",
+        "conditions": [
+            "仅选白银相关股票（A股:有色金属名含银, 港股:黄金及贵金属）",
+            "银价 > 200MA 且 60日动量 > 0 时开仓",
+            "银价 bear 时排除该行业",
+            "FCF Yield ≥ 12%, ROE ≥ 10% 连续3年",
+        ],
+        "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
+        "macro_filter": ["SI"],
+        "filters": {
+            "market_cap_min_by_market": {"CN_A": 2.5e9, "CN_HK": 2.5e9},
+            "exclude_st": True,
+            "fcf_yield_min_by_market": {"CN_A": 0.12, "CN_HK": 0.12},
+            "roe_min": 0.10, "roe_consecutive_years": 3,
+        },
+        "weights": {
+            "fcf_yield": {"weight": 0.30, "ascending": False},
+            "cfo_quality": {"weight": 0.25, "ascending": False},
+            "pb": {"weight": 0.20, "ascending": True},
+            "revenue_yoy": {"weight": 0.15, "ascending": False},
+            "gross_margin": {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 15,
+    },
+    "copper_value": {
+        "description": "铜周期+深度价值",
+        "conditions": [
+            "仅选铜相关股票（A股:有色金属名含铜, 港股:一般金属及矿石）",
+            "铜价 > 200MA 且 60日动量 > 0 时开仓",
+            "铜价 bear 时排除该行业",
+            "FCF Yield ≥ 12%, ROE ≥ 10% 连续3年",
+        ],
+        "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
+        "macro_filter": ["HG"],
+        "filters": {
+            "market_cap_min_by_market": {"CN_A": 2.5e9, "CN_HK": 2.5e9},
+            "exclude_st": True,
+            "fcf_yield_min_by_market": {"CN_A": 0.12, "CN_HK": 0.12},
+            "roe_min": 0.10, "roe_consecutive_years": 3,
+        },
+        "weights": {
+            "fcf_yield": {"weight": 0.30, "ascending": False},
+            "cfo_quality": {"weight": 0.25, "ascending": False},
+            "pb": {"weight": 0.20, "ascending": True},
+            "revenue_yoy": {"weight": 0.15, "ascending": False},
+            "gross_margin": {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 15,
+    },
     "turtle": {
         "description": "海龟交易",
         "conditions": [
