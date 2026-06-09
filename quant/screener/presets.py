@@ -177,6 +177,70 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 30,
     },
+    "gold_value": {
+        "description": "黄金周期+深度价值",
+        "conditions": [
+            "仅选黄金相关股票（A股:有色金属名含金/矿, 港股:黄金及贵金属）",
+            "金价 > 200MA 且 60日动量 > 0 时开仓",
+            "金价 bear 时排除该行业",
+            "FCF Yield ≥ 12% (A股/港股)，ROE ≥ 10% 连续3年",
+        ],
+        "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
+        "macro_filter": ["XAU"],
+        "filters": {
+            "market_cap_min_by_market": {
+                "CN_A": 2.5e9,
+                "CN_HK": 2.5e9,
+            },
+            "exclude_st": True,
+            "fcf_yield_min_by_market": {
+                "CN_A": 0.12,
+                "CN_HK": 0.12,
+            },
+            "roe_min": 0.10,
+            "roe_consecutive_years": 3,
+        },
+        "weights": {
+            "fcf_yield":     {"weight": 0.30, "ascending": False},
+            "cfo_quality":   {"weight": 0.25, "ascending": False},
+            "pb":            {"weight": 0.20, "ascending": True},
+            "revenue_yoy":   {"weight": 0.15, "ascending": False},
+            "gross_margin":  {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 15,
+    },
+    "oil_value": {
+        "description": "原油周期+深度价值",
+        "conditions": [
+            "仅选原油相关股票（港股:石油及天然气, A股暂无）",
+            "油价 > 200MA 且 60日动量 > 0 时开仓",
+            "油价 bear 时排除该行业",
+            "FCF Yield ≥ 12%, ROE ≥ 10% 连续3年",
+        ],
+        "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
+        "macro_filter": ["CL"],
+        "filters": {
+            "market_cap_min_by_market": {
+                "CN_A": 2.5e9,
+                "CN_HK": 2.5e9,
+            },
+            "exclude_st": True,
+            "fcf_yield_min_by_market": {
+                "CN_A": 0.12,
+                "CN_HK": 0.12,
+            },
+            "roe_min": 0.10,
+            "roe_consecutive_years": 3,
+        },
+        "weights": {
+            "fcf_yield":     {"weight": 0.30, "ascending": False},
+            "cfo_quality":   {"weight": 0.25, "ascending": False},
+            "pb":            {"weight": 0.20, "ascending": True},
+            "revenue_yoy":   {"weight": 0.15, "ascending": False},
+            "gross_margin":  {"weight": 0.10, "ascending": False},
+        },
+        "top_n": 15,
+    },
     "turtle": {
         "description": "海龟交易",
         "conditions": [

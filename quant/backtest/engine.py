@@ -443,6 +443,7 @@ def run_backtest(
         top_n = preset.get("top_n", 30)
     filters = preset["filters"]
     weights = preset["weights"]
+    macro_filter: list[str] = preset.get("macro_filter", [])
 
     if end is None:
         end = date.today()
@@ -506,6 +507,13 @@ def run_backtest(
                 universe = _build_universe(base, quote)
             else:
                 universe = get_point_in_time_universe(rb_date, market=market)
+
+            # 1.5. 宏观滤网：排除 bear 商品对应的行业股票
+            if macro_filter:
+                from quant.backtest.macro import get_excluded_codes
+                excluded = get_excluded_codes(market, macro_filter, rb_date)
+                if excluded:
+                    universe = universe[~universe["stock_code"].isin(excluded)]
 
             # 2. 硬过滤
             filtered, _, _ = apply_hard_filters(universe, filters)
