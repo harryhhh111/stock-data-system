@@ -172,7 +172,7 @@ PRESETS: dict[str, PresetConfig] = {
             "ATR(20) 仓位管理，单笔风险 1%",
             "止损 = 入场价 - 2×ATR",
             "大盘200MA上方才开仓（趋势过滤）",
-            "市值 top 500，最多5只持仓",
+            "市值 > 200亿，最多5只持仓",
         ],
         "scoring": "海龟 System 1 + 200MA趋势过滤",
         "filters": {},
