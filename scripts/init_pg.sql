@@ -376,3 +376,24 @@ CREATE INDEX IF NOT EXISTS idx_val_batch ON validation_results(batch_id);
 CREATE INDEX IF NOT EXISTS idx_val_stock ON validation_results(stock_code, market);
 CREATE INDEX IF NOT EXISTS idx_val_severity ON validation_results(severity);
 CREATE INDEX IF NOT EXISTS idx_val_check ON validation_results(check_name);
+
+-- ============================================================
+-- commodity_price: 国际商品期货日线
+-- 数据源: akshare futures_foreign_hist
+-- 同步: python scripts/sync_commodity.py
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS commodity_price (
+    commodity_code  VARCHAR(20) NOT NULL,
+    trade_date      DATE NOT NULL,
+    open            DECIMAL(12,4),
+    high            DECIMAL(12,4),
+    low             DECIMAL(12,4),
+    close           DECIMAL(12,4),
+    volume          BIGINT,
+    currency        VARCHAR(10) DEFAULT 'USD',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_commodity_price PRIMARY KEY (commodity_code, trade_date)
+);
+COMMENT ON COLUMN commodity_price.currency IS
+    '商品计价币种。仅作信号使用（趋势/动量），不做与 CNY 股价的直接换算';
