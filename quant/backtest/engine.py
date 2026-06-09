@@ -578,32 +578,38 @@ def run_backtest(
         bt_start = portfolio.history[0].date
         bt_end = portfolio.history[-1].date
         bench_prices = _load_benchmark_prices(benchmark, market, bt_start, bt_end)
-        if bench_prices:
-            # 日期对齐：直接用 bench_prices 的交易日列表
-            trade_dates = sorted(bench_prices.keys())
-
-            # 加载所有曾经持仓过的股票日频行情
-            all_codes: set[str] = set()
-            for snap in portfolio.history:
-                all_codes.update(snap.holdings.keys())
-            daily_quotes = _load_daily_quotes_for_codes(
-                list(all_codes), market, bt_start, bt_end
+        if not bench_prices:
+            raise ValueError(
+                f"基准 {benchmark} 在 {market} 市场 {bt_start} ~ {bt_end} 区间无 daily_quote 数据。"
+                f" 请检查：(1) stock_info 是否有该 ticker；(2) daily_quote 是否回填；"
+                f" 或用 --benchmark '' 显式禁用基准对比。"
             )
 
-            # 策略日频 NAV
-            strategy_daily_nav = _compute_daily_nav(
-                portfolio.history, daily_quotes, trade_dates, initial_capital
-            )
+        # 日期对齐：直接用 bench_prices 的交易日列表
+        trade_dates = sorted(bench_prices.keys())
 
-            # 基准日频 NAV（基准 NAV[bt_start] = 1.0）
-            base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
-            benchmark_daily_nav = {
-                d: bench_prices[d] / base_close for d in trade_dates
-            }
+        # 加载所有曾经持仓过的股票日频行情
+        all_codes: set[str] = set()
+        for snap in portfolio.history:
+            all_codes.update(snap.holdings.keys())
+        daily_quotes = _load_daily_quotes_for_codes(
+            list(all_codes), market, bt_start, bt_end
+        )
 
-            bench_comparison = compute_benchmark_comparison(
-                benchmark, strategy_daily_nav, benchmark_daily_nav
-            )
+        # 策略日频 NAV
+        strategy_daily_nav = _compute_daily_nav(
+            portfolio.history, daily_quotes, trade_dates, initial_capital
+        )
+
+        # 基准日频 NAV（基准 NAV[bt_start] = 1.0）
+        base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
+        benchmark_daily_nav = {
+            d: bench_prices[d] / base_close for d in trade_dates
+        }
+
+        bench_comparison = compute_benchmark_comparison(
+            benchmark, strategy_daily_nav, benchmark_daily_nav
+        )
 
     return BacktestResult(
         preset_name=preset_name,
