@@ -1,6 +1,6 @@
 # 宏观行业数据层设计文档
 
-> **目标服务器**：国内（`STOCK_MARKETS=CN_A,CN_HK`）。海外 US 服务器不在本方案覆盖范围（SIC 行业分类与申万体系不同）。
+> **目标服务器**：国内（`STOCK_MARKETS=CN_A,CN_HK`）。海外 US 服务器见 `MACRO_OVERLAY_DESIGN_US.md`。
 > 最后更新：2026-06-09（v1.2 — Phase 0 验证完成：相关性实测 + 最终映射表 + A股名称过滤方案）
 
 ## 动机
