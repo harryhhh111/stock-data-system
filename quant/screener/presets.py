@@ -83,6 +83,18 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "top_n": 30,
     },
+    "twenty_eighty": {
+        "description": "二八轮动",
+        "conditions": [
+            "比较沪深300 vs 中证500 60日动量",
+            "买入动量强者（月频调仓）",
+            "（US: SPY vs IWM）",
+        ],
+        "scoring": "60日动量比较 — 永远满仓动量强者",
+        "filters": {},
+        "weights": {},
+        "top_n": 1,
+    },
     "classic_value": {
         "description": "经典价值",
         "conditions": [
@@ -178,18 +190,6 @@ PRESETS: dict[str, PresetConfig] = {
         "filters": {},
         "weights": {},
         "top_n": 0,
-    },
-    "twenty_eighty": {
-        "description": "二八轮动",
-        "conditions": [
-            "比较沪深300 vs 中证500 60日动量",
-            "买入动量强者（月频调仓）",
-            "（US: SPY vs IWM）",
-        ],
-        "scoring": "60日动量比较 — 永远满仓动量强者",
-        "filters": {},
-        "weights": {},
-        "top_n": 1,
     },
     "multi_factor": {
         "description": "多因子综合",
