@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 # ── 海龟参数 ─────────────────────────────────────────────
 
-ENTRY_PERIOD = 20
-EXIT_PERIOD = 10
+ENTRY_PERIOD = 55
+EXIT_PERIOD = 20
 ATR_PERIOD = 20
 RISK_PER_TRADE = 0.01
 MAX_UNITS = 5

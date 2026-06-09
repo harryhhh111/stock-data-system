@@ -180,13 +180,13 @@ PRESETS: dict[str, PresetConfig] = {
     "turtle": {
         "description": "海龟交易",
         "conditions": [
-            "突破20日高点入场，跌破10日低点离场",
+            "突破55日高点入场，跌破20日低点离场",
             "ATR(20) 仓位管理，单笔风险 1%",
             "止损 = 入场价 - 2×ATR",
             "大盘200MA上方才开仓（趋势过滤）",
             "市值 > 200亿，最多5只持仓",
         ],
-        "scoring": "海龟 System 1 + 200MA趋势过滤",
+        "scoring": "海龟 System 2 (55/20) + 200MA趋势过滤",
         "filters": {},
         "weights": {},
         "top_n": 0,

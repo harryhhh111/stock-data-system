@@ -362,7 +362,10 @@ def _index_momentum(code: str, as_of_date: date, lookback: int = 20) -> float | 
 def _twenty_eighty_targets(
     as_of_date: date, market: str
 ) -> list[str]:
-    """二八轮动：比较大盘/小盘指数 60 日动量，返回目标持仓代码。"""
+    """二八轮动：比较大盘/小盘指数 60 日动量，返回目标持仓代码。
+
+    200MA 趋势过滤：大盘指数在均线下方时，空仓避险。
+    """
     LOOKBACK = 60
 
     _TWENTY_EIGHTY_PAIRS: dict[str, tuple[str, str]] = {
@@ -374,17 +377,21 @@ def _twenty_eighty_targets(
     if not pair:
         return []
 
+    # 200MA 趋势过滤：大盘指数线下则空仓
+    if not _check_200ma_signal(pair[0], market, as_of_date):
+        return []
+
     mom_a = _index_momentum(pair[0], as_of_date, LOOKBACK)
     mom_b = _index_momentum(pair[1], as_of_date, LOOKBACK)
 
     if mom_a is None and mom_b is None:
         return []
-    if mom_a is not None and mom_b is None:
-        return [pair[0]] if mom_a >= 0 else []
-    if mom_b is not None and mom_a is None:
-        return [pair[1]] if mom_b >= 0 else []
+    if mom_b is None:
+        mom_b = mom_a  # 单指数时用自身动量判断
+    if mom_a is None:
+        mom_a = mom_b
 
-    # 两者都有数据：选强者（双负时选跌得少的）
+    # 选强者（双负时选跌得少的）
     return [pair[0]] if mom_a >= mom_b else [pair[1]]
 
 
