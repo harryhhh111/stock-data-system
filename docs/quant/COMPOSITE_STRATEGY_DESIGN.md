@@ -1,8 +1,8 @@
 # 复合策略引擎设计文档
 
-> **状态**：草案 v1.0（审核修订版）  
-> **审核日期**：2026-06-10  
-> **修订内容**：解决与 macro_filter 体系重叠、Portfolio 兼容性、子策略复用、验证标准等 12 条审核意见。
+> **状态**：草案 v1.1（二审修订版）  
+> **审核日期**：2026-06-10（一审）→ 2026-06-11（二审）  
+> **v1.1 修订**：补充 Portfolio API、ROE 连续过滤、日频 NAV 生成、持仓去重合并、港股锁定 CN_A、工作量重估。
 
 ## 定位
 
@@ -136,7 +136,7 @@ def run_composite_backtest(
     preset_name: str,
     start: date,
     end: date | None = None,
-    market: str = "CN_A",
+    market: str = "CN_A",          # v1 只支持 CN_A（港股择时/指数未适配）
     initial_capital: float = 1_000_000,
     benchmark: str | None = None,
     progress_callback: Callable | None = None,
@@ -150,8 +150,31 @@ def run_composite_backtest(
       1. 检查所有商品信号 + 大盘 200MA
       2. 计算各子策略资金分配（归一化）
       3. 各子策略在各自 Portfolio 内独立调仓
-      4. 汇总：NAV_total = Σ NAV_i，holdings = ∪ all
+      4. 汇总：NAV_total = Σ NAV_i，holdings 去重合并
     """
+
+
+def _check_all_signals(
+    cfg: CompositeConfig, market: str, as_of_date: date
+) -> dict[str, str]:
+    """遍历 cfg 中所有 commodity，调用现有 commodity_signal() + _check_200ma_signal()。
+
+    Returns:
+        {"XAU": "bull", "HG": "bull", "CL": "bear", "market": "bull"}
+        其中 "market" 键是大盘 200MA 信号（True→"bull", False→"bear"）。
+    """
+    signals: dict[str, str] = {}
+    for sub in cfg["sub_strategies"]:
+        if sub["commodity"]:
+            signals[sub["commodity"]] = commodity_signal(sub["commodity"], as_of_date)
+
+    # 大盘信号
+    benchmark = cfg.get("benchmark")
+    if benchmark:
+        is_bull = _check_200ma_signal(benchmark, market, as_of_date)
+        signals["market"] = "bull" if is_bull else "bear"
+
+    return signals
 ```
 
 ### 完整伪代码
@@ -208,14 +231,17 @@ def run_composite_backtest(preset_name, start, end, market, initial_capital, ben
             target_capital = initial_capital * allocation[name]
             sub_pf = sub_portfolios[name]
 
-            # 3a. 资金归一化（解决 §7 漂移问题）
-            #     将子组合当前 NAV 缩放到 target_capital
-            current_nav = sub_pf.nav(_get_prices(rb_date))
+            # 3a. 资金归一化（解决漂移问题）
+            #     用调仓日收盘价估值 → 缩放到 target_capital
+            all_codes = list(sub_pf.positions.keys())
+            prices_3a = _get_sell_prices_mixed(rb_date, all_codes, benchmark, market)
+            current_nav = sub_pf.nav(prices_3a)
             if current_nav > 0:
                 scale = target_capital / current_nav
-                sub_pf.scale_positions(scale)  # 等比缩放持仓
+                sub_pf.scale_positions(scale)
             else:
                 sub_pf.cash = target_capital
+                sub_pf.positions.clear()
 
             # 3b. 选股
             if is_residual_base(sub):
@@ -293,9 +319,78 @@ def run_composite_backtest(preset_name, start, end, market, initial_capital, ben
 
 5. 汇总
    NAV_total = NAV_gold + NAV_copper + NAV_oil + NAV_base
-   holdings = gold_pf.positions ∪ copper_pf.positions ∪ base_pf.positions
+
+   持仓合并（去重 + 权重叠加）：
+   - 同一只股票可能出现在多个子组合中（如紫金矿业同时入选 gold 和 copper）
+   - 这不是 bug —— 紫金矿业确实同时受益于金价和铜价上涨
+   - 汇总时合并 shares：total_shares["紫金矿业"] = gold_pf 的 shares + copper_pf 的 shares
+   - 在持仓展示中标注"双因子暴露"（gold+copper）
+   - 如果同一只股票被两个子组合选中的频率过高（>30% 调仓日），说明行业映射颗粒度需要调整
 
    绩效指标从 NAV_total 序列计算（夏普、最大回撤、年化收益等）
+```
+
+## 日频 NAV 生成
+
+`compute_benchmark_comparison`（`portfolio.py:53`）要求 `strategy_daily_nav` 和 `benchmark_daily_nav` 日期完全对齐，才能正确计算 IR、beta、tracking error。复合策略需要在每个交易日估值所有子组合的持仓。
+
+### 方案：批量日频估值（方案 A）
+
+```
+每个交易日 d:
+  NAV_d = Σ 各子组合的 cash + sum(pos.shares × close_d)
+
+实现:
+  1. 收集回测区间内所有曾经持有的 stock_code（来自子组合历史快照）
+  2. COPY CSV 批量查询这些代码在 [start, end] 全部 close
+     注：不是 2527 × 几千只，只是曾经持有的几十到几百只
+  3. 按日遍历：对每个 d，用 close_d 估值每个子组合 → 求和
+```
+
+### IO 估算
+
+```
+10 年 × 12 调仓/年 × 平均 30 只持仓 = ~3600 个 (code, date) 对
+实际上很多重复（同一代码持有多期），COPY CSV 一次拉全部 close 即可
+预计 IO：~1 MB，< 1 秒
+```
+
+### 边界处理
+
+- 停牌日：用最近一个交易日的 close（forward-fill）
+- 退市股票：退市后 shares = 0，不参与后续估值
+- 子组合空仓：该子组合 NAV = cash（不增值不贬值）
+
+```python
+def _compute_daily_nav(sub_portfolios, start, end, market):
+    """计算复合策略的每日 NAV 序列。"""
+    # 1. 收集所有持仓代码
+    all_codes = set()
+    for pf in sub_portfolios.values():
+        for snap in pf.history:
+            all_codes.update(snap.holdings.keys())
+
+    # 2. 批量加载 close
+    with Connection() as conn:
+        daily_close = _batch_load_close(conn, list(all_codes), start, end, market)
+    # daily_close: dict[date, dict[str, float]]
+
+    # 3. 日频估值
+    all_dates = sorted(daily_close.keys())
+    daily_nav = {}
+    for d in all_dates:
+        total = 0.0
+        for pf in sub_portfolios.values():
+            # 找到 d 所在调仓周期的持仓
+            holdings = _get_holdings_at(pf, d)
+            prices = daily_close[d]
+            nav = pf.cash  # 从最后一次调仓快照获取（近似）
+            for code, shares in holdings.items():
+                nav += shares * prices.get(code, 0)
+            total += nav
+        daily_nav[d] = total
+
+    return daily_nav
 ```
 
 ## 和现有引擎的关系
@@ -336,6 +431,8 @@ def run_backtest(preset_name, ...):
 def _commodity_sub_targets(sub, rb_date, market, preloader, quote_by_date):
     """用 fcf_roe_value 的 filter + scoring 逻辑，但：
     1. universe 替换为 commodity_mapped_stocks ∩ full_universe
+       （注意：preloader.get_universe() 已经包含市值/FCF/ROE 等财务过滤，
+        pool 是"全市场 FCF+ROE 候选 ∩ 商品行业"，不是"先选行业再套过滤"）
     2. top_n 用 sub["top_n_override"] 而非原 preset 的 top_n
     3. 行业排除保留 fcf_roe_value 的 exclude_industries（银行/非银/地产）
        ——在 commodity 股池内仍需排除（如黄金股不在银行，通常无影响）
@@ -346,10 +443,30 @@ def _commodity_sub_targets(sub, rb_date, market, preloader, quote_by_date):
 
     filters = PRESETS["fcf_roe_value"]["filters"]
     weights = PRESETS["fcf_roe_value"]["weights"]
-    top_n = sub.get("top_n_override") or PRESETS["fcf_roe_value"]["top_n"]
 
+    # top_n: 显式判断 None（不能用 or，0 会被误判为 falsy）
+    top_n_override = sub.get("top_n_override")
+    top_n = top_n_override if top_n_override is not None else PRESETS["fcf_roe_value"]["top_n"]
+
+    # 1. 硬过滤（市值、FCF Yield、行业排除等）
     filtered, _, _ = apply_hard_filters(pool, filters)
-    # ROE 连续过滤...
+
+    # 2. ROE 连续过滤（fcf_roe_value 的"连续 3 年 ROE ≥ 10%"）
+    roe_years = filters.get("roe_consecutive_years", 0)
+    roe_min = filters.get("roe_min", 0)
+    if roe_years and roe_years > 0:
+        roe_hist = preloader.get_roe_history(rb_date, roe_years)
+        filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
+
+    if filtered.empty:
+        return []
+
+    # 3. 合并价格因子（动量/反转）
+    price_factors = _compute_price_factors(filtered["stock_code"].tolist(), rb_date, market)
+    if not price_factors.empty:
+        filtered = filtered.merge(price_factors, left_on="stock_code", right_index=True, how="left")
+
+    # 4. 打分
     scored = rank_factors(filtered, weights)
     return scored.nlargest(top_n, "score")["stock_code"].tolist()
 ```
@@ -398,6 +515,28 @@ base 子策略 (residual=True) 的权重 = max(residual, 0)
 
 v1 假设：**每个调仓日按原始权重比例重新缩放子组合**。这解决了"不做再平衡"导致的被动漂移问题。
 
+归一化需要给 `Portfolio` 新增两个方法（当前 `portfolio.py` 只有 `rebalance()` 和 `compute_final_value()`，没有通用估值接口）：
+
+```python
+# 新增 Portfolio.nav(prices: dict[str, float]) -> float
+def nav(self, prices: dict[str, float]) -> float:
+    """按给定价格计算当前组合总市值（不做调仓，不记录快照）。"""
+    return self.cash + sum(
+        pos.shares * prices.get(code, pos.avg_cost)
+        for code, pos in self.positions.items()
+    )
+
+# 新增 Portfolio.scale_positions(scale: float) -> None
+def scale_positions(self, scale: float) -> None:
+    """等比缩放所有持仓 + 现金（不产生交易记录）。"""
+    self.cash *= scale
+    for pos in self.positions.values():
+        pos.shares *= scale
+    # avg_cost 不变 —— 缩放不改变成本基础
+```
+
+归一化函数本体：
+
 ```python
 def _normalize_sub_portfolio(sub_pf, target_capital, prices):
     """将子组合 NAV 缩放到 target_capital，保持持仓比例不变。"""
@@ -408,10 +547,7 @@ def _normalize_sub_portfolio(sub_pf, target_capital, prices):
         return
 
     scale = target_capital / current_nav
-    # 等比缩放所有持仓 + 现金
-    sub_pf.cash *= scale
-    for pos in sub_pf.positions.values():
-        pos.shares *= scale
+    sub_pf.scale_positions(scale)
 ```
 
 这保证了：
@@ -468,11 +604,8 @@ def _normalize_sub_portfolio(sub_pf, target_capital, prices):
 ### 5. CLI 验证
 
 ```bash
-# 全期回测
+# 全期回测（v1 仅 CN_A）
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2016-01
-
-# 港股
-python -m quant.backtest --preset commodity_rotation --market CN_HK --start 2016-01
 
 # 分段
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2016-01 --end 2018-12
@@ -485,31 +618,34 @@ python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2016-01
 python -m quant.backtest --preset twenty_eighty --market CN_A --start 2016-01
 ```
 
-## 实施计划（修订）
+## 实施计划（二审修订）
 
 | 步骤 | 内容 | 文件 | 预估 |
 |------|------|------|------|
 | 1 | `CompositeConfig` / `SubStrategyConfig` TypedDict | `presets.py` | 0.5h |
-| 2 | `run_composite_backtest()` 主框架 | `composite.py` | 2h |
-| 3 | 信号检查 + 资金分配 + 归一化 | `composite.py` | 1h |
-| 4 | 商品子策略选股（复用 preloader + scorer） | `composite.py` | 1.5h |
+| 2a | `Portfolio.nav()` + `scale_positions()` 新增 | `portfolio.py` | 0.5h |
+| 2b | `run_composite_backtest()` 主框架 | `composite.py` | 2h |
+| 3 | 信号检查 + 资金分配 + 归一化（含 `_check_all_signals`） | `composite.py` | 1.5h |
+| 4a | 商品子策略选股（含 ROE 连续过滤 + 价格因子合并） | `composite.py` | 2h |
+| 4b | 日频 NAV 生成 + benchmark 对齐 | `composite.py` | 1.5h |
 | 5 | 基础子策略分支（二八轮动/FCF+ROE） | `composite.py` | 1h |
-| 6 | 汇总 + 绩效合并 + BacktestResult | `composite.py` | 1h |
+| 6 | 汇总去重 + 绩效合并 + BacktestResult | `composite.py` | 1.5h |
 | 7 | 引擎路由（`type: "composite"` 判断） | `engine.py` | 0.5h |
-| 8 | 前端适配（子组合持仓展示） | `frontend/` | 1h |
+| 8 | 前端适配（子组合持仓展示 + 重叠标注） | `frontend/` | 1h |
 | 9 | 回测验证（对照组 + 分段 + 归因 + 极端） | CLI | 3h |
-| **总计** | | | **~11.5h** |
+| **总计** | | | **~15h** |
 
 ## 不做的（v1 范围外）
 
 - **子策略间日频再平衡**：只做月度归一化（调仓日统一缩放）。子组合间的日内漂移不纠正，月度归一化已足够控制偏离。
-- **商品信号冲突仲裁**：不适用——每个商品子策略独立分配，不存在信号冲突。基础策略的 `market_scope="all"` 也不与商品子策略冲突（硬过滤阶段排除就行）。
+- **子组合持仓重叠仲裁**：同一只股票可被多个子组合独立持有（如紫金矿业同时受 gold+copper 驱动）。v1 接受重叠并在汇总时合并 shares，不判定"冲突"。如果重叠频率过高（>30% 调仓日），v2 考虑引入"去重后重新分配权重"。
+- **假换手修正**：`Portfolio.rebalance()` 的重建式调仓（清空再买入）会产生虚增换手。但单策略回测也有同样的行为，因此**跨策略的换手率横向对比仍是公平的**。在归因分析中标注"换手率含调仓重建成分"即可，v1 不改 Portfolio。
 - **机器学习动态权重**
-- **跨市场复合**（CN_A + CN_HK 同时配置）
+- **跨市场复合**（CN_A + CN_HK 同时配置）：v1 锁定 CN_A。CN_HK 需要适配择时指数（恒指/国企）和 `_twenty_eighty_targets` 的港股路径，留给 v2。
 - **子策略级别的绩效归因**：v1 只做汇总绩效。子策略分别报告留给 v2。
 
 ## 开放问题
 
-1. **子组合空仓时怎么处理**：所有商品 bear + 大盘熊市 → base 配 100% FCF+ROE。FCF+ROE 也可能选不出股票（如 2008 金融危机全市场 ROE < 10%）。此时 base 子组合空仓是合理行为还是应该 fallback 到指数？
+1. **base 空仓 fallback**：所有商品 bear + 大盘熊市 → base 配 100% FCF+ROE。FCF+ROE 也可能选不出股票（如 2008 金融危机全市场 ROE < 10%）。v1 决策：**接受空仓**（诚实反映风险），不强制买入指数。理由：(a) 强行买入基准会隐藏真实的因子失效信号；(b) 空仓本身就是有价值的信息——说明当前市场环境下所有策略都找不到机会。如果回测显示空仓期过长（连续 6+ 个月），在归因分析中单独标注，v2 再评估 fallback 方案。
 2. **top_n_override 的动态性**：top_n 应该随资金量浮动吗（15w 配 5 只 vs 10w 配 3 只）？当前写死，后续可考虑 `top_n = max(1, int(capital / 3w))`。
 3. **子策略 preset 多样性**：v1 所有商品子策略都用 fcf_roe_value。后续是否允许 gold 用 turtle、copper 用 momentum？需要吗？
