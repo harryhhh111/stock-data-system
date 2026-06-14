@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from db import Connection
@@ -31,10 +33,10 @@ from quant.backtest.engine import (
     get_nearest_trade_date,
 )
 from quant.backtest.macro import commodity_signal, get_mapped_stocks
-from quant.backtest.portfolio import Portfolio
+from quant.backtest.portfolio import PerformanceMetrics, Portfolio
 from quant.backtest.preloader import PITPreloader
 from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
-from quant.screener.presets import COMPOSITE_PRESETS, PRESETS, CompositeConfig
+from quant.screener.presets import COMPOSITE_PRESETS, PRESETS, CompositeConfig, SubStrategyConfig
 from quant.screener.scorer import rank_factors
 
 logger = logging.getLogger(__name__)
@@ -117,7 +119,11 @@ def _normalize_sub_portfolio(
     sub_pf: Portfolio, target_capital: float, current_prices: dict[str, float | None]
 ) -> None:
     """将子组合 NAV 缩放到 target_capital，保持持仓比例不变。"""
-    prices_clean = {k: (v or 0) for k, v in current_prices.items()}
+    # 缺失/停牌价格用持仓均价兜底，避免市值被低估导致过度缩放
+    prices_clean = {
+        code: (price if price is not None and price > 0 else sub_pf.positions[code].avg_cost)
+        for code, price in current_prices.items()
+    }
     current_nav = sub_pf.nav(prices_clean)
     if current_nav <= 0:
         sub_pf.cash = target_capital
@@ -131,8 +137,10 @@ def _normalize_sub_portfolio(
 # ── 日频 NAV ────────────────────────────────────────────
 
 def _get_snapshot_at(snapshots: list[Snapshot], d: date) -> Snapshot:
-    """返回 d 之前（含）最近一次 Snapshot。"""
+    """返回 d 之前（含）最近一次 Snapshot；若不存在则返回空组合快照。"""
     if not snapshots:
+        return _empty_snapshot(d, 0.0)
+    if snapshots[0].date > d:
         return _empty_snapshot(d, 0.0)
     snap = snapshots[0]
     for s in snapshots:
@@ -151,6 +159,7 @@ def _empty_snapshot(d: date, cash: float = 1_000_000) -> Snapshot:
         turnover=0.0,
         cash=cash,
         holdings={},
+        costs={},
     )
 
 
@@ -163,6 +172,7 @@ def _compute_composite_daily_nav(
     """日频估值所有子组合，求和后归一化。
 
     使用 pre-norm 估值快照计算真实市场价值，而非归一化后的恒常值。
+    日收盘价向前填充；若某股票完全没有行情，用持仓均价兜底。
 
     Returns:
         {date: normalized_nav} — NAV / total_initial_capital
@@ -186,7 +196,8 @@ def _compute_composite_daily_nav(
             # 使用估值快照的现金和持仓（pre-norm，反映真实市场价值）
             nav = snap.cash
             for code, shares in snap.holdings.items():
-                price = last_close.get(code, 0.0)
+                # 优先用最新收盘价，缺失则用成本价兜底，避免停牌被估为 0
+                price = last_close.get(code) or snap.costs.get(code, 0.0)
                 nav += shares * price
             total += nav
 
@@ -198,7 +209,7 @@ def _compute_composite_daily_nav(
 # ── 子策略选股 ──────────────────────────────────────────
 
 def _commodity_sub_targets(
-    sub: dict,
+    sub: SubStrategyConfig,
     rb_date: date,
     market: str,
     preloader: PITPreloader,
@@ -295,7 +306,7 @@ def _factor_targets(
 
 def _base_targets(
     signals: dict[str, str],
-    sub: dict,
+    sub: SubStrategyConfig,
     rb_date: date,
     market: str,
     preloader: PITPreloader,
@@ -415,7 +426,10 @@ def run_composite_backtest(
             # 3a. 记录 pre-norm 估值快照（日频 NAV 用真实市场价值）
             current_codes = list(sub_pf.positions.keys())
             current_prices = _get_sell_prices_mixed(rb_date, current_codes, benchmark, market)
-            prices_clean = {k: (v or 0) for k, v in current_prices.items()}
+            prices_clean = {
+                code: (price if price is not None and price > 0 else sub_pf.positions[code].avg_cost)
+                for code, price in current_prices.items()
+            }
             pre_nav = sub_pf.nav(prices_clean)
             valuation_snaps[name].append(Snapshot(
                 date=rb_date,
@@ -424,6 +438,7 @@ def run_composite_backtest(
                 turnover=0.0,
                 cash=sub_pf.cash,
                 holdings={c: p.shares for c, p in sub_pf.positions.items()},
+                costs={c: p.avg_cost for c, p in sub_pf.positions.items()},
             ))
 
             # 3b. 资金归一化
@@ -484,7 +499,10 @@ def run_composite_backtest(
         for name, pf in sub_portfolios.items():
             current_codes = list(pf.positions.keys())
             current_prices = _get_sell_prices_mixed(end_trade, current_codes, benchmark, market)
-            prices_clean = {k: (v or 0) for k, v in current_prices.items()}
+            prices_clean = {
+                code: (price if price is not None and price > 0 else pf.positions[code].avg_cost)
+                for code, price in current_prices.items()
+            }
             final_nav = pf.nav(prices_clean)
             valuation_snaps[name].append(Snapshot(
                 date=end_trade,
@@ -493,52 +511,49 @@ def run_composite_backtest(
                 turnover=0.0,
                 cash=pf.cash,
                 holdings={c: p.shares for c, p in pf.positions.items()},
+                costs={c: p.avg_cost for c, p in pf.positions.items()},
             ))
 
     # ── 构建 merged_history（仅用于持仓展示） ──
-    all_rb_dates = sorted(set(
-        s.date for pf in sub_portfolios.values() for s in pf.history
-    ))
+    # 合并 rebalance 历史与最终估值快照，避免遗漏 end_trade 日
+    all_rb_dates = sorted(
+        set(s.date for pf in sub_portfolios.values() for s in pf.history)
+        | set(s.date for snaps in valuation_snaps.values() for s in snaps)
+    )
     merged_history: list[Snapshot] = []
     for d in all_rb_dates:
         total_value = 0.0
         total_cash = 0.0
         all_holdings: dict[str, float] = {}
         all_positions: list[str] = []
-        total_turnover = 0.0
-        count = 0
+        turnovers: list[float] = []
+
         for name, pf in sub_portfolios.items():
-            snaps = valuation_snaps.get(name, [])
-            snap = _get_snapshot_at(snaps, d)
-            if snap.date == d:
-                total_value += snap.total_value
-                total_cash += snap.cash
-                for code, shares in snap.holdings.items():
-                    all_holdings[code] = all_holdings.get(code, 0.0) + shares
-                all_positions.extend(snap.positions)
-                total_turnover += snap.turnover
-                count += 1
-            else:
-                total_value += snap.total_value
-                total_cash += snap.cash
-                for code, shares in snap.holdings.items():
-                    all_holdings[code] = all_holdings.get(code, 0.0) + shares
+            # 市值/现金/持仓用 pre-norm 估值快照（真实市场价值）
+            v_snap = _get_snapshot_at(valuation_snaps.get(name, []), d)
+            total_value += v_snap.total_value
+            total_cash += v_snap.cash
+            for code, shares in v_snap.holdings.items():
+                all_holdings[code] = all_holdings.get(code, 0.0) + shares
+            all_positions.extend(v_snap.positions)
+
+            # 换手率来自 pf.history（仅调仓日本身有值）
+            h_snap = _get_snapshot_at(pf.history, d)
+            if h_snap.date == d and h_snap.turnover:
+                turnovers.append(h_snap.turnover)
 
         merged_history.append(Snapshot(
             date=d,
             total_value=total_value,
             positions=all_positions,
-            turnover=total_turnover / max(count, 1),
+            turnover=sum(turnovers) / len(turnovers) if turnovers else 0.0,
             cash=total_cash,
             holdings=all_holdings,
+            costs={},
         ))
 
     # ── 日频 NAV + 基准对比 ──
     # 归一化导致 merged_history.total_value 恒为常数，绩效必须从日频 NAV 计算
-    import math
-
-    from quant.backtest.portfolio import PerformanceMetrics
-
     bench_comparison: BenchmarkComparison | None = None
     strategy_daily_nav: dict[date, float] = {}
     benchmark_daily_nav: dict[date, float] = {}
@@ -618,7 +633,6 @@ def run_composite_backtest(
             if dd > max_dd:
                 max_dd = dd
 
-        import numpy as np
         daily_rets = np.diff(daily_nav_list) / daily_nav_list[:-1]
         if len(daily_rets) >= 2:
             ann_factor = math.sqrt(252)
@@ -630,7 +644,7 @@ def run_composite_backtest(
             volatility = 0.0
             sharpe = 0.0
 
-        num_rebalances = max(0, len(merged_history) - 2)
+        num_rebalances = len(rebalance_dates)
         holding_counts = [len(s.positions) for s in merged_history[:-1]]
         avg_holding = sum(holding_counts) / len(holding_counts) if holding_counts else 0
 
@@ -642,7 +656,7 @@ def run_composite_backtest(
             volatility=volatility,
             num_rebalances=num_rebalances,
             avg_holding_count=avg_holding,
-            total_trades=0,
+            total_trades=sum(pf._total_trades for pf in sub_portfolios.values()),
         )
     else:
         final_value = initial_capital

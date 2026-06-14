@@ -22,6 +22,7 @@ class Snapshot:
     turnover: float       # 本次调仓换手率 = 卖出市值 / 调仓前总市值
     cash: float = 0.0     # 调仓后现金余额（用于日频 mark-to-market）
     holdings: dict[str, float] = field(default_factory=dict)  # {code: shares}
+    costs: dict[str, float] = field(default_factory=dict)     # {code: avg_cost}，停牌时估算市值用
 
 
 @dataclass
@@ -230,6 +231,7 @@ class Portfolio:
                 turnover=turnover,
                 cash=self.cash,
                 holdings={c: p.shares for c, p in self.positions.items()},
+                costs={c: p.avg_cost for c, p in self.positions.items()},
             )
         )
 
@@ -249,6 +251,7 @@ class Portfolio:
                 turnover=0.0,
                 cash=self.cash,
                 holdings={c: p.shares for c, p in self.positions.items()},
+                costs={c: p.avg_cost for c, p in self.positions.items()},
             )
         )
         return total_value
