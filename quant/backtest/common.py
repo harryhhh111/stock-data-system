@@ -313,6 +313,63 @@ def compute_price_factors(
     return result_df
 
 
+# ── 策略工具 ──────────────────────────────────────────────
+
+def index_momentum(code: str, as_of_date: date, lookback: int = 20) -> float | None:
+    """查询指数过去 N 个交易日的动量。"""
+    sql = """
+    SELECT close FROM daily_quote
+    WHERE stock_code = %s AND market = 'CN_IDX' AND trade_date <= %s
+    ORDER BY trade_date DESC LIMIT %s
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (code, as_of_date, lookback + 1))
+        rows = cur.fetchall()
+        cur.close()
+    if len(rows) < lookback + 1:
+        return None
+    latest = float(rows[0][0])
+    oldest = float(rows[-1][0])
+    return (latest - oldest) / oldest if oldest > 0 else None
+
+
+def twenty_eighty_targets(
+    as_of_date: date, market: str
+) -> list[str]:
+    """二八轮动：比较大盘/小盘指数 60 日动量，返回目标持仓代码。
+
+    200MA 趋势过滤：大盘指数在均线下方时，空仓避险。
+    """
+    LOOKBACK = 60
+
+    _TWENTY_EIGHTY_PAIRS: dict[str, tuple[str, str]] = {
+        "CN_A": ("000300", "399905"),  # 沪深300 vs 中证500
+        "US": ("SPY", "IWM"),          # S&P 500 vs Russell 2000
+        "CN_HK": ("HSI", "HSI"),       # 港股暂无小盘指数，只持恒生
+    }
+    pair = _TWENTY_EIGHTY_PAIRS.get(market)
+    if not pair:
+        return []
+
+    # 200MA 趋势过滤：大盘指数线下则空仓
+    if not check_200ma_signal(pair[0], market, as_of_date):
+        return []
+
+    mom_a = index_momentum(pair[0], as_of_date, LOOKBACK)
+    mom_b = index_momentum(pair[1], as_of_date, LOOKBACK)
+
+    if mom_a is None and mom_b is None:
+        return []
+    if mom_b is None:
+        mom_b = mom_a  # 单指数时用自身动量判断
+    if mom_a is None:
+        mom_a = mom_b
+
+    # 选强者（双负时选跌得少的）
+    return [pair[0]] if mom_a >= mom_b else [pair[1]]
+
+
 # ── 基准对比 ──────────────────────────────────────────────
 
 def compute_benchmark_comparison(

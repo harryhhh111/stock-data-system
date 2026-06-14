@@ -23,11 +23,11 @@ from quant.backtest.common import (
     compute_benchmark_comparison,
     compute_price_factors,
     generate_rebalance_dates,
+    twenty_eighty_targets,
     get_sell_prices_mixed,
     load_benchmark_prices,
     load_daily_quotes_for_codes,
 )
-from quant.backtest.engine import _twenty_eighty_targets
 from quant.backtest.types import BacktestResult, BenchmarkComparison, Snapshot
 from quant.backtest.universe import get_nearest_trade_date
 from quant.backtest.macro import commodity_signal, get_mapped_stocks
@@ -313,7 +313,7 @@ def _base_targets(
 ) -> list[str]:
     """基础子策略：大盘牛市→二八轮动，大盘熊市→FCF+ROE。"""
     if signals.get("market") == "bull":
-        return _twenty_eighty_targets(rb_date, market)
+        return twenty_eighty_targets(rb_date, market)
 
     # 熊市：全市场 FCF+ROE
     filters = PRESETS["fcf_roe_value"]["filters"]

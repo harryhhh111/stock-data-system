@@ -14,6 +14,7 @@ from quant.backtest.common import (
     build_universe,
     check_200ma_signal,
     compute_benchmark_comparison,
+    twenty_eighty_targets,
     compute_daily_nav,
     compute_price_factors,
     generate_rebalance_dates,
@@ -34,61 +35,6 @@ from quant.screener.presets import COMPOSITE_PRESETS, PRESETS
 from quant.screener.scorer import rank_factors
 
 from db import Connection
-
-
-def _index_momentum(code: str, as_of_date: date, lookback: int = 20) -> float | None:
-    """查询指数过去 N 个交易日的动量。"""
-    sql = """
-    SELECT close FROM daily_quote
-    WHERE stock_code = %s AND market = 'CN_IDX' AND trade_date <= %s
-    ORDER BY trade_date DESC LIMIT %s
-    """
-    with Connection() as conn:
-        cur = conn.cursor()
-        cur.execute(sql, (code, as_of_date, lookback + 1))
-        rows = cur.fetchall()
-        cur.close()
-    if len(rows) < lookback + 1:
-        return None
-    latest = float(rows[0][0])
-    oldest = float(rows[-1][0])
-    return (latest - oldest) / oldest if oldest > 0 else None
-
-
-def _twenty_eighty_targets(
-    as_of_date: date, market: str
-) -> list[str]:
-    """二八轮动：比较大盘/小盘指数 60 日动量，返回目标持仓代码。
-
-    200MA 趋势过滤：大盘指数在均线下方时，空仓避险。
-    """
-    LOOKBACK = 60
-
-    _TWENTY_EIGHTY_PAIRS: dict[str, tuple[str, str]] = {
-        "CN_A": ("000300", "399905"),  # 沪深300 vs 中证500
-        "US": ("SPY", "IWM"),          # S&P 500 vs Russell 2000
-        "CN_HK": ("HSI", "HSI"),       # 港股暂无小盘指数，只持恒生
-    }
-    pair = _TWENTY_EIGHTY_PAIRS.get(market)
-    if not pair:
-        return []
-
-    # 200MA 趋势过滤：大盘指数线下则空仓
-    if not check_200ma_signal(pair[0], market, as_of_date):
-        return []
-
-    mom_a = _index_momentum(pair[0], as_of_date, LOOKBACK)
-    mom_b = _index_momentum(pair[1], as_of_date, LOOKBACK)
-
-    if mom_a is None and mom_b is None:
-        return []
-    if mom_b is None:
-        mom_b = mom_a  # 单指数时用自身动量判断
-    if mom_a is None:
-        mom_a = mom_b
-
-    # 选强者（双负时选跌得少的）
-    return [pair[0]] if mom_a >= mom_b else [pair[1]]
 
 
 def run_backtest(
@@ -184,7 +130,7 @@ def run_backtest(
     for i, rb_date in enumerate(rebalance_dates):
         # 0. 二八轮动：直接决定持仓指数
         if preset_name == "twenty_eighty":
-            targets = _twenty_eighty_targets(rb_date, market)
+            targets = twenty_eighty_targets(rb_date, market)
             sell_codes = list(portfolio.positions.keys())
             sell_p = get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
             buy_prices = get_sell_prices_mixed(rb_date, targets, benchmark, market)
