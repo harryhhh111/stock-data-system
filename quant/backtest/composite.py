@@ -15,25 +15,24 @@ import numpy as np
 import pandas as pd
 
 from db import Connection
-from quant.backtest.engine import (
-    BacktestResult,
-    BenchmarkComparison,
-    Snapshot,
-    _batch_query_quote,
-    _benchmark_market,
-    _build_universe,
-    _check_200ma_signal,
-    _compute_price_factors,
-    _generate_rebalance_dates,
-    _get_sell_prices_mixed,
-    _load_benchmark_prices,
-    _load_daily_quotes_for_codes,
-    _twenty_eighty_targets,
+from quant.backtest.common import (
+    batch_query_quote,
+    benchmark_market,
+    build_universe,
+    check_200ma_signal,
     compute_benchmark_comparison,
-    get_nearest_trade_date,
+    compute_price_factors,
+    generate_rebalance_dates,
+    get_sell_prices_mixed,
+    load_benchmark_prices,
+    load_daily_quotes_for_codes,
 )
+from quant.backtest.engine import _twenty_eighty_targets
+from quant.backtest.types import BacktestResult, BenchmarkComparison, Snapshot
+from quant.backtest.universe import get_nearest_trade_date
 from quant.backtest.macro import commodity_signal, get_mapped_stocks
-from quant.backtest.portfolio import PerformanceMetrics, Portfolio
+from quant.backtest.portfolio import Portfolio
+from quant.backtest.types import PerformanceMetrics
 from quant.backtest.preloader import PITPreloader
 from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
 from quant.screener.presets import COMPOSITE_PRESETS, PRESETS, CompositeConfig, SubStrategyConfig
@@ -47,7 +46,7 @@ logger = logging.getLogger(__name__)
 def _check_all_signals(
     cfg: CompositeConfig, market: str, as_of_date: date
 ) -> dict[str, str]:
-    """遍历 cfg 中所有 commodity，调用 commodity_signal + _check_200ma_signal。
+    """遍历 cfg 中所有 commodity，调用 commodity_signal + check_200ma_signal。
 
     Returns:
         {"XAU": "bull", "HG": "bull", "CL": "bear", "market": "bull"}
@@ -61,7 +60,7 @@ def _check_all_signals(
 
     benchmark = cfg.get("benchmark")
     if benchmark:
-        is_bull = _check_200ma_signal(benchmark, market, as_of_date)
+        is_bull = check_200ma_signal(benchmark, market, as_of_date)
         signals["market"] = "bull" if is_bull else "bear"
 
     return signals
@@ -227,7 +226,7 @@ def _commodity_sub_targets(
     quote = quote_by_date.get(rb_date, pd.DataFrame())
     if quote.empty:
         return []
-    universe = _build_universe(base, quote)
+    universe = build_universe(base, quote)
     pool = universe[universe["stock_code"].isin(codes)]
     if pool.empty:
         return []
@@ -254,7 +253,7 @@ def _commodity_sub_targets(
         return []
 
     # 3. 价格因子
-    price_factors = _compute_price_factors(filtered["stock_code"].tolist(), rb_date, market)
+    price_factors = compute_price_factors(filtered["stock_code"].tolist(), rb_date, market)
     if not price_factors.empty:
         filtered = filtered.merge(price_factors, left_on="stock_code", right_index=True, how="left")
 
@@ -277,7 +276,7 @@ def _factor_targets(
     quote = quote_by_date.get(rb_date, pd.DataFrame())
     if quote.empty:
         return []
-    universe = _build_universe(base, quote)
+    universe = build_universe(base, quote)
 
     # 硬过滤
     filtered, _, _ = apply_hard_filters(universe, filters)
@@ -295,7 +294,7 @@ def _factor_targets(
         return []
 
     # 价格因子
-    price_factors = _compute_price_factors(filtered["stock_code"].tolist(), rb_date, market)
+    price_factors = compute_price_factors(filtered["stock_code"].tolist(), rb_date, market)
     if not price_factors.empty:
         filtered = filtered.merge(price_factors, left_on="stock_code", right_index=True, how="left")
 
@@ -385,12 +384,12 @@ def run_composite_backtest(
     # 0c. 共享数据预加载
     preloader = PITPreloader(market)
     preloader.load()
-    rebalance_dates = _generate_rebalance_dates(start, end, 1, market=market)
+    rebalance_dates = generate_rebalance_dates(start, end, 1, market=market)
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
     with Connection() as conn:
-        quote_by_date = _batch_query_quote(conn, rebalance_dates, market)
+        quote_by_date = batch_query_quote(conn, rebalance_dates, market)
 
     if progress_callback:
         progress_callback(0.0, "数据预加载完成")
@@ -425,7 +424,7 @@ def run_composite_backtest(
 
             # 3a. 记录 pre-norm 估值快照（日频 NAV 用真实市场价值）
             current_codes = list(sub_pf.positions.keys())
-            current_prices = _get_sell_prices_mixed(rb_date, current_codes, benchmark, market)
+            current_prices = get_sell_prices_mixed(rb_date, current_codes, benchmark, market)
             prices_clean = {
                 code: (price if price is not None and price > 0 else sub_pf.positions[code].avg_cost)
                 for code, price in current_prices.items()
@@ -446,7 +445,7 @@ def run_composite_backtest(
 
             if target_capital <= 0:
                 sell_codes = list(sub_pf.positions.keys())
-                sell_p = _get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
+                sell_p = get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
                 sub_pf.rebalance(rb_date, [], {}, sell_p)
                 continue
 
@@ -473,7 +472,7 @@ def run_composite_backtest(
             # 3d. 子组合调仓
             sell_codes = list(sub_pf.positions.keys())
             trade_codes = list(set(targets) | set(sell_codes))
-            all_prices = _get_sell_prices_mixed(rb_date, trade_codes, benchmark, market)
+            all_prices = get_sell_prices_mixed(rb_date, trade_codes, benchmark, market)
 
             buy_prices = {
                 c: p for c, p in all_prices.items()
@@ -498,7 +497,7 @@ def run_composite_backtest(
     if end_trade:
         for name, pf in sub_portfolios.items():
             current_codes = list(pf.positions.keys())
-            current_prices = _get_sell_prices_mixed(end_trade, current_codes, benchmark, market)
+            current_prices = get_sell_prices_mixed(end_trade, current_codes, benchmark, market)
             prices_clean = {
                 code: (price if price is not None and price > 0 else pf.positions[code].avg_cost)
                 for code, price in current_prices.items()
@@ -563,7 +562,7 @@ def run_composite_backtest(
     if benchmark and merged_history:
         bt_start = merged_history[0].date
         bt_end = merged_history[-1].date
-        bench_prices = _load_benchmark_prices(benchmark, market, bt_start, bt_end)
+        bench_prices = load_benchmark_prices(benchmark, market, bt_start, bt_end)
         if not bench_prices:
             raise ValueError(
                 f"基准 {benchmark} 在 {market} 市场 {bt_start}~{bt_end} 区间无数据。"
@@ -580,15 +579,15 @@ def run_composite_backtest(
         strategy_codes = [c for c in all_codes if c not in _INDEX_CODES]
         index_codes = [c for c in all_codes if c in _INDEX_CODES]
 
-        daily_quotes = dict(_load_daily_quotes_for_codes(strategy_codes, market, bt_start, bt_end))
+        daily_quotes = dict(load_daily_quotes_for_codes(strategy_codes, market, bt_start, bt_end))
         if index_codes:
             daily_quotes.update(
-                _load_daily_quotes_for_codes(index_codes, "CN_IDX", bt_start, bt_end)
+                load_daily_quotes_for_codes(index_codes, "CN_IDX", bt_start, bt_end)
             )
         if benchmark not in all_codes:
             daily_quotes.update(
-                _load_daily_quotes_for_codes(
-                    [benchmark], _benchmark_market(benchmark, market), bt_start, bt_end
+                load_daily_quotes_for_codes(
+                    [benchmark], benchmark_market(benchmark, market), bt_start, bt_end
                 )
             )
 

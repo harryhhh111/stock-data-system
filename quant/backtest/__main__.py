@@ -7,7 +7,8 @@ import json
 import sys
 from datetime import date
 
-from quant.backtest.engine import run_backtest, BacktestResult
+from quant.backtest.engine import run_backtest
+from quant.backtest.types import BacktestResult
 from quant.screener.presets import PRESETS
 
 

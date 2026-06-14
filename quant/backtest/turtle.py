@@ -15,17 +15,15 @@ import numpy as np
 import pandas as pd
 
 from db import Connection
-from quant.backtest.portfolio import (
-    Portfolio, PerformanceMetrics, Snapshot, BenchmarkComparison,
+from quant.backtest.common import (
+    check_200ma_signal,
     compute_benchmark_comparison,
+    compute_daily_nav,
+    load_benchmark_prices,
+    load_daily_quotes_for_codes,
 )
-from quant.backtest.engine import (
-    BacktestResult,
-    _check_200ma_signal,
-    _load_benchmark_prices,
-    _load_daily_quotes_for_codes,
-    _compute_daily_nav,
-)
+from quant.backtest.portfolio import Portfolio
+from quant.backtest.types import BacktestResult, BenchmarkComparison, PerformanceMetrics, Snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +223,7 @@ class TurtlePortfolio:
             turnover=0.0,
             cash=self.cash,
             holdings={c: p.units for c, p in self.positions.items()},
+            costs={c: p.entry_price for c, p in self.positions.items()},
         ))
 
 
@@ -273,7 +272,7 @@ def run_turtle_backtest(
     if benchmark:
         sample_dates = trading_dates[::5]
         for i, td in enumerate(sample_dates):
-            benchmark_ma[td] = _check_200ma_signal(benchmark, market, td)
+            benchmark_ma[td] = check_200ma_signal(benchmark, market, td)
             if progress_callback and i % 20 == 0:
                 progress_callback(30 + 5 * i / len(sample_dates), f"趋势信号 {i}/{len(sample_dates)}")
         last = True
@@ -323,14 +322,14 @@ def run_turtle_backtest(
     s_nav, b_nav = {}, {}
     if benchmark and pf.history:
         bt_s, bt_e = pf.history[0].date, pf.history[-1].date
-        bp = _load_benchmark_prices(benchmark, market, bt_s, bt_e)
+        bp = load_benchmark_prices(benchmark, market, bt_s, bt_e)
         if bp:
             bdates = sorted(bp.keys())
             codes_set = set()
             for s in pf.history:
                 codes_set.update(s.holdings.keys())
-            dq = _load_daily_quotes_for_codes(list(codes_set), market, bt_s, bt_e)
-            s_nav = _compute_daily_nav(pf.history, dq, bdates, initial_capital)
+            dq = load_daily_quotes_for_codes(list(codes_set), market, bt_s, bt_e)
+            s_nav = compute_daily_nav(pf.history, dq, bdates, initial_capital)
             base = bp.get(bt_s) or next(iter(bp.values()))
             b_nav = {d: bp[d] / base for d in bdates}
             bc = compute_benchmark_comparison(benchmark, s_nav, b_nav)

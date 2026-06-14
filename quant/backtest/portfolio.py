@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
+
+from quant.backtest.common import compute_benchmark_comparison
+from quant.backtest.types import BenchmarkComparison, PerformanceMetrics, Snapshot
 
 
 @dataclass
@@ -12,132 +15,6 @@ class Position:
     stock_code: str
     shares: float
     avg_cost: float  # 买入均价
-
-
-@dataclass
-class Snapshot:
-    date: date
-    total_value: float    # 持仓市值 + 现金
-    positions: list[str]  # 当前持仓代码列表
-    turnover: float       # 本次调仓换手率 = 卖出市值 / 调仓前总市值
-    cash: float = 0.0     # 调仓后现金余额（用于日频 mark-to-market）
-    holdings: dict[str, float] = field(default_factory=dict)  # {code: shares}
-    costs: dict[str, float] = field(default_factory=dict)     # {code: avg_cost}，停牌时估算市值用
-
-
-@dataclass
-class PerformanceMetrics:
-    total_return: float
-    annualized_return: float
-    max_drawdown: float
-    sharpe_ratio: float
-    volatility: float
-    num_rebalances: int
-    avg_holding_count: float
-    total_trades: int
-
-
-@dataclass
-class BenchmarkComparison:
-    benchmark_ticker: str
-    benchmark_total_return: float        # 基准总收益率
-    benchmark_annualized: float          # 基准年化
-    benchmark_max_drawdown: float        # 基准最大回撤
-    excess_return: float                 # 策略 - 基准（总收益）
-    annualized_alpha: float              # 年化超额（分别年化后做差）
-    information_ratio: float             # IR（日频年化）
-    tracking_error: float                # 跟踪误差（日频年化）
-    beta: float                          # 策略对基准的 beta（日频）
-    correlation: float                   # 相关系数（日频）
-
-
-def compute_benchmark_comparison(
-    benchmark_ticker: str,
-    strategy_daily_nav: dict[date, float],
-    benchmark_daily_nav: dict[date, float],
-) -> BenchmarkComparison:
-    """基于日频 NAV 计算策略 vs 基准的对比指标。
-
-    要求：strategy_daily_nav 和 benchmark_daily_nav 的日期完全对齐。
-    """
-    import pandas as pd
-
-    # 按日期对齐
-    common_dates = sorted(set(strategy_daily_nav.keys()) & set(benchmark_daily_nav.keys()))
-    if len(common_dates) < 2:
-        return BenchmarkComparison(
-            benchmark_ticker=benchmark_ticker,
-            benchmark_total_return=0.0, benchmark_annualized=0.0,
-            benchmark_max_drawdown=0.0, excess_return=0.0,
-            annualized_alpha=0.0, information_ratio=0.0,
-            tracking_error=0.0, beta=0.0, correlation=0.0,
-        )
-
-    s_navs = [strategy_daily_nav[d] for d in common_dates]
-    b_navs = [benchmark_daily_nav[d] for d in common_dates]
-    start_date, end_date = common_dates[0], common_dates[-1]
-    years = (end_date - start_date).days / 365.25
-    if years <= 0:
-        years = 1.0 / 365.25
-
-    strategy_total = s_navs[-1] - 1.0
-    benchmark_total = b_navs[-1] - 1.0
-    excess_return = strategy_total - benchmark_total
-
-    # Alpha: 分别年化后做差（标准金融做法）
-    if 1 + strategy_total > 0:
-        strategy_annualized = (1 + strategy_total) ** (1 / years) - 1
-    else:
-        strategy_annualized = -1.0
-    if 1 + benchmark_total > 0:
-        benchmark_annualized = (1 + benchmark_total) ** (1 / years) - 1
-    else:
-        benchmark_annualized = -1.0
-    annualized_alpha = strategy_annualized - benchmark_annualized
-
-    # 基准最大回撤（与策略 max_drawdown 同算法）
-    bench_peak = b_navs[0]
-    bench_max_dd = 0.0
-    for nav in b_navs:
-        if nav > bench_peak:
-            bench_peak = nav
-        dd = 1 - nav / bench_peak if bench_peak > 0 else 0
-        if dd > bench_max_dd:
-            bench_max_dd = dd
-
-    # 日频收益率
-    s_ret = pd.Series(s_navs).pct_change().dropna()
-    b_ret = pd.Series(b_navs).pct_change().dropna()
-    excess_ret = s_ret - b_ret
-    excess_std = excess_ret.std()
-
-    # 日频 → 年化（×√252）
-    # 注：pd.Series.std() / cov() / var() 默认 ddof=1（样本估计），
-    #     分子分母 ddof 一致，比值不受影响
-    tracking_error = excess_std * (252 ** 0.5) if excess_std and excess_std > 0 else 0.0
-    information_ratio = (
-        (excess_ret.mean() / excess_std) * (252 ** 0.5)
-        if excess_std and excess_std > 0 else 0.0
-    )
-
-    b_var = b_ret.var()
-    beta = (s_ret.cov(b_ret) / b_var) if b_var and b_var > 0 else 0.0
-    correlation = s_ret.corr(b_ret) if len(s_ret) > 1 else 0.0
-    if pd.isna(correlation):
-        correlation = 0.0
-
-    return BenchmarkComparison(
-        benchmark_ticker=benchmark_ticker,
-        benchmark_total_return=benchmark_total,
-        benchmark_annualized=benchmark_annualized,
-        benchmark_max_drawdown=bench_max_dd,
-        excess_return=excess_return,
-        annualized_alpha=annualized_alpha,
-        information_ratio=float(information_ratio),
-        tracking_error=float(tracking_error),
-        beta=float(beta),
-        correlation=float(correlation),
-    )
 
 
 class Portfolio:
