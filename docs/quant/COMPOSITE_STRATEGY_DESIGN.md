@@ -381,11 +381,12 @@ def _compute_daily_nav(sub_portfolios, start, end, market):
     for d in all_dates:
         total = 0.0
         for pf in sub_portfolios.values():
-            # 找到 d 所在调仓周期的持仓
-            holdings = _get_holdings_at(pf, d)
+            # 取 d 之前最近一次调仓 Snapshot
+            # pf.history 按 date 排序，Snap 有 cash + holdings: dict[str, float]
+            snap = _get_snapshot_at(pf, d)  # pf.history 中 date <= d 的最后一条
             prices = daily_close[d]
-            nav = pf.cash  # 从最后一次调仓快照获取（近似）
-            for code, shares in holdings.items():
+            nav = snap.cash
+            for code, shares in snap.holdings.items():
                 nav += shares * prices.get(code, 0)
             total += nav
         daily_nav[d] = total
@@ -413,8 +414,10 @@ run_backtest()  ← 现有入口（不改签名）
 
 ```python
 def run_backtest(preset_name, ...):
-    # 先查复合策略
+    # 先查复合策略（必须在 PRESETS 查表之前，避免被误当成普通策略）
     if preset_name in COMPOSITE_PRESETS:
+        cfg = COMPOSITE_PRESETS[preset_name]
+        assert cfg["type"] == "composite", f"{preset_name} 在 COMPOSITE_PRESETS 但 type != composite"
         return run_composite_backtest(preset_name, ...)
 
     # 再查普通策略（现有逻辑不变）
@@ -474,12 +477,12 @@ def _commodity_sub_targets(sub, rb_date, market, preloader, quote_by_date):
 ### 基础子策略（market_scope="all", residual=True）
 
 ```python
-def _base_targets(signals, sub, rb_date, market):
+def _base_targets(signals, sub, rb_date, market, preloader, quote_by_date):
     """大盘牛市 → 二八轮动，大盘熊市 → FCF+ROE"""
     if signals.get("market") == "bull":
         return _twenty_eighty_targets(rb_date, market)  # 复用 engine.py 现有
     else:
-        # 全市场 FCF+ROE（复用现有因子管线）
+        # 全市场 FCF+ROE（复用现有因子管线，preloader/quote_by_date 传入）
         return _factor_targets(
             PRESETS["fcf_roe_value"], rb_date, market, preloader, quote_by_date
         )
@@ -533,6 +536,7 @@ def scale_positions(self, scale: float) -> None:
     for pos in self.positions.values():
         pos.shares *= scale
     # avg_cost 不变 —— 缩放不改变成本基础
+    # 缩放后 cash + Σ(pos.shares × price) ≈ target_capital，浮点残差 < 0.01 元忽略
 ```
 
 归一化函数本体：
@@ -607,7 +611,7 @@ def _normalize_sub_portfolio(sub_pf, target_capital, prices):
 # 全期回测（v1 仅 CN_A）
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2016-01
 
-# 分段
+# 以下 4 段为独立子回测，对比各段独立表现（非连续区间拼接）
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2016-01 --end 2018-12
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2019-01 --end 2020-12
 python -m quant.backtest --preset commodity_rotation --market CN_A --start 2021-01 --end 2023-12
@@ -617,6 +621,19 @@ python -m quant.backtest --preset commodity_rotation --market CN_A --start 2024-
 python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2016-01
 python -m quant.backtest --preset twenty_eighty --market CN_A --start 2016-01
 ```
+
+### 6. 归因必报指标
+
+实现步骤 9（回测验证）必须输出：
+
+| 指标 | 说明 |
+|------|------|
+| 复合 vs 基准：年化收益、Sharpe、最大回撤、IR | 整体绩效对比（同单策略格式） |
+| 分段超额（4 段） | 每段独立报告复合超额 vs 基准 |
+| 子组合贡献分解 | v1 用期末 cash 占比近似（各子组合 NAV / 总 NAV） |
+| 各子组合最长连续空仓月数 | 如 base 连续 6+ 月空仓 → 归因标注 |
+| 持仓重叠率 | 同一只股票被 2+ 子组合持有的调仓日占比 |
+| 换手率横向对比 | 复合 vs fcf_roe_value vs twenty_eighty（标注"含重建成分"） |
 
 ## 实施计划（二审修订）
 
