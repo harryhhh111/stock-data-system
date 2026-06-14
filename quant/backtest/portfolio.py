@@ -147,6 +147,20 @@ class Portfolio:
         self.history: list[Snapshot] = []
         self._total_trades: int = 0
 
+    def nav(self, prices: dict[str, float]) -> float:
+        """按给定价格计算当前组合总市值（不做调仓，不记录快照）。"""
+        return self.cash + sum(
+            pos.shares * prices.get(code, pos.avg_cost)
+            for code, pos in self.positions.items()
+        )
+
+    def scale_positions(self, scale: float) -> None:
+        """等比缩放所有持仓 + 现金（不产生交易记录，avg_cost 不变）。"""
+        self.cash *= scale
+        for pos in self.positions.values():
+            pos.shares *= scale
+        # 缩放后 cash + Σ(pos.shares × price) ≈ target_capital，浮点残差 < 0.01 元忽略
+
     def rebalance(
         self,
         rebal_date: date,

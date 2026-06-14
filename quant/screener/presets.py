@@ -2,7 +2,7 @@
 选股筛选器 — 预设策略配置
 """
 
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 
 class FilterConfig(TypedDict, total=False):
@@ -37,6 +37,26 @@ class PresetConfig(TypedDict):
     filters: FilterConfig
     weights: dict[str, FactorWeight]
     top_n: int
+
+
+class SubStrategyConfig(TypedDict):
+    name: str                       # 子策略名（用于日志/归因）
+    strategy: str                   # 子策略 preset 名（"fcf_roe_value" / "twenty_eighty"）
+    commodity: str                  # 关联商品代码（"XAU"/"HG"/"CL"/"SI"），无则为 ""
+    weight_bull: float              # 商品牛市时配比（如 0.15）
+    weight_bear: float              # 商品熊市时配比（通常 0.0）
+    weight_neutral: float           # 商品中性时配比（默认 0.0）
+    top_n_override: int | None      # 覆盖子策略的 top_n（如 5），None=用原 preset 默认值
+    market_scope: str               # "commodity" = 限定商品行业 / "all" = 全市场
+    residual: bool                  # True = 吃剩余资金（只有一个子策略可以设 True）
+
+
+class CompositeConfig(TypedDict):
+    description: str
+    type: Literal["composite"]
+    sub_strategies: list[SubStrategyConfig]
+    rebalance: str                  # "monthly"（v1 只支持月频）
+    benchmark: str | None           # 200MA 择时基准（如 "000300"）
 
 
 # ───────────────────────────────────────────────
@@ -429,6 +449,51 @@ FACTOR_COLUMNS: dict[str, str] = {
     "cfo_quality":    "cfo_ttm",  # 需要额外计算：cfo_ttm / net_profit_ttm
 }
 
+
+# ───────────────────────────────────────────────
+# 复合策略预设
+# ───────────────────────────────────────────────
+
+COMPOSITE_PRESETS: dict[str, CompositeConfig] = {
+    "commodity_rotation": {
+        "description": "商品周期+价值轮动",
+        "type": "composite",
+        "sub_strategies": [
+            {
+                "name": "gold",
+                "commodity": "XAU",
+                "weight_bull": 0.15,
+                "weight_bear": 0.0,
+                "weight_neutral": 0.0,
+                "strategy": "fcf_roe_value",
+                "market_scope": "commodity",
+                "top_n_override": 5,
+                "residual": False,
+            },
+            {
+                "name": "copper",
+                "commodity": "HG",
+                "weight_bull": 0.10,
+                "weight_bear": 0.0,
+                "weight_neutral": 0.0,
+                "strategy": "fcf_roe_value",
+                "market_scope": "commodity",
+                "top_n_override": 3,
+                "residual": False,
+            },
+            {
+                "name": "base",
+                "commodity": "",
+                "strategy": "timing_rotation",
+                "market_scope": "all",
+                "top_n_override": None,
+                "residual": True,
+            },
+        ],
+        "rebalance": "monthly",
+        "benchmark": "000300",
+    },
+}
 
 # 输出列配置
 OUTPUT_COLUMNS = [

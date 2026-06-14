@@ -25,7 +25,7 @@ from quant.backtest.universe import (
     get_nearest_trade_date,
 )
 from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
-from quant.screener.presets import PRESETS
+from quant.screener.presets import COMPOSITE_PRESETS, PRESETS
 from quant.screener.scorer import rank_factors
 
 from db import Connection
@@ -423,6 +423,21 @@ def run_backtest(
     Returns:
         BacktestResult
     """
+    # 复合策略：独立引擎
+    if preset_name in COMPOSITE_PRESETS:
+        from quant.backtest.composite import run_composite_backtest
+        cfg = COMPOSITE_PRESETS[preset_name]
+        assert cfg.get("type") == "composite", f"{preset_name} type != composite"
+        return run_composite_backtest(
+            preset_name=preset_name,
+            start=start,
+            end=end,
+            market=market,
+            initial_capital=initial_capital,
+            benchmark=benchmark,
+            progress_callback=progress_callback,
+        )
+
     if preset_name not in PRESETS:
         raise ValueError(f"未知预设: {preset_name}，可选: {list(PRESETS.keys())}")
 
