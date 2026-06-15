@@ -1,8 +1,25 @@
 # 复合策略引擎设计文档
 
-> **状态**：草案 v1.1（二审修订版）  
+> **状态**：v1 已落地，前后端打通待完成
 > **审核日期**：2026-06-10（一审）→ 2026-06-11（二审）  
-> **v1.1 修订**：补充 Portfolio API、ROE 连续过滤、日频 NAV 生成、持仓去重合并、港股锁定 CN_A、工作量重估。
+> **实现同步**：2026-06-15
+> **当前代码**：`quant/backtest/composite.py`、`quant/screener/presets.py::COMPOSITE_PRESETS`、`quant/backtest/engine.py` 路由。
+
+## 当前进展
+
+已完成：
+
+- `commodity_rotation` 复合策略配置已加入 `COMPOSITE_PRESETS`
+- `run_composite_backtest()` 已实现多子策略资金分配、独立 `Portfolio` 调仓、汇总持仓、日频 NAV、基准对比
+- `engine.run_backtest()` 已能识别复合策略并自动路由，CLI 可继续使用统一入口
+- 单元测试覆盖资金分配、子组合归一化、快照查询、日频 NAV、持仓汇总，以及空组合集成场景
+
+待完成：
+
+- Web API 的 `/backtest/presets` 目前只暴露普通 `PRESETS`，需要合并返回 `COMPOSITE_PRESETS`
+- 前端回测页需要识别复合策略，隐藏或锁定 `months`、`top_n`、`timing` 等不适用参数
+- 前端结果页需要展示子策略配置、资金分配、信号状态和复合策略特有说明
+- 需要跑一轮真实数据端到端验证：CLI → API → 前端
 
 ## 定位
 

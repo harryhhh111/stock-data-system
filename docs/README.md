@@ -34,10 +34,14 @@
 
 | 文档 | 内容 |
 |------|------|
-| [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（Phase 1~5） |
+| [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（选股、分析、回测） |
+| [quant/BACKTEST_DESIGN.md](quant/BACKTEST_DESIGN.md) | 因子策略回测系统设计（PIT、组合、基准对比） |
+| [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |
+| [quant/PAPER_TRADING_PLAN.md](quant/PAPER_TRADING_PLAN.md) | 模拟盘计划（复合策略前后端打通后的下一阶段） |
 | [quant/WEB_FRONTEND_PLAN.md](quant/WEB_FRONTEND_PLAN.md) | Web 前端仪表板设计方案 |
 | `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 5 个预设策略） |
 | `quant/analyzer/` 代码 | 个股深度分析报告（盈利/负债/现金流/估值四维分析） |
+| `quant/backtest/` 代码 | 普通因子回测 + 复合策略回测（CLI/API 共用入口） |
 
 ---
 
@@ -67,10 +71,11 @@ core/          ←→   量化无关的基础设施
 quant/         ←→   面向用户的分析工具
 ├── screener/       多因子选股筛选器（CLI: python -m quant.screener）
 ├── analyzer/       个股深度分析（CLI: python -m quant.analyzer）
+├── backtest/       因子回测与复合策略回测（CLI: python -m quant.backtest）
 └── checks/         数据质量把关（FCF+ROE 检查）
 
 web/           ←→   FastAPI 纯 JSON API（仪表板后端）
-└── routes/         dashboard / sync / quality / screener / analyzer
+└── routes/         dashboard / sync / quality / screener / analyzer / backtest
 
 frontend/      ←→   React SPA 仪表板（独立部署 Cloudflare Pages）
 └── src/            shadcn/ui + ECharts + TanStack Query
@@ -87,6 +92,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-06-15 | 补充复合策略与模拟盘计划文档入口 |
 | 2026-05-01 | 整理文档结构，新增 deployment/ 目录，归档临时文档 |
 | 2026-04-30 | 添加 WEB_FRONTEND_PLAN.md（前端设计文档） |
 | 2026-04-23 | 添加 QUANT_SYSTEM_PLAN.md（量化系统规划） |

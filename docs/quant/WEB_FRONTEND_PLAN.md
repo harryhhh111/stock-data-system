@@ -1,6 +1,6 @@
-# Web 前端仪表板 — 实现方案 v8 (Final)
+# Web 前端仪表板 — 实现方案 v8
 
-> 审核通过，可进入编码阶段。
+> 当前状态：基础仪表板、筛选、分析、回测页面已实现；下一阶段重点是复合策略前后端打通，为模拟盘做准备。
 
 ## 顶层架构
 
@@ -23,6 +23,54 @@
                         │  └─ AAPL   → 海外 API (US)      │
                         └─────────────────────────────────┘
 ```
+
+## 当前补充：复合策略打通
+
+复合策略后端引擎已经通过 `quant.backtest.engine.run_backtest()` 路由可用，但 Web 层还需要补齐暴露和交互。
+
+### 后端 API
+
+当前状态：
+
+- `POST /backtest/run` 已经调用统一 `run_backtest()`，理论上可执行 `commodity_rotation`
+- `/backtest/status/{task_id}` 已能返回日频 NAV、基准 NAV、调仓历史和最终持仓
+- `/backtest/presets` 目前只返回普通 `PRESETS`，没有返回 `COMPOSITE_PRESETS`
+
+待办：
+
+- `/backtest/presets` 返回 `type: "normal" | "composite"`
+- 复合策略预设返回 `sub_strategies`、`rebalance`、`benchmark` 等配置摘要
+- `run_backtest_task()` 序列化时保留复合策略结果需要的字段：子策略名、信号、资金分配、目标/实际持仓
+- 错误信息区分配置错误、数据缺失、行情缺失和运行异常
+
+### 前端页面
+
+当前状态：
+
+- `frontend/src/pages/backtest-page.tsx` 已有回测表单、异步任务轮询、日频 NAV 图、基准对比、调仓历史和最终持仓展示
+
+待办：
+
+- 预设下拉展示复合策略，并用 `type` 做视觉区分
+- 选择复合策略后，锁定或隐藏不适用参数：`months`、`top_n`、`timing`
+- 默认市场限制为 `CN_A`，除非后端明确支持港股/美股复合策略
+- 增加复合策略摘要区：子策略名称、商品、牛市权重、熊市权重、持仓数覆盖
+- 结果页增加复合策略区块：信号状态、资金分配、子策略贡献、子策略持仓
+
+### 打通验收
+
+最小验收路径：
+
+```bash
+python -m quant.backtest --preset commodity_rotation --market CN_A --start 2021-01 --end 2024-12
+```
+
+Web 端验收：
+
+- 预设列表能看到 `commodity_rotation`
+- 创建任务后能完成或给出明确数据缺失原因
+- 结果页能展示策略曲线、基准曲线、调仓历史和最终持仓
+- 复合策略参数不会误导用户以为 `months/top_n/timing` 仍会生效
 
 **关键决策**：
 
