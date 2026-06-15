@@ -146,6 +146,7 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 - **SEC data deduplication**: same (tag, end, fp) can have 3-6 records from different filings. Must dedup by preferring latest `filed`, with `frame`-present records first.
 - **All external API calls** must catch exceptions and log context (stock_code, params, response status).
 - **Use tmux** for long-running bulk operations, not nohup.
+- **Local VPS script**: `scripts/start-vps.sh` may exist on this machine as a local backend startup helper for VPS access. It is intentionally gitignored; do not commit, modify, or remove it unless the user explicitly asks.
 
 ## Key Files
 

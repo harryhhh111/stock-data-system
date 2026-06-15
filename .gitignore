@@ -26,6 +26,7 @@ data/*.log
 # Runtime outputs
 data/
 !data/.gitkeep
+scripts/start-vps.sh
 
 # IDE
 .vscode/
