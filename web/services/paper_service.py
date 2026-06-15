@@ -8,7 +8,7 @@ from datetime import date, datetime
 
 from db import Connection
 from quant.paper.engine import PaperTradingEngine
-from quant.screener.presets import COMPOSITE_PRESETS
+from quant.screener.presets import COMPOSITE_PRESETS, PRESETS
 
 
 def _to_dict(cols: list[str], row: tuple) -> dict | None:
@@ -66,12 +66,16 @@ def create_account(params: dict) -> dict:
     market = params.get("market", "CN_A")
     preset_type = params.get("preset_type", "composite")
     strategy_name = params["strategy_name"]
-    if preset_type != "composite":
-        raise ValueError("模拟盘引擎当前仅支持 composite 策略账户")
-    if strategy_name not in COMPOSITE_PRESETS:
+    if preset_type == "composite" and strategy_name not in COMPOSITE_PRESETS:
         raise ValueError(
             f"未知复合策略: {strategy_name}，可选: {list(COMPOSITE_PRESETS.keys())}"
         )
+    if preset_type == "normal" and strategy_name not in PRESETS:
+        raise ValueError(
+            f"未知普通策略: {strategy_name}，可选: {list(PRESETS.keys())}"
+        )
+    if preset_type not in ("normal", "composite"):
+        raise ValueError("preset_type 必须是 normal 或 composite")
     if params.get("benchmark") is None:
         params["benchmark"] = {"CN_A": "000300", "CN_HK": "HSI", "US": "SPY"}.get(market)
 

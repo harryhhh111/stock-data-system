@@ -18,9 +18,12 @@ import pandas as pd
 from db import Connection
 from quant.backtest.common import (
     batch_query_quote,
+    build_universe,
+    compute_price_factors,
     get_sell_prices_mixed,
     load_benchmark_prices,
     generate_rebalance_dates,
+    twenty_eighty_targets,
 )
 from quant.backtest.composite import (
     _check_all_signals,
@@ -29,7 +32,9 @@ from quant.backtest.composite import (
 )
 from quant.backtest.portfolio import Portfolio
 from quant.backtest.universe import get_nearest_trade_date
-from quant.screener.presets import COMPOSITE_PRESETS, CompositeConfig
+from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
+from quant.screener.presets import COMPOSITE_PRESETS, PRESETS, CompositeConfig, PresetConfig
+from quant.screener.scorer import rank_factors
 from quant.paper.preloader import PaperPreloader
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,7 @@ class PaperTradingEngine:
         self._conn = conn
         self._account: dict | None = None
         self._cfg: CompositeConfig | None = None
+        self._preset: PresetConfig | None = None
 
     # ── 数据加载 ────────────────────────────────────────
 
@@ -88,6 +94,17 @@ class PaperTradingEngine:
         self._cfg = cfg
         return cfg
 
+    def _load_normal_preset(self) -> PresetConfig:
+        strategy = self._account["strategy_name"]
+        if strategy not in PRESETS:
+            raise ValueError(
+                f"Unknown normal strategy: {strategy}. "
+                f"Available: {list(PRESETS.keys())}"
+            )
+        preset = PRESETS[strategy]
+        self._preset = preset
+        return preset
+
     def _load_current_positions(self) -> dict[str, Portfolio]:
         sub_portfolios: dict[str, Portfolio] = {}
         with Connection() as conn:
@@ -111,6 +128,87 @@ class PaperTradingEngine:
             pf.positions[code] = type("P", (), {"shares": shares, "avg_cost": avg_cost})()
             pf._total_trades = 0
         return sub_portfolios
+
+    def _select_normal_targets(
+        self,
+        preset: PresetConfig,
+        trade_date: date,
+        market: str,
+        quote_by_date: dict[date, pd.DataFrame],
+    ) -> list[str]:
+        """普通策略单日选股：复用回测因子管线，返回目标持仓代码。"""
+        strategy = self._account["strategy_name"]
+        if strategy == "twenty_eighty":
+            return twenty_eighty_targets(trade_date, market)
+
+        filters = preset["filters"]
+        weights = preset["weights"]
+        top_n = preset.get("top_n", 30)
+
+        preloader = PaperPreloader(market)
+        base = preloader.get_universe(trade_date)
+        quote = quote_by_date.get(trade_date, pd.DataFrame())
+        if quote.empty:
+            return []
+        universe = build_universe(base, quote)
+
+        macro_filter: list[str] = preset.get("macro_filter", [])
+        if macro_filter:
+            from quant.backtest.macro import get_excluded_codes
+            excluded = get_excluded_codes(market, macro_filter, trade_date)
+            if excluded:
+                universe = universe[~universe["stock_code"].isin(excluded)]
+
+        filtered, _, _ = apply_hard_filters(universe, filters)
+        if filtered.empty:
+            return []
+
+        roe_years = filters.get("roe_consecutive_years", 0)
+        roe_min = filters.get("roe_min", 0)
+        if roe_years and roe_years > 0:
+            roe_hist = preloader.get_roe_history(trade_date, roe_years)
+            filtered, _, _ = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
+            if filtered.empty:
+                return []
+
+        price_factors = compute_price_factors(
+            filtered["stock_code"].tolist(), trade_date, market
+        )
+        if not price_factors.empty:
+            filtered = filtered.merge(
+                price_factors, left_on="stock_code", right_index=True, how="left"
+            )
+
+        scored = rank_factors(filtered, weights)
+        return scored.nlargest(min(top_n, len(scored)), "score")["stock_code"].tolist()
+
+    def _rebalance_normal_portfolio(
+        self,
+        pf: Portfolio,
+        trade_date: date,
+        market: str,
+        benchmark: str | None,
+        quote_by_date: dict[date, pd.DataFrame],
+    ) -> list[str]:
+        """普通策略调仓到单一 base 组合，返回目标代码列表。"""
+        preset = self._preset or self._load_normal_preset()
+        targets = self._select_normal_targets(preset, trade_date, market, quote_by_date)
+        sell_codes = list(pf.positions.keys())
+        trade_codes = list(set(targets) | set(sell_codes))
+        all_prices = get_sell_prices_mixed(trade_date, trade_codes, benchmark, market)
+        buy_prices = {
+            c: p for c, p in all_prices.items()
+            if c in targets and p is not None and p > 0
+        }
+        sell_prices = {
+            c: p for c, p in all_prices.items()
+            if c in sell_codes and p is not None
+        }
+        for c in sell_codes:
+            if c not in sell_prices:
+                sell_prices[c] = pf.positions[c].avg_cost
+        pf.rebalance(trade_date, list(buy_prices.keys()), buy_prices, sell_prices)
+        return list(buy_prices.keys())
 
     # ── 持久化 ──────────────────────────────────────────
 
@@ -175,7 +273,12 @@ class PaperTradingEngine:
                     side = "buy" if diff > 0 else "sell"
                     shares = abs(diff)
                     # 用调仓日价格近似成交价
-                    price = float(new_pf.positions[code].avg_cost) if code in new_pf.positions else 0.0
+                    if code in new_pf.positions:
+                        price = float(new_pf.positions[code].avg_cost)
+                    elif code in old_pf.positions:
+                        price = float(old_pf.positions[code].avg_cost)
+                    else:
+                        price = 0.0
                     amount = shares * price
                     fee = amount * fee_rate
                     slippage = amount * slippage_bps / 10000.0
@@ -392,7 +495,14 @@ class PaperTradingEngine:
             as_of_date = date.today()
 
         account = self._load_account()
-        cfg = self._load_config()
+        preset_type = account.get("preset_type", "composite")
+        if preset_type == "composite":
+            cfg = self._load_config()
+        elif preset_type == "normal":
+            cfg = None
+            self._load_normal_preset()
+        else:
+            raise ValueError(f"Unsupported preset_type: {preset_type}")
         market = account["market"]
 
         # 对齐到交易日
@@ -419,6 +529,11 @@ class PaperTradingEngine:
 
         # 加载当前持仓
         sub_portfolios = self._load_current_positions()
+        if preset_type == "normal":
+            if "base" not in sub_portfolios:
+                sub_portfolios["base"] = Portfolio(_acct_float(account, "cash"))
+            elif not sub_portfolios["base"].positions:
+                sub_portfolios["base"].cash = _acct_float(account, "cash")
         old_portfolios = deepcopy(sub_portfolios) if is_rebalance else None
 
         # 获取当前行情
@@ -451,33 +566,45 @@ class PaperTradingEngine:
         trades: list[dict] = []
 
         if is_rebalance:
-            signals = _check_all_signals(cfg, market, trade_date)
-            allocation = _allocate(cfg, signals)
-
-            preloader = PaperPreloader(market)
             with Connection() as conn:
                 quote_by_date = batch_query_quote(conn, [trade_date], market)
 
-            valuation_snaps = {sub["name"]: [] for sub in cfg["sub_strategies"]}
+            if preset_type == "composite":
+                assert cfg is not None
+                signals = _check_all_signals(cfg, market, trade_date)
+                allocation = _allocate(cfg, signals)
 
-            for sub in cfg["sub_strategies"]:
-                name = sub["name"]
-                target_capital = _acct_float(account, "initial_capital") * allocation.get(name, 0.0)
-                if name not in sub_portfolios:
-                    sub_portfolios[name] = Portfolio(0.0)
-                _rebalance_sub_portfolio(
-                    sub=sub,
-                    sub_pf=sub_portfolios[name],
-                    name=name,
-                    rb_date=trade_date,
-                    target_capital=target_capital,
-                    benchmark=account["benchmark"],
+                preloader = PaperPreloader(market)
+                valuation_snaps = {sub["name"]: [] for sub in cfg["sub_strategies"]}
+
+                for sub in cfg["sub_strategies"]:
+                    name = sub["name"]
+                    target_capital = _acct_float(account, "initial_capital") * allocation.get(name, 0.0)
+                    if name not in sub_portfolios:
+                        sub_portfolios[name] = Portfolio(0.0)
+                    _rebalance_sub_portfolio(
+                        sub=sub,
+                        sub_pf=sub_portfolios[name],
+                        name=name,
+                        rb_date=trade_date,
+                        target_capital=target_capital,
+                        benchmark=account["benchmark"],
+                        market=market,
+                        preloader=preloader,
+                        quote_by_date=quote_by_date,
+                        signals=signals,
+                        valuation_snaps=valuation_snaps,
+                    )
+            else:
+                allocation = {"base": 1.0}
+                self._rebalance_normal_portfolio(
+                    pf=sub_portfolios["base"],
+                    trade_date=trade_date,
                     market=market,
-                    preloader=preloader,
+                    benchmark=account["benchmark"],
                     quote_by_date=quote_by_date,
-                    signals=signals,
-                    valuation_snaps=valuation_snaps,
                 )
+                signals = {"strategy": account["strategy_name"]}
 
             trades = self._save_trades(old_portfolios or {}, sub_portfolios, trade_date, signals, allocation)
 
