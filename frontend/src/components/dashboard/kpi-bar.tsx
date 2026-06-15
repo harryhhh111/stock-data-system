@@ -15,11 +15,6 @@ const MARKET_LABEL: Record<Market, string> = {
   US: "美股",
 };
 
-function calcSyncRate(status: DashboardStats["sync_status"][Market]) {
-  const total = status.success + status.failed + status.in_progress + status.partial;
-  return total > 0 ? status.success / total : 0;
-}
-
 /** 计算今日和昨日成功率，返回 {today, change} */
 function calcSyncTrend(trend: DashboardStats["sync_trend"]) {
   const markets = Object.keys(trend) as Market[];

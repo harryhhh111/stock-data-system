@@ -63,7 +63,7 @@ export function mergeStats(
   const partial = {} as Record<Market, number>;
 
   // Quote sync merge
-  const quoteToday: DashboardStats["quote_sync_today"] = {};
+  const quoteToday: Partial<DashboardStats["quote_sync_today"]> = {};
   const quoteTrendMap = new Map<string, { date: string; success: number; failed: number }>();
   const quoteCoverageMap = new Map<Market, DashboardStats["quote_coverage"][0]>();
 
@@ -151,7 +151,11 @@ export function mergeStats(
     anomalies_today: anomaliesToday,
     freshness,
     recent_issues: recent10,
-    quote_sync_today: quoteToday,
+    quote_sync_today: {
+      CN_A: quoteToday.CN_A ?? { success: 0, failed: 0 },
+      CN_HK: quoteToday.CN_HK ?? { success: 0, failed: 0 },
+      US: quoteToday.US ?? { success: 0, failed: 0 },
+    },
     quote_sync_trend: Array.from(quoteTrendMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
     quote_coverage: Array.from(quoteCoverageMap.values()),
   };

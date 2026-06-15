@@ -99,7 +99,6 @@ export function QuoteSyncPanel({
               const qc = quoteCoverage.find((c) => c.market === m);
               const total = totalStocks[m] ?? 0;
               const updated = qt.success + qt.failed;
-              const rate = updated > 0 ? (qt.success / updated) * 100 : 0;
               const isDone = updated >= total && total > 0;
 
               return (

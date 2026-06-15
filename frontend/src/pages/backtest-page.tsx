@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { backtestApi } from "@/lib/api/client";
 import { useBacktestStore } from "@/lib/store/backtest-store";
@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { TrendingUp, Loader2, RotateCcw } from "lucide-react";
 import { fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
-import type { BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison } from "@/lib/types/backtest";
+import type { BacktestPreset, BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison } from "@/lib/types/backtest";
 
 const MARKETS: { value: Market; label: string }[] = [
   { value: "CN_A", label: "A 股" },
@@ -135,8 +135,49 @@ function BenchmarkKpiSection({ bc }: { bc: BenchmarkComparison }) {
   );
 }
 
+function CompositePresetSummary({ preset }: { preset: BacktestPreset }) {
+  const subs = preset.sub_strategies ?? [];
+  if (preset.type !== "composite" || subs.length === 0) return null;
 
-function ResultView({ result }: { result: BacktestResult }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">复合策略配置</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {subs.map((sub) => (
+            <div key={sub.name} className="rounded-md border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">{sub.name}</span>
+                <Badge variant={sub.residual ? "secondary" : "outline"} className="text-xs">
+                  {sub.residual ? "剩余资金" : sub.commodity || "全市场"}
+                </Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                <span>牛 {fmtPct(sub.weight_bull)}</span>
+                <span>熊 {fmtPct(sub.weight_bear)}</span>
+                <span>中 {fmtPct(sub.weight_neutral)}</span>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {sub.strategy}
+                {sub.top_n_override ? ` · Top ${sub.top_n_override}` : ""}
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {preset.rebalance && <Badge variant="outline">调仓: {preset.rebalance}</Badge>}
+          {preset.benchmark && <Badge variant="outline">基准: {preset.benchmark}</Badge>}
+          <Badge variant="outline">市场: CN_A</Badge>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+function ResultView({ result, preset }: { result: BacktestResult; preset?: BacktestPreset }) {
   const m = result.metrics;
   const details = computeTurnoverDetails(result.rebalance_history);
   const bc = result.benchmark_comparison;
@@ -207,6 +248,8 @@ function ResultView({ result }: { result: BacktestResult }) {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
+      {preset?.type === "composite" && <CompositePresetSummary preset={preset} />}
+
       {/* 策略 KPI 卡片 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard label="总收益率" value={fmtPct(m.total_return)} highlight />
@@ -282,6 +325,9 @@ export function BacktestPage() {
     queryFn: () => backtestApi.presets(),
     staleTime: 300_000,
   });
+  const presets = presetsData?.presets ?? [];
+  const activePreset = presets.find((p) => p.name === store.presetName);
+  const isComposite = activePreset?.type === "composite";
 
   // 轮询任务状态
   const taskQuery = useQuery({
@@ -299,14 +345,14 @@ export function BacktestPage() {
     mutationFn: () =>
       backtestApi.run({
         preset_name: store.presetName,
-        market: store.market,
+        market: isComposite ? "CN_A" : store.market,
         start: store.start,
         end: store.end || undefined,
-        months: store.months,
-        top_n: store.topN ?? undefined,
+        months: isComposite ? 1 : store.months,
+        top_n: isComposite ? undefined : store.topN ?? undefined,
         initial_capital: store.capital,
         benchmark: store.benchmark || null,
-        timing: store.timing,
+        timing: isComposite ? false : store.timing,
       }),
     onSuccess: (data) => setActiveTaskId(data.task_id),
   });
@@ -314,7 +360,23 @@ export function BacktestPage() {
   const task = taskQuery.data;
   const isRunning = task?.status === "CREATED" || task?.status === "RUNNING";
   const result = task?.result;
-  const presets = presetsData?.presets ?? [];
+
+  useEffect(() => {
+    if (isComposite && store.market !== "CN_A") {
+      store.setMarket("CN_A");
+    }
+  }, [isComposite, store]);
+
+  function handlePresetChange(name: string) {
+    store.setPresetName(name);
+    const next = presets.find((p) => p.name === name);
+    if (next?.type === "composite") {
+      store.setMarket("CN_A");
+      store.setMonths(1);
+      store.setTopN(null);
+      store.setTiming(false);
+    }
+  }
 
   function handleReset() {
     setActiveTaskId(null);
@@ -328,11 +390,13 @@ export function BacktestPage() {
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-48">
           <label className="text-xs text-muted-foreground mb-1 block">预设策略</label>
-          <Select value={store.presetName} onValueChange={store.setPresetName} disabled={isRunning}>
+          <Select value={store.presetName} onValueChange={handlePresetChange} disabled={isRunning}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {presets.map((p) => (
-                <SelectItem key={p.name} value={p.name}>{p.name} — {p.description}</SelectItem>
+                <SelectItem key={p.name} value={p.name}>
+                  {p.name} — {p.description}{p.type === "composite" ? " · 复合" : ""}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -340,7 +404,7 @@ export function BacktestPage() {
 
         <div className="w-24">
           <label className="text-xs text-muted-foreground mb-1 block">市场</label>
-          <Select value={store.market} onValueChange={store.setMarket} disabled={isRunning}>
+          <Select value={store.market} onValueChange={store.setMarket} disabled={isRunning || isComposite}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {MARKETS.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
@@ -360,7 +424,7 @@ export function BacktestPage() {
 
         <div className="w-28">
           <label className="text-xs text-muted-foreground mb-1 block">调仓间隔</label>
-          <Select value={String(store.months)} onValueChange={(v) => store.setMonths(Number(v))} disabled={isRunning}>
+          <Select value={String(isComposite ? 1 : store.months)} onValueChange={(v) => store.setMonths(Number(v))} disabled={isRunning || isComposite}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {INTERVALS.map((i) => <SelectItem key={i.value} value={String(i.value)}>{i.label}</SelectItem>)}
@@ -370,7 +434,13 @@ export function BacktestPage() {
 
         <div className="w-24">
           <label className="text-xs text-muted-foreground mb-1 block">持仓数</label>
-          <Input type="number" value={store.topN ?? ""} onChange={(e) => store.setTopN(e.target.value ? Number(e.target.value) : null)} disabled={isRunning} placeholder="预设" />
+          <Input
+            type="number"
+            value={isComposite ? "" : store.topN ?? ""}
+            onChange={(e) => store.setTopN(e.target.value ? Number(e.target.value) : null)}
+            disabled={isRunning || isComposite}
+            placeholder={isComposite ? "子策略" : "预设"}
+          />
         </div>
 
         <div className="w-32">
@@ -391,9 +461,9 @@ export function BacktestPage() {
         <div className="flex items-center gap-2 pt-5">
           <Checkbox
             id="timing-toggle"
-            checked={store.timing}
+            checked={isComposite ? false : store.timing}
             onCheckedChange={(v) => store.setTiming(v === true)}
-            disabled={isRunning}
+            disabled={isRunning || isComposite}
           />
           <label htmlFor="timing-toggle" className="text-xs text-muted-foreground cursor-pointer select-none">
             200MA择时
@@ -405,6 +475,8 @@ export function BacktestPage() {
           {mutation.isPending ? "创建中..." : "开始回测"}
         </Button>
       </div>
+
+      {isComposite && activePreset && <CompositePresetSummary preset={activePreset} />}
 
       {/* 进度条 */}
       {isRunning && (
@@ -434,7 +506,7 @@ export function BacktestPage() {
       {/* 结果 */}
       {result && !isRunning && (
         <>
-          <ResultView result={result} />
+          <ResultView result={result} preset={presets.find((p) => p.name === result.preset_name)} />
           <div className="flex justify-center">
             <Button variant="outline" onClick={handleReset}>
               <RotateCcw className="h-4 w-4 mr-2" />新建回测

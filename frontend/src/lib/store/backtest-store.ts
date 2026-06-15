@@ -20,6 +20,7 @@ interface BacktestState {
   setTopN: (v: number | null) => void;
   setCapital: (v: number) => void;
   setBenchmark: (v: string) => void;
+  setTiming: (v: boolean) => void;
 }
 
 export const useBacktestStore = create<BacktestState>()(

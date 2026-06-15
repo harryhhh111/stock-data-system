@@ -4,7 +4,7 @@ from datetime import date
 
 from db import Connection
 from quant.backtest.engine import run_backtest
-from quant.screener.presets import PRESETS
+from quant.screener.presets import COMPOSITE_PRESETS, PRESETS
 
 # 基准 ticker 说明
 _BENCHMARK_INFO: dict[str, str] = {
@@ -43,6 +43,7 @@ def _serialize(result, market: str = "US") -> dict:
 
     return {
         "preset_name": result.preset_name,
+        "preset_type": "composite" if result.preset_name in COMPOSITE_PRESETS else "normal",
         "start_date": str(result.start_date),
         "end_date": str(result.end_date),
         "rebalance_months": result.rebalance_months,
@@ -133,11 +134,40 @@ def run_backtest_task(task_id: str, params: dict) -> None:
 
 def get_available_presets() -> dict:
     """返回可用预设列表。"""
+    normal_presets = [
+        {
+            "name": k,
+            "description": v["description"],
+            "type": "normal",
+        }
+        for k, v in PRESETS.items()
+    ]
+    composite_presets = [
+        {
+            "name": k,
+            "description": v["description"],
+            "type": "composite",
+            "rebalance": v.get("rebalance"),
+            "benchmark": v.get("benchmark"),
+            "sub_strategies": [
+                {
+                    "name": sub["name"],
+                    "strategy": sub["strategy"],
+                    "commodity": sub["commodity"],
+                    "weight_bull": sub.get("weight_bull", 0.0),
+                    "weight_bear": sub.get("weight_bear", 0.0),
+                    "weight_neutral": sub.get("weight_neutral", 0.0),
+                    "top_n_override": sub.get("top_n_override"),
+                    "market_scope": sub["market_scope"],
+                    "residual": sub["residual"],
+                }
+                for sub in v["sub_strategies"]
+            ],
+        }
+        for k, v in COMPOSITE_PRESETS.items()
+    ]
     return {
-        "presets": [
-            {"name": k, "description": v["description"]}
-            for k, v in PRESETS.items()
-        ]
+        "presets": normal_presets + composite_presets
     }
 
 

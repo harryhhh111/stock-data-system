@@ -46,6 +46,7 @@ export interface BenchmarkComparison {
 
 export interface BacktestResult {
   preset_name: string;
+  preset_type?: "normal" | "composite";
   start_date: string;
   end_date: string;
   rebalance_months: number;
@@ -74,6 +75,22 @@ export interface BacktestTask {
 export interface BacktestPreset {
   name: string;
   description: string;
+  type: "normal" | "composite";
+  rebalance?: string | null;
+  benchmark?: string | null;
+  sub_strategies?: CompositeSubStrategy[];
+}
+
+export interface CompositeSubStrategy {
+  name: string;
+  strategy: string;
+  commodity: string;
+  weight_bull: number;
+  weight_bear: number;
+  weight_neutral: number;
+  top_n_override?: number | null;
+  market_scope: string;
+  residual: boolean;
 }
 
 /** 换手详情：每期调仓的买入/卖出/持有股票列表 */
