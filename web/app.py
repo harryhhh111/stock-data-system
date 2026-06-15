@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest
+from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest, paper
 
 
 def create_app() -> FastAPI:
@@ -17,6 +17,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[
             "http://localhost:5173",
+            "http://localhost:5174",
         ],
         allow_origin_regex=r"https://.*\.pages\.dev",
         allow_credentials=True,
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(screener.router, prefix="/api/v1", tags=["screener"])
     app.include_router(analyzer.router, prefix="/api/v1", tags=["analyzer"])
     app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
+    app.include_router(paper.router, prefix="/api/v1", tags=["paper"])
 
     return app
 
