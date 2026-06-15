@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from web import ok, err
 from web.services import paper_service
@@ -20,7 +20,7 @@ class CreateAccountParams(BaseModel):
     initial_capital: float = 1_000_000
     fee_rate: float = 0.0
     slippage_bps: float = 0.0
-    config: dict = {}
+    config: dict = Field(default_factory=dict)
 
 
 class RunAccountParams(BaseModel):

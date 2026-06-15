@@ -165,10 +165,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_paper_accounts_updated_at ON paper_accounts;
 CREATE TRIGGER trg_paper_accounts_updated_at
     BEFORE UPDATE ON paper_accounts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS trg_paper_nav_snapshots_updated_at ON paper_nav_snapshots;
 CREATE TRIGGER trg_paper_nav_snapshots_updated_at
     BEFORE UPDATE ON paper_nav_snapshots
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
