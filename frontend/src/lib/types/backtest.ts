@@ -44,6 +44,20 @@ export interface BenchmarkComparison {
   correlation: number;
 }
 
+export interface CompositeRebalanceRecord {
+  date: string;
+  signals: Record<string, string>;
+  allocation: Record<string, number>;
+  sub_holdings: Record<string, string[]>;
+  sub_navs: Record<string, number>;
+}
+
+export interface CompositeDetails {
+  records: CompositeRebalanceRecord[];
+  final_sub_contributions: Record<string, number>;
+  final_sub_allocation: Record<string, number>;
+}
+
 export interface BacktestResult {
   preset_name: string;
   preset_type?: "normal" | "composite";
@@ -59,6 +73,7 @@ export interface BacktestResult {
   strategy_daily_nav?: Record<string, number> | null;
   benchmark_daily_nav?: Record<string, number> | null;
   stock_names?: Record<string, string>;
+  composite_details?: CompositeDetails | null;
 }
 
 export type BacktestTaskStatus = "CREATED" | "RUNNING" | "DONE" | "FAILED";

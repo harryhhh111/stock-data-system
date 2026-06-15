@@ -16,6 +16,7 @@ import pandas as pd
 
 from db import Connection
 from quant.backtest.common import (
+    CN_INDEX_CODES,
     batch_query_quote,
     benchmark_market,
     build_universe,
