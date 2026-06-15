@@ -29,6 +29,8 @@
 quant/backtest/
 ├── __init__.py
 ├── __main__.py      # CLI: python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
+├── types.py         # 公共类型定义（Snapshot / PerformanceMetrics / BenchmarkComparison / BacktestResult）
+├── common.py        # 共享工具函数（行情批量查询 / 日期 / 基准对比 / 价格因子 / 200MA / 日频 NAV）
 ├── engine.py        # 回测主循环：预加载 → 调仓日期 → 切面选股 → 模拟交易 → 记录净值
 ├── preloader.py     # 数据预加载：一次 COPY CSV 加载财报/TTM/股本到内存，pandas 做 PIT 过滤
 ├── universe.py      # 历史切面查询：point-in-time 因子数据（US/CN_A/CN_HK 三套 SQL，回退用）
@@ -387,9 +389,10 @@ ORDER BY trade_date DESC LIMIT 1
 
 **核心函数**: `run_backtest(preset_name, start_date, end_date, rebalance_months, top_n, initial_capital, market) -> BacktestResult`
 
-`market` 参数（默认 `"US"`）线程化到所有下游调用。
+`BacktestResult` 等类型定义在 `types.py`，共享工具函数在 `common.py`。`market` 参数（默认 `"US"`）线程化到所有下游调用。
 
 ```python
+# quant/backtest/types.py
 class BacktestResult:
     preset_name: str
     start_date: date
@@ -425,12 +428,12 @@ V5 核心优化：数据预加载到内存（`PITPreloader`），PIT 过滤在 p
 0. 初始化:
    a. preloader = PITPreloader(market)
    b. preloader.load()                         # COPY CSV 加载全部财务/TTM/股本到内存
-   c. quote_by_date = _batch_query_quote(all_dates)  # 一次 SQL 查完所有调仓日行情
+   c. quote_by_date = batch_query_quote(all_dates)  # 一次 SQL 查完所有调仓日行情
 
 1. 对每个调仓日期 D:
    a. base = preloader.get_universe(D)         # 内存 PIT：drop_duplicates 取最新财报
    b. quote = quote_by_date[D]                 # 从预查询结果取当日行情
-   c. universe = _build_universe(base, quote)  # merge + 计算 PE/PB/FCF yield
+   c. universe = build_universe(base, quote)   # merge + 计算 PE/PB/FCF yield
    d. filtered = apply_hard_filters(universe, preset.filters)
    e. 若有 roe_consecutive_years:
       roe_hist = preloader.get_roe_history(D, years)  # 内存 PIT ROE
@@ -467,12 +470,15 @@ ORDER BY stock_code, trade_date DESC
 
 ### 3. `portfolio.py` — 组合模型
 
+类型定义（Snapshot / PerformanceMetrics）已提取到 `types.py`，`portfolio.py` 只保留 `Position` 和 `Portfolio` 类。
+
 ```python
 class Position:
     stock_code: str
     shares: float
     avg_cost: float       # 买入均价
 
+# quant/backtest/types.py
 class Snapshot:
     date: date
     total_value: float    # 持仓市值 + 现金
@@ -681,18 +687,18 @@ FROM daily_quote
 WHERE market = %s AND trade_date = ANY(%s::date[]) AND close IS NOT NULL
 """
 
-def _batch_query_quote(conn, dates, market) -> dict[date, pd.DataFrame]:
+def batch_query_quote(conn, dates, market) -> dict[date, pd.DataFrame]:
     # 一次查询返回所有调仓日行情，按 trade_date 拆成 {date: DataFrame}
 ```
 
 17 次 LATERAL index seek 被替换为 1 次批量查询，行情查询从 ~49s 降至 ~3s。
 
-### _build_universe
+### build_universe
 
 将 preloader 的财务结果与批量行情 merge：
 
 ```python
-def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
+def build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
     result = base.merge(quote, on="stock_code", how="left")
     # 填充 market_cap = fillna(close * total_shares)
     # 计算 PE = market_cap / net_profit_ttm (net_profit_ttm > 0)
@@ -719,7 +725,7 @@ def _build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
 | preloader.load() — COPY CSV × 4 | ~2.8s |
 | batch_query_quote — 1 次 SQL | ~3s |
 | 17 × get_universe (pandas PIT) | ~1.7s |
-| 17 × _build_universe (merge+计算) | ~0.5s |
+| 17 × build_universe (merge+计算) | ~0.5s |
 | 17 × filter_consecutive_roe | ~0.03s |
 | 17 × rank_factors + nlargest | ~0.3s |
 | 17 × get_sell_prices | ~1.5s |

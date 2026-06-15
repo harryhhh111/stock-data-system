@@ -83,6 +83,8 @@ stock_data/
 │   ├── backtest/                  # 因子回测（Phase 2.0 ✅）
 │   │   ├── __init__.py
 │   │   ├── __main__.py            # CLI 入口
+│   │   ├── types.py               # 公共类型（Snapshot / PerformanceMetrics / BacktestResult）
+│   │   ├── common.py              # 共享工具（行情查询 / 日期 / 基准对比 / 价格因子）
 │   │   ├── engine.py              # 回测主循环（预加载 + 批量行情）
 │   │   ├── preloader.py           # 数据预加载（COPY CSV → 内存 PIT）
 │   │   ├── universe.py            # 历史 PIT 切面查询

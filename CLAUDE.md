@@ -137,7 +137,7 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
   - `STOCK_MARKETS=CN_A,CN_HK` → **国内服务器**，只有 A 股+港股数据。只能做: A股/港股财务同步、A股/港股日线行情、A股/港股分红、申万行业分类、沪深指数成分等。禁止推荐: SEC EDGAR 数据拉取、美股日线等。
   - 不确定时先问用户当前在哪台机器。
 - **⚠️ NO SILENT FAILURE (永不静默失败)**: 当请求的资源缺失、外部依赖不可用、或前提假设不成立时，**MUST** 抛 exception 或返回明确错误，**严禁**返回空结果 / 0 / NaN / None 假装一切正常。静默失败的代价是 bug 长期潜伏（用户以为代码工作，实际数据是错的），远高于一次明显的报错中断。
-  - 反例：`bench_prices = _load_benchmark_prices(...)` 在 CN 市场返回 `{}`，然后 `if bench_prices: ...` 跳过基准对比，用户看不到任何提示。
+  - 反例：`bench_prices = load_benchmark_prices(...)` 在 CN 市场返回 `{}`，然后 `if bench_prices: ...` 跳过基准对比，用户看不到任何提示。
   - 正例：`if benchmark and not bench_prices: raise ValueError(f"基准 {benchmark} 在 {market} 市场无数据，请用 --benchmark '' 显式禁用")`。
   - 用户主动禁用（如 `--benchmark ''`）是显式选择，不算静默失败。
 - **Never overwrite existing DB values with None** via upsert unless using `force_null_cols`.

@@ -206,3 +206,77 @@ def test_aggregate_holdings_sums_shares():
 
     merged = _aggregate_holdings({"a": pf_a, "b": pf_b})
     assert merged == {"X": 130.0, "Y": 50.0, "Z": 20.0}
+
+
+# ── run_composite_backtest 集成测试 ───────────────────────
+
+from unittest.mock import patch
+
+import pandas as pd
+
+from quant.backtest.composite import run_composite_backtest
+
+
+_TEST_COMPOSITE_PRESETS = {
+    "test_composite": {
+        "description": "test composite",
+        "type": "composite",
+        "sub_strategies": [
+            {
+                "name": "base",
+                "commodity": "",
+                "strategy": "nonexistent_strategy",
+                "market_scope": "all",
+                "top_n_override": None,
+                "residual": True,
+                "weight_bull": 0.0,
+                "weight_bear": 0.0,
+                "weight_neutral": 0.0,
+            },
+        ],
+        "rebalance": "monthly",
+        "benchmark": None,
+    },
+}
+
+
+def _mock_preloader():
+    preloader = MagicMock()
+    preloader.get_universe.return_value = pd.DataFrame({"stock_code": pd.Series([], dtype=str)})
+    preloader.get_roe_history.return_value = pd.DataFrame()
+    return preloader
+
+
+def test_run_composite_backtest_empty_holds_cash():
+    """无有效选股时，组合应持有现金，NAV 保持 1.0。"""
+    patches = [
+        patch("quant.backtest.composite.COMPOSITE_PRESETS", _TEST_COMPOSITE_PRESETS),
+        patch("quant.backtest.composite.generate_rebalance_dates", return_value=[date(2024, 1, 31), date(2024, 2, 29)]),
+        patch("quant.backtest.composite.get_nearest_trade_date", side_effect=lambda d, **kw: d),
+        patch("quant.backtest.composite.batch_query_quote", return_value={}),
+        patch("quant.backtest.composite.PITPreloader", return_value=_mock_preloader()),
+        patch("quant.backtest.composite.get_sell_prices_mixed", return_value={}),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        result = run_composite_backtest(
+            preset_name="test_composite",
+            start=date(2024, 1, 1),
+            end=date(2024, 2, 29),
+            market="CN_A",
+            initial_capital=1_000_000,
+            benchmark="",  # 禁用基准对比
+        )
+
+        assert result.preset_name == "test_composite"
+        assert result.start_date == date(2024, 1, 31)
+        assert result.end_date == date(2024, 2, 29)
+        assert result.initial_capital == 1_000_000
+        assert result.final_value == pytest.approx(1_000_000, rel=1e-9)
+        assert result.metrics.total_return == pytest.approx(0.0, abs=1e-9)
+        assert result.final_holdings == []
+        assert result.benchmark_comparison is None
+    finally:
+        for p in reversed(patches):
+            p.stop()

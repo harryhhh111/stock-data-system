@@ -197,14 +197,14 @@ def compute_daily_nav(
             rb_idx += 1
         snap = rebalance_history[rb_idx]
 
-        # 计算持仓市值：当天 close 优先，缺失则用上一交易日的 close
+        # 计算持仓市值：当天 close 优先，其次前向填充，最后用持仓均价兜底
         position_value = 0.0
         for code, shares in snap.holdings.items():
             price = daily_quotes.get((code, d))
             if price is not None:
                 last_close[code] = price
             else:
-                price = last_close.get(code, 0.0)
+                price = last_close.get(code) or snap.costs.get(code, 0.0)
             position_value += shares * price
         daily_nav[d] = (snap.cash + position_value) / initial_capital
     return daily_nav

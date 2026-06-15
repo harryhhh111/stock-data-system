@@ -79,7 +79,7 @@
 为支持日频 mark-to-market，扩展现有 `Snapshot`：
 
 ```python
-# quant/backtest/portfolio.py
+# quant/backtest/types.py（Snapshot 从 portfolio.py 提取）
 @dataclass
 class Snapshot:
     date: date
@@ -131,10 +131,10 @@ python -m core.sync --type daily-backfill --market US
 
 ### Step 2: 基准数据加载
 
-在 `quant/backtest/engine.py` 内联加：
+在 `quant/backtest/common.py` 内联加：
 
 ```python
-def _load_benchmark_prices(
+def load_benchmark_prices(
     ticker: str, market: str, start: date, end: date
 ) -> dict[date, float]:
     """加载基准日线，返回 {trade_date: close}。"""
@@ -171,7 +171,7 @@ for snap in portfolio.history:
 #### 3b. 一次性加载日频行情
 
 ```python
-def _load_daily_quotes_for_codes(
+def load_daily_quotes_for_codes(
     codes: list[str], market: str, start: date, end: date
 ) -> dict[tuple[str, date], float]:
     """返回 {(stock_code, trade_date): close}。预期 100K~250K 行。"""
@@ -191,7 +191,7 @@ def _load_daily_quotes_for_codes(
 #### 3c. 计算策略日频 NAV
 
 ```python
-def _compute_daily_nav(
+def compute_daily_nav(
     rebalance_history: list[Snapshot],
     daily_quotes: dict[tuple[str, date], float],
     trade_dates: list[date],
@@ -226,7 +226,7 @@ def _compute_daily_nav(
 #### 3d. 基准日频 NAV
 
 ```python
-bench_prices = _load_benchmark_prices(benchmark, market, start, end)
+bench_prices = load_benchmark_prices(benchmark, market, start, end)
 # trade_dates 中第一个有基准数据的日期
 strategy_start = trade_dates[0]
 base_close = bench_prices.get(strategy_start) or next(iter(bench_prices.values()))
@@ -246,7 +246,7 @@ trade_dates = sorted(bench_prices.keys())
 
 ### Step 4: 对比指标计算
 
-`quant/backtest/portfolio.py` 新增 `BenchmarkComparison` dataclass：
+`quant/backtest/types.py` 新增 `BenchmarkComparison` dataclass（从 `portfolio.py` 提取）：
 
 ```python
 @dataclass
@@ -308,6 +308,8 @@ correlation = s_ret.corr(b_ret)
 
 ### Step 5: BacktestResult 扩展
 
+`BacktestResult` 定义在 `quant/backtest/types.py`。
+
 ```python
 @dataclass
 class BacktestResult:
@@ -364,9 +366,8 @@ US 默认 SPY。CN 暂时不支持（数据库无基准数据）。
 
 | 文件 | 改动 |
 |------|------|
-| `quant/backtest/portfolio.py` | **Step 0**：Snapshot 加 `cash` + `holdings` 字段，`rebalance()` 和 `compute_final_value()` 填入 |
-| `quant/backtest/portfolio.py` | `BenchmarkComparison` dataclass + `compute_benchmark_comparison()` 函数 |
-| `quant/backtest/engine.py` | `_load_benchmark_prices()` + `_load_daily_quotes_for_codes()` + `_compute_daily_nav()` |
+| `quant/backtest/types.py` | **Step 0**：Snapshot/BacktestResult/BenchmarkComparison 类型定义（从 portfolio.py 提取） |
+| `quant/backtest/common.py` | `load_benchmark_prices()` + `load_daily_quotes_for_codes()` + `compute_daily_nav()` + `compute_benchmark_comparison()` |
 | `quant/backtest/__main__.py` | CLI 参数 + 报告输出 |
 | （DB 一次性）| `INSERT INTO stock_info` + `python -m core.sync --type daily-backfill --market US` |
 
