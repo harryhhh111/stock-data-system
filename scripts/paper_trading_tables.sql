@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 CREATE INDEX IF NOT EXISTS idx_paper_trades_account_date ON paper_trades(account_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_stock ON paper_trades(stock_code, market);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_sub_strategy ON paper_trades(account_id, sub_strategy);
+-- 防止同一调仓日重复写入成交（执行引擎幂等保护）
+CREATE UNIQUE INDEX IF NOT EXISTS uk_paper_trades_dedup
+    ON paper_trades(account_id, trade_date, stock_code, side, COALESCE(sub_strategy, ''));
 
 -- 每日净值快照。估值任务可按 (account_id, value_date) 幂等覆盖。
 CREATE TABLE IF NOT EXISTS paper_nav_snapshots (
@@ -149,3 +152,23 @@ CREATE TABLE IF NOT EXISTS paper_strategy_runs (
 
 CREATE INDEX IF NOT EXISTS idx_paper_runs_account_date ON paper_strategy_runs(account_id, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_paper_runs_status ON paper_strategy_runs(status);
+
+-- ============================================================
+-- 触发器：自动更新 updated_at
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_paper_accounts_updated_at
+    BEFORE UPDATE ON paper_accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_paper_nav_snapshots_updated_at
+    BEFORE UPDATE ON paper_nav_snapshots
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

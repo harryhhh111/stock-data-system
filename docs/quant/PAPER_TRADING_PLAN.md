@@ -113,7 +113,7 @@ psql -d stock_data -f scripts/paper_trading_tables.sql
 
 - `paper_nav_snapshots` 使用 `(account_id, value_date)` 主键，每日估值可覆盖。
 - `paper_strategy_runs` 使用 `(account_id, run_date, run_type)` 唯一键，每日运行可更新状态。
-- `paper_trades` 首版只在调仓日写入；执行引擎需要防止同一调仓日重复生成成交。
+- `paper_trades` 使用 `(account_id, trade_date, stock_code, side, COALESCE(sub_strategy, ''))` 唯一索引，数据库层面阻止重复成交。
 
 ## 运行规则
 
