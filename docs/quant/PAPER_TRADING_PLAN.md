@@ -29,40 +29,91 @@
 
 首版保持简单，避免过早做交易系统复杂度。
 
-账户字段：
+DDL 入口：
+
+```bash
+psql -d stock_data -f scripts/paper_trading_tables.sql
+```
+
+账户表：`paper_accounts`
 
 - `account_id`
+- `account_name`
 - `strategy_name`
+- `preset_type`
 - `market`
+- `benchmark`
 - `initial_capital`
 - `cash`
+- `total_value`
 - `nav`
+- `fee_rate`
+- `slippage_bps`
+- `rebalance_rule`
+- `config`
+- `status`
 - `created_at`
 - `last_valued_at`
-- `status`
 
-持仓字段：
+持仓表：`paper_positions`
 
 - `account_id`
 - `stock_code`
+- `market`
+- `sub_strategy`
 - `shares`
 - `avg_cost`
 - `last_price`
 - `market_value`
 - `weight`
-- `updated_at`
 
-流水字段：
+流水表：`paper_trades`
 
 - `account_id`
 - `trade_date`
 - `stock_code`
+- `market`
+- `sub_strategy`
 - `side`
 - `shares`
 - `price`
 - `amount`
 - `fee`
+- `slippage`
 - `reason`
+- `signal_snapshot`
+
+净值表：`paper_nav_snapshots`
+
+- `account_id`
+- `value_date`
+- `cash`
+- `market_value`
+- `total_value`
+- `nav`
+- `benchmark_nav`
+- `daily_return`
+- `drawdown`
+- `position_count`
+- `snapshot`
+
+运行记录表：`paper_strategy_runs`
+
+- `account_id`
+- `run_date`
+- `run_type`
+- `status`
+- `signals`
+- `allocation`
+- `target_positions`
+- `trade_plan`
+- `error_message`
+
+幂等约束：
+
+- `paper_nav_snapshots` 使用 `(account_id, value_date)` 主键，每日估值可覆盖。
+- `paper_strategy_runs` 使用 `(account_id, run_date, run_type)` 唯一键，每日运行可更新状态。
+- `paper_trades` 首版只在调仓日写入；执行引擎需要防止同一调仓日重复生成成交。
 
 ## 运行规则
 

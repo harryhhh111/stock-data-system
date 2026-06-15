@@ -25,6 +25,7 @@
 | Layer 3b: mv_fcf_yield | FCF Yield 物化视图 | 定时刷新 |
 | 辅助: sync_progress | 同步状态 + 增量判断 | Upsert |
 | 辅助: validation_results | 数据校验结果 | Append-only |
+| 辅助: paper_* | 模拟盘账户、持仓、流水、净值和运行记录 | Upsert + Append-only |
 
 ---
 
@@ -716,3 +717,109 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_fcf_yield;
 |----|-------------------|---------|-------|
 | daily_quote | ~7,000,000（5,500 股 × 250 天 × 5 年） | 120B | ~840MB |
 | mv_fcf_yield | ~5,000 | 200B | ~1MB |
+
+---
+
+## 模拟盘表 `paper_*`
+
+完整 DDL 见 `scripts/paper_trading_tables.sql`。首版模拟盘不自动下单，只保存纸面账户、持仓、成交流水、每日净值和策略运行记录。
+
+### `paper_accounts`
+
+模拟盘账户主表。`account_id` 由应用层生成 uuid hex，避免依赖数据库扩展。
+
+核心字段：
+
+- `account_id`
+- `account_name`
+- `strategy_name`
+- `preset_type`: `normal` / `composite`
+- `market`: `CN_A` / `CN_HK` / `US`
+- `benchmark`
+- `initial_capital`
+- `cash`
+- `total_value`
+- `nav`
+- `fee_rate`
+- `slippage_bps`
+- `rebalance_rule`
+- `config`: JSONB，保存策略参数和账户配置
+- `status`: `active` / `paused` / `archived`
+- `last_valued_at`
+
+### `paper_positions`
+
+账户当前持仓表。每个账户每只股票一行，非持仓股票不保留 0 仓位。
+
+主键：`(account_id, stock_code)`
+
+核心字段：
+
+- `stock_code`
+- `market`
+- `sub_strategy`: 复合策略子组合名，如 `gold` / `copper` / `base`
+- `shares`
+- `avg_cost`
+- `last_price`
+- `market_value`
+- `weight`
+
+### `paper_trades`
+
+模拟成交流水。调仓日生成，非调仓日不写成交。
+
+核心字段：
+
+- `trade_date`
+- `stock_code`
+- `market`
+- `sub_strategy`
+- `side`: `buy` / `sell`
+- `shares`
+- `price`
+- `amount`
+- `fee`
+- `slippage`
+- `reason`
+- `signal_snapshot`: JSONB，记录成交时信号快照
+
+### `paper_nav_snapshots`
+
+每日净值快照。估值任务按 `(account_id, value_date)` 幂等覆盖。
+
+主键：`(account_id, value_date)`
+
+核心字段：
+
+- `cash`
+- `market_value`
+- `total_value`
+- `nav`
+- `benchmark_nav`
+- `daily_return`
+- `drawdown`
+- `position_count`
+- `snapshot`: JSONB，保存持仓估值明细
+
+### `paper_strategy_runs`
+
+策略运行记录。记录每日信号、目标权重、调仓建议和执行状态。
+
+唯一键：`(account_id, run_date, run_type)`
+
+核心字段：
+
+- `run_date`
+- `run_type`: `valuation` / `rebalance`
+- `status`: `success` / `failed` / `skipped`
+- `signals`: JSONB
+- `allocation`: JSONB
+- `target_positions`: JSONB
+- `trade_plan`: JSONB
+- `error_message`
+
+### 幂等规则
+
+- 每日估值：覆盖 `paper_nav_snapshots(account_id, value_date)` 和 `paper_positions`。
+- 每日运行记录：覆盖或更新 `paper_strategy_runs(account_id, run_date, run_type)`。
+- 成交流水：只在调仓日写入；后续执行引擎需要在同一调仓日重复运行时避免重复插入成交。
