@@ -28,7 +28,13 @@ from quant.backtest.common import (
     load_benchmark_prices,
     load_daily_quotes_for_codes,
 )
-from quant.backtest.types import BacktestResult, BenchmarkComparison, Snapshot
+from quant.backtest.types import (
+    BacktestResult,
+    BenchmarkComparison,
+    CompositeDetails,
+    CompositeRebalanceRecord,
+    Snapshot,
+)
 from quant.backtest.universe import get_nearest_trade_date
 from quant.backtest.macro import commodity_signal, get_mapped_stocks
 from quant.backtest.portfolio import Portfolio
@@ -495,8 +501,13 @@ def _run_rebalance_loop(
     quote_by_date: dict[date, pd.DataFrame],
     initial_capital: float,
     progress_callback: Callable[[float, str], None] | None,
-) -> None:
-    """复合策略主循环：信号 → 分配 → 各子策略独立调仓。"""
+) -> list[CompositeRebalanceRecord]:
+    """复合策略主循环：信号 → 分配 → 各子策略独立调仓。
+
+    返回每次调仓的结构化记录，供前端展示 signals / allocation / 子策略持仓 / NAV。
+    """
+    records: list[CompositeRebalanceRecord] = []
+
     for i, rb_date in enumerate(rebalance_dates):
         signals = _check_all_signals(cfg, market, rb_date)
         allocation = _allocate(cfg, signals)
@@ -509,9 +520,27 @@ def _run_rebalance_loop(
                 benchmark, market, preloader, quote_by_date, signals, valuation_snaps,
             )
 
+        # 记录本次调仓的结构化数据
+        sub_holdings: dict[str, list[str]] = {}
+        sub_navs: dict[str, float] = {}
+        for name, pf in sub_portfolios.items():
+            snap = pf.history[-1] if pf.history else _empty_snapshot(rb_date, pf.cash)
+            sub_holdings[name] = snap.positions
+            sub_navs[name] = snap.total_value
+
+        records.append(CompositeRebalanceRecord(
+            date=rb_date,
+            signals=signals,
+            allocation=allocation,
+            sub_holdings=sub_holdings,
+            sub_navs=sub_navs,
+        ))
+
         if progress_callback:
             pct = round((i + 1) / len(rebalance_dates) * 100, 1)
             progress_callback(pct, f"调仓 {i + 1}/{len(rebalance_dates)}: {rb_date}")
+
+    return records
 
 
 def _record_final_valuation(
@@ -752,7 +781,7 @@ def run_composite_backtest(
         cfg, initial_capital, rebalance_dates, market
     )
 
-    _run_rebalance_loop(
+    records = _run_rebalance_loop(
         cfg, market, benchmark, rebalance_dates, sub_portfolios, valuation_snaps,
         preloader, quote_by_date, initial_capital, progress_callback,
     )
@@ -772,6 +801,24 @@ def run_composite_backtest(
     )
     final_holdings = _aggregate_holdings(sub_portfolios)
 
+    # 复合策略专有展示数据
+    final_sub_values = {
+        name: snaps[-1].total_value
+        for name, snaps in valuation_snaps.items()
+        if snaps
+    }
+    total_sub_value = sum(final_sub_values.values()) or 1.0
+    final_sub_contributions = {
+        name: v / total_sub_value for name, v in final_sub_values.items()
+    }
+    final_sub_allocation = records[-1].allocation if records else {}
+
+    composite_details = CompositeDetails(
+        records=records,
+        final_sub_contributions=final_sub_contributions,
+        final_sub_allocation=final_sub_allocation,
+    )
+
     return BacktestResult(
         preset_name=preset_name,
         start_date=rebalance_dates[0],
@@ -785,4 +832,5 @@ def run_composite_backtest(
         benchmark_comparison=bench_comparison,
         strategy_daily_nav=strategy_daily_nav,
         benchmark_daily_nav=benchmark_daily_nav,
+        composite_details=composite_details,
     )

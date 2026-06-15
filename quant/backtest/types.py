@@ -48,6 +48,24 @@ class BenchmarkComparison:
 
 
 @dataclass
+class CompositeRebalanceRecord:
+    """复合策略单次调仓的结构化记录（供前端展示）。"""
+    date: date
+    signals: dict[str, str]              # {commodity/market: bull/bear/neutral}
+    allocation: dict[str, float]         # {sub_strategy_name: weight}
+    sub_holdings: dict[str, list[str]]   # {sub_strategy_name: [stock_code]}
+    sub_navs: dict[str, float]           # {sub_strategy_name: post_rebalance_nav}
+
+
+@dataclass
+class CompositeDetails:
+    """复合策略专有返回数据。"""
+    records: list[CompositeRebalanceRecord]
+    final_sub_contributions: dict[str, float]  # 最终各子策略 NAV 占比
+    final_sub_allocation: dict[str, float]     # 最终各子策略资金占比
+
+
+@dataclass
 class BacktestResult:
     preset_name: str
     start_date: date
@@ -61,3 +79,4 @@ class BacktestResult:
     benchmark_comparison: BenchmarkComparison | None = None
     strategy_daily_nav: dict[date, float] = field(default_factory=dict)
     benchmark_daily_nav: dict[date, float] = field(default_factory=dict)
+    composite_details: CompositeDetails | None = None

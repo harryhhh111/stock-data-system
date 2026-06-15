@@ -77,6 +77,26 @@ def _serialize(result, market: str = "US") -> dict:
         "benchmark_daily_nav": {
             str(d): v for d, v in result.benchmark_daily_nav.items()
         } if result.benchmark_daily_nav else None,
+        "composite_details": _serialize_composite_details(result.composite_details),
+    }
+
+
+def _serialize_composite_details(details) -> dict | None:
+    if details is None:
+        return None
+    return {
+        "records": [
+            {
+                "date": str(r.date),
+                "signals": r.signals,
+                "allocation": r.allocation,
+                "sub_holdings": r.sub_holdings,
+                "sub_navs": r.sub_navs,
+            }
+            for r in details.records
+        ],
+        "final_sub_contributions": details.final_sub_contributions,
+        "final_sub_allocation": details.final_sub_allocation,
     }
 
 

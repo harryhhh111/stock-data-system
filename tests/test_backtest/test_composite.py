@@ -277,6 +277,19 @@ def test_run_composite_backtest_empty_holds_cash():
         assert result.metrics.total_return == pytest.approx(0.0, abs=1e-9)
         assert result.final_holdings == []
         assert result.benchmark_comparison is None
+
+        # 复合策略专有展示数据
+        details = result.composite_details
+        assert details is not None
+        assert len(details.records) == 2
+        for rec in details.records:
+            assert "date" in rec.__dict__
+            assert "signals" in rec.__dict__
+            assert "allocation" in rec.__dict__
+            assert "sub_holdings" in rec.__dict__
+            assert "sub_navs" in rec.__dict__
+        assert pytest.approx(sum(details.final_sub_allocation.values()), abs=1e-9) == 1.0
+        assert pytest.approx(sum(details.final_sub_contributions.values()), abs=1e-9) == 1.0
     finally:
         for p in reversed(patches):
             p.stop()
