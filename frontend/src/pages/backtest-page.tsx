@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { TrendingUp, Loader2, RotateCcw } from "lucide-react";
 import { fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
-import type { BacktestPreset, BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison } from "@/lib/types/backtest";
+import type { BacktestPreset, BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison, CompositeDetails } from "@/lib/types/backtest";
 
 const MARKETS: { value: Market; label: string }[] = [
   { value: "CN_A", label: "A 股" },
@@ -110,6 +110,132 @@ function CollapsibleRebalanceRow({ snap, isFirst }: { snap: BacktestSnapshot & T
         </tr>
       )}
     </>
+  );
+}
+
+function SignalBadge({ signal }: { signal: string }) {
+  const variant =
+    signal === "bull" ? "default" :
+    signal === "bear" ? "destructive" :
+    "outline";
+  const label = signal === "bull" ? "牛" : signal === "bear" ? "熊" : "中";
+  return <Badge variant={variant as any} className="text-xs">{label}</Badge>;
+}
+
+function CompositeDetailsSection({ details, initialCapital }: { details: CompositeDetails; initialCapital: number }) {
+  const records = details.records;
+  if (!records || records.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>复合策略运行详情</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* 最终占比 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <h4 className="text-sm font-medium">最终资金占比（目标配置）</h4>
+            {Object.entries(details.final_sub_allocation).map(([name, weight]) => (
+              <div key={name} className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span>{name}</span>
+                  <span className="text-muted-foreground">{fmtPct(weight)}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-muted">
+                  <div
+                    className="h-2 rounded-full bg-primary"
+                    style={{ width: `${Math.max(0, Math.min(1, weight)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-3">
+            <h4 className="text-sm font-medium">最终 NAV 贡献（实际市值）</h4>
+            {Object.entries(details.final_sub_contributions).map(([name, weight]) => (
+              <div key={name} className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span>{name}</span>
+                  <span className="text-muted-foreground">{fmtPct(weight)}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-muted">
+                  <div
+                    className="h-2 rounded-full bg-blue-500"
+                    style={{ width: `${Math.max(0, Math.min(1, weight)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 每期调仓记录 */}
+        <div>
+          <h4 className="text-sm font-medium mb-3">调仓记录</h4>
+          <div className="rounded-md border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
+                  <th className="py-2 px-3">日期</th>
+                  <th className="py-2 px-3">信号</th>
+                  <th className="py-2 px-3">资金分配</th>
+                  <th className="py-2 px-3">子策略持仓</th>
+                  <th className="py-2 px-3">子策略 NAV</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((rec) => (
+                  <tr key={rec.date} className="border-b last:border-0">
+                    <td className="py-2 px-3 whitespace-nowrap">{rec.date}</td>
+                    <td className="py-2 px-3">
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(rec.signals).map(([key, sig]) => (
+                          <div key={key} className="flex items-center gap-1">
+                            <span className="text-xs text-muted-foreground">{key}</span>
+                            <SignalBadge signal={sig} />
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3">
+                      <div className="space-y-1">
+                        {Object.entries(rec.allocation).map(([name, w]) => (
+                          <div key={name} className="flex justify-between text-xs gap-3">
+                            <span>{name}</span>
+                            <span className="text-muted-foreground">{fmtPct(w)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3">
+                      <div className="space-y-1">
+                        {Object.entries(rec.sub_holdings).map(([name, codes]) => (
+                          <div key={name} className="text-xs">
+                            <span className="text-muted-foreground">{name}:</span>{" "}
+                            {codes.length > 0 ? codes.join(", ") : "—"}
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3">
+                      <div className="space-y-1">
+                        {Object.entries(rec.sub_navs).map(([name, nav]) => (
+                          <div key={name} className="flex justify-between text-xs gap-3">
+                            <span className="text-muted-foreground">{name}</span>
+                            <span className="font-mono">{(nav / initialCapital).toFixed(3)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -272,6 +398,14 @@ function ResultView({ result, preset }: { result: BacktestResult; preset?: Backt
           <EChartsWrapper option={chartOption} style={{ height: 400 }} />
         </CardContent>
       </Card>
+
+      {/* 复合策略运行详情 */}
+      {result.composite_details && (
+        <CompositeDetailsSection
+          details={result.composite_details}
+          initialCapital={result.initial_capital}
+        />
+      )}
 
       {/* 调仓历史（可展开） */}
       <Card>
