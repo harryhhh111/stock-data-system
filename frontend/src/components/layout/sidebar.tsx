@@ -1,12 +1,13 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils/cn";
 import { useUiStore } from "@/lib/store/ui-store";
-import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, Wallet, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const nav = [
   { to: "/screener", label: "选股筛选", icon: BarChart3 },
   { to: "/backtest", label: "策略回测", icon: TrendingUp },
+  { to: "/paper", label: "模拟盘", icon: Wallet },
   { to: "/analyzer", label: "个股分析", icon: LineChart },
   { to: "/dashboard", label: "仪表板", icon: LayoutDashboard },
   { to: "/sync", label: "同步状态", icon: RefreshCw },

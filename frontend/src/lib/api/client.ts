@@ -172,3 +172,49 @@ export const backtestApi = {
       `/backtest/status/${taskId}`,
     ),
 };
+
+// ── Paper Trading ──
+export const paperApi = {
+  list: (params?: { status?: string; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return apiFetch<import("@/lib/types/paper").PaperAccount[]>(
+      `/paper/accounts${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  create: (params: import("@/lib/types/paper").CreatePaperAccountParams) =>
+    apiFetch<import("@/lib/types/paper").PaperAccount>("/paper/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  detail: (accountId: string) =>
+    apiFetch<import("@/lib/types/paper").PaperAccountDetail>(
+      `/paper/accounts/${accountId}`,
+    ),
+
+  run: (accountId: string, asOfDate?: string) =>
+    apiFetch<import("@/lib/types/paper").PaperRunResult>(
+      `/paper/accounts/${accountId}/run`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(asOfDate ? { as_of_date: asOfDate } : {}),
+      },
+    ),
+
+  navHistory: (accountId: string, days = 90) =>
+    apiFetch<import("@/lib/types/paper").PaperNavSnapshot[]>(
+      `/paper/accounts/${accountId}/nav?days=${days}`,
+    ),
+
+  trades: (accountId: string, limit = 100, offset = 0) =>
+    apiFetch<import("@/lib/types/paper").PaperTrade[]>(
+      `/paper/accounts/${accountId}/trades?limit=${limit}&offset=${offset}`,
+    ),
+};

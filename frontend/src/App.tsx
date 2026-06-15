@@ -6,6 +6,8 @@ import { QualityPage } from "@/pages/quality-page";
 import { ScreenerPage } from "@/pages/screener-page";
 import { AnalyzerPage } from "@/pages/analyzer-page";
 import { BacktestPage } from "@/pages/backtest-page";
+import { PaperPage } from "@/pages/paper-page";
+import { PaperDetailPage } from "@/pages/paper-detail-page";
 import { Button } from "@/components/ui/button";
 import { FileQuestion } from "lucide-react";
 
@@ -33,6 +35,8 @@ export default function App() {
         <Route path="screener" element={<ScreenerPage />} />
         <Route path="analyzer" element={<AnalyzerPage />} />
         <Route path="backtest" element={<BacktestPage />} />
+        <Route path="paper" element={<PaperPage />} />
+        <Route path="paper/:id" element={<PaperDetailPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

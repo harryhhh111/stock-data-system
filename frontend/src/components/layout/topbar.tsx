@@ -11,6 +11,7 @@ const titles: Record<string, string> = {
   "/quality": "数据质量",
   "/screener": "选股筛选",
   "/backtest": "策略回测",
+  "/paper": "模拟盘",
   "/analyzer": "个股分析",
 };
 
