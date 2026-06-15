@@ -578,13 +578,12 @@ def _load_composite_daily_quotes(
     bt_end: date,
 ) -> dict[date, dict[str, float]]:
     """加载复合策略日频行情，区分策略股票、A股/港股指数和基准。"""
-    _INDEX_CODES = {"000300", "399006", "399905", "HSI"}
     all_codes: set[str] = set()
     for snap in merged_history:
         all_codes.update(snap.holdings.keys())
 
-    strategy_codes = [c for c in all_codes if c not in _INDEX_CODES]
-    index_codes = [c for c in all_codes if c in _INDEX_CODES]
+    strategy_codes = [c for c in all_codes if c not in CN_INDEX_CODES]
+    index_codes = [c for c in all_codes if c in CN_INDEX_CODES]
 
     daily_quotes: dict[tuple[str, date], float] = {}
     if strategy_codes:

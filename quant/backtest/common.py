@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, timedelta
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -15,6 +17,20 @@ from dateutil.relativedelta import relativedelta
 from db import Connection
 from quant.backtest.types import BenchmarkComparison, Snapshot
 from quant.backtest.universe import get_nearest_trade_date, get_sell_prices
+
+
+# A 股/港股常用指数代码集合（daily_quote market 统一用 CN_IDX）
+CN_INDEX_CODES = {"000300", "399006", "399905", "HSI"}
+
+
+@contextmanager
+def _connection(conn: Connection | None = None) -> Iterator[Connection]:
+    """获取数据库连接；若已提供则复用，否则新建并自动关闭。"""
+    if conn is not None:
+        yield conn
+    else:
+        with Connection() as c:
+            yield c
 
 
 # ── 日期工具 ──────────────────────────────────────────────
@@ -116,7 +132,11 @@ def build_universe(base: pd.DataFrame, quote: pd.DataFrame) -> pd.DataFrame:
 # ── 基准与日线 ────────────────────────────────────────────
 
 def load_benchmark_prices(
-    ticker: str, market: str, start: date, end: date
+    ticker: str,
+    market: str,
+    start: date,
+    end: date,
+    conn: Connection | None = None,
 ) -> dict[date, float]:
     """加载基准日线，返回 {trade_date: close}。
 
@@ -129,8 +149,8 @@ def load_benchmark_prices(
       AND trade_date BETWEEN %s AND %s
     ORDER BY trade_date
     """
-    with Connection() as conn:
-        cur = conn.cursor()
+    with _connection(conn) as c:
+        cur = c.cursor()
         cur.execute(sql, (ticker, idx_market, start, end))
         rows = cur.fetchall()
         cur.close()
@@ -139,14 +159,17 @@ def load_benchmark_prices(
 
 def benchmark_market(ticker: str, strategy_market: str) -> str:
     """判断基准 ticker 对应的 daily_quote market。"""
-    # A 股/港股指数统一用 CN_IDX
-    if ticker in ("000300", "399006", "HSI"):
+    if ticker in CN_INDEX_CODES:
         return "CN_IDX"
     return strategy_market
 
 
 def load_daily_quotes_for_codes(
-    codes: list[str], market: str, start: date, end: date
+    codes: list[str],
+    market: str,
+    start: date,
+    end: date,
+    conn: Connection | None = None,
 ) -> dict[tuple[str, date], float]:
     """返回 {(stock_code, trade_date): close}。预期 100K~250K 行。"""
     if not codes:
@@ -156,8 +179,8 @@ def load_daily_quotes_for_codes(
     WHERE stock_code = ANY(%s) AND market = %s
       AND trade_date BETWEEN %s AND %s AND close IS NOT NULL
     """
-    with Connection() as conn:
-        cur = conn.cursor()
+    with _connection(conn) as c:
+        cur = c.cursor()
         cur.execute(sql, (list(codes), market, start, end))
         rows = cur.fetchall()
         cur.close()
@@ -210,7 +233,12 @@ def compute_daily_nav(
     return daily_nav
 
 
-def check_200ma_signal(ticker: str, market: str, as_of_date: date) -> bool:
+def check_200ma_signal(
+    ticker: str,
+    market: str,
+    as_of_date: date,
+    conn: Connection | None = None,
+) -> bool:
     """200 日均线择时：True = 牛市（持有基准），False = 熊市（执行策略）。
 
     在 as_of_date 时刻，查询 ticker 过去 250 个交易日收盘价，
@@ -221,8 +249,8 @@ def check_200ma_signal(ticker: str, market: str, as_of_date: date) -> bool:
     WHERE stock_code = %s AND market = %s AND trade_date <= %s
     ORDER BY trade_date DESC LIMIT 250
     """
-    with Connection() as conn:
-        cur = conn.cursor()
+    with _connection(conn) as c:
+        cur = c.cursor()
         cur.execute(sql, (ticker, benchmark_market(ticker, market), as_of_date))
         rows = cur.fetchall()
         cur.close()
@@ -256,7 +284,10 @@ def get_sell_prices_mixed(
 # ── 价格因子 ──────────────────────────────────────────────
 
 def compute_price_factors(
-    codes: list[str], as_of_date: date, market: str
+    codes: list[str],
+    as_of_date: date,
+    market: str,
+    conn: Connection | None = None,
 ) -> pd.DataFrame:
     """计算价格动量/反转因子，返回以 stock_code 为 index 的 DataFrame。
 
@@ -272,8 +303,8 @@ def compute_price_factors(
     WHERE stock_code = ANY(%s) AND market = %s AND trade_date BETWEEN %s AND %s
     ORDER BY stock_code, trade_date
     """
-    with Connection() as conn:
-        cur = conn.cursor()
+    with _connection(conn) as c:
+        cur = c.cursor()
         cur.execute(sql, (list(codes), market, start_date, as_of_date))
         rows = cur.fetchall()
         cur.close()
@@ -315,15 +346,20 @@ def compute_price_factors(
 
 # ── 策略工具 ──────────────────────────────────────────────
 
-def index_momentum(code: str, as_of_date: date, lookback: int = 20) -> float | None:
+def index_momentum(
+    code: str,
+    as_of_date: date,
+    lookback: int = 20,
+    conn: Connection | None = None,
+) -> float | None:
     """查询指数过去 N 个交易日的动量。"""
     sql = """
     SELECT close FROM daily_quote
     WHERE stock_code = %s AND market = 'CN_IDX' AND trade_date <= %s
     ORDER BY trade_date DESC LIMIT %s
     """
-    with Connection() as conn:
-        cur = conn.cursor()
+    with _connection(conn) as c:
+        cur = c.cursor()
         cur.execute(sql, (code, as_of_date, lookback + 1))
         rows = cur.fetchall()
         cur.close()
