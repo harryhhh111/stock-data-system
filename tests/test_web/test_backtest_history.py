@@ -116,6 +116,48 @@ def test_list_runs_excludes_result(mock_execute):
 
 
 @patch("web.services.backtest_history_service.execute")
+def test_list_runs_with_rows(mock_execute):
+    """列表查询有数据时应返回摘要，且不依赖 result 列。"""
+    run_id = uuid.uuid4()
+    now = datetime.now()
+    mock_execute.side_effect = [
+        [(1,)],
+        [
+            (
+                run_id,
+                "fcf_roe_value",
+                "normal",
+                "US",
+                "2024-01",
+                None,
+                6,
+                10,
+                1_000_000.0,
+                "SPY",
+                False,
+                "DONE",
+                100.0,
+                "完成",
+                None,
+                json.dumps({"total_return": 0.12}),
+                json.dumps({"preset_name": "fcf_roe_value", "market": "US"}),
+                now,
+                now,
+                now,
+                1234,
+            )
+        ],
+    ]
+
+    items, total = list_runs(limit=20, offset=0)
+
+    assert total == 1
+    assert items[0]["run_id"] == str(run_id)
+    assert "result" not in items[0]
+    assert items[0]["metrics"]["total_return"] == 0.12
+
+
+@patch("web.services.backtest_history_service.execute")
 def test_delete_run(mock_execute):
     """删除单条记录。"""
     run_id = str(uuid.uuid4())

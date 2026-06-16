@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { backtestApi } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RotateCcw } from "lucide-react";
@@ -16,15 +15,18 @@ interface BacktestHistorySectionProps {
   onReuseParams: (params: BacktestRunParams) => void;
 }
 
-const MARKETS: { value: Market | ""; label: string }[] = [
-  { value: "", label: "全部市场" },
+const ALL_MARKETS = "__all_markets__";
+const ALL_STATUSES = "__all_statuses__";
+
+const MARKETS: { value: Market | typeof ALL_MARKETS; label: string }[] = [
+  { value: ALL_MARKETS, label: "全部市场" },
   { value: "CN_A", label: "A 股" },
   { value: "CN_HK", label: "港股" },
   { value: "US", label: "美股" },
 ];
 
 const STATUSES = [
-  { value: "", label: "全部状态" },
+  { value: ALL_STATUSES, label: "全部状态" },
   { value: "DONE", label: "完成" },
   { value: "FAILED", label: "失败" },
   { value: "RUNNING", label: "运行中" },
@@ -32,16 +34,15 @@ const STATUSES = [
 
 export function BacktestHistorySection({ onViewDetail, onReuseParams }: BacktestHistorySectionProps) {
   const queryClient = useQueryClient();
-  const [market, setMarket] = useState<Market | "">("");
+  const [market, setMarket] = useState<Market | typeof ALL_MARKETS>(ALL_MARKETS);
   const [status, setStatus] = useState<string>("DONE");
   const [presetName, setPresetName] = useState("");
-  const [showFailed, setShowFailed] = useState(false);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [limit, setLimit] = useState(20);
 
   const filters = {
-    market: market || undefined,
-    status: (status || undefined) as BacktestRunSummary["status"] | undefined,
+    market: market === ALL_MARKETS ? undefined : market,
+    status: (status === ALL_STATUSES ? undefined : status) as BacktestRunSummary["status"] | undefined,
     preset_name: presetName || undefined,
     limit,
     offset: 0,
@@ -99,7 +100,7 @@ export function BacktestHistorySection({ onViewDetail, onReuseParams }: Backtest
         </div>
         <div className="w-32">
           <label className="text-xs text-muted-foreground mb-1 block">市场</label>
-          <Select value={market} onValueChange={(v) => setMarket(v as Market | "")}>
+          <Select value={market} onValueChange={(v) => setMarket(v as Market | typeof ALL_MARKETS)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {MARKETS.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
@@ -114,16 +115,6 @@ export function BacktestHistorySection({ onViewDetail, onReuseParams }: Backtest
               {STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
             </SelectContent>
           </Select>
-        </div>
-        <div className="flex items-center gap-2 pb-2">
-          <Checkbox
-            id="show-failed"
-            checked={showFailed}
-            onCheckedChange={(v: boolean | "indeterminate") => setShowFailed(v === true)}
-          />
-          <label htmlFor="show-failed" className="text-xs text-muted-foreground cursor-pointer select-none">
-            显示失败
-          </label>
         </div>
         <Button variant="outline" size="sm" onClick={() => refetch()} className="mb-0.5">
           <RotateCcw className="h-3.5 w-3.5 mr-1" /> 刷新
@@ -148,20 +139,18 @@ export function BacktestHistorySection({ onViewDetail, onReuseParams }: Backtest
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {runs
-              .filter((run) => showFailed || run.status !== "FAILED")
-              .map((run) => (
-                <BacktestHistoryCard
-                  key={run.run_id}
-                  run={run}
-                  selected={selectedRunIds.has(run.run_id)}
-                  onSelect={(checked) => toggleSelection(run.run_id, checked)}
-                  onViewDetail={() => onViewDetail(run.run_id)}
-                  onReuseParams={() => handleReuseParams(run)}
-                  onDelete={() => deleteMutation.mutate(run.run_id)}
-                  disableSelect={selectedRunIds.size >= 4}
-                />
-              ))}
+            {runs.map((run) => (
+              <BacktestHistoryCard
+                key={run.run_id}
+                run={run}
+                selected={selectedRunIds.has(run.run_id)}
+                onSelect={(checked) => toggleSelection(run.run_id, checked)}
+                onViewDetail={() => onViewDetail(run.run_id)}
+                onReuseParams={() => handleReuseParams(run)}
+                onDelete={() => deleteMutation.mutate(run.run_id)}
+                disableSelect={selectedRunIds.size >= 4}
+              />
+            ))}
           </div>
           {total > limit && (
             <div className="flex justify-center">

@@ -150,6 +150,68 @@ def _row_to_dict(row: tuple) -> dict:
     }
 
 
+def _row_to_summary_dict(row: tuple) -> dict:
+    """把不含 result 的列表查询行转换为摘要 dict。"""
+    (
+        run_id,
+        preset_name,
+        preset_type,
+        market,
+        start_month,
+        end_month,
+        rebalance_months,
+        top_n,
+        initial_capital,
+        benchmark,
+        timing,
+        status,
+        progress_pct,
+        progress_label,
+        error,
+        metrics,
+        params,
+        created_at,
+        started_at,
+        completed_at,
+        elapsed_ms,
+    ) = row
+
+    def _json_loads(v):
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        try:
+            return json.loads(v)
+        except Exception:
+            return v
+
+    return {
+        "task_id": str(run_id),
+        "run_id": str(run_id),
+        "status": status,
+        "progress_pct": float(progress_pct) if progress_pct is not None else 0.0,
+        "progress_label": progress_label or "",
+        "params": _json_loads(params) or {},
+        "error": error,
+        "created_at": created_at.isoformat() if created_at else None,
+        "started_at": started_at.isoformat() if started_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+        "elapsed_ms": elapsed_ms,
+        "metrics": _json_loads(metrics),
+        "preset_name": preset_name,
+        "preset_type": preset_type,
+        "market": market,
+        "start_month": start_month,
+        "end_month": end_month,
+        "rebalance_months": rebalance_months,
+        "top_n": top_n,
+        "initial_capital": float(initial_capital) if initial_capital is not None else None,
+        "benchmark": benchmark,
+        "timing": timing,
+    }
+
+
 # ── CRUD ──────────────────────────────────────────────────
 
 def create_run(
@@ -316,7 +378,7 @@ def list_runs(
         fetch=True,
         commit=False,
     )
-    return [_row_to_dict(row) for row in rows], total
+    return [_row_to_summary_dict(row) for row in rows], total
 
 
 def delete_run(run_id: str | uuid.UUID) -> bool:
