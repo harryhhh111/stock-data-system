@@ -160,7 +160,7 @@ export const backtestApi = {
       "/backtest/presets",
     ),
 
-  run: (params: import("@/lib/types/backtest").BacktestParams) =>
+  run: (params: import("@/lib/types/backtest").BacktestRunParams) =>
     apiFetch<{ task_id: string; status: string }>("/backtest/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -171,6 +171,34 @@ export const backtestApi = {
     apiFetch<import("@/lib/types/backtest").BacktestTask>(
       `/backtest/status/${taskId}`,
     ),
+
+  runs: (params?: {
+    preset_name?: string;
+    market?: Market;
+    status?: import("@/lib/types/backtest").BacktestRunStatus;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.preset_name) q.set("preset_name", params.preset_name);
+    if (params?.market) q.set("market", params.market);
+    if (params?.status) q.set("status", params.status);
+    q.set("limit", String(params?.limit ?? 20));
+    q.set("offset", String(params?.offset ?? 0));
+    return apiFetch<import("@/lib/types/backtest").BacktestRunsResponse>(
+      `/backtest/runs?${q}`,
+    );
+  },
+
+  runDetail: (runId: string) =>
+    apiFetch<import("@/lib/types/backtest").BacktestRunDetail>(
+      `/backtest/runs/${runId}`,
+    ),
+
+  deleteRun: (runId: string) =>
+    apiFetch<{ deleted: true }>(`/backtest/runs/${runId}`, {
+      method: "DELETE",
+    }),
 };
 
 // ── Paper Trading ──

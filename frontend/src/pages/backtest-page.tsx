@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { backtestApi } from "@/lib/api/client";
 import { useBacktestStore } from "@/lib/store/backtest-store";
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
 import { EChartsWrapper } from "@/components/charts/echarts-wrapper";
 import { PageHeader } from "@/components/layout/page-header";
+import { BacktestHistorySection } from "@/components/backtest/backtest-history-section";
 import { TrendingUp, Loader2, RotateCcw } from "lucide-react";
 import { fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
-import type { BacktestPreset, BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison, CompositeDetails } from "@/lib/types/backtest";
+import type { BacktestPreset, BacktestResult, BacktestSnapshot, TurnoverDetail, BenchmarkComparison, CompositeDetails, BacktestRunParams } from "@/lib/types/backtest";
 
 const MARKETS: { value: Market; label: string }[] = [
   { value: "CN_A", label: "A 股" },
@@ -451,7 +453,9 @@ function ResultView({ result, preset }: { result: BacktestResult; preset?: Backt
 
 export function BacktestPage() {
   const store = useBacktestStore();
+  const queryClient = useQueryClient();
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [viewingRunId, setViewingRunId] = useState<string | null>(null);
 
   // 获取预设列表
   const { data: presetsData } = useQuery({
@@ -463,7 +467,7 @@ export function BacktestPage() {
   const activePreset = presets.find((p) => p.name === store.presetName);
   const isComposite = activePreset?.type === "composite";
 
-  // 轮询任务状态
+  // 轮询当前任务状态
   const taskQuery = useQuery({
     queryKey: ["backtest", "task", activeTaskId],
     queryFn: () => backtestApi.status(activeTaskId!),
@@ -474,26 +478,62 @@ export function BacktestPage() {
     },
   });
 
+  // 查看历史详情
+  const detailQuery = useQuery({
+    queryKey: ["backtest", "run", viewingRunId],
+    queryFn: () => backtestApi.runDetail(viewingRunId!),
+    enabled: !!viewingRunId,
+  });
+
+  // 当前任务完成后刷新历史列表
+  useEffect(() => {
+    const s = taskQuery.data?.status;
+    if (s === "DONE" || s === "FAILED") {
+      queryClient.invalidateQueries({ queryKey: ["backtest", "runs"] });
+    }
+  }, [taskQuery.data?.status, queryClient]);
+
   // 提交回测
   const mutation = useMutation({
-    mutationFn: () =>
-      backtestApi.run({
-        preset_name: store.presetName,
-        market: isComposite ? "CN_A" : store.market,
-        start: store.start,
-        end: store.end || undefined,
-        months: isComposite ? 1 : store.months,
-        top_n: isComposite ? undefined : store.topN ?? undefined,
-        initial_capital: store.capital,
-        benchmark: store.benchmark || null,
-        timing: isComposite ? false : store.timing,
-      }),
-    onSuccess: (data) => setActiveTaskId(data.task_id),
+    mutationFn: () => {
+      const params: BacktestRunParams = isComposite
+        ? {
+            preset_name: store.presetName,
+            preset_type: "composite",
+            market: "CN_A",
+            start: store.start,
+            end: store.end || undefined,
+            initial_capital: store.capital,
+            benchmark: store.benchmark || null,
+          }
+        : {
+            preset_name: store.presetName,
+            preset_type: "normal",
+            market: store.market,
+            start: store.start,
+            end: store.end || undefined,
+            months: store.months,
+            top_n: store.topN ?? undefined,
+            initial_capital: store.capital,
+            benchmark: store.benchmark || null,
+            timing: store.timing,
+          };
+      return backtestApi.run(params);
+    },
+    onSuccess: (data) => {
+      setActiveTaskId(data.task_id);
+      setViewingRunId(null);
+    },
   });
 
   const task = taskQuery.data;
   const isRunning = task?.status === "CREATED" || task?.status === "RUNNING";
-  const result = task?.result;
+  const currentResult = task?.result;
+  const historicalResult = detailQuery.data?.result;
+  const result: BacktestResult | undefined = currentResult ?? historicalResult ?? undefined;
+  const viewingPreset = result
+    ? presets.find((p) => p.name === result.preset_name)
+    : undefined;
 
   useEffect(() => {
     if (isComposite && store.market !== "CN_A") {
@@ -514,6 +554,32 @@ export function BacktestPage() {
 
   function handleReset() {
     setActiveTaskId(null);
+    setViewingRunId(null);
+    queryClient.removeQueries({ queryKey: ["backtest", "run"] });
+  }
+
+  function handleViewDetail(runId: string) {
+    setViewingRunId(runId);
+    setActiveTaskId(null);
+  }
+
+  function handleReuseParams(params: BacktestRunParams) {
+    store.setPresetName(params.preset_name);
+    if (params.preset_type === "composite") {
+      store.setMarket("CN_A");
+      store.setMonths(1);
+      store.setTopN(null);
+      store.setTiming(false);
+    } else {
+      store.setMarket(params.market);
+      store.setMonths(params.months);
+      store.setTopN(params.top_n ?? null);
+      store.setTiming(params.timing ?? false);
+    }
+    store.setStart(params.start);
+    store.setEnd(params.end ?? "");
+    store.setCapital(params.initial_capital);
+    store.setBenchmark(params.benchmark ?? "");
   }
 
   return (
@@ -640,7 +706,15 @@ export function BacktestPage() {
       {/* 结果 */}
       {result && !isRunning && (
         <>
-          <ResultView result={result} preset={presets.find((p) => p.name === result.preset_name)} />
+          {viewingRunId && (
+            <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-4 py-2">
+              <p className="text-sm text-muted-foreground">正在查看历史回测结果</p>
+              <Button variant="outline" size="sm" onClick={handleReset}>
+                <RotateCcw className="h-3.5 w-3.5 mr-1" /> 返回当前
+              </Button>
+            </div>
+          )}
+          <ResultView result={result} preset={viewingPreset ?? presets.find((p) => p.name === result.preset_name)} />
           <div className="flex justify-center">
             <Button variant="outline" onClick={handleReset}>
               <RotateCcw className="h-4 w-4 mr-2" />新建回测
@@ -657,6 +731,17 @@ export function BacktestPage() {
           <Skeleton className="h-48 w-full" />
         </div>
       )}
+
+      <Separator className="my-8" />
+
+      {/* 历史回测 */}
+      <div className="space-y-4">
+        <PageHeader icon={TrendingUp} title="历史回测结果" description="查看、比较和复用之前的回测" />
+        <BacktestHistorySection
+          onViewDetail={handleViewDetail}
+          onReuseParams={handleReuseParams}
+        />
+      </div>
     </div>
   );
 }
