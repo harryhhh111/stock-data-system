@@ -47,7 +47,11 @@ def cmd_list(args):
 
 def cmd_create(args):
     import uuid
+    from quant.screener.presets import COMPOSITE_PRESETS
+
     account_id = uuid.uuid4().hex[:32]
+    preset_type = "composite" if args.strategy in COMPOSITE_PRESETS else "normal"
+
     with Connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -58,7 +62,7 @@ def cmd_create(args):
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                RETURNING account_id""",
             (
-                account_id, args.name, args.strategy, "composite",
+                account_id, args.name, args.strategy, preset_type,
                 args.market, args.benchmark,
                 args.capital, args.capital, args.capital, 1.0,
                 args.fee, args.slippage, "{}",
@@ -67,7 +71,7 @@ def cmd_create(args):
         conn.commit()
         row = cur.fetchone()
         cur.close()
-    print(f"Created account: {row[0]}")
+    print(f"Created account: {row[0]} (preset_type={preset_type})")
 
 
 def cmd_run(args):
