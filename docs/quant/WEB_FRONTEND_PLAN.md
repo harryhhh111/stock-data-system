@@ -1,6 +1,6 @@
-# Web 前端仪表板 — 实现方案 v8
+# Web 前端仪表板 — 实现方案 v9
 
-> 当前状态：基础仪表板、筛选、分析、回测页面已实现；下一阶段重点是复合策略前后端打通，为模拟盘做准备。
+> 当前状态：基础仪表板、筛选、分析、回测页面已实现；复合策略前后端已打通；下一阶段重点是回测结果沉淀和模拟盘体验完善。
 
 ## 顶层架构
 
@@ -71,6 +71,176 @@ Web 端验收：
 - 创建任务后能完成或给出明确数据缺失原因
 - 结果页能展示策略曲线、基准曲线、调仓历史和最终持仓
 - 复合策略参数不会误导用户以为 `months/top_n/timing` 仍会生效
+
+## 当前补充：回测结果历史卡片
+
+### 背景
+
+策略回测通常耗时较长，当前 Web 回测页只保留当前异步任务的结果。用户一旦点击“新建回测”、刷新页面或切换参数，之前跑完的结果就不方便再查看，也无法把多个策略、区间、市场或参数组合放在一起比较。
+
+目标是在“策略回测”页面下方保留已完成的回测结果，每条结果以卡片形式展示摘要，并支持点击展开查看完整结果。这样用户可以先连续跑几组回测，再集中比较收益、回撤、夏普、基准 Alpha、最终持仓和复合策略详情。
+
+### 用户体验
+
+页面结构调整为：
+
+1. 顶部保留现有回测参数表单和运行进度。
+2. 当前刚完成的回测仍优先展示完整结果，避免用户找不到刚跑出来的数据。
+3. 页面下方新增“历史回测结果”区域，按完成时间倒序展示卡片。
+4. 每张卡片展示最关键摘要：
+   - 策略名称、策略类型（普通/复合）、市场、回测区间、调仓周期、持仓数、初始资金
+   - 总收益、年化收益、最大回撤、夏普、超额收益/Alpha（如果有基准）
+   - 完成时间、耗时、任务状态
+5. 卡片操作：
+   - “查看详情”：把该历史结果恢复到当前结果区，复用现有 `ResultView`
+   - “复用参数”：把该卡片的参数回填到表单，方便微调后重跑
+   - “删除”：从历史列表移除
+   - “清空历史”：批量删除历史记录
+6. 卡片比较体验：
+   - 默认展示最近 10 条
+   - 支持按策略、市场、回测区间筛选
+   - 支持勾选 2-4 张卡片进入对比模式，横向比较核心 KPI
+
+### 一步到位方案：服务端持久化 + 前端历史卡片
+
+直接做服务端持久化，不先做纯前端本地历史。原因是回测结果本身成本高、体积大，并且用户真正需要的是跨刷新、跨浏览器、服务重启后仍可查看和比较。`localStorage` 最多作为前端加速缓存，不能作为主方案。
+
+整体闭环：
+
+1. 后端创建回测任务时写入 `backtest_runs`。
+2. 后台任务运行中持续更新状态、进度和错误信息。
+3. 任务完成后把完整 `BacktestResult` 和摘要指标写入数据库。
+4. 前端进入“策略回测”页时从 `/backtest/runs` 拉取历史摘要。
+5. 用户点击历史卡片时通过 `/backtest/runs/{run_id}` 拉取完整结果，并复用现有 `ResultView` 展示。
+6. 用户可以删除单条历史、复用参数重跑、勾选多条进入对比视图。
+
+前端历史摘要类型：
+
+```typescript
+interface BacktestHistoryItem {
+  run_id: string;
+  created_at: string;
+  completed_at: string;
+  elapsed_ms?: number;
+  params: BacktestParams;
+  summary: {
+    preset_name: string;
+    preset_type?: "normal" | "composite";
+    market: Market;
+    start: string;
+    end?: string;
+    total_return: number;
+    annualized_return: number;
+    max_drawdown: number;
+    sharpe_ratio: number;
+    excess_return?: number;
+    annualized_alpha?: number;
+  };
+}
+```
+
+建议新增表：
+
+```sql
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
+    preset_name TEXT NOT NULL,
+    preset_type TEXT NOT NULL DEFAULT 'normal',
+    market TEXT NOT NULL,
+    start_month TEXT NOT NULL,
+    end_month TEXT,
+    rebalance_months INTEGER NOT NULL,
+    top_n INTEGER,
+    initial_capital NUMERIC(20, 4) NOT NULL,
+    benchmark TEXT,
+    timing BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL,
+    progress_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    progress_label TEXT,
+    error TEXT,
+    metrics JSONB,
+    params JSONB NOT NULL,
+    result JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    elapsed_ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_market ON backtest_runs (preset_name, market, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs (status, created_at DESC);
+```
+
+建议 API：
+
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| `POST` | `/api/v1/backtest/run` | 创建回测任务，同时创建历史 run 记录 |
+| `GET` | `/api/v1/backtest/status/{run_id}` | 查询运行状态，兼容现有轮询逻辑 |
+| `GET` | `/api/v1/backtest/runs` | 分页返回历史回测摘要，支持 `preset_name`、`market`、`status` 过滤 |
+| `GET` | `/api/v1/backtest/runs/{run_id}` | 返回完整回测结果 |
+| `DELETE` | `/api/v1/backtest/runs/{run_id}` | 删除一条历史结果 |
+| `DELETE` | `/api/v1/backtest/runs` | 按条件清理历史结果，默认需要显式确认 |
+
+后端任务流调整：
+
+- `POST /backtest/run` 创建任务时同步插入 `backtest_runs(status='CREATED')`
+- 后台线程开始时更新 `RUNNING`、`started_at`
+- 每次 `progress_callback` 同步更新 `progress_pct`、`progress_label`
+- 完成时写入 `DONE`、`result`、`metrics`、`completed_at`、`elapsed_ms`
+- 失败时写入 `FAILED`、`error`、`completed_at`
+- `/backtest/status/{run_id}` 继续保留，用于实时进度轮询，并优先从内存任务读取，内存不存在时回退数据库
+
+前端改造：
+
+- `frontend/src/lib/types/backtest.ts`
+  - 新增 `BacktestRunSummary`、`BacktestRunDetail`
+- `frontend/src/lib/api/client.ts`
+  - 新增 `backtestApi.runs()`、`backtestApi.runDetail()`、`backtestApi.deleteRun()`
+- `frontend/src/pages/backtest-page.tsx`
+  - 顶部表单和当前结果保持现状
+  - 下方新增历史卡片区，从服务端加载摘要
+  - 点击“查看详情”拉取完整结果后交给现有 `ResultView`
+  - 点击“复用参数”把历史参数回填到表单
+  - 当前任务完成后 invalidate runs query，让历史卡片自动刷新
+
+可选缓存：
+
+- 前端可以用 TanStack Query 缓存列表和详情，但不再把完整结果写入 `localStorage`。
+- Zustand 只继续保存表单条件，不承担历史结果持久化。
+
+### UI 细节
+
+历史卡片应是“结果摘要”，不是完整结果的重复堆叠，避免页面变得很长。推荐布局：
+
+- 卡片头部：策略名 + 类型 Badge + 市场 + 区间
+- 卡片主体：4 个核心 KPI（总收益、年化、最大回撤、夏普）
+- 卡片底部：完成时间 + 操作按钮
+- 复合策略卡片额外展示最终资金占比摘要
+- 失败任务可选择是否显示；默认历史列表只展示成功结果，提供“显示失败”开关
+
+对比模式推荐使用紧凑表格：
+
+| 策略 | 市场 | 区间 | 总收益 | 年化 | 回撤 | 夏普 | Alpha |
+|------|------|------|--------|------|------|------|-------|
+
+### 验收标准
+
+服务端持久化验收：
+
+- 完成一次回测后，下方历史区域新增一张卡片。
+- 刷新页面后，历史卡片仍存在。
+- 重启后端服务后，历史卡片仍存在。
+- 连续跑多个参数组合后，历史卡片按完成时间倒序排列。
+- 点击“查看详情”能恢复完整结果视图，包括 NAV 图、基准对比、调仓历史、最终持仓和复合策略详情。
+- 点击“复用参数”能把历史参数回填到顶部表单。
+- 删除历史记录后，刷新页面不会再次出现。
+- 大结果 JSON 不影响列表接口性能：列表接口只返回摘要，详情接口按需返回完整 `result`。
+- 同一个 `run_id` 不会因为轮询重复写入多张卡片。
+- `python3 -m pytest tests/test_web/test_backtest_wrapper.py -q` 通过。
+- `npm run build` 通过。
 
 **关键决策**：
 
