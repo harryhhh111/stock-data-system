@@ -2,9 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-// 开发时代理目标可通过环境变量覆盖，避免每个人本地 IP 不同还要改仓库文件
-const API_PROXY_CN = process.env.VITE_API_PROXY_CN || "http://localhost:8000";
-const API_PROXY_US = process.env.VITE_API_PROXY_US || "http://localhost:8000";
+// 开发时代理目标可通过环境变量覆盖。
+// 默认按文档双服务器架构：CN 在国内服务器，US 在海外服务器。
+const API_PROXY_CN = process.env.VITE_API_PROXY_CN || "http://134.175.237.24:8000";
+const API_PROXY_US = process.env.VITE_API_PROXY_US || "http://43.167.190.219:8000";
 
 export default defineConfig({
   plugins: [react()],
