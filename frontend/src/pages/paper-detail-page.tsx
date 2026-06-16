@@ -192,6 +192,7 @@ export function PaperDetailPage() {
                 <thead>
                   <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
                     <th className="py-2 px-3">代码</th>
+                    <th className="py-2 px-3">名称</th>
                     <th className="py-2 px-3">子策略</th>
                     <th className="py-2 px-3 text-right">股数</th>
                     <th className="py-2 px-3 text-right">成本</th>
@@ -203,6 +204,7 @@ export function PaperDetailPage() {
                   {current_holdings.map((h) => (
                     <tr key={h.stock_code} className="border-b last:border-0">
                       <td className="py-2 px-3 font-mono">{h.stock_code}</td>
+                      <td className="py-2 px-3 text-xs max-w-32 truncate" title={h.stock_name}>{h.stock_name || "—"}</td>
                       <td className="py-2 px-3"><Badge variant="outline" className="text-xs">{h.sub_strategy || "—"}</Badge></td>
                       <td className="py-2 px-3 text-right tabular-nums">{h.shares.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}</td>
                       <td className="py-2 px-3 text-right tabular-nums">{h.avg_cost.toFixed(2)}</td>

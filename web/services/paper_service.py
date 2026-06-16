@@ -123,7 +123,10 @@ def get_account_detail(account_id: str) -> dict | None:
     with Connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM paper_positions WHERE account_id=%s ORDER BY sub_strategy, stock_code",
+            """SELECT p.*, COALESCE(s.stock_name, '') AS stock_name
+               FROM paper_positions p
+               LEFT JOIN stock_info s ON s.stock_code = p.stock_code AND s.market = p.market
+               WHERE p.account_id=%s ORDER BY p.sub_strategy, p.stock_code""",
             (account_id,),
         )
         cols, rows = _fetchall(cur)

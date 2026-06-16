@@ -21,6 +21,7 @@ export interface PaperAccount {
 
 export interface PaperPosition {
   stock_code: string;
+  stock_name?: string;
   market: string;
   sub_strategy: string | null;
   shares: number;
