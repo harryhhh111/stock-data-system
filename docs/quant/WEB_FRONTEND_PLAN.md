@@ -97,7 +97,7 @@ Web 端验收：
    - “删除”：从历史列表移除
    - “清空历史”：批量删除历史记录
 6. 卡片比较体验：
-   - 默认展示最近 10 条
+   - 默认展示最近 20 条，支持“加载更多”
    - 支持按策略、市场、回测区间筛选
    - 支持勾选 2-4 张卡片进入对比模式，横向比较核心 KPI
 
@@ -117,15 +117,41 @@ Web 端验收：
 前端历史摘要类型：
 
 ```typescript
+type BacktestRunStatus = "CREATED" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED";
+
+type BacktestRunParams =
+  | {
+      preset_name: string;
+      preset_type: "normal";
+      market: Market;
+      start: string;
+      end?: string;
+      months: number;
+      top_n?: number | null;
+      initial_capital: number;
+      benchmark?: string | null;
+      timing?: boolean;
+    }
+  | {
+      preset_name: string;
+      preset_type: "composite";
+      market: "CN_A";
+      start: string;
+      end?: string;
+      initial_capital: number;
+      benchmark?: string | null;
+    };
+
 interface BacktestHistoryItem {
   run_id: string;
+  status: BacktestRunStatus;
   created_at: string;
-  completed_at: string;
+  completed_at?: string | null;
   elapsed_ms?: number;
-  params: BacktestParams;
+  params: BacktestRunParams;
   summary: {
     preset_name: string;
-    preset_type?: "normal" | "composite";
+    preset_type: "normal" | "composite";
     market: Market;
     start: string;
     end?: string;
@@ -144,18 +170,21 @@ interface BacktestHistoryItem {
 ```sql
 CREATE TABLE IF NOT EXISTS backtest_runs (
     id BIGSERIAL PRIMARY KEY,
-    run_id TEXT NOT NULL UNIQUE,
+    run_id UUID NOT NULL UNIQUE,
     preset_name TEXT NOT NULL,
-    preset_type TEXT NOT NULL DEFAULT 'normal',
+    preset_type TEXT NOT NULL DEFAULT 'normal'
+        CHECK (preset_type IN ('normal', 'composite')),
     market TEXT NOT NULL,
     start_month TEXT NOT NULL,
     end_month TEXT,
-    rebalance_months INTEGER NOT NULL,
+    -- 普通策略存用户选择的调仓间隔；复合策略使用策略内部配置，存 NULL，前端展示“策略默认”。
+    rebalance_months INTEGER,
     top_n INTEGER,
     initial_capital NUMERIC(20, 4) NOT NULL,
     benchmark TEXT,
     timing BOOLEAN NOT NULL DEFAULT FALSE,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('CREATED', 'RUNNING', 'DONE', 'FAILED', 'CANCELLED')),
     progress_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
     progress_label TEXT,
     error TEXT,
@@ -173,16 +202,24 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_market ON backtest_runs (pre
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs (status, created_at DESC);
 ```
 
+约束和生成规则：
+
+- `run_id` 使用 UUID v4，由 `POST /backtest/run` 在创建任务时生成，并作为 API 返回的任务 id。
+- `preset_type='normal'` 时 `rebalance_months` 应非空；`preset_type='composite'` 时 `rebalance_months` 存 `NULL`。
+- `top_n`、`timing` 对复合策略不展示，不参与卡片摘要比较；完整请求参数仍保留在 `params` JSONB 中用于审计。
+- 列表接口必须显式 `SELECT` 摘要列和 `metrics`，禁止读取 `result` 字段；完整 `result` 只在详情接口按需读取。
+- 如果单条 `result` 长期超过 1 MB，再拆分为 `backtest_run_nav`、`backtest_run_rebalances` 等明细表；v1 先依赖 PostgreSQL TOAST。
+
 建议 API：
 
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | `POST` | `/api/v1/backtest/run` | 创建回测任务，同时创建历史 run 记录 |
 | `GET` | `/api/v1/backtest/status/{run_id}` | 查询运行状态，兼容现有轮询逻辑 |
-| `GET` | `/api/v1/backtest/runs` | 分页返回历史回测摘要，支持 `preset_name`、`market`、`status` 过滤 |
+| `GET` | `/api/v1/backtest/runs` | 分页返回历史回测摘要，支持 `preset_name`、`market`、`status`、`limit`、`offset` 过滤 |
 | `GET` | `/api/v1/backtest/runs/{run_id}` | 返回完整回测结果 |
 | `DELETE` | `/api/v1/backtest/runs/{run_id}` | 删除一条历史结果 |
-| `DELETE` | `/api/v1/backtest/runs` | 按条件清理历史结果，默认需要显式确认 |
+| `DELETE` | `/api/v1/backtest/runs` | 管理/维护接口：按条件清理历史结果，必须 `confirm=true` 且带 `before=` 时间上限 |
 
 后端任务流调整：
 
@@ -192,6 +229,9 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs (status, cr
 - 完成时写入 `DONE`、`result`、`metrics`、`completed_at`、`elapsed_ms`
 - 失败时写入 `FAILED`、`error`、`completed_at`
 - `/backtest/status/{run_id}` 继续保留，用于实时进度轮询，并优先从内存任务读取，内存不存在时回退数据库
+- 内存任务完成后可以延迟清理，但数据库必须先写入最终状态；状态接口回退数据库时应返回同一份 `DONE/FAILED` 结果，避免刷新后状态抖动
+- 同一进程默认最多并发 2 个回测任务；超过限制时返回明确错误或排队，避免共享服务器被连续回测打满
+- 失败任务允许“复用参数”重跑，但不在同一 `run_id` 上重试，避免覆盖原始失败记录
 
 前端改造：
 
@@ -210,6 +250,12 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs (status, cr
 
 - 前端可以用 TanStack Query 缓存列表和详情，但不再把完整结果写入 `localStorage`。
 - Zustand 只继续保存表单条件，不承担历史结果持久化。
+
+删除和保留策略：
+
+- 普通页面只暴露单条删除。
+- 批量清理接口仅用于管理/维护入口，必须传 `confirm=true` 和 `before=YYYY-MM-DD`，默认建议只清理 90 天前的记录。
+- 自动保留策略建议：每台服务器保留最近 500 条成功回测和最近 90 天失败回测；超出部分由维护脚本清理。
 
 ### UI 细节
 
@@ -782,6 +828,12 @@ interface OverallAssessment {
 | POST | `/api/v1/screener/run` | body: `ScreenerParams` | `ScreenerResult` | 运行筛选 |
 | GET | `/api/v1/analyzer/search` | `?q=&market=` | `StockSearchResult[]` | 股票搜索 |
 | GET | `/api/v1/analyzer/analyze` | `?stock_code=&market=` | `AnalysisReport` | 个股分析 |
+| GET | `/api/v1/backtest/presets` | — | `{presets: BacktestPreset[]}` | 回测预设列表，包含普通策略和复合策略 |
+| POST | `/api/v1/backtest/run` | body: `BacktestRunParams` | `{run_id: string, status: BacktestRunStatus}` | 创建回测任务并持久化 run 记录 |
+| GET | `/api/v1/backtest/status/{run_id}` | — | `BacktestTask` | 查询回测任务状态和进度 |
+| GET | `/api/v1/backtest/runs` | `?preset_name=&market=&status=&limit=&offset=` | `Paginated<BacktestRunSummary>` | 回测历史摘要列表，不返回完整 result |
+| GET | `/api/v1/backtest/runs/{run_id}` | — | `BacktestRunDetail` | 回测历史详情，按需返回完整 result |
+| DELETE | `/api/v1/backtest/runs/{run_id}` | — | `{deleted: true}` | 删除单条回测历史 |
 
 ### 双服务器路由
 
@@ -1232,3 +1284,4 @@ curl -X POST http://localhost:8000/api/v1/screener/run \
 | v7 | 2026-04-30 | 二次审阅修订 |
 | v8 | 2026-04-30 | 终审：删除 cachetools 依赖、useDashboardStats 补全 staleTime |
 | v8.1 | 2026-04-30 | 四审修订：SyncLogEntry/SyncProgressEntry 注明字段来源（config_json、EXTRACT、JOIN）、client.ts 去 auth 残留、useDashboardStats market 加路由注释、ScreenerResult 计数来源注释、vite proxy 双服务器 |
+| v9 | 2026-06-16 | 新增回测历史卡片方案：服务端持久化优先、`backtest_runs` DDL、历史摘要/详情 API、删除安全、并发限制、保留策略、主 API 汇总表补齐 |
