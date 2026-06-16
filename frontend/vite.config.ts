@@ -2,6 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
+// 开发时代理目标可通过环境变量覆盖，避免每个人本地 IP 不同还要改仓库文件
+const API_PROXY_CN = process.env.VITE_API_PROXY_CN || "http://localhost:8000";
+const API_PROXY_US = process.env.VITE_API_PROXY_US || "http://localhost:8000";
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -23,11 +27,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/api/cn": {
-        target: "http://134.175.237.24:8000",
+        target: API_PROXY_CN,
         rewrite: (p) => p.replace(/^\/api\/cn/, ""),
       },
       "/api/us": {
-        target: "http://43.167.190.219:8000",
+        target: API_PROXY_US,
         rewrite: (p) => p.replace(/^\/api\/us/, ""),
         changeOrigin: true,
       },
