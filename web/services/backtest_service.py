@@ -148,7 +148,8 @@ def update_task(task_id: str, **kwargs):
             task["elapsed_ms"] = int((now - created).total_seconds() * 1000)
 
         # 同步数据库
-        _sync_db_update(task_id, now, **task)
+        db_fields = {k: v for k, v in task.items() if k != "task_id"}
+        _sync_db_update(task_id, now, **db_fields)
 
 
 def _sync_db_update(task_id: str, now: datetime, **fields):

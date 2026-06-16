@@ -17,7 +17,7 @@ from web.services.backtest_history_service import (
     migrate_backtest_runs,
     update_run,
 )
-from web.services.backtest_service import _prepare_run_fields, _detect_preset_type
+from web.services.backtest_service import _prepare_run_fields, _detect_preset_type, _tasks, update_task
 
 
 @patch("web.services.backtest_history_service.execute")
@@ -210,3 +210,30 @@ def test_prepare_run_fields_composite():
     assert fields["rebalance_months"] is None
     assert fields["top_n"] is None
     assert fields["timing"] is False
+
+
+@patch("web.services.backtest_service.update_run")
+def test_update_task_sync_db_does_not_duplicate_task_id(mock_update_run):
+    """内存 task 同步数据库时不应把 task_id 作为重复关键字传入。"""
+    task_id = str(uuid.uuid4())
+    _tasks[task_id] = {
+        "task_id": task_id,
+        "status": "CREATED",
+        "progress_pct": 0.0,
+        "progress_label": "等待开始...",
+        "params": {},
+        "result": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+        "started_at": None,
+        "completed_at": None,
+        "elapsed_ms": None,
+    }
+
+    try:
+        update_task(task_id, status="RUNNING", progress_label="开始回测...")
+    finally:
+        _tasks.pop(task_id, None)
+
+    assert mock_update_run.called
+    assert mock_update_run.call_args.kwargs["status"] == "RUNNING"
