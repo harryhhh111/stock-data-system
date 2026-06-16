@@ -900,19 +900,6 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
     """
     rows = []
 
-    # 检测数据库编码，只在 SQL_ASCII 时才做 ASCII sanitize
-    with Connection() as _enc_conn:
-        _cur = _enc_conn.cursor()
-        _cur.execute("SHOW server_encoding")
-        _db_encoding = (_cur.fetchone() or ["UTF8"])[0]
-
-    def _sanitize(val):
-        if val is None:
-            return None
-        if _db_encoding == "SQL_ASCII":
-            return val.encode("ascii", errors="replace").decode("ascii")
-        return val
-
     for issue in report.issues:
         rows.append(
             {
@@ -925,10 +912,10 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
                 "check_name": issue.check_name,
                 "severity": issue.severity,
                 "field_name": issue.field_name,
-                "actual_value": _sanitize(issue.actual_value),
-                "expected_value": _sanitize(issue.expected_value),
-                "message": _sanitize(issue.message),
-                "suggestion": _sanitize(issue.suggestion),
+                "actual_value": issue.actual_value,
+                "expected_value": issue.expected_value,
+                "message": issue.message,
+                "suggestion": issue.suggestion,
             }
         )
 

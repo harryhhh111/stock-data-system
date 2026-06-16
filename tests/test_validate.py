@@ -384,6 +384,51 @@ class TestCrossSource:
         assert any(i.check_name == "single_source_limitation" and i.market == "US" for i in issues)
 
 
+# ── save_results ─────────────────────────────────────────
+
+class TestSaveResults:
+    @patch("core.validate.db.Connection")
+    def test_preserves_chinese_characters(self, mock_conn_cls):
+        """中文消息不应被替换成问号。"""
+        from core.validate import save_results, ValidationReport, ValidationIssue
+
+        report = ValidationReport(started_at="2026-01-01T00:00:00")
+        report.issues.append(
+            ValidationIssue(
+                stock_code="00006",
+                market="CN_HK",
+                report_date="2024-12-31",
+                check_name="net_profit_exceeds_revenue",
+                severity="warning",
+                field_name="net_profit/total_revenue",
+                actual_value="净利润=2,728,138,820, 营收=610,350,760",
+                expected_value="净利润通常不超过营收的 1.5 倍",
+                message="净利润(2,728,138,820)远超营收(610,350,760)",
+                suggestion="可能有大额投资收益/营业外收入，需核实利润构成",
+            )
+        )
+
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 1
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_conn_cls.return_value.__enter__.return_value = mock_conn
+
+        save_results(report, "20260101_120000")
+
+        assert mock_cur.executemany.called
+        # 取出 executemany 的第二个参数（参数列表）
+        params_list = mock_cur.executemany.call_args[0][1]
+        assert len(params_list) == 1
+        row = params_list[0]
+        assert "净利润" in row["message"]
+        assert "营收" in row["message"]
+        assert "?" not in row["message"]
+        assert "?" not in row["actual_value"]
+        assert "?" not in row["expected_value"]
+        assert "?" not in row["suggestion"]
+
+
 # ── Integration: run_validation ─────────────────────────
 
 class TestRunValidation:
