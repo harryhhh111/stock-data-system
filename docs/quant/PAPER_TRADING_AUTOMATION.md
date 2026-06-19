@@ -68,7 +68,9 @@ python scripts/run_paper_daily.py --dry-run
 1. 检查当日行情数据是否已同步
 2. 查询 `paper_accounts` 中 `status='active'` 的账户
 3. 逐个运行 `PaperTradingEngine(account_id).run(as_of)`
-4. 汇总结果并写入日志文件
+4. 单个账户失败时自动重试一次
+5. 最终失败时写入 `paper_strategy_runs` 表，供前端展示
+6. 汇总结果并写入日志文件
 
 ### 4.2 数据就绪检查
 
@@ -101,18 +103,38 @@ GROUP BY market;
 
 ```python
 for account in active_accounts:
-    try:
-        engine = PaperTradingEngine(account["account_id"])
-        result = engine.run(as_of=target_date)
-        if result["status"] == "skipped":
-            skipped.append({account, reason: "already_run"})
-        else:
-            success.append({account, nav: result["nav_after"]["nav"]})
-    except Exception as e:
-        failed.append({account, error: str(e)})
+    last_error = ""
+    for attempt in range(2):  # 首次 + 重试一次
+        try:
+            engine = PaperTradingEngine(account["account_id"])
+            result = engine.run(as_of=target_date)
+            if result["status"] == "skipped":
+                skipped.append({account, reason: "already_run"})
+            else:
+                success.append({account, nav: result["nav_after"]["nav"]})
+            break
+        except Exception as e:
+            last_error = str(e)
+            logger.warning("账户 %s 第 %d 次运行失败: %s", account, attempt + 1, last_error)
+    else:
+        # 两次都失败
+        failed.append({account, error: last_error})
+        save_failed_run(account, target_date, last_error)  # 写入 paper_strategy_runs
 ```
 
-### 4.4 日志输出
+### 4.4 失败记录前端展示
+
+账户最终运行失败时，脚本会向 `paper_strategy_runs` 表写入一条 `status='failed'`、`run_type='daily_run'` 的记录，并把错误信息写入 `error_message` 字段。
+
+前端「模拟盘详情页」的「运行记录」组件会读取该表并展示：
+
+- 失败日期
+- 状态图标（红色 `XCircle`）
+- 错误信息
+
+这样不需要单独的通知渠道，打开对应账户详情页就能看到哪天运行失败了。
+
+### 4.5 日志输出
 
 脚本通过 Python logging 输出到 stdout，cron 重定向到日志文件：
 
@@ -174,7 +196,7 @@ crontab -e
 | 风险 | 影响 | 应对 |
 |------|------|------|
 | 行情数据未同步 | 部分账户漏跑 | 数据就绪检查，未就绪市场账户跳过 |
-| 某个账户运行失败 | 该账户当日无 NAV | 捕获异常，记录到日志 |
+| 某个账户运行失败 | 该账户当日无 NAV | 自动重试一次，最终失败写入 `paper_strategy_runs` 并在前端展示 |
 | 运行时服务器宕机 | 所有账户漏跑 | cron 每天触发，重启后继续 |
 | 策略信号异常导致大额调仓 | 模拟盘无资金损失，但需排查 | 通过 `paper_trades` 表审计 |
 | 重复运行 | 已运行账户自动 skip，幂等 |
@@ -187,7 +209,7 @@ crontab -e
 2. ✅ 通知渠道：不需要
 3. ✅ 日志表：不需要，用日志文件
 4. ✅ strict 模式：默认不开启
-5. 是否需要在失败时自动重试？重试几次？
+5. ✅ 失败自动重试：重试一次，最终失败写入 `paper_strategy_runs`，前端展示
 
 ---
 

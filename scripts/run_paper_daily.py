@@ -28,6 +28,8 @@ sys.path.insert(0, str(ROOT))
 from db import Connection, execute
 from quant.paper.engine import PaperTradingEngine
 
+MAX_RETRIES = 1
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -138,48 +140,105 @@ def _notify(report: dict) -> None:
             logger.warning("通知发送失败: %s", exc)
 
 
+# ── 失败记录写入 ─────────────────────────────────────────────
+
+def save_failed_run(account: dict, target_date: date, error_message: str) -> None:
+    """把失败记录写入 paper_strategy_runs，供前端展示。"""
+    execute(
+        """INSERT INTO paper_strategy_runs
+           (account_id, run_date, run_type, status, signals, allocation,
+            target_positions, trade_plan, error_message, started_at, finished_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (account_id, run_date, run_type) DO UPDATE SET
+             status = EXCLUDED.status,
+             error_message = EXCLUDED.error_message,
+             finished_at = EXCLUDED.finished_at""",
+        (
+            account["account_id"],
+            target_date.isoformat(),
+            "daily_run",
+            "failed",
+            "{}",
+            "{}",
+            "{}",
+            "{}",
+            error_message,
+            datetime.now().isoformat(),
+            datetime.now().isoformat(),
+        ),
+        commit=True,
+    )
+
+
 # ── 主流程 ───────────────────────────────────────────────────
 
 def run_single_account(account: dict, target_date: date) -> dict:
-    """运行单个账户，返回统一结果 dict。"""
+    """运行单个账户，失败自动重试一次，返回统一结果 dict。"""
     t0 = time.time()
+    last_error = ""
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            engine = PaperTradingEngine(account["account_id"])
+            result = engine.run(as_of_date=target_date)
+            duration_ms = int((time.time() - t0) * 1000)
+
+            status = result.get("status", "success")
+            nav_after = result.get("nav_after", {}).get("nav") if result.get("nav_after") else None
+            trades = result.get("trades", [])
+            run_type = result.get("run_type")
+
+            if attempt > 0:
+                logger.info("账户 %s 第 %d 次重试成功", account.get("account_name", account["account_id"]), attempt + 1)
+
+            return {
+                "account_id": account["account_id"],
+                "account_name": account.get("account_name", ""),
+                "market": account["market"],
+                "status": status,
+                "run_type": run_type,
+                "nav_after": nav_after,
+                "trade_count": len(trades),
+                "duration_ms": duration_ms,
+                "error": None,
+                "attempts": attempt + 1,
+            }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "账户 %s 第 %d 次运行失败: %s",
+                account.get("account_name", account["account_id"]),
+                attempt + 1,
+                last_error,
+            )
+
+    # 最终失败
+    duration_ms = int((time.time() - t0) * 1000)
+    logger.error(
+        "账户 %s 运行失败（已重试 %d 次）: %s",
+        account.get("account_name", account["account_id"]),
+        MAX_RETRIES,
+        last_error,
+    )
+
+    # 写入失败记录到 paper_strategy_runs，前端可展示
     try:
-        engine = PaperTradingEngine(account["account_id"])
-        result = engine.run(as_of_date=target_date)
-        duration_ms = int((time.time() - t0) * 1000)
+        save_failed_run(account, target_date, last_error)
+    except Exception as log_exc:
+        logger.error("写入失败记录失败: %s", log_exc)
 
-        status = result.get("status", "success")
-        nav_after = result.get("nav_after", {}).get("nav") if result.get("nav_after") else None
-        trades = result.get("trades", [])
-        run_type = result.get("run_type")
-
-        return {
-            "account_id": account["account_id"],
-            "account_name": account.get("account_name", ""),
-            "market": account["market"],
-            "status": status,
-            "run_type": run_type,
-            "nav_after": nav_after,
-            "trade_count": len(trades),
-            "duration_ms": duration_ms,
-            "error": None,
-        }
-    except Exception as exc:
-        duration_ms = int((time.time() - t0) * 1000)
-        error_msg = f"{type(exc).__name__}: {exc}"
-        logger.error("账户 %s 运行失败: %s", account.get("account_name", account["account_id"]), error_msg)
-
-        return {
-            "account_id": account["account_id"],
-            "account_name": account.get("account_name", ""),
-            "market": account["market"],
-            "status": "failed",
-            "run_type": None,
-            "nav_after": None,
-            "trade_count": 0,
-            "duration_ms": duration_ms,
-            "error": error_msg,
-        }
+    return {
+        "account_id": account["account_id"],
+        "account_name": account.get("account_name", ""),
+        "market": account["market"],
+        "status": "failed",
+        "run_type": None,
+        "nav_after": None,
+        "trade_count": 0,
+        "duration_ms": duration_ms,
+        "error": last_error,
+        "attempts": MAX_RETRIES + 1,
+    }
 
 
 def main():
@@ -287,6 +346,9 @@ def main():
         report["failed_count"],
         sum(r["duration_ms"] for r in results) / 1000,
     )
+    if failed:
+        for f in failed:
+            logger.error("  失败账户: %s (%s), 重试次数=%d, 错误=%s", f["account_name"], f["account_id"][:8], f.get("attempts", 1), f["error"])
     logger.info("=" * 60)
 
     if args.notify or failed:
