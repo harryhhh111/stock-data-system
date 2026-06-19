@@ -22,6 +22,7 @@ data/*.db-shm
 # Logs
 data/*.log
 *.log
+logs/
 
 # Runtime outputs
 data/

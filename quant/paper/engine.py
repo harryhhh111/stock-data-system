@@ -280,6 +280,14 @@ class PaperTradingEngine:
                     else:
                         price = 0.0
                     amount = shares * price
+
+                    # 跳过碎股/极小金额交易，避免写入 shares=0 违反约束
+                    if shares < 1e-4 or amount < 0.01:
+                        logger.debug(
+                            "跳过极小交易 %s: shares=%s, amount=%s", code, shares, amount
+                        )
+                        continue
+
                     fee = amount * fee_rate
                     slippage = amount * slippage_bps / 10000.0
                     reason = "rebalance"
