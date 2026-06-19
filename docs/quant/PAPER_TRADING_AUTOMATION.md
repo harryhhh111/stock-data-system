@@ -62,6 +62,7 @@ python scripts/run_paper_daily.py
 python scripts/run_paper_daily.py --date 2026-06-18
 python scripts/run_paper_daily.py --market CN_HK
 python scripts/run_paper_daily.py --dry-run
+python scripts/run_paper_daily.py --strict
 ```
 
 主要职责：
@@ -71,6 +72,7 @@ python scripts/run_paper_daily.py --dry-run
 4. 单个账户失败时自动重试一次
 5. 最终失败时写入 `paper_strategy_runs` 表，供前端展示
 6. 汇总结果并写入日志文件
+7. 失败时默认发送通知；也可用 `--notify` 强制发送日报通知
 
 ### 4.2 数据就绪检查
 
@@ -87,6 +89,7 @@ GROUP BY market;
 - 如果某市场 `latest_date < target_date`，说明该市场数据可能未同步
 - 默认行为：**跳过该市场账户**，其他市场正常跑
 - `--strict` 模式下：**直接整体失败退出**，一个都不跑
+- `--skip-data-check` 可跳过就绪检查，用于人工补跑或排障
 
 #### strict 模式说明
 
@@ -124,7 +127,7 @@ for account in active_accounts:
 
 ### 4.4 失败记录前端展示
 
-账户最终运行失败时，脚本会向 `paper_strategy_runs` 表写入一条 `status='failed'`、`run_type='daily_run'` 的记录，并把错误信息写入 `error_message` 字段。
+账户最终运行失败时，脚本会向 `paper_strategy_runs` 表写入一条 `status='failed'`、`run_type='daily_run'` 的记录，并把错误信息写入 `error_message` 字段。`daily_run` 表示自动化批处理层失败，区别于单账户引擎内部的 `valuation` / `rebalance`。
 
 前端「模拟盘详情页」的「运行记录」组件会读取该表并展示：
 
@@ -152,6 +155,15 @@ for account in active_accounts:
 ...
 2026-06-18 18:31:00 [INFO] 运行完成: 成功=10, 跳过=0, 失败=0, 总耗时=58.2s
 ```
+
+### 4.6 通知
+
+通知不是主链路，日志文件和 `paper_strategy_runs` 是权威记录。脚本支持两种通知方式：
+
+- 默认：只有出现失败账户时发送通知
+- `--notify`：无论成功/失败都发送本次运行摘要
+
+通知地址优先读取 `config.scheduler.notify_url`，没有配置时读取环境变量 `PAPER_NOTIFY_URL`。没有通知地址时只写日志，不影响自动运行。
 
 ---
 
@@ -206,7 +218,7 @@ crontab -e
 ## 8. 待确认事项
 
 1. ✅ 运行时间：北京时间 18:30（数据 18:14 前已同步，足够）
-2. ✅ 通知渠道：不需要
+2. ✅ 通知渠道：可选；默认失败时通知，无 webhook 时仅写日志
 3. ✅ 日志表：不需要，用日志文件
 4. ✅ strict 模式：默认不开启
 5. ✅ 失败自动重试：重试一次，最终失败写入 `paper_strategy_runs`，前端展示

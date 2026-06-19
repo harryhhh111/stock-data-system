@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS paper_strategy_runs (
         FOREIGN KEY (account_id) REFERENCES paper_accounts(account_id) ON DELETE CASCADE,
     CONSTRAINT uk_paper_runs_account_date_type UNIQUE (account_id, run_date, run_type),
     CONSTRAINT chk_paper_runs_type
-        CHECK (run_type IN ('valuation', 'rebalance')),
+        CHECK (run_type IN ('valuation', 'rebalance', 'daily_run')),
     CONSTRAINT chk_paper_runs_status
         CHECK (status IN ('success', 'failed', 'skipped'))
 );

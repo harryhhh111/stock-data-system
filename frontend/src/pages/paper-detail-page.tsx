@@ -19,6 +19,12 @@ const STATUS_ICON: Record<string, { icon: typeof CheckCircle; color: string }> =
   skipped: { icon: Clock, color: "text-muted-foreground" },
 };
 
+function runTypeLabel(runType: string) {
+  if (runType === "rebalance") return "调仓";
+  if (runType === "daily_run") return "自动运行";
+  return "估值";
+}
+
 function KpiCard({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <Card>
@@ -270,7 +276,7 @@ export function PaperDetailPage() {
                   <div key={r.run_id} className="flex items-center gap-3 text-sm">
                     <si.icon className={`h-4 w-4 ${si.color}`} />
                     <span className="w-24 text-muted-foreground">{r.run_date}</span>
-                    <Badge variant="outline" className="text-xs">{r.run_type === "rebalance" ? "调仓" : "估值"}</Badge>
+                    <Badge variant="outline" className="text-xs">{runTypeLabel(r.run_type)}</Badge>
                     <span className={si.color}>{r.status}</span>
                     {r.error_message && <span className="text-xs text-red-500">{r.error_message}</span>}
                   </div>

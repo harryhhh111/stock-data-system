@@ -62,7 +62,7 @@ export interface PaperNavSnapshot {
 export interface PaperStrategyRun {
   run_id: number;
   run_date: string;
-  run_type: "valuation" | "rebalance";
+  run_type: "valuation" | "rebalance" | "daily_run";
   status: "success" | "failed" | "skipped";
   signals: Record<string, string>;
   allocation: Record<string, number>;
@@ -74,7 +74,7 @@ export interface PaperStrategyRun {
 }
 
 export interface PaperRunResult {
-  run_type: "valuation" | "rebalance";
+  run_type: "valuation" | "rebalance" | "daily_run";
   run_date: string;
   status: string;
   signals: Record<string, string>;

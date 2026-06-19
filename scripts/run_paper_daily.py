@@ -6,6 +6,7 @@
     venv/bin/python scripts/run_paper_daily.py --date 2026-06-18
     venv/bin/python scripts/run_paper_daily.py --market CN_A
     venv/bin/python scripts/run_paper_daily.py --dry-run
+    venv/bin/python scripts/run_paper_daily.py --strict
 
 建议 cron:
     30 18 * * 1-5 cd /home/ubuntu/projects/stock_data && venv/bin/python scripts/run_paper_daily.py >> /var/log/paper_daily.log 2>&1
@@ -29,6 +30,7 @@ from db import Connection, execute
 from quant.paper.engine import PaperTradingEngine
 
 MAX_RETRIES = 1
+DAILY_RUN_TYPE = "daily_run"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,9 +119,11 @@ def _notify(report: dict) -> None:
     if report["top_nav_changes"]:
         lines.append("\nNAV 变化 Top 3：")
         for item in report["top_nav_changes"]:
+            daily_return = item.get("daily_return")
+            change = f"({daily_return * 100:+.2f}%)" if daily_return is not None else "(无前值)"
             lines.append(
                 f"- {item['account_name']}: {item['nav_after']:.4f} "
-                f"({item['daily_return']*100:+.2f}%)"
+                f"{change}"
             )
 
     message = "\n".join(lines)
@@ -142,8 +146,38 @@ def _notify(report: dict) -> None:
 
 # ── 失败记录写入 ─────────────────────────────────────────────
 
+def ensure_daily_run_type_allowed() -> None:
+    """确保 paper_strategy_runs.run_type 允许 daily_run。"""
+    rows = execute(
+        """
+        SELECT pg_get_constraintdef(oid)
+        FROM pg_constraint
+        WHERE conrelid = 'paper_strategy_runs'::regclass
+          AND conname = 'chk_paper_runs_type'
+        """,
+        fetch=True,
+        commit=False,
+    )
+    constraint = rows[0][0] if rows else ""
+    if DAILY_RUN_TYPE in constraint:
+        return
+
+    execute(
+        """
+        ALTER TABLE paper_strategy_runs
+        DROP CONSTRAINT IF EXISTS chk_paper_runs_type;
+        ALTER TABLE paper_strategy_runs
+        ADD CONSTRAINT chk_paper_runs_type
+            CHECK (run_type IN ('valuation', 'rebalance', 'daily_run'));
+        """,
+        commit=True,
+    )
+    logger.info("已更新 paper_strategy_runs.run_type 约束，允许 daily_run")
+
+
 def save_failed_run(account: dict, target_date: date, error_message: str) -> None:
     """把失败记录写入 paper_strategy_runs，供前端展示。"""
+    ensure_daily_run_type_allowed()
     execute(
         """INSERT INTO paper_strategy_runs
            (account_id, run_date, run_type, status, signals, allocation,
@@ -156,7 +190,7 @@ def save_failed_run(account: dict, target_date: date, error_message: str) -> Non
         (
             account["account_id"],
             target_date.isoformat(),
-            "daily_run",
+            DAILY_RUN_TYPE,
             "failed",
             "{}",
             "{}",
@@ -247,6 +281,7 @@ def main():
     parser.add_argument("--market", type=str, help="只运行指定市场（CN_A/CN_HK/US）")
     parser.add_argument("--dry-run", action="store_true", help="只预览要运行的账户，不实际执行")
     parser.add_argument("--skip-data-check", action="store_true", help="跳过行情数据就绪检查")
+    parser.add_argument("--strict", action="store_true", help="任一目标市场数据未就绪时整体失败退出")
     parser.add_argument("--notify", action="store_true", help="强制发送通知（默认只在失败时发）")
     args = parser.parse_args()
 
@@ -265,21 +300,34 @@ def main():
     # 数据就绪检查
     if not args.skip_data_check:
         ready = check_data_ready(target_date, markets)
-        not_ready = [m for m, ok in ready.items() if not ok]
+        not_ready = {m for m, ok in ready.items() if not ok}
         if not_ready:
             msg = f"以下市场行情数据未同步到 {target_date}: {', '.join(not_ready)}"
-            logger.error(msg)
-            _notify({
-                "run_date": str(target_date),
-                "success_count": 0,
-                "skipped_count": 0,
-                "failed_count": len(accounts),
-                "success": [],
-                "skipped": [],
-                "failed": [{"account_name": acc["account_name"], "account_id": acc["account_id"], "error": msg} for acc in accounts],
-                "top_nav_changes": [],
-            })
-            sys.exit(1)
+            if args.strict:
+                logger.error(msg)
+                _notify({
+                    "run_date": str(target_date),
+                    "success_count": 0,
+                    "skipped_count": 0,
+                    "failed_count": len(accounts),
+                    "success": [],
+                    "skipped": [],
+                    "failed": [{"account_name": acc["account_name"], "account_id": acc["account_id"], "error": msg} for acc in accounts],
+                    "top_nav_changes": [],
+                })
+                sys.exit(1)
+
+            skipped_accounts = [acc for acc in accounts if acc["market"] in not_ready]
+            for acc in skipped_accounts:
+                logger.warning(
+                    "跳过账户：%s (%s)，原因：市场数据未就绪",
+                    acc["account_name"],
+                    acc["market"],
+                )
+            accounts = [acc for acc in accounts if acc["market"] not in not_ready]
+            if not accounts:
+                logger.warning("所有目标账户所属市场均未就绪，本次不运行")
+                sys.exit(0)
 
     if args.dry_run:
         logger.info("[DRY RUN] 将要运行 %d 个账户:", len(accounts))

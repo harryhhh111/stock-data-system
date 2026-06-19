@@ -810,7 +810,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_fcf_yield;
 核心字段：
 
 - `run_date`
-- `run_type`: `valuation` / `rebalance`
+- `run_type`: `valuation` / `rebalance` / `daily_run`
 - `status`: `success` / `failed` / `skipped`
 - `signals`: JSONB
 - `allocation`: JSONB
