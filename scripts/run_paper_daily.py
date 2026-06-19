@@ -36,35 +36,6 @@ logging.basicConfig(
 logger = logging.getLogger("paper_daily")
 
 
-# ── 表迁移 ──────────────────────────────────────────────────
-
-def ensure_run_log_table() -> None:
-    """确保 paper_daily_run_log 表存在。"""
-    ddl = """
-    CREATE TABLE IF NOT EXISTS paper_daily_run_log (
-        id BIGSERIAL PRIMARY KEY,
-        run_date DATE NOT NULL,
-        account_id TEXT NOT NULL,
-        account_name TEXT,
-        market TEXT NOT NULL,
-        strategy_name TEXT,
-        status TEXT NOT NULL CHECK (status IN ('success', 'skipped', 'failed')),
-        run_type TEXT,                 -- 'rebalance' / 'valuation' / NULL
-        nav_after NUMERIC(12, 6),
-        trade_count INTEGER,
-        error_message TEXT,
-        duration_ms INTEGER,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_paper_daily_run_log_run_date
-        ON paper_daily_run_log(run_date DESC);
-    CREATE INDEX IF NOT EXISTS idx_paper_daily_run_log_account
-        ON paper_daily_run_log(account_id, run_date DESC);
-    """
-    execute(ddl, commit=True)
-
-
 # ── 数据就绪检查 ────────────────────────────────────────────
 
 def get_latest_quote_date(market: str) -> date | None:
@@ -167,41 +138,6 @@ def _notify(report: dict) -> None:
             logger.warning("通知发送失败: %s", exc)
 
 
-# ── 日志写入 ─────────────────────────────────────────────────
-
-def log_run(
-    run_date: date,
-    account: dict,
-    status: str,
-    run_type: str | None,
-    nav_after: float | None,
-    trade_count: int,
-    error_message: str | None,
-    duration_ms: int,
-) -> None:
-    """写入 paper_daily_run_log。"""
-    execute(
-        """INSERT INTO paper_daily_run_log
-           (run_date, account_id, account_name, market, strategy_name, status,
-            run_type, nav_after, trade_count, error_message, duration_ms)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (
-            run_date.isoformat(),
-            account["account_id"],
-            account.get("account_name"),
-            account["market"],
-            account.get("strategy_name"),
-            status,
-            run_type,
-            nav_after,
-            trade_count,
-            error_message,
-            duration_ms,
-        ),
-        commit=True,
-    )
-
-
 # ── 主流程 ───────────────────────────────────────────────────
 
 def run_single_account(account: dict, target_date: date) -> dict:
@@ -216,17 +152,6 @@ def run_single_account(account: dict, target_date: date) -> dict:
         nav_after = result.get("nav_after", {}).get("nav") if result.get("nav_after") else None
         trades = result.get("trades", [])
         run_type = result.get("run_type")
-
-        log_run(
-            run_date=target_date,
-            account=account,
-            status=status,
-            run_type=run_type,
-            nav_after=nav_after,
-            trade_count=len(trades),
-            error_message=None,
-            duration_ms=duration_ms,
-        )
 
         return {
             "account_id": account["account_id"],
@@ -243,17 +168,6 @@ def run_single_account(account: dict, target_date: date) -> dict:
         duration_ms = int((time.time() - t0) * 1000)
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error("账户 %s 运行失败: %s", account.get("account_name", account["account_id"]), error_msg)
-
-        log_run(
-            run_date=target_date,
-            account=account,
-            status="failed",
-            run_type=None,
-            nav_after=None,
-            trade_count=0,
-            error_message=error_msg,
-            duration_ms=duration_ms,
-        )
 
         return {
             "account_id": account["account_id"],
@@ -281,8 +195,6 @@ def main():
     logger.info("=" * 60)
     logger.info("模拟盘自动运行开始: date=%s, market=%s", target_date, args.market or "all")
     logger.info("=" * 60)
-
-    ensure_run_log_table()
 
     accounts = list_active_accounts(args.market)
     if not accounts:
