@@ -29,4 +29,8 @@ export interface QualityIssue {
   message: string;
   suggestion: string | null;
   created_at: string;
+  acknowledged?: boolean;
+  acknowledged_by?: string | null;
+  acknowledged_reason?: string | null;
+  acknowledged_at?: string | null;
 }

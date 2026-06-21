@@ -97,6 +97,7 @@ export const qualityApi = {
     severity?: string;
     market?: Market;
     check?: string;
+    includeAcknowledged?: boolean;
     limit?: number;
     offset?: number;
   }) => {
@@ -104,6 +105,7 @@ export const qualityApi = {
     if (params.severity) q.set("severity", params.severity);
     if (params.market) q.set("market", params.market);
     if (params.check) q.set("check", params.check);
+    if (params.includeAcknowledged) q.set("include_acknowledged", "true");
     q.set("limit", String(params.limit ?? 50));
     q.set("offset", String(params.offset ?? 0));
     return apiFetch<import("@/lib/types/common").Paginated<import("@/lib/types/quality").QualityIssue>>(
@@ -111,6 +113,16 @@ export const qualityApi = {
       { market: params.market },
     );
   },
+  acknowledge: (issueId: number, reason?: string) =>
+    apiFetch<{ acknowledged: true }>(`/quality/issues/${issueId}/acknowledge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: reason || undefined }),
+    }),
+  unacknowledge: (issueId: number) =>
+    apiFetch<{ acknowledged: false }>(`/quality/issues/${issueId}/unacknowledge`, {
+      method: "POST",
+    }),
 };
 
 // ── Screener ──

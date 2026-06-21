@@ -1,5 +1,7 @@
 import { LayoutDashboard } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDashboardStats, mergeStats } from "@/lib/hooks/use-dashboard";
+import { qualityApi } from "@/lib/api/client";
 import { ErrorBanner } from "@/components/dashboard/error-banner";
 import { KpiBar } from "@/components/dashboard/kpi-bar";
 import { MarketMatrix } from "@/components/dashboard/market-matrix";
@@ -14,6 +16,16 @@ import { Card, CardContent } from "@/components/ui/card";
 export function DashboardPage() {
   const { cn, us, isLoading, errors } = useDashboardStats();
   const stats = mergeStats(cn, us);
+  const queryClient = useQueryClient();
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      qualityApi.acknowledge(id, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["quality"] });
+    },
+  });
 
   if (isLoading && !stats) {
     return (
@@ -103,7 +115,15 @@ export function DashboardPage() {
       {/* 第四层：趋势 + 问题（左右分栏） */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <MiniTrendChart syncTrend={stats.sync_trend} />
-        <IssueFeed issues={stats.recent_issues} />
+        <IssueFeed
+          issues={stats.recent_issues}
+          onAcknowledge={(id, reason) =>
+            acknowledgeMutation.mutateAsync({ id, reason })
+          }
+          acknowledgingId={
+            acknowledgeMutation.isPending ? acknowledgeMutation.variables?.id : null
+          }
+        />
       </div>
 
       {/* 第四层：数据质量 */}

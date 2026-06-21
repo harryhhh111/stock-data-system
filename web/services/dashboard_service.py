@@ -111,22 +111,45 @@ def get_stats() -> dict:
                 ),
             })
 
-        # 5. 校验问题统计（只看近 5 年 report_date，忽略旧财报数据）
+        # 5. 校验问题统计（只看近 5 年 report_date，忽略旧财报数据，排除已确认）
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND created_at >= now() - interval '24 hours'",
+            """
+            SELECT COUNT(*) FROM validation_results vr
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
+            WHERE vr.market = ANY(%s)
+              AND vr.report_date >= CURRENT_DATE - interval '5 years'
+              AND vr.created_at >= now() - interval '24 hours'
+              AND va.validation_result_id IS NULL
+            """,
             (markets,)
         )
         errors_24h = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND severity = 'warning' AND created_at >= now() - interval '7 days'",
+            """
+            SELECT COUNT(*) FROM validation_results vr
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
+            WHERE vr.market = ANY(%s)
+              AND vr.report_date >= CURRENT_DATE - interval '5 years'
+              AND vr.severity = 'warning'
+              AND vr.created_at >= now() - interval '7 days'
+              AND va.validation_result_id IS NULL
+            """,
             (markets,)
         )
         warnings_7d = cur.fetchone()[0]
 
-        # 近 5 年校验问题按严重程度分组
+        # 近 5 年校验问题按严重程度分组（排除已确认）
         cur.execute(
-            "SELECT severity, COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' GROUP BY severity",
+            """
+            SELECT vr.severity, COUNT(*)
+            FROM validation_results vr
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
+            WHERE vr.market = ANY(%s)
+              AND vr.report_date >= CURRENT_DATE - interval '5 years'
+              AND va.validation_result_id IS NULL
+            GROUP BY vr.severity
+            """,
             (markets,)
         )
         severity_counts = {r[0]: r[1] for r in cur.fetchall()}
@@ -136,9 +159,15 @@ def get_stats() -> dict:
             "info": severity_counts.get("info", 0),
         }
 
-        # 最近一次校验时间
+        # 最近一次校验时间（排除已确认）
         cur.execute(
-            "SELECT MAX(created_at) FROM validation_results WHERE market = ANY(%s)",
+            """
+            SELECT MAX(vr.created_at)
+            FROM validation_results vr
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
+            WHERE vr.market = ANY(%s)
+              AND va.validation_result_id IS NULL
+            """,
             (markets,)
         )
         last_val = cur.fetchone()[0]
@@ -151,14 +180,21 @@ def get_stats() -> dict:
             "last_check_at": last_val.isoformat() if last_val else None,
         }
 
-        # 6. 今日新增问题数（只看近 5 年 report_date）
+        # 6. 今日新增问题数（只看近 5 年 report_date，排除已确认）
         cur.execute(
-            "SELECT COUNT(*) FROM validation_results WHERE market = ANY(%s) AND report_date >= CURRENT_DATE - interval '5 years' AND created_at::date = CURRENT_DATE",
+            """
+            SELECT COUNT(*) FROM validation_results vr
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
+            WHERE vr.market = ANY(%s)
+              AND vr.report_date >= CURRENT_DATE - interval '5 years'
+              AND vr.created_at::date = CURRENT_DATE
+              AND va.validation_result_id IS NULL
+            """,
             (markets,)
         )
         anomalies_today = cur.fetchone()[0]
 
-        # 7. 最近 10 条问题（只看近 5 年 report_date）
+        # 7. 最近 10 条问题（只看近 5 年 report_date，排除已确认）
         cur.execute(
             """
             SELECT vr.id, vr.stock_code, COALESCE(si.stock_name, vr.stock_code) AS stock_name,
@@ -166,8 +202,10 @@ def get_stats() -> dict:
                    to_char(vr.created_at, 'YYYY-MM-DD HH24:MI:SS') AS created_at
             FROM validation_results vr
             LEFT JOIN stock_info si ON vr.stock_code = si.stock_code
+            LEFT JOIN validation_acknowledgments va ON vr.id = va.validation_result_id
             WHERE vr.market = ANY(%s)
               AND vr.report_date >= CURRENT_DATE - interval '5 years'
+              AND va.validation_result_id IS NULL
             ORDER BY vr.created_at DESC
             LIMIT 10
             """,
