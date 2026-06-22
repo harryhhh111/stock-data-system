@@ -299,9 +299,19 @@ def _base_targets(
     preloader: PITPreloader,
     quote_by_date: dict[date, pd.DataFrame],
 ) -> list[str]:
-    """基础子策略：大盘牛市→二八轮动，大盘熊市→FCF+ROE。"""
+    """基础子策略：大盘牛市→二八轮动，大盘熊市→FCF+ROE。
+
+    如果二八轮动返回的是本地市场指数代码（如 000300/HSI，而非可交易 ETF），
+    则回退到 FCF+ROE 选股，避免模拟盘买入无法交易的指数。
+    """
     if signals.get("market") == "bull":
-        return twenty_eighty_targets(rb_date, market)
+        targets = twenty_eighty_targets(rb_date, market)
+        # 当返回目标均为指数代码时（非 ETF），回退到个股选股
+        if targets and not all(t in CN_INDEX_CODES for t in targets):
+            return targets
+        logger.info(
+            "%s 二八轮动返回指数代码 %s，回退到 FCF+ROE 选股", market, targets
+        )
 
     filters = PRESETS["fcf_roe_value"]["filters"]
     weights = PRESETS["fcf_roe_value"]["weights"]
