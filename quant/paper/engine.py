@@ -217,29 +217,53 @@ class PaperTradingEngine:
         sub_portfolios: dict[str, Portfolio],
         prices: dict[str, float | None],
     ) -> None:
+        """持久化持仓。复合策略多个子组合可能持有同一只股票，需按 stock_code 聚合。"""
+        # 聚合同一股票在不同子组合中的持仓
+        aggregated: dict[str, dict] = {}
+        for sub_name, pf in sub_portfolios.items():
+            for code, pos in pf.positions.items():
+                price = (prices.get(code) or pos.avg_cost) if prices else pos.avg_cost
+                shares = float(pos.shares)
+                cost = shares * float(pos.avg_cost)
+                if code in aggregated:
+                    old = aggregated[code]
+                    old["shares"] += shares
+                    old["total_cost"] += cost
+                    # 用持仓金额最大的子策略名作为代表
+                    if shares * price > old["shares"] * old["price"]:
+                        old["sub_strategy"] = sub_name or None
+                else:
+                    aggregated[code] = {
+                        "shares": shares,
+                        "total_cost": cost,
+                        "price": float(price),
+                        "sub_strategy": sub_name or None,
+                    }
+
         with Connection() as conn:
             cur = conn.cursor()
             cur.execute(
                 "DELETE FROM paper_positions WHERE account_id = %s",
                 (self.account_id,),
             )
-            for sub_name, pf in sub_portfolios.items():
-                for code, pos in pf.positions.items():
-                    price = (prices.get(code) or pos.avg_cost) if prices else pos.avg_cost
-                    market = self._account["market"]
-                    mv = float(pos.shares) * float(price)
-                    cur.execute(
-                        """INSERT INTO paper_positions
-                           (account_id, stock_code, market, sub_strategy, shares,
-                            avg_cost, last_price, market_value, weight)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                        (
-                            self.account_id, code, market,
-                            sub_name or None,
-                            float(pos.shares), float(pos.avg_cost),
-                            float(price), mv, 0.0,
-                        ),
-                    )
+            market = self._account["market"]
+            for code, agg in aggregated.items():
+                if agg["shares"] <= 1e-9:
+                    continue
+                avg_cost = agg["total_cost"] / agg["shares"]
+                mv = agg["shares"] * agg["price"]
+                cur.execute(
+                    """INSERT INTO paper_positions
+                       (account_id, stock_code, market, sub_strategy, shares,
+                        avg_cost, last_price, market_value, weight)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        self.account_id, code, market,
+                        agg["sub_strategy"],
+                        agg["shares"], avg_cost,
+                        agg["price"], mv, 0.0,
+                    ),
+                )
             conn.commit()
             cur.close()
 

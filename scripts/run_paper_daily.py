@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from db import Connection, execute
+from quant.backtest.universe import get_nearest_trade_date
 from quant.paper.engine import PaperTradingEngine
 
 MAX_RETRIES = 1
@@ -56,15 +57,21 @@ def get_latest_quote_date(market: str) -> date | None:
 
 
 def check_data_ready(target_date: date, markets: set[str]) -> dict[str, bool]:
-    """检查各市场行情数据是否已同步到目标日期。"""
+    """检查各市场行情数据是否已同步到目标日期（考虑节假日）。"""
     result = {}
     for market in markets:
         latest = get_latest_quote_date(market)
-        result[market] = latest is not None and latest >= target_date
+        expected = get_nearest_trade_date(target_date, market)
+        result[market] = (
+            latest is not None
+            and expected is not None
+            and latest >= expected
+        )
         logger.info(
-            "数据就绪检查 %s: latest=%s, target=%s, ready=%s",
+            "数据就绪检查 %s: latest=%s, expected_trade_date=%s, target=%s, ready=%s",
             market,
             latest,
+            expected,
             target_date,
             result[market],
         )
