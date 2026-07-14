@@ -36,7 +36,7 @@ def search_stocks(q: str, market: str | None) -> list[dict]:
                 SELECT stock_code, stock_name, market, industry
                 FROM stock_info
                 WHERE market = %s
-                  AND (stock_code LIKE %s OR stock_name LIKE %s)
+                  AND (stock_code ILIKE %s OR stock_name ILIKE %s)
                 ORDER BY stock_code
                 LIMIT 20
                 """,
@@ -47,7 +47,7 @@ def search_stocks(q: str, market: str | None) -> list[dict]:
                 """
                 SELECT stock_code, stock_name, market, industry
                 FROM stock_info
-                WHERE stock_code LIKE %s OR stock_name LIKE %s
+                WHERE stock_code ILIKE %s OR stock_name ILIKE %s
                 ORDER BY stock_code
                 LIMIT 20
                 """,
