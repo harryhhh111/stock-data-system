@@ -107,7 +107,7 @@ class PaperTradingEngine:
 
     def _load_current_positions(self) -> dict[str, Portfolio]:
         sub_portfolios: dict[str, Portfolio] = {}
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 "SELECT * FROM paper_positions WHERE account_id = %s",
@@ -128,6 +128,27 @@ class PaperTradingEngine:
             pf.positions[code] = type("P", (), {"shares": shares, "avg_cost": avg_cost})()
             pf._total_trades = 0
         return sub_portfolios
+
+    def _restore_account_cash(
+        self,
+        sub_portfolios: dict[str, Portfolio],
+        preset_type: str,
+        cfg: CompositeConfig | None,
+    ) -> None:
+        """把账户级现金恢复到一个子组合，确保每日估值不遗漏现金。"""
+        cash = _acct_float(self._account or {}, "cash")
+        if preset_type == "normal":
+            target_name = "base"
+        else:
+            sub_defs = cfg.get("sub_strategies", []) if cfg else []
+            residual = next((sub for sub in sub_defs if sub.get("residual")), None)
+            target_name = (residual or (sub_defs[0] if sub_defs else {})).get(
+                "name", "base"
+            )
+
+        if target_name not in sub_portfolios:
+            sub_portfolios[target_name] = Portfolio(0.0)
+        sub_portfolios[target_name].cash = cash
 
     def _select_normal_targets(
         self,
@@ -240,7 +261,7 @@ class PaperTradingEngine:
                         "sub_strategy": sub_name or None,
                     }
 
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 "DELETE FROM paper_positions WHERE account_id = %s",
@@ -281,7 +302,7 @@ class PaperTradingEngine:
         slippage_bps = _acct_float(self._account, "slippage_bps")
 
         all_subs = set(old_portfolios.keys()) | set(new_portfolios.keys())
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             for sub in all_subs:
                 old_pf = old_portfolios.get(sub, Portfolio(0.0))
@@ -385,7 +406,7 @@ class PaperTradingEngine:
         if peak_nav is not None and peak_nav > 0 and nav <= peak_nav:
             drawdown = (peak_nav - nav) / peak_nav
 
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """INSERT INTO paper_nav_snapshots
@@ -420,7 +441,7 @@ class PaperTradingEngine:
         }
 
     def _get_latest_nav(self, before_date: date) -> float | None:
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """SELECT nav FROM paper_nav_snapshots
@@ -433,7 +454,7 @@ class PaperTradingEngine:
         return float(row[0]) if row else None
 
     def _get_peak_nav(self, before_date: date) -> float | None:
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """SELECT MAX(nav) FROM paper_nav_snapshots
@@ -456,7 +477,7 @@ class PaperTradingEngine:
         error_message: str | None,
     ) -> None:
         now = datetime.now()
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """INSERT INTO paper_strategy_runs
@@ -484,7 +505,7 @@ class PaperTradingEngine:
             cur.close()
 
     def _check_already_run(self, trade_date: date) -> dict | None:
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """SELECT run_type, status FROM paper_strategy_runs
@@ -502,7 +523,7 @@ class PaperTradingEngine:
         self, total_value: float, cash: float, nav: float, as_of_date: date
     ) -> None:
         now = datetime.now()
-        with Connection() as conn:
+        with _get_conn(self._conn) as conn:
             cur = conn.cursor()
             cur.execute(
                 """UPDATE paper_accounts
@@ -561,11 +582,7 @@ class PaperTradingEngine:
 
         # 加载当前持仓
         sub_portfolios = self._load_current_positions()
-        if preset_type == "normal":
-            if "base" not in sub_portfolios:
-                sub_portfolios["base"] = Portfolio(_acct_float(account, "cash"))
-            elif not sub_portfolios["base"].positions:
-                sub_portfolios["base"].cash = _acct_float(account, "cash")
+        self._restore_account_cash(sub_portfolios, preset_type, cfg)
         old_portfolios = deepcopy(sub_portfolios) if is_rebalance else None
 
         # 获取当前行情
@@ -598,7 +615,7 @@ class PaperTradingEngine:
         trades: list[dict] = []
 
         if is_rebalance:
-            with Connection() as conn:
+            with _get_conn(self._conn) as conn:
                 quote_by_date = batch_query_quote(conn, [trade_date], market)
 
             if preset_type == "composite":
