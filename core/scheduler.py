@@ -440,8 +440,37 @@ def _get_cron_parts(cron_expr: str) -> dict:
         "hour": parts[1],
         "day": parts[2],
         "month": parts[3],
-        "day_of_week": parts[4],
+        # 配置使用标准 cron 星期编号（0/7=周日, 1=周一），而
+        # APScheduler 使用 0=周一。转成星期名称可避免整体错后一天。
+        "day_of_week": _standard_cron_dow_to_apscheduler(parts[4]),
     }
+
+
+def _standard_cron_dow_to_apscheduler(expr: str) -> str:
+    """把标准 cron 的星期字段转换为 APScheduler 可识别的表达式。"""
+    names = {
+        "0": "sun",
+        "1": "mon",
+        "2": "tue",
+        "3": "wed",
+        "4": "thu",
+        "5": "fri",
+        "6": "sat",
+        "7": "sun",
+    }
+
+    def convert_atom(atom: str) -> str:
+        if atom == "*":
+            return atom
+        base, separator, step = atom.partition("/")
+        if "-" in base:
+            start, end = base.split("-", 1)
+            converted = f"{names.get(start, start)}-{names.get(end, end)}"
+        else:
+            converted = names.get(base, base)
+        return f"{converted}/{step}" if separator else converted
+
+    return ",".join(convert_atom(atom) for atom in expr.split(","))
 
 
 def _make_job_wrapper(job_id: str):

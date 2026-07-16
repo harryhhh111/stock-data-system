@@ -835,6 +835,38 @@ class TestFetchTencentHistUS:
         assert records[0]["close"] == pytest.approx(485000.00)
 
 
+# ── transform_us_spot_to_records ─────────────────────────
+
+
+class TestTransformUsSpotToRecords:
+    """美股实时行情必须保留响应中的美东交易日期。"""
+
+    def test_uses_quote_date_instead_of_beijing_today(self):
+        from core.fetchers.daily_quote import transform_us_spot_to_records
+
+        df = pd.DataFrame([{
+            "代码": "AAPL",
+            "交易日期": "2026-07-15",
+            "最新价": 330.0,
+        }])
+        records = transform_us_spot_to_records(df)
+        assert str(records[0]["trade_date"]) == "2026-07-15"
+
+    def test_missing_quote_date_raises(self):
+        from core.fetchers.daily_quote import transform_us_spot_to_records
+
+        df = pd.DataFrame([{"代码": "AAPL", "最新价": 330.0}])
+        with pytest.raises(ValueError, match="交易日期"):
+            transform_us_spot_to_records(df)
+
+    def test_tencent_class_share_code_round_trip(self):
+        from core.fetchers.daily_quote import _tencent_us_code_to_db
+
+        assert _tencent_us_code_to_db("AAPL.OQ") == "AAPL"
+        assert _tencent_us_code_to_db("HEI.A.N") == "HEI-A"
+        assert _tencent_us_code_to_db("LEN.B.N") == "LEN-B"
+
+
 # ── transform_us_hist_to_records ──────────────────────────
 
 

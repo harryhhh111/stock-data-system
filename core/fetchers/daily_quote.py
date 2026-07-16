@@ -36,6 +36,14 @@ from .base import BaseFetcher, retry_with_backoff, rate_limiter, AdaptiveRateLim
 logger = logging.getLogger(__name__)
 
 
+def _tencent_us_code_to_db(raw_code: str) -> str:
+    """把腾讯代码（AAPL.OQ / BRK.B.N）还原为数据库 ticker。"""
+    parts = raw_code.strip().split(".")
+    if len(parts) >= 2:
+        parts = parts[:-1]  # 去掉交易所后缀 OQ/N/A
+    return "-".join(parts)
+
+
 class DailyQuoteFetcher(BaseFetcher):
     """日线行情拉取器。"""
 
@@ -501,7 +509,7 @@ class DailyQuoteFetcher(BaseFetcher):
     def _us_spot_columns() -> list[str]:
         """美股实时行情标准列名。"""
         return [
-            "代码", "名称", "最新价", "涨跌额", "涨跌幅",
+            "代码", "名称", "交易日期", "最新价", "涨跌额", "涨跌幅",
             "今开", "最高", "最低", "昨收",
             "成交量", "成交额", "总市值", "市盈率-动态", "市净率",
         ]
@@ -543,12 +551,6 @@ class DailyQuoteFetcher(BaseFetcher):
 
         # 转为腾讯格式: AAPL → usAAPL，BRK-B → usBRK.B（腾讯用点号）
         tencent_codes = [f"us{code.replace('-', '.')}" for code in all_codes]
-        # 反向映射：腾讯响应中的代码前缀 → DB stock_code（处理 BRK-B 等带连字符的代码）
-        _code_reverse: dict[str, str] = {}
-        for c in all_codes:
-            _prefix = c.replace("-", ".").split(".")[0]
-            _code_reverse[_prefix] = c
-
         # 批量查询（每批 300，避免 URL 过长）
         batch_size = 300
         all_lines: list[str] = []
@@ -580,10 +582,11 @@ class DailyQuoteFetcher(BaseFetcher):
                 continue
 
             try:
-                # 代码：去掉后缀 AAPL.OQ → AAPL，BRK.B.N → BRK → BRK-B
+                # 代码：去掉交易所后缀，并把类别股的点号还原为连字符
                 raw_code = parts[2].strip()
-                code = _code_reverse.get(raw_code.split(".")[0], raw_code.split(".")[0])
+                code = _tencent_us_code_to_db(raw_code)
                 name = parts[1].strip()
+                quote_date = parts[30].strip()[:10]
                 price = _safe_float(parts[3])
                 prev_close = _safe_float(parts[4])
                 open_price = _safe_float(parts[5])
@@ -610,6 +613,7 @@ class DailyQuoteFetcher(BaseFetcher):
                 rows.append({
                     "代码": code,
                     "名称": name,
+                    "交易日期": quote_date,
                     "最新价": price,
                     "涨跌额": change_amt,
                     "涨跌幅": change_pct,
@@ -680,12 +684,8 @@ class DailyQuoteFetcher(BaseFetcher):
         if not all_codes:
             return {}
 
-        # Tencent 格式（BRK-B → usBRK.B）；反向映射
+        # Tencent 格式（BRK-B → usBRK.B）
         tencent_codes = [f"us{code.replace('-', '.')}" for code in all_codes]
-        _code_reverse: dict[str, str] = {}
-        for c in all_codes:
-            _prefix = c.replace("-", ".").split(".")[0]
-            _code_reverse[_prefix] = c
 
         batch_size = 300
         result: dict[str, str] = {}
@@ -713,8 +713,7 @@ class DailyQuoteFetcher(BaseFetcher):
                     # BRK.B.N → .N, AAPL.OQ → .OQ
                     parts_list = raw_code.split(".")
                     suffix = f".{parts_list[-1]}" if len(parts_list) >= 2 else ""
-                    prefix = parts_list[0]
-                    db_code = _code_reverse.get(prefix, prefix)
+                    db_code = _tencent_us_code_to_db(raw_code)
                     result[db_code] = suffix
             except Exception as e:
                 logger.error("获取美股交易所后缀失败 (batch %d): %s", i // batch_size + 1, e)
@@ -861,18 +860,21 @@ def transform_hk_spot_to_records(df: pd.DataFrame) -> tuple[list[dict], dict[str
 def transform_us_spot_to_records(df: pd.DataFrame) -> list[dict]:
     """将美股实时行情 DataFrame 转为 upsert 记录列表。
 
-    含市值、PE、PB 字段。trade_date 取当前日期。
+    含市值、PE、PB 字段。trade_date 使用腾讯响应中的美东交易日期，
+    避免北京时间清晨同步时把前一交易日行情写到次日。
     成交额和市值已在 fetch_us_spot() 中转为 USD 原始单位。
     """
-    today = datetime.now().date()
     records = []
     for _, row in df.iterrows():
         code = str(row.get("代码", "")).strip()
         if not code:
             continue
+        quote_date = pd.to_datetime(row.get("交易日期"), errors="coerce")
+        if pd.isna(quote_date):
+            raise ValueError(f"美股实时行情缺少有效交易日期: {code}")
         records.append({
             "stock_code": code,
-            "trade_date": today,
+            "trade_date": quote_date.date(),
             "market": "US",
             "open": _safe_float(row.get("今开")),
             "high": _safe_float(row.get("最高")),

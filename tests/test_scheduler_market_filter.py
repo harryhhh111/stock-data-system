@@ -136,6 +136,27 @@ class TestSchedulerExitOnEmptyMarkets:
             assert exc_info.value.code == 1
 
 
+# ── standard cron weekday conversion ───────────────────
+
+class TestCronWeekdayConversion:
+    """配置使用标准 cron 星期编号，注册 APScheduler 时必须正确换算。"""
+
+    def test_cn_weekdays(self):
+        from core.scheduler import _get_cron_parts
+
+        assert _get_cron_parts("37 16 * * 1-5")["day_of_week"] == "mon-fri"
+
+    def test_us_post_close_weekdays(self):
+        from core.scheduler import _get_cron_parts
+
+        assert _get_cron_parts("37 5 * * 2-6")["day_of_week"] == "tue-sat"
+
+    def test_sunday_aliases_and_list(self):
+        from core.scheduler import _standard_cron_dow_to_apscheduler
+
+        assert _standard_cron_dow_to_apscheduler("0,7") == "sun,sun"
+
+
 # ── dry_run shows market info ──────────────────────────
 
 class TestDryRunMarketDisplay:

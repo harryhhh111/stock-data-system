@@ -1,6 +1,6 @@
 # 模拟盘自动化运行方案
 
-> 状态：已落地
+> 状态：代码已落地；US 服务器已于 2026-07-17 部署定时任务并完成近期补跑
 > 目标：实现模拟盘账户每日自动估值 + 调仓，数据未就绪时安全跳过，运行结果写入日志文件。
 
 ---
@@ -182,9 +182,14 @@ crontab -e
 ### 海外服务器
 
 ```bash
-# 美股账户在美国东部时间 20:00 跑（收盘后）
-0 20 * * 1-5 cd /home/ubuntu/projects/stock_data && venv/bin/python scripts/run_paper_daily.py --market US >> /home/ubuntu/projects/stock_data/logs/paper_daily/paper_daily.log 2>&1
+# 当前 US 服务器使用 Asia/Beijing 时区：
+# 05:37 同步前一美股交易日行情，06:30 运行模拟盘。
+# 标准 cron 的 2-6 表示北京时间周二至周六。
+30 6 * * 2-6 cd /home/vinci/projects/stock_data && /usr/bin/flock -n /tmp/stock-paper-daily.lock /home/vinci/projects/stock_data/venv/bin/python scripts/run_paper_daily.py --market US >> /home/vinci/projects/stock_data/logs/paper_daily/paper_daily.log 2>&1
 ```
+
+`flock` 用于阻止上一次任务尚未结束时重复启动。部署前必须用 `date` 或
+`timedatectl` 确认服务器时区，不能直接照搬美国东部时间的 cron 表达式。
 
 > 如果 A 股/港股/美股账户都在同一台服务器跑，脚本会根据账户的 `market` 字段自动过滤，只需一个 cron job。
 
@@ -200,6 +205,26 @@ crontab -e
    venv/bin/python scripts/run_paper_daily.py --date 2026-06-18
    ```
 4. 观察日志，确认无问题后开启 cron
+
+### 6.1 US 服务器实际部署记录（2026-07-17）
+
+- 行情调度：北京时间周二至周六 05:37
+- 模拟盘调度：北京时间周二至周六 06:30
+- 日志：`logs/paper_daily/paper_daily.log`
+- 防重入锁：`/tmp/stock-paper-daily.lock`
+- 活跃账户：5 个 US 普通策略账户
+- 补跑范围：2026-06-12 至 2026-07-15，共 22 个有效交易日/账户
+- 验证结果：110 条 NAV 快照；110 条成功运行记录；0 条失败记录
+
+部署时同时修复了两个会破坏每日连续性的行情问题：
+
+1. 标准 cron 星期编号和 APScheduler 星期编号不一致，导致任务整体错后一天；注册任务前现已转换为星期名称。
+2. 美股实时行情曾使用北京时间当天作为 `trade_date`；现改为使用腾讯响应中的美东交易日期。
+3. 腾讯类别股代码（如 `HEI.A.N`、`LEN.B.N`）曾被截断；现可正确还原为数据库中的 `HEI-A`、`LEN-B`。
+
+修复后回填了 2026-06-13 至 2026-07-16 区间行情，并移除了 2026-06-19、
+2026-07-03 两个休市伪记录及尚未收盘时提前写入的 2026-07-16 记录。当前最新完整行情和
+模拟盘 NAV 均截至 2026-07-15。
 
 ---
 

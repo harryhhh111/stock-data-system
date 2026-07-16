@@ -118,6 +118,8 @@ class TestFetchNasdaq100Constituents:
             base.append(f"TST{i:03d}")
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html>mock</html>"
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
         mock_read_html.return_value = [
@@ -144,6 +146,8 @@ class TestFetchNasdaq100Constituents:
             base.append(f"TST{i:03d}")
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html>mock</html>"
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
         mock_read_html.return_value = [

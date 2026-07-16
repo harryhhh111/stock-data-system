@@ -433,6 +433,8 @@ class TestSaveResults:
 
 class TestRunValidation:
     @patch("core.validate.save_results")
+    @patch("core.validate.check_market_cap_jump")
+    @patch("core.validate.check_standalone_cross_validation_us")
     @patch("core.validate.check_cross_source")
     @patch("core.validate.check_logic_us")
     @patch("core.validate.check_logic_cn_hk")
@@ -440,13 +442,16 @@ class TestRunValidation:
     @patch("core.validate.check_anomalies_cn_hk")
     @patch("core.validate.ensure_table")
     def test_run_validation_market_a(self, mock_ensure, mock_anomalies, mock_anomalies_us,
-                                      mock_logic, mock_logic_us, mock_cross, mock_save):
+                                      mock_logic, mock_logic_us, mock_cross,
+                                      mock_standalone_us, mock_mcap_jump, mock_save):
         from core.validate import run_validation, ValidationIssue
 
         mock_anomalies.return_value = 100
         mock_logic.return_value = 100
         mock_cross.return_value = 0
         mock_save.return_value = 0
+        mock_standalone_us.return_value = 0
+        mock_mcap_jump.return_value = 0
 
         report = run_validation(market="A")
         assert report.market == "A"
@@ -454,24 +459,34 @@ class TestRunValidation:
         mock_anomalies.assert_called_once()
         mock_logic.assert_called_once()
         mock_anomalies_us.assert_not_called()
+        mock_standalone_us.assert_not_called()
+        mock_mcap_jump.assert_called_once()  # 全市场检查，所有 market 都会调用
 
     @patch("core.validate.save_results")
+    @patch("core.validate.check_market_cap_jump")
     @patch("core.validate.check_cross_source")
+    @patch("core.validate.check_standalone_cross_validation_us")
     @patch("core.validate.check_logic_us")
     @patch("core.validate.check_anomalies_us")
     @patch("core.validate.ensure_table")
     def test_run_validation_market_us(self, mock_ensure, mock_anomalies_us, mock_logic_us,
-                                       mock_cross, mock_save):
+                                       mock_standalone_us, mock_cross, mock_mcap_jump, mock_save):
         from core.validate import run_validation
 
         mock_anomalies_us.return_value = 50
         mock_logic_us.return_value = 50
         mock_cross.return_value = 0
         mock_save.return_value = 0
+        mock_standalone_us.return_value = 0
+        mock_mcap_jump.return_value = 0
 
         report = run_validation(market="US")
         assert report.market == "US"
-        assert report.total_rows_scanned == 100
+        assert report.total_rows_scanned == 100  # 50 + 50
+        mock_anomalies_us.assert_called_once()
+        mock_logic_us.assert_called_once()
+        mock_standalone_us.assert_called_once()
+        mock_mcap_jump.assert_called_once()
 
 
 # ── Output: JSON / CSV ─────────────────────────────────
