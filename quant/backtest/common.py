@@ -46,14 +46,21 @@ def generate_rebalance_dates(
     months: int,
     market: str = "US",
 ) -> list[date]:
-    """生成调仓日期列表（每月末对齐到最后一个交易日）。"""
+    """生成调仓日期列表（每月末对齐到最后一个交易日）。
+
+    ⚠️  实时模拟盘场景：月底数据可能尚未产生，get_nearest_trade_date(month_end)
+    会返回当前最新交易日而非真正的月底日。通过距月底 ≤ 10 天的校验过滤掉误判。
+    """
     dates: list[date] = []
     cursor = start_month
     while cursor <= end:
         month_end = get_month_end(cursor)
         trade_date = get_nearest_trade_date(month_end, market=market)
         if trade_date and trade_date <= end and trade_date not in dates:
-            dates.append(trade_date)
+            # 确保找到的交易日确实是月底日：距日历月底 ≤ 10 天
+            # （10 天容差覆盖春节/圣诞等长假期，同时阻止月中日期被误判为调仓日）
+            if (month_end - trade_date).days <= 10:
+                dates.append(trade_date)
         cursor = cursor + relativedelta(months=months)
     return dates
 
