@@ -460,7 +460,8 @@ class TestRunValidation:
         mock_logic.assert_called_once()
         mock_anomalies_us.assert_not_called()
         mock_standalone_us.assert_not_called()
-        mock_mcap_jump.assert_called_once()  # 全市场检查，所有 market 都会调用
+        mock_mcap_jump.assert_called_once()
+        assert mock_mcap_jump.call_args[1]["market"] == "A"
 
     @patch("core.validate.save_results")
     @patch("core.validate.check_market_cap_jump")
@@ -487,6 +488,102 @@ class TestRunValidation:
         mock_logic_us.assert_called_once()
         mock_standalone_us.assert_called_once()
         mock_mcap_jump.assert_called_once()
+        assert mock_mcap_jump.call_args[1]["market"] == "US"
+
+
+# ── Market Cap Jump ──────────────────────────────────────
+
+
+class TestCheckMarketCapJump:
+    """测试 check_market_cap_jump 的市场参数化及 LATERAL JOIN 去重。"""
+
+    def _mock_jump_row(self, **overrides):
+        """构建 check_market_cap_jump 期望的 jumps 行。"""
+        defaults = (
+            "000001",       # stock_code
+            "CN_A",         # market
+            "2024-12-31",   # trade_date (text from ::text cast)
+            10.0,           # close
+            1000.0,         # market_cap
+            500.0,          # prev_mcap (one-day prior, normal mcap)
+            9.9,            # prev_close
+            100.0,          # total_shares (from LATERAL join)
+        )
+        row = list(defaults)
+        keys = [
+            "stock_code", "market", "trade_date",
+            "close", "market_cap", "prev_mcap", "prev_close", "total_shares",
+        ]
+        for k, v in overrides.items():
+            if k in keys:
+                idx = keys.index(k)
+                row[idx] = v
+        return tuple(row)
+
+    @patch("core.validate.db.execute")
+    def test_market_a_only_scans_cn_a(self, mock_exec):
+        """传入 market="A" 时，应仅扫描 CN_A 市场。"""
+        from core.validate import check_market_cap_jump
+        mock_exec.return_value = []  # 无异常行
+        issues = []
+        scanned = check_market_cap_jump(issues, market="A")
+        assert scanned == 0
+        # 验证 db.execute 收到正确的市场参数
+        call_args = mock_exec.call_args[0]
+        assert "CN_A" in call_args[1]  # params 中含 CN_A
+        assert "CN_HK" not in call_args[1]  # 不应含 HK
+        assert "US" not in call_args[1]      # 不应含 US
+
+    @patch("core.validate.db.execute")
+    def test_market_all_scans_all(self, mock_exec):
+        """传入 market="" 时，应扫描全部三个市场。"""
+        from core.validate import check_market_cap_jump
+        mock_exec.return_value = []
+        issues = []
+        scanned = check_market_cap_jump(issues, market="")
+        assert scanned == 0
+        call_args = mock_exec.call_args[0]
+        assert "CN_A" in call_args[1]
+        assert "CN_HK" in call_args[1]
+        assert "US" in call_args[1]
+
+    @patch("core.validate.db.execute")
+    def test_lateral_join_prevents_duplicate_anomalies(self, mock_exec):
+        """多期股本不会重复生成异常——每个 db 行对应恰好一个 issue。
+
+        场景：stock_share 有 3 条股本记录（不同日期），
+        但 LEFT JOIN LATERAL ... LIMIT 1 确保 SQL 只返回 1 行，
+        因此只产生 1 个 issue。
+        """
+        from core.validate import check_market_cap_jump
+        # 单行数据：prev_mcap=500, mcap=1000 → 跳变 100% > 50%
+        # close 10.0, prev_close 9.9 → 变化 1% < 10%
+        mock_exec.return_value = [self._mock_jump_row()]
+        issues = []
+        scanned = check_market_cap_jump(issues, market="A")
+        assert scanned == 1
+        assert len(issues) == 1  # 1 行 → 1 个 issue，不会因多期股本而重复
+
+    @patch("core.validate.db.execute")
+    def test_no_jumps_returns_zero(self, mock_exec):
+        """无跳变异常时返回 0。"""
+        from core.validate import check_market_cap_jump
+        mock_exec.return_value = []
+        issues = []
+        scanned = check_market_cap_jump(issues, market="US")
+        assert scanned == 0
+        assert len(issues) == 0
+
+    @patch("core.validate.db.execute")
+    def test_market_hk_maps_to_cn_hk(self, mock_exec):
+        """market="HK" 应映射为 CN_HK。"""
+        from core.validate import check_market_cap_jump
+        mock_exec.return_value = []
+        issues = []
+        check_market_cap_jump(issues, market="HK")
+        call_args = mock_exec.call_args[0]
+        assert "CN_HK" in call_args[1]
+        assert "CN_A" not in call_args[1]
 
 
 # ── Output: JSON / CSV ─────────────────────────────────

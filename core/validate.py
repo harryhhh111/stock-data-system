@@ -751,23 +751,37 @@ def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
 # ──────────────────────────────────────────────────────────
 
 
-def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
+def check_market_cap_jump(issues: list[ValidationIssue], market: str = "") -> int:
     """检测市值日环比跳变（数据源偶发错误）。
 
     当市值日环比变化 > 50% 但收盘价变化 < 10% 时，
     说明行情 API 返回了错误的市值（通常是总股本数据错乱）。
-    同时检查 stock_share 表，用 close * total_shares 核实。
+    同时用 LEFT JOIN LATERAL 取异常日期之前最近一条股本记录，
+    用 close × total_shares 核实。
+
+    Args:
+        issues: 校验问题列表（会被原地追加）。
+        market: "A" | "HK" | "US" | ""（空字符串 = 全部市场）。
 
     Returns scanned row count.
     """
-    sql = """
+    # 市场参数映射
+    market_map = {"A": "CN_A", "HK": "CN_HK", "US": "US"}
+    if market:
+        db_markets = [market_map[market]]
+    else:
+        db_markets = ["CN_A", "CN_HK", "US"]
+
+    market_placeholders = ", ".join(["%s"] * len(db_markets))
+
+    sql = f"""
     WITH jumps AS (
         SELECT dq.stock_code, dq.market, dq.trade_date,
                dq.close, dq.market_cap,
                LAG(dq.market_cap) OVER w AS prev_mcap,
                LAG(dq.close) OVER w AS prev_close
         FROM daily_quote dq
-        WHERE dq.market IN ('CN_A', 'CN_HK', 'US')
+        WHERE dq.market IN ({market_placeholders})
           AND dq.market_cap IS NOT NULL
           AND dq.close IS NOT NULL
         WINDOW w AS (PARTITION BY dq.stock_code, dq.market ORDER BY dq.trade_date)
@@ -776,8 +790,15 @@ def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
            j.close, j.market_cap, j.prev_mcap, j.prev_close,
            ss.total_shares
     FROM jumps j
-    LEFT JOIN stock_share ss
-        ON j.stock_code = ss.stock_code
+    LEFT JOIN LATERAL (
+        SELECT ss_inner.total_shares
+        FROM stock_share ss_inner
+        WHERE ss_inner.stock_code = j.stock_code
+          AND ss_inner.market = j.market
+          AND ss_inner.trade_date <= j.trade_date
+        ORDER BY ss_inner.trade_date DESC
+        LIMIT 1
+    ) ss ON true
     WHERE j.prev_mcap IS NOT NULL
       AND j.prev_close IS NOT NULL
       AND j.prev_mcap > 0
@@ -785,7 +806,7 @@ def check_market_cap_jump(issues: list[ValidationIssue]) -> int:
       AND ABS(j.close - j.prev_close) / j.prev_close < 0.1
     ORDER BY j.trade_date DESC, j.stock_code
     """
-    rows = db.execute(sql, fetch=True) or []
+    rows = db.execute(sql, db_markets, fetch=True) or []
     if not rows:
         return 0
 
@@ -1037,10 +1058,10 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
         # 跨源比对
         check_cross_source(mkt, report.issues)
 
-    # 市值跳变检测（全市场，SQL 内已含 market 过滤）
-    scanned_mcap = check_market_cap_jump(report.issues)
-    report.total_rows_scanned += scanned_mcap
-    logger.info("  市值跳变: 扫描 %d 行", scanned_mcap)
+        # 市值跳变检测（按市场，避免跨市场噪音）
+        scanned_mcap = check_market_cap_jump(report.issues, market=mkt)
+        report.total_rows_scanned += scanned_mcap
+        logger.info("  市值跳变: 扫描 %d 行 (%s)", scanned_mcap, mkt)
 
     # 汇总
     report.finished_at = datetime.now().isoformat()
