@@ -287,6 +287,8 @@ CREATE INDEX IF NOT EXISTS idx_mcap_audit_batch
     ON market_cap_backfill_audit (batch_id);
 CREATE INDEX IF NOT EXISTS idx_mcap_audit_stock_date
     ON market_cap_backfill_audit (stock_code, trade_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcap_audit_dedup
+    ON market_cap_backfill_audit (batch_id, market, stock_code, trade_date);
 
 -- ============================================================
 -- 辅助表: sync_log

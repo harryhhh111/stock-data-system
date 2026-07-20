@@ -9,7 +9,7 @@ v1 为"有效日 PIT"：只保证股本生效日不晚于行情日，不保证�
 严格"信息可得日 PIT"留待 v2（需要 SEC filing 版本历史）。
 
 用法:
-    # 只读预检
+    # 只读预检（零写入）
     python scripts/backfill_historical_market_cap.py --market US --dry-run
 
     # 小范围试跑
@@ -26,6 +26,7 @@ v1 为"有效日 PIT"：只保证股本生效日不晚于行情日，不保证�
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -35,9 +36,12 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
+import psycopg2
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from db import Connection, execute
+from config import db as db_config
+from db import Connection, execute, get_connection, release_connection
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,7 +81,7 @@ def _validate_market(market: str) -> str:
 # ── DDL helpers ────────────────────────────────────────────
 
 def _ensure_audit_table() -> None:
-    """创建审计表（如不存在）。"""
+    """创建审计表及索引（如不存在）。"""
     execute(
         f"""CREATE TABLE IF NOT EXISTS {AUDIT_TABLE} (
             id              BIGSERIAL PRIMARY KEY,
@@ -103,11 +107,20 @@ def _ensure_audit_table() -> None:
             ON {AUDIT_TABLE} (stock_code, trade_date)""",
         commit=True,
     )
+    # 去重约束：同批次、同市场、同股票、同交易日只允许一条审计记录
+    execute(
+        f"""CREATE UNIQUE INDEX IF NOT EXISTS idx_mcap_audit_dedup
+            ON {AUDIT_TABLE} (batch_id, market, stock_code, trade_date)""",
+        commit=True,
+    )
     logger.info("审计表 %s 已就绪", AUDIT_TABLE)
 
 
 def _ensure_indexes() -> None:
-    """创建/补齐性能索引（CONCURRENTLY，独立事务）。"""
+    """创建/补齐性能索引（CONCURRENTLY，使用独立 autocommit 连接）。
+
+    CREATE INDEX CONCURRENTLY 不能在事务块内执行，因此不能通过 db.execute()。
+    """
     indexes = [
         """CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_quote_missing_mcap
            ON daily_quote (market, trade_date, stock_code)
@@ -117,12 +130,60 @@ def _ensure_indexes() -> None:
            INCLUDE (total_shares)
            WHERE total_shares IS NOT NULL AND total_shares > 0""",
     ]
-    for sql in indexes:
-        try:
-            logger.info("创建索引: %s", sql.split("\n")[0].strip())
-            execute(sql, commit=True)
-        except Exception as e:
-            logger.warning("索引创建跳过（可能已存在或无法 CONCURRENTLY）: %s", e)
+    conn = psycopg2.connect(
+        host=db_config.host,
+        port=db_config.port,
+        dbname=db_config.dbname,
+        user=db_config.user,
+        password=db_config.password,
+    )
+    conn.autocommit = True
+    try:
+        for sql in indexes:
+            try:
+                label = sql.split("\n")[0].strip()
+                logger.info("创建索引: %s", label)
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                logger.info("索引创建完成: %s", label)
+            except psycopg2.Error as e:
+                logger.warning("索引创建跳过（可能已存在或无法 CONCURRENTLY）: %s", e)
+    finally:
+        conn.close()
+
+
+# ── sync_log ────────────────────────────────────────────────
+
+def _write_sync_log(
+    batch_id: str,
+    market: str,
+    status: str,
+    success: int,
+    skipped: int,
+    started_at: datetime,
+    error_detail: str | None,
+    config: dict,
+) -> None:
+    """写入 sync_log 运行汇总记录。"""
+    execute(
+        """INSERT INTO sync_log
+           (data_type, status, started_at, finished_at,
+            success_count, fail_count, error_detail, sync_batch, config_json)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (
+            "market_cap_backfill",
+            status,
+            started_at,
+            datetime.now(),
+            success,
+            skipped,
+            error_detail,
+            batch_id,
+            json.dumps(config, ensure_ascii=False),
+        ),
+        commit=True,
+    )
+    logger.info("sync_log 已写入 (status=%s)", status)
 
 
 # ── Dry-run / Stats ─────────────────────────────────────────
@@ -296,7 +357,11 @@ def _run_single_batch(
     last_trade_date: str | None,
     last_stock_code: str | None,
 ) -> dict:
-    """执行一批回算，在当前 cursor 的事务内完成。"""
+    """执行一批回算，在当前 cursor 的事务内完成。
+
+    Raises:
+        RuntimeError: 审计写入数与更新成功数不一致，调用方必须回滚整批。
+    """
 
     # ── Build query ──────────────────────────────────────
     params: list = [market]
@@ -406,7 +471,6 @@ def _run_single_batch(
     cur.executemany(audit_sql, audit_rows)
 
     # ── Update daily_quote ───────────────────────────────
-    # Use individual updates to ensure market_cap IS NULL guard per row
     update_success = 0
     for mcap, code, td in update_rows:
         cur.execute(
@@ -417,11 +481,11 @@ def _run_single_batch(
         )
         update_success += cur.rowcount
 
-    # ── Validate ─────────────────────────────────────────
+    # ── Validate: mismatch → raise so caller rolls back ──
     if len(audit_rows) != update_success:
-        logger.warning(
-            "审计写入 %d ≠ 更新成功 %d (processed=%d skipped=%d)",
-            len(audit_rows), update_success, processed, skipped,
+        raise RuntimeError(
+            f"审计写入 {len(audit_rows)} ≠ 更新成功 {update_success} "
+            f"(processed={processed} skipped={skipped})，整批回滚"
         )
 
     return {
@@ -440,43 +504,61 @@ def _run_backfill(
     market: str,
     batch_size: int,
     start_date: date | None,
-    end_date: date | None,
+    end_date: date,
     max_rows: int | None,
 ) -> dict:
-    """执行全量分批回算，每批独立事务，全程持有 advisory lock。"""
+    """执行全量分批回算，每批独立事务，全程持有 advisory lock。
+
+    Args:
+        end_date: 已冻结的截止日期（必传）。
+    """
 
     total_success = 0
     total_skipped = 0
     total_processed = 0
     batch_count = 0
+    error_detail: str | None = None
     last_trade_date: str | None = None
     last_stock_code: str | None = None
     t_start = time.time()
 
-    # ── Acquire advisory lock (held for entire run) ─────
-    lock_conn = Connection().__enter__()
+    # ── Acquire advisory lock (non-blocking, fast-fail) ──
+    lock_conn = get_connection()
     try:
         with lock_conn.cursor() as lock_cur:
-            lock_cur.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+            lock_cur.execute("SELECT pg_try_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+            if not lock_cur.fetchone()[0]:
+                raise RuntimeError(
+                    "无法获取 advisory lock——已有同市场回算在运行？"
+                )
         logger.info("已获取 advisory lock (key=%d)", ADVISORY_LOCK_KEY)
     except Exception:
-        lock_conn.close()
+        release_connection(lock_conn)
         raise
 
     try:
-        logger.info("开始回算 batch_id=%s market=%s batch_size=%d", batch_id, market, batch_size)
+        logger.info(
+            "开始回算 batch_id=%s market=%s batch_size=%d max_rows=%s end_date=%s",
+            batch_id, market, batch_size, max_rows or "无限制", end_date,
+        )
 
         while True:
-            if max_rows and total_success >= max_rows:
-                logger.info("达到 max_rows=%d，停止", max_rows)
-                break
+            # ── Enforce max_rows: cap per-batch size ──────
+            if max_rows is not None:
+                remaining = max_rows - total_success
+                if remaining <= 0:
+                    logger.info("达到 max_rows=%d，停止", max_rows)
+                    break
+                effective_batch_size = min(batch_size, remaining)
+            else:
+                effective_batch_size = batch_size
 
             batch_count += 1
             with Connection() as conn:
                 try:
                     with conn.cursor() as cur:
                         result = _run_single_batch(
-                            cur, batch_id, market, batch_size,
+                            cur, batch_id, market, effective_batch_size,
                             start_date, end_date,
                             last_trade_date, last_stock_code,
                         )
@@ -504,11 +586,15 @@ def _run_backfill(
             last_trade_date = result.get("last_trade_date")
             last_stock_code = result.get("last_stock_code")
 
+    except Exception as e:
+        error_detail = str(e)
+        logger.error("回算异常: %s", e)
+        raise
     finally:
-        # ── Release lock ────────────────────────────────
+        # ── Release lock and return to pool ──────────────
         with lock_conn.cursor() as lock_cur:
             lock_cur.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
-        lock_conn.close()
+        release_connection(lock_conn)
         logger.info("已释放 advisory lock")
 
     elapsed = time.time() - t_start
@@ -524,6 +610,7 @@ def _run_backfill(
         "skipped": total_skipped,
         "processed": total_processed,
         "elapsed_sec": elapsed,
+        "error_detail": error_detail,
     }
 
 
@@ -551,7 +638,7 @@ def main():
     )
     parser.add_argument(
         "--end-date", type=_parse_date, default=None,
-        help="截止日期 YYYY-MM-DD（含）",
+        help="截止日期 YYYY-MM-DD（含）；默认当天，启动时冻结避免同步中新数据混入",
     )
     parser.add_argument(
         "--batch-size", type=int, default=10000,
@@ -559,7 +646,7 @@ def main():
     )
     parser.add_argument(
         "--max-rows", type=int, default=None,
-        help="最多回算行数（试跑限量）",
+        help="最多回算行数（试跑限量）；每批会自动限制不超剩余配额",
     )
     parser.add_argument(
         "--batch-id", type=str, default=None,
@@ -571,7 +658,7 @@ def main():
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="只统计，不写入",
+        help="只统计，不写入（不创建表、不建索引、不写数据）",
     )
     parser.add_argument(
         "--no-refresh", action="store_true",
@@ -586,11 +673,9 @@ def main():
     # ── Validate market ──────────────────────────────────
     market = _validate_market(args.market)
 
-    # ── Ensure DDL ───────────────────────────────────────
-    _ensure_audit_table()
-
-    # ── Rollback mode ────────────────────────────────────
+    # ── Rollback mode (needs audit table to exist) ───────
     if args.rollback_batch:
+        _ensure_audit_table()
         result = _rollback_batch(market, args.rollback_batch, dry_run=args.dry_run)
         print("\n回滚结果:")
         print(f"  审计记录: {result['audit_rows']}")
@@ -599,10 +684,8 @@ def main():
         print(f"  未找到:   {result['not_found']}")
         return
 
-    # ── Dry-run ──────────────────────────────────────────
+    # ── Dry-run: zero writes ─────────────────────────────
     if args.dry_run:
-        if not args.skip_indexes:
-            _ensure_indexes()
         stats = _dry_run_stats(market, args.start_date, args.end_date)
         print("\n====== DRY-RUN 统计 ======")
         print(f"  市场:           {market}")
@@ -617,38 +700,82 @@ def main():
         print("=========================")
         return
 
-    # ── Run backfill ─────────────────────────────────────
+    # ── Real run: ensure DDL, create indexes, freeze boundary ──
+    _ensure_audit_table()
     if not args.skip_indexes:
         _ensure_indexes()
 
-    batch_id = args.batch_id or datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
-    logger.info("batch_id=%s", batch_id)
+    # Freeze end_date at startup to prevent newly-synced data mixing in
+    end_date = args.end_date or date.today()
 
-    result = _run_backfill(
-        batch_id=batch_id,
-        market=market,
-        batch_size=args.batch_size,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        max_rows=args.max_rows,
+    batch_id = args.batch_id or (
+        datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     )
+    logger.info("batch_id=%s end_date=%s", batch_id, end_date)
 
-    print(f"\n====== 回算完成 ======")
-    print(f"  batch_id:  {result['batch_id']}")
-    print(f"  批次数:    {result['batches']}")
-    print(f"  成功:      {result['success']:,}")
-    print(f"  跳过:      {result['skipped']:,}")
-    print(f"  耗时:      {result['elapsed_sec']/60:.1f}min")
-    print("======================")
+    started_at = datetime.now()
+    run_config = {
+        "market": market,
+        "start_date": args.start_date.isoformat() if args.start_date else None,
+        "end_date": end_date.isoformat(),
+        "batch_size": args.batch_size,
+        "max_rows": args.max_rows,
+    }
 
-    # ── Refresh materialized views ────────────────────────
-    if not args.no_refresh and result["success"] > 0:
-        logger.info("刷新物化视图 mv_us_fcf_yield …")
-        try:
-            execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_fcf_yield", commit=True)
-            logger.info("mv_us_fcf_yield 刷新完成")
-        except Exception as e:
-            logger.warning("物化视图刷新失败（可稍后手动刷新）: %s", e)
+    try:
+        result = _run_backfill(
+            batch_id=batch_id,
+            market=market,
+            batch_size=args.batch_size,
+            start_date=args.start_date,
+            end_date=end_date,
+            max_rows=args.max_rows,
+        )
+
+        print(f"\n====== 回算完成 ======")
+        print(f"  batch_id:  {result['batch_id']}")
+        print(f"  批次数:    {result['batches']}")
+        print(f"  成功:      {result['success']:,}")
+        print(f"  跳过:      {result['skipped']:,}")
+        print(f"  耗时:      {result['elapsed_sec']/60:.1f}min")
+        print("======================")
+
+        # ── sync_log ──────────────────────────────────
+        _write_sync_log(
+            batch_id=batch_id,
+            market=market,
+            status="success",
+            success=result["success"],
+            skipped=result["skipped"],
+            started_at=started_at,
+            error_detail=None,
+            config=run_config,
+        )
+
+        # ── Refresh materialized views ──────────────────
+        if not args.no_refresh and result["success"] > 0:
+            logger.info("刷新物化视图 mv_us_fcf_yield …")
+            try:
+                execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_fcf_yield",
+                    commit=True,
+                )
+                logger.info("mv_us_fcf_yield 刷新完成")
+            except Exception as e:
+                logger.warning("物化视图刷新失败（可稍后手动刷新）: %s", e)
+
+    except Exception as e:
+        _write_sync_log(
+            batch_id=batch_id,
+            market=market,
+            status="failed",
+            success=0,
+            skipped=0,
+            started_at=started_at,
+            error_detail=str(e),
+            config=run_config,
+        )
+        raise
 
 
 if __name__ == "__main__":
