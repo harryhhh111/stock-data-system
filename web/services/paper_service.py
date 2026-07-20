@@ -43,6 +43,36 @@ def _serialize(r: dict) -> dict:
     return d
 
 
+_MARKET_LABELS: dict[str, str] = {
+    "CN_A": "A股",
+    "CN_HK": "港股",
+    "US": "美股",
+}
+
+
+def _strategy_display_name(strategy_name: str, preset_type: str, market: str) -> str:
+    """生成策略显示名称，格式：港股-商品周期+价值轮动"""
+    market_label = _MARKET_LABELS.get(market, market)
+    if preset_type == "composite":
+        cfg = COMPOSITE_PRESETS.get(strategy_name)
+        desc = cfg["description"] if cfg else strategy_name
+    else:
+        preset = PRESETS.get(strategy_name)
+        desc = preset["description"] if preset else strategy_name
+    return f"{market_label}-{desc}"
+
+
+def _enrich_account(account: dict) -> dict:
+    """为账户 dict 添加 strategy_display_name 字段。"""
+    if account:
+        account["strategy_display_name"] = _strategy_display_name(
+            account.get("strategy_name", ""),
+            account.get("preset_type", "normal"),
+            account.get("market", ""),
+        )
+    return account
+
+
 def list_accounts(status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
     with Connection() as conn:
         cur = conn.cursor()
@@ -58,7 +88,7 @@ def list_accounts(status: str | None = None, limit: int = 50, offset: int = 0) -
             )
         cols, rows = _fetchall(cur)
         cur.close()
-    return [_serialize(_to_dict(cols, r)) for r in rows]
+    return [_enrich_account(_serialize(_to_dict(cols, r))) for r in rows]
 
 
 def create_account(params: dict) -> dict:
@@ -107,7 +137,7 @@ def create_account(params: dict) -> dict:
         conn.commit()
         cols, rows = _fetchall(cur)
         cur.close()
-    return _serialize(_to_dict(cols, rows[0]))
+    return _enrich_account(_serialize(_to_dict(cols, rows[0])))
 
 
 def get_account_detail(account_id: str) -> dict | None:
@@ -164,7 +194,7 @@ def get_account_detail(account_id: str) -> dict | None:
     runs = [_serialize(_to_dict(cols, r)) for r in rows]
 
     return {
-        "account": account,
+        "account": _enrich_account(account),
         "current_holdings": holdings,
         "recent_trades": trades,
         "nav_history": nav_history,

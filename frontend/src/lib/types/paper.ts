@@ -4,6 +4,7 @@ export interface PaperAccount {
   account_id: string;
   account_name: string;
   strategy_name: string;
+  strategy_display_name: string;
   preset_type: "normal" | "composite";
   market: Market;
   benchmark: string | null;

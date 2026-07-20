@@ -42,7 +42,7 @@ function AccountCard({ account }: { account: PaperAccount }) {
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">{account.strategy_name}</span>
+          <span className="text-xs text-muted-foreground">{account.strategy_display_name}</span>
           <span className="text-xs text-muted-foreground">{account.market}</span>
         </div>
         <div className="flex items-center gap-2">
@@ -114,7 +114,7 @@ function CreateAccountDialog({
               <SelectContent>
                 {presets.map((p: BacktestPreset) => (
                   <SelectItem key={p.name} value={p.name}>
-                    {p.name} — {p.description}{p.type === "composite" ? " · 复合" : ""}
+                    {p.description}{p.type === "composite" ? " · 复合" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>

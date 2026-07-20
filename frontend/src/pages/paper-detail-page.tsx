@@ -132,7 +132,7 @@ export function PaperDetailPage() {
         <div>
           <h1 className="text-2xl font-bold">{account.account_name}</h1>
           <p className="text-sm text-muted-foreground">
-            {account.strategy_name} · {account.market} · {account.benchmark}
+            {account.strategy_display_name} · {account.market} · {account.benchmark}
           </p>
         </div>
         <Button onClick={() => runMutation.mutate()} disabled={runMutation.isPending}>
