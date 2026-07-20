@@ -63,6 +63,8 @@
 - 数据源：腾讯 K 线接口（历史回填）+ 腾讯实时行情（每日快照）+ Finnhub fallback
 - 历史 K 线仅含 OHLCV（无市值/PE/PB），upsert COALESCE 保护不覆盖快照字段
 - 1,002 只全覆盖（Russell 1000，含 BRK-B、BF-B 连字符修复）
+- 市值缺口可通过 `scripts/backfill_historical_market_cap.py` PIT 回算补齐（close × 最近有效股本），
+  当前缺口 ~660K 行，可回算约 95.8%
 
 ---
 

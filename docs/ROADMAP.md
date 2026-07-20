@@ -1,6 +1,6 @@
 # Stock Data System — 开发路线图
 
-> 最后更新：2026-07-17（美股模拟盘自动运行部署 + 近期 NAV 补跑）
+> 最后更新：2026-07-20（历史市值 PIT 分批回算方案）
 
 ## Phase 1：核心重构 ✅ 已完成
 
@@ -101,7 +101,7 @@
 - [x] A 股分红数据同步（5,350 只，82,125 条）
 - [x] 港股分红数据同步（1,981 只）
 - [x] 分红策略预设（dividend_value，支持 CN_A/CN_HK）
-- [ ] 历史市值回算（`close × total_shares`，922 万条 daily_quote 历史 market_cap 待补）
+- [ ] 历史市值 PIT 分批回算（US 当前缺失约 66.0 万条，约 63.3 万条可按有效日股本回算；[实施方案](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md)）
 
 ## Phase 6：高级分析（待规划）
 

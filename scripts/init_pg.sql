@@ -269,6 +269,26 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_batch ON raw_snapshot(sync_batch);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshot_unique ON raw_snapshot(stock_code, data_type, source, COALESCE(api_params::text, ''));
 
 -- ============================================================
+-- 辅助表: market_cap_backfill_audit（历史市值 PIT 回算审计）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS market_cap_backfill_audit (
+    id              BIGSERIAL PRIMARY KEY,
+    batch_id        VARCHAR(32) NOT NULL,
+    market          VARCHAR(10) NOT NULL,
+    stock_code      VARCHAR(20) NOT NULL,
+    trade_date      DATE NOT NULL,
+    share_date      DATE NOT NULL,
+    total_shares    BIGINT NOT NULL,
+    close           DECIMAL(16,4) NOT NULL,
+    computed_market_cap DECIMAL(20,2) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mcap_audit_batch
+    ON market_cap_backfill_audit (batch_id);
+CREATE INDEX IF NOT EXISTS idx_mcap_audit_stock_date
+    ON market_cap_backfill_audit (stock_code, trade_date);
+
+-- ============================================================
 -- 辅助表: sync_log
 -- ============================================================
 CREATE TABLE IF NOT EXISTS sync_log (

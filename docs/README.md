@@ -25,6 +25,7 @@
 | [core/[US] DEPLOY_OVERSEAS.md](core/[US] DEPLOY_OVERSEAS.md) | 海外服务器部署指南 |
 | [core/DATA_STATUS_CN.md](core/DATA_STATUS_CN.md) | A 股/港股数据现状（行数、覆盖率） |
 | [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据现状（行数、覆盖率、修复记录） |
+| [core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md) | 历史市值 PIT 分批回算、审计、回滚与上线方案 |
 
 ---
 
@@ -92,6 +93,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-07-20 | 新增历史市值 PIT 分批回算方案 |
 | 2026-06-15 | 补充复合策略与模拟盘计划文档入口 |
 | 2026-05-01 | 整理文档结构，新增 deployment/ 目录，归档临时文档 |
 | 2026-04-30 | 添加 WEB_FRONTEND_PLAN.md（前端设计文档） |
