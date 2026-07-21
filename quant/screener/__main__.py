@@ -13,7 +13,7 @@ import argparse
 import sys
 
 from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield, get_roe_history
-from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
+from quant.screener.filters import apply_hard_filters, filter_consecutive_roe, apply_commodity_filter
 from quant.screener.scorer import rank_factors
 from quant.screener.report import format_results, format_summary
 from quant.screener.presets import PRESETS, FACTOR_LABELS
@@ -156,6 +156,13 @@ def main():
         df = get_universe(args.market)
         df = compute_dividend_yield(df)
     n_before = len(df)
+
+    # 1.5 商品周期策略：先限定到商品映射股票
+    macro_filter = preset.get("macro_filter", []) if args.preset else []
+    if macro_filter:
+        df, _, n_after_commodity = apply_commodity_filter(df, args.market, macro_filter)
+        print(f"商品映射过滤 ({', '.join(macro_filter)}): {n_after_commodity} 只")
+        n_before = len(df)
 
     # 2. 硬过滤
     filtered, _, n_after_filter = apply_hard_filters(df, filters)

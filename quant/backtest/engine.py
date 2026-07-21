@@ -166,6 +166,18 @@ def run_backtest(
             else:
                 universe = get_point_in_time_universe(rb_date, market=market)
 
+            # 1.4 商品周期策略：先限定到商品映射股票
+            if macro_filter:
+                from quant.backtest.macro import get_mapped_stocks
+                mapped_codes: set[str] = set()
+                for commodity in macro_filter:
+                    try:
+                        mapped_codes.update(get_mapped_stocks(market, commodity))
+                    except ValueError:
+                        pass
+                if mapped_codes:
+                    universe = universe[universe["stock_code"].isin(mapped_codes)]
+
             # 1.5. 宏观滤网：排除 bear 商品对应的行业股票
             if macro_filter:
                 from quant.backtest.macro import get_excluded_codes

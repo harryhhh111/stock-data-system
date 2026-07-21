@@ -213,6 +213,10 @@ PRESETS: dict[str, PresetConfig] = {
                 "CN_HK": 2.5e9,
             },
             "exclude_st": True,
+            "exclude_industries_by_market": {
+                "CN_A": ["银行", "非银金融", "房地产"],
+                "CN_HK": ["银行", "保险", "其他金融", "地产"],
+            },
             "fcf_yield_min_by_market": {
                 "CN_A": 0.12,
                 "CN_HK": 0.12,
@@ -245,6 +249,10 @@ PRESETS: dict[str, PresetConfig] = {
                 "CN_HK": 2.5e9,
             },
             "exclude_st": True,
+            "exclude_industries_by_market": {
+                "CN_A": ["银行", "非银金融", "房地产"],
+                "CN_HK": ["银行", "保险", "其他金融", "地产"],
+            },
             "fcf_yield_min_by_market": {
                 "CN_A": 0.12,
                 "CN_HK": 0.12,
@@ -274,6 +282,10 @@ PRESETS: dict[str, PresetConfig] = {
         "filters": {
             "market_cap_min_by_market": {"CN_A": 2.5e9, "CN_HK": 2.5e9},
             "exclude_st": True,
+            "exclude_industries_by_market": {
+                "CN_A": ["银行", "非银金融", "房地产"],
+                "CN_HK": ["银行", "保险", "其他金融", "地产"],
+            },
             "fcf_yield_min_by_market": {"CN_A": 0.12, "CN_HK": 0.12},
             "roe_min": 0.10, "roe_consecutive_years": 3,
         },
@@ -299,6 +311,10 @@ PRESETS: dict[str, PresetConfig] = {
         "filters": {
             "market_cap_min_by_market": {"CN_A": 2.5e9, "CN_HK": 2.5e9},
             "exclude_st": True,
+            "exclude_industries_by_market": {
+                "CN_A": ["银行", "非银金融", "房地产"],
+                "CN_HK": ["银行", "保险", "其他金融", "地产"],
+            },
             "fcf_yield_min_by_market": {"CN_A": 0.12, "CN_HK": 0.12},
             "roe_min": 0.10, "roe_consecutive_years": 3,
         },

@@ -4,6 +4,7 @@
 
 import pandas as pd
 from quant.screener.presets import FilterConfig
+from quant.backtest.macro import get_mapped_stocks
 
 
 def filter_consecutive_roe(
@@ -139,3 +140,35 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
 
     n_after = len(result)
     return result, n_before, n_after
+
+
+def apply_commodity_filter(
+    df: pd.DataFrame,
+    market: str,
+    commodities: list[str],
+) -> tuple[pd.DataFrame, int, int]:
+    """将选股池限制为商品映射股票（黄金/白银/铜/原油相关）。
+
+    仅 CN_A / CN_HK 存在商品映射；US / all 中无映射的市场保持原样。
+    返回 (filtered_df, n_before, n_after)。
+    """
+    n_before = len(df)
+    if df.empty or not commodities:
+        return df, n_before, n_before
+
+    target_markets = ["CN_A", "CN_HK"] if market == "all" else [market]
+    mapped_codes: set[str] = set()
+
+    for mkt in target_markets:
+        for commodity in commodities:
+            try:
+                mapped_codes.update(get_mapped_stocks(mkt, commodity))
+            except ValueError:
+                # 该商品/市场无映射或当前无股票，忽略
+                pass
+
+    if not mapped_codes:
+        return df, n_before, n_before
+
+    result = df[df["stock_code"].isin(mapped_codes)].copy()
+    return result, n_before, len(result)

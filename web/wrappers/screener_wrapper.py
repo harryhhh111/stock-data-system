@@ -1,7 +1,7 @@
 """Screener wrapper — 复用 quant/screener 逻辑，返回结构化 dict。"""
 from quant.screener.presets import PRESETS, FACTOR_LABELS
 from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield, get_roe_history
-from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
+from quant.screener.filters import apply_hard_filters, filter_consecutive_roe, apply_commodity_filter
 from quant.screener.scorer import rank_factors
 
 
@@ -67,6 +67,12 @@ def run_screener(market: str, preset: str | None, top_n: int) -> dict:
         df = compute_dividend_yield(df)
 
     total_before_filter = len(df)
+
+    # 1.5 商品周期策略：先限定到商品映射股票
+    macro_filter = cfg.get("macro_filter", []) if preset else []
+    if macro_filter:
+        df, _, _ = apply_commodity_filter(df, market, macro_filter)
+        total_before_filter = len(df)
 
     # 2. 硬过滤
     filtered, _, total_after_filter = apply_hard_filters(df, filters)
