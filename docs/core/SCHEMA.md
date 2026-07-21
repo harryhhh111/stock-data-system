@@ -434,6 +434,7 @@ CREATE TABLE market_cap_backfill_audit (
 );
 CREATE INDEX idx_mcap_audit_batch ON market_cap_backfill_audit (batch_id);
 CREATE INDEX idx_mcap_audit_stock_date ON market_cap_backfill_audit (stock_code, trade_date);
+CREATE UNIQUE INDEX idx_mcap_audit_dedup ON market_cap_backfill_audit (batch_id, market, stock_code, trade_date);
 ```
 
 ### stock_share（股本结构，用于计算每股指标）

@@ -173,17 +173,26 @@ class TestEnsureAuditTable:
 class TestEnsureIndexes:
     @patch("scripts.backfill_historical_market_cap.psycopg2.connect")
     def test_uses_autocommit_connection(self, mock_connect):
-        """CONCURRENTLY 索引使用 autocommit 独立连接，不走 db.execute。"""
+        """CONCURRENTLY 索引使用 autocommit 独立连接。"""
         from scripts.backfill_historical_market_cap import _ensure_indexes
-
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
-
         _ensure_indexes()
-
-        # 验证 autocommit 已开启
         assert mock_conn.autocommit is True
-        # 验证连接被关闭（归还）
+        mock_conn.close.assert_called_once()
+
+    @patch("scripts.backfill_historical_market_cap.psycopg2.connect")
+    def test_raises_on_index_failure(self, mock_connect):
+        """任一索引创建失败 → RuntimeError，阻止正式回算。"""
+        from scripts.backfill_historical_market_cap import _ensure_indexes
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+        # 模拟索引创建失败
+        import psycopg2
+        mock_conn.cursor.return_value.__enter__.return_value.execute.side_effect = \
+            psycopg2.Error("concurrent index creation not allowed")
+        with pytest.raises(RuntimeError, match="PIT 索引创建失败"):
+            _ensure_indexes()
         mock_conn.close.assert_called_once()
 
 
@@ -364,6 +373,23 @@ class TestRunBackfill:
         # Lock was released and connection returned to pool
         mock_release.assert_called_once_with(lock_mock)
 
+    @patch("scripts.backfill_historical_market_cap.execute")
+    @patch("scripts.backfill_historical_market_cap.release_connection")
+    @patch("scripts.backfill_historical_market_cap.get_connection")
+    def test_reused_batch_id_raises(self, mock_get_conn, mock_release, mock_exec):
+        """batch_id 已有审计记录 → RuntimeError（在获取锁之前检测）。"""
+        from scripts.backfill_historical_market_cap import _run_backfill
+
+        # batch_id already has audit rows
+        mock_exec.return_value = [(1,)]
+
+        with pytest.raises(RuntimeError, match="已有审计记录"):
+            _run_backfill("b001", "US", 10000, None, date(2024, 12, 31), None)
+
+        # 检测发生在锁获取之前，不应获取/释放连接
+        mock_get_conn.assert_not_called()
+        mock_release.assert_not_called()
+
 
 # ── _rollback_batch ─────────────────────────────────────────
 
@@ -466,9 +492,12 @@ class TestMainCLI:
     @patch("scripts.backfill_historical_market_cap._ensure_audit_table")
     def test_sync_log_called_on_failure(self, mock_audit, mock_idx,
                                           mock_run, mock_sync, monkeypatch):
-        """异常时写入 sync_log (status=failed) 再 raise。"""
+        """异常时写入 sync_log (status=failed) 再 raise，含部分成功计数。"""
         from scripts.backfill_historical_market_cap import main
-        mock_run.side_effect = RuntimeError("模拟失败")
+        err = RuntimeError("模拟失败")
+        err._partial_success = 3500
+        err._partial_skipped = 120
+        mock_run.side_effect = err
         monkeypatch.setattr("sys.argv", [
             "backfill", "--market", "US", "--skip-indexes", "--no-refresh",
         ])
@@ -476,6 +505,8 @@ class TestMainCLI:
             main()
         mock_sync.assert_called_once()
         assert mock_sync.call_args[1]["status"] == "failed"
+        assert mock_sync.call_args[1]["success"] == 3500
+        assert mock_sync.call_args[1]["skipped"] == 120
 
     @patch.dict(os.environ, {"STOCK_MARKETS": "US"}, clear=False)
     @patch("scripts.backfill_historical_market_cap._dry_run_stats")
@@ -507,6 +538,21 @@ class TestMainCLI:
         main()
         mock_rollback.assert_called_once()
         assert mock_rollback.call_args[0] == ("US", "batch-001")
+
+    @patch.dict(os.environ, {"STOCK_MARKETS": "US"}, clear=False)
+    @patch("scripts.backfill_historical_market_cap._rollback_batch")
+    @patch("scripts.backfill_historical_market_cap._ensure_audit_table")
+    def test_rollback_dry_run_skips_ddl(self, mock_audit, mock_rollback, monkeypatch):
+        """--rollback-batch ... --dry-run 不创建审计表。"""
+        from scripts.backfill_historical_market_cap import main
+        mock_rollback.return_value = {
+            "audit_rows": 100, "rolled_back": 0, "skipped": 0, "not_found": 0,
+        }
+        monkeypatch.setattr("sys.argv", [
+            "backfill", "--market", "US", "--rollback-batch", "batch-001", "--dry-run",
+        ])
+        main()
+        mock_audit.assert_not_called()
 
     @patch.dict(os.environ, {"STOCK_MARKETS": "CN_A,CN_HK"}, clear=False)
     def test_invalid_market_exits_early(self, monkeypatch):

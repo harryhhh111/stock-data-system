@@ -138,18 +138,25 @@ def _ensure_indexes() -> None:
         password=db_config.password,
     )
     conn.autocommit = True
+    failed: list[str] = []
     try:
         for sql in indexes:
+            label = sql.split("\n")[0].strip()
+            logger.info("创建索引: %s", label)
             try:
-                label = sql.split("\n")[0].strip()
-                logger.info("创建索引: %s", label)
                 with conn.cursor() as cur:
                     cur.execute(sql)
                 logger.info("索引创建完成: %s", label)
             except psycopg2.Error as e:
-                logger.warning("索引创建跳过（可能已存在或无法 CONCURRENTLY）: %s", e)
+                failed.append(f"{label}: {e}")
     finally:
         conn.close()
+
+    if failed:
+        raise RuntimeError(
+            f"PIT 索引创建失败，共 {len(failed)} 个:\n" +
+            "\n".join(f"  - {f}" for f in failed)
+        )
 
 
 # ── sync_log ────────────────────────────────────────────────
@@ -522,6 +529,18 @@ def _run_backfill(
     last_stock_code: str | None = None
     t_start = time.time()
 
+    # ── Check for batch_id reuse ─────────────────────────
+    existing = execute(
+        f"SELECT 1 FROM {AUDIT_TABLE} WHERE batch_id = %s LIMIT 1",
+        (batch_id,),
+        fetch=True,
+    )
+    if existing:
+        raise RuntimeError(
+            f"batch_id={batch_id} 已有审计记录——"
+            "请回滚后使用新 batch_id，或删除旧审计记录后重试"
+        )
+
     # ── Acquire advisory lock (non-blocking, fast-fail) ──
     lock_conn = get_connection()
     try:
@@ -588,7 +607,11 @@ def _run_backfill(
 
     except Exception as e:
         error_detail = str(e)
-        logger.error("回算异常: %s", e)
+        logger.error("回算异常（已提交 %d 批）: %s", batch_count, e)
+        # 将部分成功计数附加到异常，供调用方写入 sync_log
+        e._partial_success = total_success
+        e._partial_skipped = total_skipped
+        e._partial_batch_count = batch_count
         raise
     finally:
         # ── Release lock and return to pool ──────────────
@@ -673,9 +696,11 @@ def main():
     # ── Validate market ──────────────────────────────────
     market = _validate_market(args.market)
 
-    # ── Rollback mode (needs audit table to exist) ───────
+    # ── Rollback mode ────────────────────────────────────
     if args.rollback_batch:
-        _ensure_audit_table()
+        if not args.dry_run:
+            # 回滚需要审计表存在；dry-run 跳过 DDL
+            _ensure_audit_table()
         result = _rollback_batch(market, args.rollback_batch, dry_run=args.dry_run)
         print("\n回滚结果:")
         print(f"  审计记录: {result['audit_rows']}")
@@ -765,12 +790,15 @@ def main():
                 logger.warning("物化视图刷新失败（可稍后手动刷新）: %s", e)
 
     except Exception as e:
+        # 提取部分成功计数（由 _run_backfill 在异常上设置）
+        partial_success = getattr(e, "_partial_success", 0)
+        partial_skipped = getattr(e, "_partial_skipped", 0)
         _write_sync_log(
             batch_id=batch_id,
             market=market,
             status="failed",
-            success=0,
-            skipped=0,
+            success=partial_success,
+            skipped=partial_skipped,
             started_at=started_at,
             error_detail=str(e),
             config=run_config,
