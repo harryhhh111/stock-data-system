@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Iterator
@@ -192,6 +193,97 @@ def load_daily_quotes_for_codes(
         rows = cur.fetchall()
         cur.close()
     return {(r[0], r[1]): float(r[2]) for r in rows}
+
+
+def compute_daily_metrics(
+    daily_nav: dict[date, float] | list[float],
+    trade_dates: list[date] | None = None,
+    portfolio=None,
+) -> "PerformanceMetrics":
+    """基于日频 NAV 统一计算策略绩效指标。
+
+    Args:
+        daily_nav: {date: normalized_nav} 字典，或已按时间排序的 NAV 列表。
+        trade_dates: 与 daily_nav 列表对应的日期列表；传入字典时可省略。
+        portfolio: 可选 Portfolio（或兼容对象），用于获取调仓次数、持仓数、交易数。
+
+    Returns:
+        PerformanceMetrics
+    """
+    from quant.backtest.types import PerformanceMetrics
+
+    if isinstance(daily_nav, dict):
+        trade_dates = sorted(daily_nav.keys())
+        navs = [daily_nav[d] for d in trade_dates]
+    else:
+        navs = list(daily_nav)
+        if trade_dates is None:
+            trade_dates = [date.min] * len(navs)
+
+    if len(navs) < 2:
+        return PerformanceMetrics(0, 0, 0, 0, 0, 0, 0, 0)
+
+    final_nav = navs[-1]
+    total_return = final_nav - 1.0
+
+    days = (trade_dates[-1] - trade_dates[0]).days
+    if days > 0 and total_return > -1:
+        annualized_return = (1 + total_return) ** (365 / days) - 1
+    else:
+        annualized_return = -1.0
+
+    # 最大回撤（日频）
+    peak = navs[0]
+    max_dd = 0.0
+    for v in navs:
+        if v > peak:
+            peak = v
+        dd = 1 - v / peak if peak > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+
+    # 日频收益 → 年化波动率 / Sharpe
+    daily_rets = np.diff(navs) / np.array(navs[:-1])
+    if len(daily_rets) >= 2:
+        mean_ret = float(np.mean(daily_rets))
+        std_ret = float(np.std(daily_rets, ddof=1))
+        ann_factor = math.sqrt(252)
+        # 波动率极小视为无波动，Sharpe 无意义时取 0
+        if std_ret < 1e-12:
+            volatility = 0.0
+            sharpe = 0.0
+        else:
+            volatility = std_ret * ann_factor
+            sharpe = mean_ret / std_ret * ann_factor
+    else:
+        volatility = 0.0
+        sharpe = 0.0
+
+    if portfolio is not None:
+        num_rebalances = getattr(portfolio, "num_rebalances", None)
+        if num_rebalances is None:
+            history = getattr(portfolio, "history", [])
+            # 不含初始建仓和最终快照
+            num_rebalances = max(0, len(history) - 2)
+        total_trades = getattr(portfolio, "_total_trades", 0)
+        history = getattr(portfolio, "history", [])
+        holding_counts = [len(s.positions) for s in history[:-1]] if history else []
+        avg_holding = sum(holding_counts) / len(holding_counts) if holding_counts else 0.0
+    else:
+        num_rebalances = 0
+        avg_holding = 0.0
+        total_trades = 0
+
+    return PerformanceMetrics(
+        total_return=total_return,
+        annualized_return=annualized_return,
+        max_drawdown=max_dd,
+        sharpe_ratio=sharpe,
+        volatility=volatility,
+        num_rebalances=num_rebalances,
+        avg_holding_count=avg_holding,
+        total_trades=total_trades,
+    )
 
 
 def compute_daily_nav(

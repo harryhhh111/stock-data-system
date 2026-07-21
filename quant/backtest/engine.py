@@ -14,6 +14,7 @@ from quant.backtest.common import (
     build_universe,
     check_200ma_signal,
     compute_benchmark_comparison,
+    compute_daily_metrics,
     twenty_eighty_targets,
     compute_daily_nav,
     compute_price_factors,
@@ -232,26 +233,14 @@ def run_backtest(
     else:
         final_value = portfolio.cash
 
-    metrics = portfolio.get_performance()
-
-    # 基准对比（v1.5：默认 SPY for US）
+    # ── 日频 NAV 与绩效指标 ─────────────────────────────
     bench_comparison: BenchmarkComparison | None = None
     strategy_daily_nav: dict[date, float] = {}
     benchmark_daily_nav: dict[date, float] = {}
 
-    if benchmark and portfolio.history:
+    if portfolio.history:
         bt_start = portfolio.history[0].date
         bt_end = portfolio.history[-1].date
-        bench_prices = load_benchmark_prices(benchmark, market, bt_start, bt_end)
-        if not bench_prices:
-            raise ValueError(
-                f"基准 {benchmark} 在 {market} 市场 {bt_start} ~ {bt_end} 区间无 daily_quote 数据。"
-                f" 请检查：(1) stock_info 是否有该 ticker；(2) daily_quote 是否回填；"
-                f" 或用 --benchmark '' 显式禁用基准对比。"
-            )
-
-        # 日期对齐：直接用 bench_prices 的交易日列表
-        trade_dates = sorted(bench_prices.keys())
 
         # 加载所有曾经持仓过的股票日频行情
         all_codes: set[str] = set()
@@ -261,20 +250,45 @@ def run_backtest(
             list(all_codes), market, bt_start, bt_end
         )
 
-        # 策略日频 NAV
+        # 交易日：有持仓股票的交易日并集（确保无 benchmark 也能生成日频 NAV）
+        trade_dates = sorted(
+            set(d for (_, d) in daily_quotes.keys()) | {bt_start, bt_end}
+        )
+
+        # 策略日频 NAV（始终生成，即使禁用 benchmark）
         strategy_daily_nav = compute_daily_nav(
             portfolio.history, daily_quotes, trade_dates, initial_capital
         )
 
-        # 基准日频 NAV（基准 NAV[bt_start] = 1.0）
-        base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
-        benchmark_daily_nav = {
-            d: bench_prices[d] / base_close for d in trade_dates
-        }
+        # 基准对比（可选）
+        if benchmark:
+            bench_prices = load_benchmark_prices(benchmark, market, bt_start, bt_end)
+            if not bench_prices:
+                raise ValueError(
+                    f"基准 {benchmark} 在 {market} 市场 {bt_start} ~ {bt_end} 区间无 daily_quote 数据。"
+                    f" 请检查：(1) stock_info 是否有该 ticker；(2) daily_quote 是否回填；"
+                    f" 或用 --benchmark '' 显式禁用基准对比。"
+                )
 
-        bench_comparison = compute_benchmark_comparison(
-            benchmark, strategy_daily_nav, benchmark_daily_nav
-        )
+            # 日期对齐：策略与基准交易日取交集
+            aligned_dates = sorted(
+                set(strategy_daily_nav.keys()) & set(bench_prices.keys())
+            )
+
+            # 基准日频 NAV（基准 NAV[bt_start] = 1.0）
+            base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
+            benchmark_daily_nav = {
+                d: bench_prices[d] / base_close for d in aligned_dates
+            }
+            # 策略 NAV 也按对齐日期重采样
+            strategy_daily_nav = {d: strategy_daily_nav[d] for d in aligned_dates}
+
+            bench_comparison = compute_benchmark_comparison(
+                benchmark, strategy_daily_nav, benchmark_daily_nav
+            )
+
+    # 统一基于日频 NAV 计算绩效指标
+    metrics = compute_daily_metrics(strategy_daily_nav, portfolio=portfolio)
 
     return BacktestResult(
         preset_name=preset_name,

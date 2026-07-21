@@ -1,6 +1,6 @@
 # 因子策略回测系统设计
 
-> 最后更新：2026-05-14（v5.0 — 内存预加载 + 批量行情查询，回测 90s → 10s）
+> 最后更新：2026-07-21（v5.1 — 日频 NAV 统一绩效指标：回撤/波动率/Sharpe 基于日频计算）
 
 ## Context
 
@@ -30,7 +30,7 @@ quant/backtest/
 ├── __init__.py
 ├── __main__.py      # CLI: python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01
 ├── types.py         # 公共类型定义（Snapshot / PerformanceMetrics / BenchmarkComparison / BacktestResult）
-├── common.py        # 共享工具函数（行情批量查询 / 日期 / 基准对比 / 价格因子 / 200MA / 日频 NAV）
+├── common.py        # 共享工具函数（行情批量查询 / 日期 / 基准对比 / 价格因子 / 200MA / 日频 NAV / 统一绩效指标）
 ├── engine.py        # 回测主循环：预加载 → 调仓日期 → 切面选股 → 模拟交易 → 记录净值
 ├── preloader.py     # 数据预加载：一次 COPY CSV 加载财报/TTM/股本到内存，pandas 做 PIT 过滤
 ├── universe.py      # 历史切面查询：point-in-time 因子数据（US/CN_A/CN_HK 三套 SQL，回退用）
@@ -468,6 +468,32 @@ ORDER BY stock_code, trade_date DESC
 - `{stock_code: None}` — 退市/停牌，调仓日及之前均无行情记录
 - `portfolio.rebalance()` 中 `sell_prices[code] is None` 时按 0 清算
 
+#### 2.4 `compute_daily_nav()` 与 `compute_daily_metrics()` — 日频绩效指标
+
+```python
+def compute_daily_nav(
+    rebalance_history: list[Snapshot],
+    daily_quotes: dict[tuple[str, date], float],
+    trade_dates: list[date],
+    initial_capital: float,
+) -> dict[date, float]:
+    """对每个交易日：取最近一次调仓快照，按当日 close 计算组合市值。"""
+
+def compute_daily_metrics(
+    daily_nav: dict[date, float] | list[float],
+    trade_dates: list[date] | None = None,
+    portfolio=None,
+) -> PerformanceMetrics:
+    """统一绩效指标：总收益、年化收益(CAGR)、最大回撤、日频波动率、日频Sharpe。
+       调仓次数/交易数/平均持仓数从 portfolio 透传。"""
+```
+
+关键设计决策：
+- **必须生成策略日频 NAV**：即使 `--benchmark ''` 禁用基准，engine 也会加载所有曾经持仓股票的 `daily_quote`，生成 `strategy_daily_nav`。
+- **日期对齐**：启用 benchmark 时，策略 NAV 与基准 NAV 取交易日交集；禁用时，使用持仓股票的交易日并集。
+- **统一年化方式**：普通策略与复合策略调用同一个 `compute_daily_metrics()`，年化收益按实际天数 CAGR，波动率/Sharpe 按 `std(daily_returns) * sqrt(252)`。
+- **持有期内下跌被计入**：日频 NAV 能捕捉两个调仓日之间的跌幅，因此最大回撤、波动率通常会大于仅看调仓快照的近似值。
+
 ### 3. `portfolio.py` — 组合模型
 
 类型定义（Snapshot / PerformanceMetrics）已提取到 `types.py`，`portfolio.py` 只保留 `Position` 和 `Portfolio` 类。
@@ -488,15 +514,15 @@ class Snapshot:
 class PerformanceMetrics:
     total_return: float         # 总收益率 = (final - initial) / initial
     annualized_return: float    # 年化收益率 = (1 + total)^(365/days) - 1 (CAGR)
-    max_drawdown: float         # 最大回撤 = max(1 - value/peak)
-    sharpe_ratio: float         # V1 近似: mean(rebal_returns) / std(rebal_returns) * sqrt(252/rebal_days)
-    volatility: float           # V1 近似: std(rebal_returns) * sqrt(252/rebal_days)
+    max_drawdown: float         # 最大回撤 = max(1 - value/peak)，基于日频 NAV
+    sharpe_ratio: float         # 日频收益 Sharpe = mean(daily_returns) / std(daily_returns) * sqrt(252)
+    volatility: float           # 日频收益年化波动率 = std(daily_returns) * sqrt(252)
     num_rebalances: int
     avg_holding_count: float
     total_trades: int
 ```
 
-> **V1 夏普/波动率近似**：Snapshot 仅在调仓日记录，无日频净值序列。V1 基于调仓间隔收益率计算：`rebal_returns = [snap[i].value / snap[i-1].value - 1]`，年化因子为 `sqrt(252 / avg_rebal_days)`。这假设调仓日之间的收益均匀分布，是粗略近似。V2 可通过每日查询 `daily_quote` 计算精确日频净值。
+> **日频绩效指标（V2）**：所有价格类指标（年化收益、最大回撤、波动率、Sharpe）均基于 `compute_daily_metrics(daily_nav)` 从日频 NAV 计算。`daily_nav` 由 `compute_daily_nav()` 根据持仓股票日行情逐日 mark-to-market 生成，能捕捉调仓日之间的股价下跌。调仓次数、交易数、平均持仓数继续从 `Portfolio` 获取。
 
 #### 3.1 `rebalance(date, target_codes, buy_prices, sell_prices)`
 
@@ -595,30 +621,47 @@ python -m quant.backtest --preset fcf_roe_value --market CN_A --start 2022-01 --
 | `--market` | US | 市场代码 (US/CN_A/CN_HK) |
 | `--format` | text | 输出格式 (text/json) |
 
-**输出示例**:
+**输出示例**（CN_A `fcf_roe_value`，2022-01 ~ 2026-05，日频指标）：
 ```
-═══════════════════════════════════════════
+══════════════════════════════════════════════════
   回测报告: FCF+ROE 深度价值
-  2022-01 → 2026-05 | 每 6 个月调仓
-═══════════════════════════════════════════
+  2022-01-28 → 2026-05-29 | 每 6 个月调仓
+══════════════════════════════════════════════════
 
-  总收益率:     +45.2%
-  年化收益率:   +9.8%
-  最大回撤:     -18.3%
-  夏普比率:     0.72
-  波动率:       13.6%
-  调仓次数:     9
-  平均持仓:     28 只
-  总交易:       156 笔
+  总收益率:     +22.8%
+  年化收益率:   +4.9%
+  最大回撤:     -31.0%
+  夏普比率:     0.35
+  波动率:       19.8%
+  调仓次数:     8
+  平均持仓:     27 只
+  总交易:       368 笔
 
   ┌─ 调仓记录 ─────────────────────────┐
-  │ 2022-01  买入 30 只  净值 1.000    │
-  │ 2022-07  换手 4 只   净值 1.082    │
-  │ 2023-01  换手 6 只   净值 1.156    │
-  │ ...                                │
-  │ 2026-01  换手 3 只   净值 1.452    │
+  │ 2022-01-28  买入 22 只   净值 1.000  │
+  │ 2022-07-29  换手 42%     净值 0.944  │
+  │ 2023-01-31  换手 52%     净值 0.920  │
+  │ 2023-07-31  换手 66%     净值 0.855  │
+  │ 2024-01-31  换手 58%     净值 0.795  │
+  │ 2024-07-31  换手 66%     净值 0.859  │
+  │ 2025-01-27  换手 62%     净值 0.916  │
+  │ 2025-07-31  换手 56%     净值 0.947  │
+  │ 2026-01-30  换手 64%     净值 1.406  │
+  │ 2026-05-29  买入 22 只   净值 1.228  │
   └────────────────────────────────────┘
 ```
+
+> 注：最大回撤、波动率、Sharpe 均基于日频 NAV 计算，会显著大于仅看调仓快照的粗略估算。
+
+### 5.1  regenerated 示例指标（2026-07-21，日频指标）
+
+| 策略 | 市场 | 区间 | 总收益 | 年化 | 最大回撤 | Sharpe | 波动率 | 调仓次数 |
+|------|------|------|--------|------|---------|--------|--------|---------|
+| `fcf_roe_value` | CN_A | 2022-01 ~ 2026-05 | +22.8% | +4.9% | -31.0% | 0.35 | 19.8% | 8 |
+| `fcf_roe_value` | CN_HK | 2022-01 ~ 2026-05 | +15.7% | +3.4% | -39.0% | 0.27 | 21.7% | 8 |
+| `commodity_rotation` | CN_A | 2022-01 ~ 2026-05 | +0.0% | +0.0% | -25.4% | 0.13 | 25.3% | 53 |
+
+> 以上结果由 `python -m quant.backtest --preset <name> --market <market> --start 2022-01 --end 2026-05` 重新生成。与旧版调仓快照指标相比，日频指标的最大回撤和波动率普遍更大。
 
 ## 已知数据限制
 

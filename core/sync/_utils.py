@@ -54,7 +54,7 @@ def _em_code(stock_code: str) -> str:
         return f"SH{stock_code}"
     elif stock_code.startswith(("0", "3")):
         return f"SZ{stock_code}"
-    elif stock_code.startswith(("4", "8")):
+    elif stock_code.startswith(("4", "8", "92")):
         return f"BJ{stock_code}"
     return f"SZ{stock_code}"
 

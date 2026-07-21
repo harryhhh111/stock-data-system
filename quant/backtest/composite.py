@@ -22,6 +22,7 @@ from quant.backtest.common import (
     build_universe,
     check_200ma_signal,
     compute_benchmark_comparison,
+    compute_daily_metrics,
     compute_price_factors,
     generate_rebalance_dates,
     twenty_eighty_targets,
@@ -659,18 +660,32 @@ def _compute_composite_nav_and_benchmark(
     list[float],
     list[date],
 ]:
-    """计算日频 NAV、基准 NAV 与基准对比。"""
+    """计算日频 NAV、基准 NAV 与基准对比（无论是否启用 benchmark 都生成策略日频 NAV）。"""
     bench_comparison: BenchmarkComparison | None = None
     strategy_daily_nav: dict[date, float] = {}
     benchmark_daily_nav: dict[date, float] = {}
     daily_nav_list: list[float] = []
     trade_dates: list[date] = []
 
-    if not benchmark or not merged_history:
-        return bench_comparison, strategy_daily_nav, benchmark_daily_nav, [1.0], trade_dates
+    if not merged_history:
+        return bench_comparison, strategy_daily_nav, benchmark_daily_nav, daily_nav_list, trade_dates
 
     bt_start = merged_history[0].date
     bt_end = merged_history[-1].date
+
+    # 策略日频 NAV 始终生成
+    daily_close = _load_composite_daily_quotes(
+        merged_history, benchmark or "", market, bt_start, bt_end
+    )
+    strategy_daily_nav = _compute_composite_daily_nav(
+        sub_portfolios, valuation_snaps, daily_close, initial_capital
+    )
+    trade_dates = sorted(strategy_daily_nav.keys())
+    daily_nav_list = [strategy_daily_nav[d] for d in trade_dates]
+
+    if not benchmark:
+        return bench_comparison, strategy_daily_nav, benchmark_daily_nav, daily_nav_list, trade_dates
+
     bench_prices = load_benchmark_prices(benchmark, market, bt_start, bt_end)
     if not bench_prices:
         raise ValueError(
@@ -678,19 +693,16 @@ def _compute_composite_nav_and_benchmark(
             f" 请用 --benchmark '' 显式禁用。"
         )
 
-    trade_dates = sorted(bench_prices.keys())
-    daily_close = _load_composite_daily_quotes(
-        merged_history, benchmark, market, bt_start, bt_end
+    # 日期对齐：策略与基准交易日取交集
+    aligned_dates = sorted(
+        set(strategy_daily_nav.keys()) & set(bench_prices.keys())
     )
-
-    strategy_daily_nav = _compute_composite_daily_nav(
-        sub_portfolios, valuation_snaps, daily_close, initial_capital
-    )
-    strategy_daily_nav = {d: strategy_daily_nav.get(d, 1.0) for d in trade_dates}
-    daily_nav_list = [strategy_daily_nav[d] for d in trade_dates]
+    strategy_daily_nav = {d: strategy_daily_nav[d] for d in aligned_dates}
+    daily_nav_list = [strategy_daily_nav[d] for d in aligned_dates]
+    trade_dates = aligned_dates
 
     base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
-    benchmark_daily_nav = {d: bench_prices[d] / base_close for d in trade_dates}
+    benchmark_daily_nav = {d: bench_prices[d] / base_close for d in aligned_dates}
 
     bench_comparison = compute_benchmark_comparison(
         benchmark, strategy_daily_nav, benchmark_daily_nav
@@ -706,53 +718,26 @@ def _build_composite_metrics(
     sub_portfolios: dict[str, Portfolio],
     initial_capital: float,
 ) -> tuple[float, PerformanceMetrics]:
-    """从日频 NAV 计算绩效指标与最终市值。"""
+    """从日频 NAV 计算绩效指标与最终市值（统一调用 compute_daily_metrics）。"""
     if len(daily_nav_list) < 2:
         return initial_capital, PerformanceMetrics(0, 0, 0, 0, 0, 0, 0, 0)
 
-    final_nav = daily_nav_list[-1]
-    total_return = final_nav - 1.0
-    final_value = final_nav * initial_capital
+    final_value = daily_nav_list[-1] * initial_capital
 
-    days = (trade_dates[-1] - trade_dates[0]).days if trade_dates else 1
-    if days > 0 and total_return > -1:
-        annualized_return = (1 + total_return) ** (365 / days) - 1
-    else:
-        annualized_return = -1.0
+    # 构造一个兼容 portfolio 的代理对象，用于 compute_daily_metrics 提取非价格指标
+    class _CompositePortfolioProxy:
+        def __init__(
+            self,
+            merged_history: list[Snapshot],
+            sub_portfolios: dict[str, Portfolio],
+            rebalance_dates: list[date],
+        ):
+            self.history = merged_history
+            self.num_rebalances = max(0, len(rebalance_dates))
+            self._total_trades = sum(pf._total_trades for pf in sub_portfolios.values())
 
-    peak = daily_nav_list[0]
-    max_dd = 0.0
-    for v in daily_nav_list:
-        if v > peak:
-            peak = v
-        dd = 1 - v / peak if peak > 0 else 0
-        if dd > max_dd:
-            max_dd = dd
-
-    daily_rets = np.diff(daily_nav_list) / daily_nav_list[:-1]
-    if len(daily_rets) >= 2:
-        ann_factor = math.sqrt(252)
-        mean_ret = float(np.mean(daily_rets))
-        std_ret = float(np.std(daily_rets, ddof=1))
-        volatility = std_ret * ann_factor
-        sharpe = (mean_ret / std_ret * ann_factor) if std_ret > 0 else 0.0
-    else:
-        volatility = 0.0
-        sharpe = 0.0
-
-    holding_counts = [len(s.positions) for s in merged_history[:-1]]
-    avg_holding = sum(holding_counts) / len(holding_counts) if holding_counts else 0
-
-    metrics = PerformanceMetrics(
-        total_return=total_return,
-        annualized_return=annualized_return,
-        max_drawdown=max_dd,
-        sharpe_ratio=sharpe,
-        volatility=volatility,
-        num_rebalances=len(rebalance_dates),
-        avg_holding_count=avg_holding,
-        total_trades=sum(pf._total_trades for pf in sub_portfolios.values()),
-    )
+    proxy = _CompositePortfolioProxy(merged_history, sub_portfolios, rebalance_dates)
+    metrics = compute_daily_metrics(daily_nav_list, trade_dates, portfolio=proxy)
     return final_value, metrics
 
 

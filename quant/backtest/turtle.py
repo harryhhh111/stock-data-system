@@ -18,6 +18,7 @@ from db import Connection
 from quant.backtest.common import (
     check_200ma_signal,
     compute_benchmark_comparison,
+    compute_daily_metrics,
     compute_daily_nav,
     load_benchmark_prices,
     load_daily_quotes_for_codes,
@@ -307,32 +308,45 @@ def run_turtle_backtest(
         if progress_callback and i % 200 == 0:
             progress_callback(38 + 52 * i / total, f"日 {i}/{total}: {td}  持仓{len(pf.positions)}")
 
-    # 7. 绩效
+    # 7. 绩效（日频 NAV）
     if progress_callback:
         progress_callback(90.0, "计算绩效...")
     final_value = pf.history[-1].total_value if pf.history else initial_capital
 
-    temp = Portfolio(initial_capital)
-    temp.history = pf.history
-    temp._total_trades = pf._total_trades
-    metrics = temp.get_performance()
+    # 构造兼容 compute_daily_metrics 的 proxy
+    class _TurtlePortfolioProxy:
+        def __init__(self, turtle_pf):
+            self.history = turtle_pf.history
+            self._total_trades = turtle_pf._total_trades
+            self.num_rebalances = 0  # 海龟为日频交易，无调仓概念
 
-    # 8. 基准对比
+    s_nav: dict[date, float] = {}
+    b_nav: dict[date, float] = {}
     bc = None
-    s_nav, b_nav = {}, {}
-    if benchmark and pf.history:
+
+    if pf.history:
         bt_s, bt_e = pf.history[0].date, pf.history[-1].date
-        bp = load_benchmark_prices(benchmark, market, bt_s, bt_e)
-        if bp:
-            bdates = sorted(bp.keys())
-            codes_set = set()
-            for s in pf.history:
-                codes_set.update(s.holdings.keys())
-            dq = load_daily_quotes_for_codes(list(codes_set), market, bt_s, bt_e)
-            s_nav = compute_daily_nav(pf.history, dq, bdates, initial_capital)
-            base = bp.get(bt_s) or next(iter(bp.values()))
-            b_nav = {d: bp[d] / base for d in bdates}
-            bc = compute_benchmark_comparison(benchmark, s_nav, b_nav)
+        codes_set = set()
+        for s in pf.history:
+            codes_set.update(s.holdings.keys())
+        dq = load_daily_quotes_for_codes(list(codes_set), market, bt_s, bt_e)
+        # 交易日：持仓股票的交易日并集
+        trade_dates = sorted(set(d for (_, d) in dq.keys()) | {bt_s, bt_e})
+        s_nav = compute_daily_nav(pf.history, dq, trade_dates, initial_capital)
+
+        metrics = compute_daily_metrics(s_nav, portfolio=_TurtlePortfolioProxy(pf))
+
+        # 8. 基准对比（可选）
+        if benchmark:
+            bp = load_benchmark_prices(benchmark, market, bt_s, bt_e)
+            if bp:
+                aligned_dates = sorted(set(s_nav.keys()) & set(bp.keys()))
+                s_nav = {d: s_nav[d] for d in aligned_dates}
+                base = bp.get(bt_s) or next(iter(bp.values()))
+                b_nav = {d: bp[d] / base for d in aligned_dates}
+                bc = compute_benchmark_comparison(benchmark, s_nav, b_nav)
+    else:
+        metrics = PerformanceMetrics(0, 0, 0, 0, 0, 0, 0, 0)
 
     if progress_callback:
         progress_callback(100.0, "完成")

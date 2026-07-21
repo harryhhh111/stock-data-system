@@ -95,7 +95,7 @@ def _print_report(r: BacktestResult) -> None:
         print(f"  跟踪误差:          {bc.tracking_error:.1%}")
         print(f"  相关系数:          {bc.correlation:.2f}")
         print()
-        print("  注：IR / Beta / TE 基于日频 NAV 计算（252 个交易日/年）")
+        print("  注：策略年化/回撤/波动率/Sharpe 及基准对比均基于日频 NAV 计算（252 个交易日/年）")
 
     if r.final_holdings:
         print(f"\n  最终持仓 ({len(r.final_holdings)} 只):")
