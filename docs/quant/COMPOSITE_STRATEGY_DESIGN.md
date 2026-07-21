@@ -471,7 +471,7 @@ def _commodity_sub_targets(sub, rb_date, market, preloader, quote_by_date):
     # 1. 硬过滤（市值、FCF Yield、行业排除等）
     filtered, _, _ = apply_hard_filters(pool, filters)
 
-    # 2. ROE 连续过滤（fcf_roe_value 的"连续 3 年 ROE ≥ 15%"）
+    # 2. ROE 连续过滤（fcf_roe_value 的"连续 3 年 ROE ≥ 12%"）
     roe_years = filters.get("roe_consecutive_years", 0)
     roe_min = filters.get("roe_min", 0)
     if roe_years and roe_years > 0:

@@ -100,11 +100,14 @@ def _fetch_hk_index(tx_code: str) -> list[dict]:
                     "amount": None,
                 })
 
-        # 最早日期 > 2020-01-01 则继续往前拉
+        # 最早日期 > 2015-01-01 则继续往前拉。
+        # 腾讯接口返回的是截至 seg_end 的最晚 800 条日线；若直接把 seg_end 设为最早日期，
+        # 会重复返回同一页。因此向前跳约 3 个交易年（1100 个日历日）取更早的 800 条，
+        # 通过 seen_dates 去重保证连续不遗漏。
         earliest = day_data[-1][0]
         if earliest <= "2015-01-01":
             break
-        seg_end = earliest
+        seg_end = (date.fromisoformat(earliest) - timedelta(days=1100)).isoformat()
 
     return all_records
 

@@ -164,7 +164,7 @@ HARD_FILTERS = {
 ```python
 PRESETS = {
     "fcf_roe_value": {
-        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + 连续3年ROE > 15% + 排除金融地产",
+        "description": "FCF+ROE 深度价值 — FCF Yield > 10% + 连续3年ROE > 12% + 排除金融地产",
         "filters": {
             "market_cap_min_by_market": {
                 "CN_A": 2e9,              # A 股 > 20 亿人民币
@@ -174,7 +174,7 @@ PRESETS = {
             "exclude_st": True,
             "exclude_industries": ["银行", "非银金融", "房地产"],
             "fcf_yield_min": 0.10,        # FCF Yield > 10%
-            "roe_min": 0.15,              # ROE > 15%
+            "roe_min": 0.12,              # ROE > 12%
             "roe_consecutive_years": 3,   # 连续 3 年
         },
         "weights": {
