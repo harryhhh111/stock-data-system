@@ -260,6 +260,9 @@ def run_backtest(
             portfolio.history, daily_quotes, trade_dates, initial_capital
         )
 
+        # 统一基于完整日频 NAV 计算策略绩效（不因为基准数据缺失而截断）
+        metrics = compute_daily_metrics(strategy_daily_nav, portfolio=portfolio)
+
         # 基准对比（可选）
         if benchmark:
             bench_prices = load_benchmark_prices(benchmark, market, bt_start, bt_end)
@@ -280,15 +283,18 @@ def run_backtest(
             benchmark_daily_nav = {
                 d: bench_prices[d] / base_close for d in aligned_dates
             }
-            # 策略 NAV 也按对齐日期重采样
-            strategy_daily_nav = {d: strategy_daily_nav[d] for d in aligned_dates}
+            aligned_strategy_daily_nav = {
+                d: strategy_daily_nav[d] for d in aligned_dates
+            }
 
             bench_comparison = compute_benchmark_comparison(
-                benchmark, strategy_daily_nav, benchmark_daily_nav
+                benchmark, aligned_strategy_daily_nav, benchmark_daily_nav
             )
 
-    # 统一基于日频 NAV 计算绩效指标
-    metrics = compute_daily_metrics(strategy_daily_nav, portfolio=portfolio)
+            # 保留完整的策略日频 NAV 供外部使用（如绘图）
+            # benchmark_daily_nav 仍仅包含有基准数据的日期
+    else:
+        metrics = compute_daily_metrics({}, portfolio=portfolio)
 
     return BacktestResult(
         preset_name=preset_name,

@@ -71,7 +71,7 @@ PRESETS: dict[str, PresetConfig] = {
             "排除 ST/*ST",
             "排除行业: 银行/非银金融/房地产 (A股)，银行/保险/其他金融/地产 (港股)",
             "FCF Yield ≥ 12% (A股/港股)，≥ 10% (美股)",
-            "ROE ≥ 10%，连续 3 年年度 ROE 均达标",
+            "ROE ≥ 15%，连续 3 年年度 ROE 均达标",
         ],
         "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
         "filters": {
@@ -90,8 +90,8 @@ PRESETS: dict[str, PresetConfig] = {
                 "CN_HK": 0.12,                 # 港股 FCF Yield > 12%
                 "US": 0.10,                    # 美股 FCF Yield > 10%
             },
-            "roe_min": 0.10,                   # ROE > 10%
-            "roe_consecutive_years": 3,        # 连续 3 年 ROE > 10%
+            "roe_min": 0.15,                   # ROE > 15%
+            "roe_consecutive_years": 3,        # 连续 3 年 ROE > 15%
         },
         # ROE/FCF Yield 已被硬过滤，打分聚焦估值 + 现金流可持续性 + 成长
         "weights": {

@@ -336,15 +336,15 @@ def run_turtle_backtest(
 
         metrics = compute_daily_metrics(s_nav, portfolio=_TurtlePortfolioProxy(pf))
 
-        # 8. 基准对比（可选）
+        # 8. 基准对比（可选）—— 仅在有基准数据的日期子集上计算，策略 NAV 保持完整
         if benchmark:
             bp = load_benchmark_prices(benchmark, market, bt_s, bt_e)
             if bp:
                 aligned_dates = sorted(set(s_nav.keys()) & set(bp.keys()))
-                s_nav = {d: s_nav[d] for d in aligned_dates}
+                aligned_s_nav = {d: s_nav[d] for d in aligned_dates}
                 base = bp.get(bt_s) or next(iter(bp.values()))
                 b_nav = {d: bp[d] / base for d in aligned_dates}
-                bc = compute_benchmark_comparison(benchmark, s_nav, b_nav)
+                bc = compute_benchmark_comparison(benchmark, aligned_s_nav, b_nav)
     else:
         metrics = PerformanceMetrics(0, 0, 0, 0, 0, 0, 0, 0)
 

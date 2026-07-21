@@ -660,7 +660,11 @@ def _compute_composite_nav_and_benchmark(
     list[float],
     list[date],
 ]:
-    """计算日频 NAV、基准 NAV 与基准对比（无论是否启用 benchmark 都生成策略日频 NAV）。"""
+    """计算日频 NAV、基准 NAV 与基准对比（无论是否启用 benchmark 都生成策略日频 NAV）。
+
+    返回的策略日频 NAV 保持完整区间，不因为基准数据缺失而截断；
+    基准对比仅在有基准数据的日期子集上计算。
+    """
     bench_comparison: BenchmarkComparison | None = None
     strategy_daily_nav: dict[date, float] = {}
     benchmark_daily_nav: dict[date, float] = {}
@@ -693,19 +697,19 @@ def _compute_composite_nav_and_benchmark(
             f" 请用 --benchmark '' 显式禁用。"
         )
 
-    # 日期对齐：策略与基准交易日取交集
+    # 日期对齐：策略与基准交易日取交集，仅用于基准对比
     aligned_dates = sorted(
         set(strategy_daily_nav.keys()) & set(bench_prices.keys())
     )
-    strategy_daily_nav = {d: strategy_daily_nav[d] for d in aligned_dates}
-    daily_nav_list = [strategy_daily_nav[d] for d in aligned_dates]
-    trade_dates = aligned_dates
+    aligned_strategy_daily_nav = {
+        d: strategy_daily_nav[d] for d in aligned_dates
+    }
 
     base_close = bench_prices.get(bt_start) or next(iter(bench_prices.values()))
     benchmark_daily_nav = {d: bench_prices[d] / base_close for d in aligned_dates}
 
     bench_comparison = compute_benchmark_comparison(
-        benchmark, strategy_daily_nav, benchmark_daily_nav
+        benchmark, aligned_strategy_daily_nav, benchmark_daily_nav
     )
     return bench_comparison, strategy_daily_nav, benchmark_daily_nav, daily_nav_list, trade_dates
 
