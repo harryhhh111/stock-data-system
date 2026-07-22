@@ -348,10 +348,12 @@ python -m core.validate
 
 | 指标 | 计算方式 |
 |------|---------|
-| ROE | 归母净利润 / 归母净资产 |
+| ROE | TTM/年度归母净利润 / 期初期末平均归母权益（缺失与低权益按质量规则降级） |
 | 毛利率 | 毛利润 / 营收 |
 | 净利率 | 净利润 / 营收 |
 | 营收增速 | 同比对比 |
+
+跨财年公司横向比较时，流量指标、资产负债表时点和长期年度历史不得混用；统一口径见 [`CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md`](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)。
 
 ### 9.3 成长筛选
 

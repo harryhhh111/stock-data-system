@@ -35,6 +35,9 @@
 
 | 文档 | 内容 |
 |------|------|
+| [quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md) | 跨财年股票比较统一规范（TTM、Snapshot、年度历史、PIT 与新鲜度） |
+| [quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md) | ROE/ROIC 等财务指标的数据治理前置条件 |
+| [quant/ROIC_IMPLEMENTATION_PLAN.md](quant/ROIC_IMPLEMENTATION_PLAN.md) | 三市场 ROIC 计算与接入方案 |
 | [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（选股、分析、回测） |
 | [quant/BACKTEST_DESIGN.md](quant/BACKTEST_DESIGN.md) | 因子策略回测系统设计（PIT、组合、基准对比） |
 | [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |

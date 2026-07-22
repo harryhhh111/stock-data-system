@@ -32,7 +32,7 @@
 | 净利率 | ✅ | ✅ | ✅ |
 | 资产负债率 | ✅ 3,620 | ✅ 2,660 | ✅ |
 | 流动比率 | ✅ | ✅ | ✅ |
-| ROE | ✅ 6,280 只（三层 fallback） | ✅ 三层 fallback | ✅ |
+| ROE | ✅ 覆盖率已补齐；平均权益/质量治理待完成 | ✅ 覆盖率已补齐；平均权益/质量治理待完成 | ✅ 覆盖可用；平均权益/filing 治理待完成 |
 | ROA | ✅ | ✅ | ✅ |
 | 营收同比增长 | ✅ 2,712 | ✅ 2,015 | ✅ mv_us_financial_indicator |
 | 净利润同比增长 | ✅ | ✅ | ✅ mv_us_financial_indicator |
@@ -45,7 +45,7 @@
 
 1. ~~**美股无日线行情**~~ ✅ 已修复：腾讯 K 线回填 683K 行（2021~2026），PE/PB/市值/FCF Yield 均已可用。
 2. ~~**分红表为空**~~ ✅ 已修复：A 股 5,350 只 / 港股 1,981 只，共 82,125 条分红记录。修复了 A 股 transformer（每10股→每股）和港股 transformer（分红方案文本解析）。
-3. ~~**ROE 覆盖率低**~~ ✅ 已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。
+3. ~~**ROE 覆盖率低**~~ ✅ 覆盖率已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。注意这只解决覆盖率；年度平均权益、归母口径配对和低权益质量治理仍按 [`FINANCIAL_METRICS_DATA_PREREQUISITES.md`](FINANCIAL_METRICS_DATA_PREREQUISITES.md) 实施。
 4. ~~**物化视图刷新滞后**~~ ✅ 已修复：`sync_financial`/`sync_dividend`/`daily_quote` 完成后自动 `REFRESH MATERIALIZED VIEW`。
 5. ~~**美股 TTM 时效性差**~~ ✅ 已修复：`mv_us_indicator_ttm` 已实现公式法 TTM（latest_cumulative + last_annual - prev_year_same_period），与 CN 链路一致。
 6. ~~**美股 PB 数据错误**~~ ✅ 已修复：腾讯 API 返回的 PB 值系统性错误（AAPL 显示 0.20 而非 ~55），改为从 `mv_us_financial_indicator.book_value_per_share` 计算 `close / bvps`。
@@ -56,7 +56,7 @@
 
 ### 2.3 结论
 
-三个市场均已可用。美股已完成 Russell 1000 扩展（1,002 只）、公式法 TTM、行业分类全覆盖、PB 修复。选股筛选器和个股分析器均支持 US。
+三个市场的基础查询链路均已可用。美股已完成 Russell 1000 扩展（1,002 只）、公式法 TTM、行业分类全覆盖、PB 修复，选股筛选器和个股分析器均支持 US；但跨财年正式比较、严格 filing PIT、年度平均权益与报告类型历史治理尚需按前置方案完成。
 
 ## 三、系统设计
 
@@ -422,11 +422,11 @@ python -m quant.analyzer 600519 --format md     # Markdown
 
 在实现筛选器和分析器之前，需要先补全几个数据缺口。
 
-#### 3.4.1 ROE 修复 ✅ 已完成
+#### 3.4.1 ROE 覆盖率修复 ✅ 已完成；会计口径治理待完成
 
 **问题**：CN_HK 无 `parent_equity`，CN_A 部分缺失。
 **方案**：修改 `mv_financial_indicator` 的 ROE 计算，三层 fallback：`parent_equity` → `total_equity` → `total_assets - total_liab`。
-**结果**：A/HK 共 6,280 只有 ROE（之前 CN_A 仅 907 只）。
+**结果**：A/HK 共 6,280 只有 ROE（之前 CN_A 仅 907 只）。本项只代表字段覆盖率修复，不代表平均权益、分子分母归属和低权益异常已经完成；后续以财务指标前置数据治理方案为准。
 
 #### 3.4.2 美股日线行情 ✅ 已完成
 
