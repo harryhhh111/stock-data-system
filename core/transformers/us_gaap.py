@@ -366,6 +366,7 @@ class USGAAPTransformer(BaseTransformer):
                 r["net_income_standalone"] = r["net_income_common_standalone"]
 
         logger.debug("利润表转换: %s, %d 条记录", stock_code, len(records))
+        records = self._filter_unknown_records(records, stock_code, "income")
         return records
 
     def transform_balance(self, raw_df: pd.DataFrame, stock_code: str = "",
@@ -400,6 +401,7 @@ class USGAAPTransformer(BaseTransformer):
                     r["total_equity"] = r["total_assets"] - r["total_liabilities"]
 
         logger.debug("资产负债表转换: %s, %d 条记录", stock_code, len(records))
+        records = self._filter_unknown_records(records, stock_code, "balance")
         return records
 
     def transform_cashflow(self, raw_df: pd.DataFrame, stock_code: str = "",
@@ -423,9 +425,36 @@ class USGAAPTransformer(BaseTransformer):
             records = [{k: r.get(k) for k in all_keys} for r in records]
 
         logger.debug("现金流量表转换: %s, %d 条记录", stock_code, len(records))
+        records = self._filter_unknown_records(records, stock_code, "cashflow")
         return records
 
     # ── 内部方法 ──────────────────────────────────────────
+
+    @staticmethod
+    def _filter_unknown_records(records: list[dict[str, Any]], stock_code: str,
+                                statement: str) -> list[dict[str, Any]]:
+        """过滤 report_type=unknown 的记录，禁止进入正式宽表。
+
+        unknown 记录待 us_financial_fact_version 表就绪后迁入 staging，
+        在此之前仅记录警告日志，不写入 us_*_statement 正式表。
+        """
+        valid = []
+        unknown_count = 0
+        for r in records:
+            if r.get("report_type") == "unknown":
+                unknown_count += 1
+                logger.warning(
+                    "UNKNOWN_FORM_FP 过滤: stock=%s statement=%s end=%s accn=%s",
+                    stock_code, statement, r.get("report_date"), r.get("accession_no", ""),
+                )
+            else:
+                valid.append(r)
+        if unknown_count > 0:
+            logger.warning(
+                "%s %s: %d 条 unknown 记录已过滤，未写入正式宽表",
+                stock_code, statement, unknown_count,
+            )
+        return valid
 
     def _build_record(self, row: pd.Series, stock_code: str,
                       cik: str) -> Optional[dict[str, Any]]:
@@ -446,12 +475,28 @@ class USGAAPTransformer(BaseTransformer):
 
         # 解析 report_type：优先 fp，未知时用 form 推断
         fp = str(row.get("fp", "")).strip()
+        period_kind = str(row.get("_period_kind", "")).strip()
         report_type = SEC_FP_MAP.get(fp)
         if report_type is None:
             form = str(row.get("form", "")).strip()
-            report_type = _infer_report_type_from_form(form, fp)
+            # form fallback 的安全性取决于 period kind：
+            #   instant（资产负债表时点）：10-K → annual 是安全的，
+            #       因为资产负债表快照天然是年度末时点。
+            #   duration（利润表/现金流期间）：10-K 可能包含 Q4 standalone
+            #       和历史比较期间，不能仅凭 form=10-K 判为 annual。
+            if period_kind == "instant":
+                report_type = _infer_report_type_from_form(form, fp)
+            else:
+                # duration 或未知 period_kind：不允许 form-only fallback
+                logger.warning(
+                    "duration/unknown period_kind 不适用 form fallback: "
+                    "stock=%s fp=%s form=%s period_kind=%s",
+                    stock_code, fp, form, period_kind or "missing",
+                )
+                report_type = None
         if report_type is None:
-            # 不静默丢弃：记录为 unknown 并保留，避免数据丢失
+            # 不静默丢弃：记录为 unknown 并标记 UNKNOWN_FORM_FP
+            # 这些记录不进入正式 current statement 宽表，待 fact version 表就绪后迁入
             report_type = "unknown"
             logger.warning(
                 "无法判定 report_type: stock=%s end=%s fp=%s form=%s",
@@ -488,7 +533,8 @@ class USGAAPTransformer(BaseTransformer):
         extra_items: dict[str, Any] = {}
 
         # 标准字段列表（排除元数据列）
-        meta_cols = {"end", "fp", "filed", "accn", "_date", "_fp_order", "frame"}
+        meta_cols = {"end", "fp", "filed", "accn", "_date", "_fp_order", "frame",
+                     "_period_kind", "_quality_flag", "_frame_has_q", "_frame_is_instant", "form"}
         for col in row.index:
             if col in meta_cols:
                 continue

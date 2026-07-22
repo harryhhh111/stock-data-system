@@ -83,13 +83,14 @@ class SECRateLimiter:
 # Period classification（start/end 第一判据，frame 仅佐证）
 # ═══════════════════════════════════════════════════════════
 
-def _classify_period(start: str | None, frame: str) -> tuple[str, str | None]:
+def _classify_period(start: str | None, end: str | None, frame: str) -> tuple[str, str | None]:
     """以 SEC fact 的 start/end 判定 period kind，frame 仅作佐证。
 
     规则:
-        start 缺失 + end 存在  → instant
-        start 存在 + end 存在  → duration
-        start 存在 + end 缺失  → invalid
+        start 缺失 + end 存在  → instant（资产负债表时点）
+        start 存在 + end 存在  → duration（利润表/现金流期间）
+        start 缺失 + end 缺失  → invalid（缺少期间信息）
+        start 存在 + end 缺失  → invalid（期间不完整）
 
     frame 佐证:
         instant + frame=~Q#I$  → 一致
@@ -99,16 +100,23 @@ def _classify_period(start: str | None, frame: str) -> tuple[str, str | None]:
 
     Returns:
         (period_kind, quality_flag or None)
+        period_kind ∈ {"instant", "duration", "invalid"}
     """
     has_start = bool(start)
-    if not has_start:
+    has_end = bool(end)
+
+    if not has_start and not has_end:
+        period_kind = "invalid"
+    elif has_start and not has_end:
+        period_kind = "invalid"
+    elif not has_start and has_end:
         period_kind = "instant"
     else:
         period_kind = "duration"
 
-    # frame 佐证检查
+    # frame 佐证检查（仅对有效 period_kind 进行）
     quality_flag = None
-    if frame:
+    if period_kind != "invalid" and frame:
         frame_is_instant = bool(frame) and bool(re.search(r"Q\d+I$", frame))
         frame_is_duration = bool(frame) and bool(re.search(r"Q\d+$", frame)) and not frame.endswith("I")
         if period_kind == "instant" and frame_is_duration:
@@ -655,6 +663,7 @@ class USFinancialFetcher(BaseFetcher):
         # SEC 为中概股同时提供 CNY 和 USD 版本，CNY 字典序靠前会被 dedup 保留
         _KEEP_UNITS = {"USD", "USD/shares", "shares"}
         records = []
+        invalid_records: list[dict] = []  # quarantined, not entering wide table
         for tag, field_name in tag_mapping.items():
             if tag in usgaap:
                 for unit_name, entries in usgaap[tag].get("units", {}).items():
@@ -670,8 +679,30 @@ class USFinancialFetcher(BaseFetcher):
                         # SEC Company Facts 的每个 fact 都有 start(可选) 和 end(必填)
                         #   start 缺失 + end 存在  → instant（资产负债表时点）
                         #   start 存在 + end 存在  → duration（利润表/现金流期间）
-                        #   start 存在 + end 缺失  → invalid
-                        _period_kind, _quality_flag = _classify_period(start, frame)
+                        #   start 缺失 + end 缺失  → invalid（缺少期间信息）
+                        #   start 存在 + end 缺失  → invalid（期间不完整）
+                        end_val = entry.get("end")
+                        _period_kind, _quality_flag = _classify_period(start, end_val, frame)
+
+                        # ── 隔离 invalid period：禁止进入正式宽表 ──
+                        if _period_kind == "invalid":
+                            invalid_records.append({
+                                "tag": tag,
+                                "field": field_name,
+                                "fp": fp,
+                                "start": start,
+                                "end": end_val,
+                                "frame": frame,
+                                "form": form,
+                                "filed": entry.get("filed"),
+                                "accn": entry.get("accn"),
+                            })
+                            logger.warning(
+                                "INVALID_PERIOD 隔离: tag=%s field=%s start=%s end=%s fp=%s frame=%s form=%s accn=%s",
+                                tag, field_name, start, end_val, fp, frame, form,
+                                entry.get("accn", ""),
+                            )
+                            continue  # 不进入 records，不进入后续 pivot 和宽表
 
                         # frame 仅作佐证，不覆盖 period kind
                         _frame_has_q = "Q" in frame
@@ -706,6 +737,13 @@ class USFinancialFetcher(BaseFetcher):
                                 "_quality_flag": _quality_flag,
                             }
                         )
+
+        if invalid_records:
+            logger.warning(
+                "extract_table: %d 条 invalid period 记录已隔离（未进入宽表），涉及 tag: %s",
+                len(invalid_records),
+                sorted(set(r["tag"] for r in invalid_records)),
+            )
 
         if not records:
             return pd.DataFrame()
@@ -795,7 +833,7 @@ class USFinancialFetcher(BaseFetcher):
                 return pd.DataFrame()
             # Preserve frame and form before pivot_table drops them (neither
             # index, columns, nor values, so pandas silently discards them).
-            meta_cols = ["frame", "form"]
+            meta_cols = ["frame", "form", "_period_kind", "_quality_flag"]
             meta_map = sub_df.groupby(["end", "fp", "filed", "accn"])[meta_cols].first().reset_index()
             wide = sub_df.pivot_table(
                 index=["end", "fp", "filed", "accn"],
