@@ -95,6 +95,177 @@ class TestPeriodKindFromStartEnd:
         assert "FY" in fps, "PLTR income 应有 FY（annual duration）"
 
 
+# ── _classify_period 直接单测 ───────────────────────────────
+
+
+class TestClassifyPeriodDirect:
+    """对 _classify_period(start, end, frame) 的直接单元测试。"""
+
+    def test_both_none_is_invalid(self):
+        """start=None, end=None → invalid。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period(None, None, "")
+        assert kind == "invalid", f"expected invalid, got {kind}"
+
+    def test_start_exists_end_none_is_invalid(self):
+        """start=value, end=None → invalid（期间不完整）。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period("2025-01-01", None, "")
+        assert kind == "invalid", f"expected invalid, got {kind}"
+
+    def test_start_none_end_exists_is_instant(self):
+        """start=None, end=2025-12-31 → instant（资产负债表时点）。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period(None, "2025-12-31", "")
+        assert kind == "instant", f"expected instant, got {kind}"
+
+    def test_both_exist_is_duration(self):
+        """start=2025-01-01, end=2025-12-31 → duration（利润表/现金流期间）。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period("2025-01-01", "2025-12-31", "")
+        assert kind == "duration", f"expected duration, got {kind}"
+
+    def test_instant_with_q4i_frame_no_conflict(self):
+        """instant + frame=CY2025Q4I → 一致，无冲突标记。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period(None, "2025-12-31", "CY2025Q4I")
+        assert kind == "instant"
+        assert flag is None, f"instant+Q4I 不应冲突, got {flag}"
+
+    def test_instant_with_q4_frame_is_conflict(self):
+        """instant + frame=CY2025Q4（无 I） → FRAME_PERIOD_CONFLICT。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period(None, "2025-12-31", "CY2025Q4")
+        assert kind == "instant"
+        assert flag == "FRAME_PERIOD_CONFLICT", f"instant+Q4 应冲突, got {flag}"
+
+    def test_duration_with_q4_frame_no_conflict(self):
+        """duration + frame=CY2025Q1 → 一致，无冲突标记。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period("2025-01-01", "2025-03-31", "CY2025Q1")
+        assert kind == "duration"
+        assert flag is None, f"duration+Q1 不应冲突, got {flag}"
+
+    def test_duration_with_q4i_frame_is_conflict(self):
+        """duration + frame=CY2025Q4I → FRAME_PERIOD_CONFLICT。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period("2025-01-01", "2025-12-31", "CY2025Q4I")
+        assert kind == "duration"
+        assert flag == "FRAME_PERIOD_CONFLICT", f"duration+Q4I 应冲突, got {flag}"
+
+    def test_invalid_skips_frame_check(self):
+        """invalid period_kind 不检查 frame 佐证（不产生虚假冲突）。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period(None, None, "CY2025Q4I")
+        assert kind == "invalid"
+        assert flag is None, f"invalid 不应有 frame 冲突标记, got {flag}"
+
+    def test_empty_string_start_and_end_is_invalid(self):
+        """空字符串 start/end 等同于 None → invalid。"""
+        from core.fetchers.us_financial import _classify_period
+        kind, flag = _classify_period("", "", "")
+        assert kind == "invalid", f"expected invalid for empty strings, got {kind}"
+
+
+# ── Invalid period 隔离（extract_table 端到端）────────────────
+
+
+class TestInvalidPeriodQuarantine:
+    """period_kind=invalid 的记录被隔离，不进入 extract_table 输出的宽表。"""
+
+    def test_missing_end_quarantined(self, caplog):
+        """entry 缺少 end → _classify_period 返回 invalid → 被隔离，不进入宽表。"""
+        from core.fetchers.us_financial import USFinancialFetcher
+        import logging
+        caplog.set_level(logging.WARNING)
+
+        facts = {
+            "cik": "0000000001",
+            "facts": {
+                "us-gaap": {
+                    "Revenues": {
+                        "units": {"USD": [
+                            {"val": 100e9, "end": "2025-12-31", "fp": "FY",
+                             "filed": "2026-02-15", "accn": "0001", "frame": "CY2025",
+                             "form": "10-K", "fy": 2025, "start": "2025-01-01"},
+                            # 缺少 end → invalid
+                            {"val": 50e9, "fp": "Q2",
+                             "filed": "2025-08-01", "accn": "0002", "frame": "CY2025Q2",
+                             "form": "10-Q", "fy": 2025, "start": "2025-04-01"},
+                        ]}
+                    },
+                }
+            }
+        }
+        fetcher = USFinancialFetcher()
+        df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
+
+        # 宽表应只包含 valid 记录（end 存在的）
+        assert not df.empty, "应至少有一条 valid 记录"
+        assert len(df) == 1, f"应只有 1 条 valid 记录, got {len(df)}"
+
+        # 确认隔离日志
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        invalid_logs = [w for w in warnings if "INVALID_PERIOD" in w]
+        assert len(invalid_logs) >= 1, f"应有 INVALID_PERIOD 隔离日志, got warnings: {warnings}"
+
+    def test_missing_start_and_end_quarantined(self, caplog):
+        """entry 同时缺少 start 和 end → invalid → 被隔离。"""
+        from core.fetchers.us_financial import USFinancialFetcher
+        import logging
+        caplog.set_level(logging.WARNING)
+
+        facts = {
+            "cik": "0000000001",
+            "facts": {
+                "us-gaap": {
+                    "Assets": {
+                        "units": {"USD": [
+                            # 缺少 start 和 end → invalid
+                            {"val": 500e9, "fp": "FY",
+                             "filed": "2026-02-15", "accn": "0001", "frame": "CY2025Q4I",
+                             "form": "10-K", "fy": 2025},
+                        ]}
+                    },
+                }
+            }
+        }
+        fetcher = USFinancialFetcher()
+        df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
+
+        assert df.empty, f"全 invalid 记录应返回空 DataFrame, got {len(df)} rows"
+
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        invalid_logs = [w for w in warnings if "INVALID_PERIOD" in w]
+        assert len(invalid_logs) >= 1, "应有 INVALID_PERIOD 隔离日志"
+
+    def test_valid_records_preserve_period_kind_in_wide_table(self):
+        """valid 记录的 _period_kind 和 _quality_flag 应在 pivot 后保留到宽表。"""
+        from core.fetchers.us_financial import USFinancialFetcher
+        facts = {
+            "cik": "0000000001",
+            "facts": {
+                "us-gaap": {
+                    "Assets": {
+                        "units": {"USD": [
+                            {"val": 500e9, "end": "2025-12-31", "fp": "FY",
+                             "filed": "2026-02-15", "accn": "0001", "frame": "CY2025Q4I",
+                             "form": "10-K", "fy": 2025},
+                        ]}
+                    },
+                }
+            }
+        }
+        fetcher = USFinancialFetcher()
+        df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
+
+        assert "_period_kind" in df.columns, (
+            f"_period_kind 应在宽表中保留, columns={list(df.columns)}"
+        )
+        kinds = df["_period_kind"].dropna().unique()
+        assert "instant" in kinds, f"Assets 应为 instant, got {kinds}"
+
+
 # ── MELI 改财年回归 ────────────────────────────────────────
 
 

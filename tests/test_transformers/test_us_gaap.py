@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import pandas as pd
 from core.transformers.us_gaap import USGAAPTransformer, SEC_FP_MAP
@@ -107,3 +108,142 @@ class TestUSGAAPTransformer:
         if len(records) > 1:
             key_sets = [set(r.keys()) for r in records]
             assert all(ks == key_sets[0] for ks in key_sets), "记录间 key 集合不一致"
+
+
+class TestUnknownFormFpFilter:
+    """unknown form/fp 的记录不允许进入正式宽表。"""
+
+    def test_unknown_report_type_filtered_out(self):
+        """report_type=unknown 的记录被 _filter_unknown_records 过滤。"""
+        transformer = USGAAPTransformer()
+        records = [
+            {"stock_code": "TEST", "report_type": "annual", "report_date": "2025-12-31",
+             "accession_no": "0001"},
+            {"stock_code": "TEST", "report_type": "unknown", "report_date": "2025-12-31",
+             "accession_no": "0002"},
+            {"stock_code": "TEST", "report_type": "quarterly", "report_date": "2025-09-30",
+             "accession_no": "0003"},
+        ]
+        filtered = transformer._filter_unknown_records(records, "TEST", "income")
+        assert len(filtered) == 2, f"应过滤 1 条 unknown, 实际保留 {len(filtered)} 条"
+        report_types = {r["report_type"] for r in filtered}
+        assert "unknown" not in report_types, "unknown 不应出现在过滤后记录中"
+
+    def test_all_unknown_filtered_returns_empty(self):
+        """全部是 unknown 时返回空列表。"""
+        transformer = USGAAPTransformer()
+        records = [
+            {"stock_code": "TEST", "report_type": "unknown", "report_date": "2025-12-31",
+             "accession_no": "0001"},
+            {"stock_code": "TEST", "report_type": "unknown", "report_date": "2025-09-30",
+             "accession_no": "0002"},
+        ]
+        filtered = transformer._filter_unknown_records(records, "TEST", "balance")
+        assert filtered == [], f"全部 unknown 应返回空列表, 实际: {filtered}"
+
+    def test_all_valid_passes_through(self):
+        """全部是有效 report_type 时原样返回。"""
+        transformer = USGAAPTransformer()
+        records = [
+            {"stock_code": "TEST", "report_type": "annual", "report_date": "2025-12-31"},
+            {"stock_code": "TEST", "report_type": "quarterly", "report_date": "2025-09-30"},
+        ]
+        filtered = transformer._filter_unknown_records(records, "TEST", "cashflow")
+        assert len(filtered) == 2
+        assert filtered == records
+
+
+class TestUnknownFormFpEndToEnd:
+    """端到端：raw DataFrame → _build_record → transform → unknown 被过滤。"""
+
+    def _make_row(self, **overrides):
+        """构造模拟 extract_table 输出的宽表行。"""
+        defaults = {
+            "end": "2025-12-31",
+            "fp": "FY",
+            "filed": "2026-02-15",
+            "accn": "0000320193-26-000001",
+            "frame": "CY2025Q4I",
+            "form": "10-K",
+            "_period_kind": "instant",
+            "_quality_flag": None,
+            "_frame_has_q": True,
+            "_frame_is_instant": True,
+            "revenues": 100e9,
+            "net_income": 20e9,
+        }
+        defaults.update(overrides)
+        return pd.Series(defaults)
+
+    def test_unknown_fp_and_unknown_form_yields_unknown(self, caplog):
+        """fp=XX + form=8-K + instant → _build_record → report_type=unknown。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="8-K", _period_kind="instant")
+        record = transformer._build_record(row, "TEST", "0000000001")
+        assert record is not None, "unknown fp+form 不应返回 None（应保留并标记 unknown）"
+        assert record["report_type"] == "unknown"
+
+    def test_unknown_fp_10k_duration_blocked_from_form_fallback(self, caplog):
+        """fp=XX + form=10-K + duration → 不适用 form fallback → unknown。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="10-K", _period_kind="duration",
+                             _frame_is_instant=False)
+        record = transformer._build_record(row, "TEST", "0000000001")
+        assert record is not None
+        assert record["report_type"] == "unknown", (
+            f"duration+10-K 不应自动判为 annual, got {record['report_type']}"
+        )
+
+    def test_unknown_fp_10q_instant_passes_form_fallback(self):
+        """fp=XX + form=10-Q + instant → form fallback 允许 → quarterly。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="10-Q", _period_kind="instant")
+        record = transformer._build_record(row, "TEST", "0000000001")
+        assert record is not None
+        assert record["report_type"] == "quarterly", (
+            f"instant+10-Q 应通过 form fallback 判为 quarterly, got {record['report_type']}"
+        )
+
+    def test_unknown_fp_10k_instant_passes_form_fallback(self):
+        """fp=XX + form=10-K + instant → form fallback 允许 → annual。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="10-K", _period_kind="instant")
+        record = transformer._build_record(row, "TEST", "0000000001")
+        assert record is not None
+        assert record["report_type"] == "annual", (
+            f"instant+10-K 应通过 form fallback 判为 annual, got {record['report_type']}"
+        )
+
+    def test_transform_income_filters_unknown(self):
+        """transform_income 出口不含 unknown 记录。"""
+        transformer = USGAAPTransformer()
+        # 构造两条：一条正常 annual，一条 unknown
+        row1 = self._make_row(fp="FY")
+        row2 = self._make_row(fp="XX", form="8-K", end="2025-09-30")
+        df = pd.DataFrame([row1, row2])
+        records = transformer.transform_income(df, stock_code="TEST", cik="0000000001")
+        report_types = {r["report_type"] for r in records}
+        assert "unknown" not in report_types, (
+            f"transform_income 输出不应含 unknown, got {report_types}"
+        )
+        assert len(records) == 1, f"应只保留 1 条 annual 记录, got {len(records)}"
+
+    def test_transform_balance_instant_form_fallback_does_not_filter(self):
+        """transform_balance: fp=XX + form=10-K + instant → annual（不过滤）。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="10-K")
+        df = pd.DataFrame([row])
+        records = transformer.transform_balance(df, stock_code="TEST", cik="0000000001")
+        assert len(records) == 1, f"instant+10-K 应通过, got {len(records)}"
+        assert records[0]["report_type"] == "annual"
+
+    def test_transform_cashflow_duration_form_blocked(self):
+        """transform_cashflow: fp=XX + form=10-K + duration → unknown → 被过滤。"""
+        transformer = USGAAPTransformer()
+        row = self._make_row(fp="XX", form="10-K", _period_kind="duration",
+                             _frame_is_instant=False)
+        df = pd.DataFrame([row])
+        records = transformer.transform_cashflow(df, stock_code="TEST", cik="0000000001")
+        assert len(records) == 0, (
+            f"duration+10-K+unknown fp 应被过滤, got {len(records)} 条"
+        )
