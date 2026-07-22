@@ -751,16 +751,17 @@ class USFinancialFetcher(BaseFetcher):
             sub_df = sub_df.dropna(subset=["val"])
             if sub_df.empty:
                 return pd.DataFrame()
-            # Preserve frame before pivot_table drops it (frame is neither
-            # index, columns, nor values, so pandas silently discards it).
-            frame_map = sub_df.groupby(["end", "fp", "filed", "accn"])["frame"].first().reset_index()
+            # Preserve frame and form before pivot_table drops them (neither
+            # index, columns, nor values, so pandas silently discards them).
+            meta_cols = ["frame", "form"]
+            meta_map = sub_df.groupby(["end", "fp", "filed", "accn"])[meta_cols].first().reset_index()
             wide = sub_df.pivot_table(
                 index=["end", "fp", "filed", "accn"],
                 columns="field",
                 values="val",
                 aggfunc="first",
             ).reset_index()
-            wide = wide.merge(frame_map, on=["end", "fp", "filed", "accn"], how="left")
+            wide = wide.merge(meta_map, on=["end", "fp", "filed", "accn"], how="left")
             if suffix:
                 renames = {
                     c: f"{c}{suffix}"
