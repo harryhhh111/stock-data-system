@@ -347,6 +347,7 @@ def _preload_composite_data(
     start: date,
     end: date,
     market: str,
+    months: int = 1,
 ) -> tuple[PITPreloader, list[date], dict[date, pd.DataFrame]]:
     """启动前校验与共享数据预加载。"""
     from quant.backtest.macro import _load_commodity_prices
@@ -366,7 +367,7 @@ def _preload_composite_data(
     # 0c. 共享数据预加载
     preloader = PITPreloader(market)
     preloader.load()
-    rebalance_dates = generate_rebalance_dates(start, end, 1, market=market)
+    rebalance_dates = generate_rebalance_dates(start, end, months, market=market)
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
@@ -522,16 +523,20 @@ def _run_rebalance_loop(
     quote_by_date: dict[date, pd.DataFrame],
     initial_capital: float,
     progress_callback: Callable[[float, str], None] | None,
+    allocation_override: dict[str, float] | None = None,
 ) -> list[CompositeRebalanceRecord]:
     """复合策略主循环：信号 → 分配 → 各子策略独立调仓。
 
     返回每次调仓的结构化记录，供前端展示 signals / allocation / 子策略持仓 / NAV。
+
+    Args:
+        allocation_override: 传入时固定使用此分配，跳过宏观信号。
     """
     records: list[CompositeRebalanceRecord] = []
 
     for i, rb_date in enumerate(rebalance_dates):
         signals = _check_all_signals(cfg, market, rb_date)
-        allocation = _allocate(cfg, signals)
+        allocation = allocation_override or _allocate(cfg, signals)
 
         for sub in cfg["sub_strategies"]:
             name = sub["name"]
@@ -762,10 +767,19 @@ def run_composite_backtest(
     initial_capital: float = 1_000_000,
     benchmark: str | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
+    rebalance_dates: list[date] | None = None,
+    preloader: PITPreloader | None = None,
+    quote_by_date: dict[date, pd.DataFrame] | None = None,
+    rebalance_months: int = 1,
+    allocation_override: dict[str, float] | None = None,
 ) -> BacktestResult:
     """运行复合策略回测。
 
-    v1 只支持 CN_A（港股择时/指数未适配）。
+    Args:
+        rebalance_dates: 预计算调仓日期列表，传入时跳过日期生成。
+        preloader / quote_by_date: 共享预加载数据，避免多 cohort 重复加载。
+        rebalance_months: generate_rebalance_dates 的频率参数。
+        allocation_override: 覆盖宏观信号分配（如固定权重回测）。
     """
     if preset_name not in COMPOSITE_PRESETS:
         raise ValueError(
@@ -780,9 +794,13 @@ def run_composite_backtest(
 
     benchmark = _resolve_benchmark(benchmark, market)
 
-    preloader, rebalance_dates, quote_by_date = _preload_composite_data(
-        cfg, start, end, market
-    )
+    if preloader is not None and quote_by_date is not None and rebalance_dates is not None:
+        # 使用调用方传入的共享数据
+        pass
+    else:
+        preloader, rebalance_dates, quote_by_date = _preload_composite_data(
+            cfg, start, end, market, months=rebalance_months
+        )
     if progress_callback:
         progress_callback(0.0, "数据预加载完成")
 
@@ -793,6 +811,7 @@ def run_composite_backtest(
     records = _run_rebalance_loop(
         cfg, market, benchmark, rebalance_dates, sub_portfolios, valuation_snaps,
         preloader, quote_by_date, initial_capital, progress_callback,
+        allocation_override=allocation_override,
     )
 
     end_trade = _record_final_valuation(
@@ -843,3 +862,174 @@ def run_composite_backtest(
         benchmark_daily_nav=benchmark_daily_nav,
         composite_details=composite_details,
     )
+
+
+# ── 六队列交错回测 ────────────────────────────────────────
+
+
+def run_staggered_composite_backtest(
+    preset_name: str,
+    start: date,
+    end: date | None = None,
+    market: str = "US",
+    initial_capital: float = 1_000_000,
+    benchmark: str | None = None,
+    allocation: dict[str, float] | None = None,
+    cohorts: int = 6,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> dict:
+    """六队列交错半年调仓复合策略回测。
+
+    每个队列占总资金 1/cohorts，错开调仓月份：
+      C01: 1月/7月, C02: 2月/8月, ..., C06: 6月/12月
+    各队列独立运行后合并 NAV、回撤和持仓。
+
+    Args:
+        allocation: 固定子策略权重（如 {"fcf_roe_value": 0.60, ...}）。
+                   不传时由宏观信号分配。
+
+    Returns:
+        {result, cohort_results, combined_nav, daily_metrics, comparison}
+    """
+    if end is None:
+        end = date.today()
+
+    benchmark = _resolve_benchmark(benchmark, market)
+    capital_per_cohort = initial_capital / cohorts
+
+    # ── 共享数据预加载 ─────────────────────────────────
+    cfg = COMPOSITE_PRESETS[preset_name]
+    preloader = PITPreloader(market)
+    preloader.load()
+
+    all_rb_dates = generate_rebalance_dates(start, end, 1, market=market)
+    with Connection() as conn:
+        quote_by_date = batch_query_quote(conn, all_rb_dates, market)
+
+    if progress_callback:
+        progress_callback(0.0, "共享数据预加载完成")
+
+    # ── 逐队列运行 ─────────────────────────────────────
+    cohort_daily_navs: list[dict[date, float]] = []
+    cohort_results: list[dict] = []
+
+    for i in range(cohorts):
+        cohort_month = i + 1
+        label = f"C{cohort_month:02d}"
+
+        cohort_start = date(start.year, min(cohort_month, 12), 1)
+        if cohort_start < start:
+            cohort_start = date(start.year + 1, cohort_month, 1)
+        cohort_rb_dates = generate_rebalance_dates(
+            cohort_start, end, 6, market=market
+        )
+
+        if not cohort_rb_dates:
+            logger.warning("%s 无调仓日期，跳过", label)
+            continue
+
+        if progress_callback:
+            pct = round((i + 1) / cohorts * 100)
+            progress_callback(pct, f"运行 {label} ({len(cohort_rb_dates)} 调仓)")
+
+        try:
+            result = run_composite_backtest(
+                preset_name=preset_name,
+                start=start,
+                end=end,
+                market=market,
+                initial_capital=capital_per_cohort,
+                benchmark=benchmark,
+                rebalance_dates=cohort_rb_dates,
+                preloader=preloader,
+                quote_by_date=quote_by_date,
+                allocation_override=allocation,
+            )
+        except Exception:
+            logger.exception("%s 回测失败", label)
+            continue
+
+        cohort_results.append({
+            "cohort_id": label,
+            "signal_months": [cohort_month, (cohort_month + 6) % 12 or 12],
+            "rebalance_dates": [str(d) for d in cohort_rb_dates],
+            "result": result,
+        })
+        cohort_daily_navs.append(result.strategy_daily_nav)
+
+    if not cohort_daily_navs:
+        raise RuntimeError("所有队列回测均失败")
+
+    # ── 合并 NAV ───────────────────────────────────────
+    all_dates = set()
+    for nav in cohort_daily_navs:
+        all_dates.update(nav.keys())
+    all_dates = sorted(all_dates)
+
+    combined_nav: dict[date, float] = {}
+    for d in all_dates:
+        total_val = 0.0
+        for nav in cohort_daily_navs:
+            nav_keys = sorted(nav.keys())
+            if d in nav:
+                val = nav[d]
+            else:
+                prev = [k for k in nav_keys if k <= d]
+                val = nav[prev[-1]] if prev else nav[nav_keys[0]]
+            total_val += val * capital_per_cohort
+        combined_nav[d] = total_val / initial_capital
+
+    # ── 合并基准 ───────────────────────────────────────
+    if benchmark:
+        bench_prices = load_benchmark_prices(benchmark, market, start, end)
+        base_price = list(bench_prices.values())[0] if bench_prices else 1.0
+        combined_bench_nav = {d: p / base_price for d, p in bench_prices.items()} if bench_prices and base_price > 0 else {}
+        comparison = compute_benchmark_comparison(benchmark, combined_nav, combined_bench_nav) if combined_bench_nav else None
+    else:
+        combined_bench_nav = {}
+        comparison = None
+
+    # ── 计算聚合指标 ───────────────────────────────────
+    metrics = compute_daily_metrics(combined_nav)
+
+    all_holdings: dict[str, float] = {}
+    for cr in cohort_results:
+        for h in cr["result"].final_holdings:
+            all_holdings[h] = all_holdings.get(h, 0) + 1
+
+    return {
+        "preset_name": preset_name,
+        "start_date": start,
+        "end_date": end,
+        "market": market,
+        "initial_capital": initial_capital,
+        "cohorts": cohorts,
+        "capital_per_cohort": capital_per_cohort,
+        "allocation": allocation,
+        "cohort_results": cohort_results,
+        "combined_nav": combined_nav,
+        "benchmark_nav": combined_bench_nav,
+        "metrics": {
+            "total_return": round(metrics.total_return, 6),
+            "annualized_return": round(metrics.annualized_return, 6),
+            "max_drawdown": round(metrics.max_drawdown, 6),
+            "sharpe_ratio": round(metrics.sharpe_ratio, 4),
+            "volatility": round(metrics.volatility, 6),
+            "num_rebalances": metrics.num_rebalances,
+            "avg_holding_count": round(metrics.avg_holding_count, 1),
+            "total_trades": metrics.total_trades,
+        },
+        "benchmark_comparison": {
+            "ticker": benchmark,
+            "total_return": round(comparison.benchmark_total_return, 6),
+            "annualized": round(comparison.benchmark_annualized, 6),
+            "max_drawdown": round(comparison.benchmark_max_drawdown, 6),
+            "excess_return": round(comparison.excess_return, 6),
+            "alpha": round(comparison.annualized_alpha, 6),
+            "beta": round(comparison.beta, 4),
+            "information_ratio": round(comparison.information_ratio, 4),
+            "tracking_error": round(comparison.tracking_error, 6),
+            "correlation": round(comparison.correlation, 4),
+        } if comparison else None,
+        "aggregated_holdings": all_holdings,
+    }
