@@ -623,18 +623,30 @@ class USFinancialFetcher(BaseFetcher):
                     for entry in entries:
                         fp = entry.get("fp", "")
                         frame = str(entry.get("frame", ""))
+                        start = entry.get("start")
+                        form = entry.get("form", "")
 
                         # 用 frame 修正 fp（仅当需要时）
                         # frame 是日历年（CY），fp 是财年，非 12 月财年公司两者不一致
                         # 只在 fp 为 FY 或空时用 frame 修正（如 MELI 改财年 case）
                         # 已有正确季度 fp 的不覆盖
+                        #
+                        # 关键：区分 instant frame（CY2025Q4I）和 duration frame（CY2025Q1）
+                        # - Q4I: 资产负债表时点值，form=10-K + fp=FY → 应保持 annual
+                        # - Q1/Q2/Q3/Q4: 流量期间值，可辅助修正缺失/错误的 fp
+                        _frame_is_instant = bool(frame) and frame.endswith("I")
+                        _frame_has_q = "Q" in frame
                         if frame:
-                            frame_match = _re.search(r"Q(\d+)(?:I)?$", frame)
-                            if frame_match and fp in ("FY", "", None):
-                                fp = f"Q{frame_match.group(1)}"
-                            elif not frame_match and "CY" in frame:
-                                fp = "FY"
-                        # 记录是否 frame 有明确的季度指示
+                            if not _frame_is_instant:
+                                # duration frame (CY2025Q1, CY2025Q4): 可辅助修正 fp
+                                frame_match = _re.search(r"Q(\d+)$", frame)
+                                if frame_match and fp in ("FY", "", None):
+                                    fp = f"Q{frame_match.group(1)}"
+                                elif not frame_match and "CY" in frame and not _frame_has_q:
+                                    fp = "FY"
+                            # instant frame (CY2025Q4I): fp 保持不变
+                            # 10-K 年报资产负债表时点事实保持 FY → annual
+
                         records.append(
                             {
                                 "tag": tag,
@@ -643,11 +655,13 @@ class USFinancialFetcher(BaseFetcher):
                                 "fy": entry.get("fy"),
                                 "fp": fp,
                                 "end": entry.get("end"),
-                                "start": entry.get("start"),
+                                "start": start,
                                 "filed": entry.get("filed"),
                                 "accn": entry.get("accn"),
                                 "frame": frame,
-                                "_frame_has_q": "Q" in frame,
+                                "form": form,
+                                "_frame_has_q": _frame_has_q,
+                                "_frame_is_instant": _frame_is_instant,
                             }
                         )
 
@@ -665,7 +679,10 @@ class USFinancialFetcher(BaseFetcher):
         #   B) 同一 (tag, end) 只有 frame=CY20xxQ?（季度），没有纯年度 frame
         #      → 只修正 frame 含 Q 的 FY 条目为对应季度（保留 frame=None 的真正年报）
         #   C) frame 含 QxI 后缀（如 CY2025Q3I）表示 interim，正则需匹配
-        fy_needs_fix = (df["fp"] == "FY") & (df["_frame_has_q"])
+        # 排除 instant frame（Q4I），这些是 10-K 年报资产负债表，应保持 FY
+        fy_needs_fix = (
+            (df["fp"] == "FY") & (df["_frame_has_q"]) & (~df["_frame_is_instant"])
+        )
         if fy_needs_fix.any():
             tags_with_fix = df.loc[fy_needs_fix, ["tag", "end"]].drop_duplicates()
             for _, row in tags_with_fix.iterrows():
