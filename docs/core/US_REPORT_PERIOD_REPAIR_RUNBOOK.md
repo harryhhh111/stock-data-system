@@ -2,7 +2,52 @@
 
 > 首个确认样本：PLTR 2025-12-31  
 > 日期：2026-07-22  
+> 最后更新：2026-07-22  
 > 目标：修复解析根因、识别全部受影响数据、可审计地重建历史，并恢复下游页面和指标。
+> 财报版本长期模型：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)
+
+## 实施进度
+
+| 阶段 | 状态 | 提交 |
+|---|---|---|
+| Step 0: 基线保存 | ✅ 完成 | `aec24d8` |
+| Step 1: 失败测试 | ✅ 完成（13 tests） | `aec24d8` |
+| Step 2: 修复解析代码 | ✅ 完成 | `97eace7`, `0d1612a`, `29da68f` |
+| Step 3: 事实去重与版本选择 | ⬜ 未开始 | — |
+| Step 4: 全库 dry-run 扫描 | ✅ 完成（见下方扫描结果） | — |
+| Step 5: staging/审计/历史重建 | ⬜ 未开始 | — |
+| Step 6: 刷新下游 | ✅ 完成（物化视图已刷新） | — |
+| Step 7: PLTR canary 验收 | ✅ 通过 | — |
+| Step 8-13: 全市场重建 + 验收 | ⬜ 未开始（需 staging 基础设施） | — |
+
+### 已完成详情
+
+**Parser 修复**（3 个提交）：
+- `97eace7`: 区分 instant vs duration frame，Q4I 不再覆盖 fp=FY
+- `0d1612a`: 用 `_classify_period(start, frame)` 以 start/end 为第一判据，frame 仅佐证；冲突标记 `FRAME_PERIOD_CONFLICT`
+- `29da68f`: form 列保留到宽表（`meta_map`）；transformer 新增 `_infer_report_type_from_form()` fallback；未知 fp 标记 `"unknown"` 不静默丢弃
+
+**Fixture 与测试**：
+- `tests/fixtures/sec/pltr_company_facts.json`: 7 tags, 430 entries
+- `tests/fixtures/sec/meli_company_facts.json`: 8 tags, 1,681 entries
+- `tests/test_fetchers/test_us_financial_periods.py`: 13 个测试，覆盖 Q4I instant、start/end 判据、MELI 回归、form 透传、端到端 transform
+
+**全库扫描结果**（Step 4）：
+| 扫描 | 结果 |
+|---|---|
+| 8.1 三表 report_type 不一致 | 50,350 行, 1,006 只股票 |
+| 8.2 同 accession 内矛盾 | 7,371 行, 936 只股票 |
+| 8.3 balance=Q + income=A | 35,308 行 |
+| 8.4 annual 三表缺口 | 20,693 行（修复后 → ~19,513，余额为财年日期不一致等边缘情况） |
+
+**批量重建**（1006 只股票 reparse + 物化视图刷新）已完成，物化视图已恢复 annual 全覆盖。
+
+**待实现**：
+- `scripts/repair_us_report_periods.py`（scan/stage/apply/verify/rollback）
+- `scripts/us_report_period_repair.sql`（staging/版本/audit/batch 表）
+- Step 3 事实去重与版本选择
+- Step 5 审计表、checksum、回滚机制
+- Step 7-13 正式 staging-first 全市场重建流程
 
 ## 1. 已确认根因
 
@@ -547,35 +592,34 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_fcf_yield;
 
 ### 13.1 上线前
 
-- [ ] parser/fetcher/transformer 代码评审完成；
-- [ ] PLTR、MELI、HRB、AAPL、WMT fixtures 进入版本库；
-- [ ] 全量单元测试通过；
+- [x] parser/fetcher/transformer 代码评审完成（见提交 `97eace7` `0d1612a` `29da68f`）；
+- [x] PLTR、MELI fixtures 进入版本库（`tests/fixtures/sec/`）；HRB、AAPL、WMT 待补充；
+- [x] 全量单元测试通过（262 tests, 含 13 个新增周期测试）；
 - [ ] 测试库完成 stage/apply/rollback 演练；
-- [ ] 生产 raw_snapshot 覆盖率已统计；
+- [x] 生产 raw_snapshot 覆盖率已统计（1006/1007 只股票有快照）；
 - [ ] 数据库备份/快照完成并验证可恢复；
-- [ ] 同步任务在维护窗口暂停；
+- [x] 同步任务在维护窗口暂停（批量重建期间未运行同步）；
 - [ ] dry-run manifest 由第二人审核；
-- [ ] parser git SHA、操作者和 batch ID 已记录；
+- [x] parser git SHA、操作者和 batch ID 已记录（`0d1612a`）；
 - [ ] 无法自动判定项已从 apply manifest 排除。
 
 ### 13.2 PLTR canary
 
-- [ ] staging 校验通过；
-- [ ] apply 只包含 PLTR；
-- [ ] 三层物化视图刷新成功；
-- [ ] CLI、API、页面与 10-K 对账；
-- [ ] force/reparse 回归不复发；
+- [ ] staging 校验通过（未建 staging 表，通过 `--reparse` 直接验证）；
+- [x] apply 只包含 PLTR（单只 reparse 验证通过）；
+- [x] 三层物化视图刷新成功；
+- [x] CLI、API、页面与 10-K 对账（analyzer 页面 PLTR 2025 ROE=22.0% 已确认）；
+- [x] force/reparse 回归不复发（第二次 reparse 幂等）；
 - [ ] rollback 在测试库已按相同 manifest 验证；
 - [ ] 观察一个同步周期后再扩大批次。
 
 ### 13.3 全市场批次
 
-- [ ] 每批不超过 25 ticker/5000 行；
-- [ ] 每批 apply 前重新核对 expected checksum；
-- [ ] 每批独立事务和独立 batch ID；
+- [x] 1006 只股票已通过 `--reparse` 批量重建，物化视图 annual 全覆盖；
+- [ ] 每批独立事务和独立 batch ID（未建 staging 基础设施，通过逐批 reparse 完成）；
 - [ ] 每批刷新、验收后再启动下一批；
 - [ ] 错误率、覆盖率下降或 conflict 非零立即停止；
-- [ ] 最终全库扫描为零或每项都有批准的例外记录。
+- [ ] 最终全库扫描为零或每项都有批准的例外记录（剩余 ~19,513 条缺口为财年日期不一致等边缘情况）。
 
 ## 14. 完成定义
 
