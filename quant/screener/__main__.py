@@ -176,6 +176,31 @@ def main():
         filtered, _, n_after_filter = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
         print(f"连续 {roe_years} 年 ROE ≥ {roe_min:.0%}: {n_after_filter} 只通过")
 
+        # 将多年 ROE pivot 为独立列，用于展示
+        if not filtered.empty and not roe_hist.empty:
+            roe_hist_in = roe_hist[roe_hist["stock_code"].isin(filtered["stock_code"])].copy()
+            # 每只股票取最近 roe_years 条（数据已按 report_date DESC 排序）
+            # 先按 stock_code 分组取 head(N)，再按 stock_code 编号
+            roe_hist_in["year_rank"] = (
+                roe_hist_in.groupby("stock_code").cumcount()
+            )
+            # pivot: stock_code 为行，year_rank 为列，值为 roe
+            roe_wide = roe_hist_in.pivot(
+                index="stock_code", columns="year_rank", values="roe"
+            )
+            # cumcount=0 是最新年（和基础 roe 列重复），从 1 开始编号
+            roe_wide.columns = [f"roe_{int(c)+1}y_ago" for c in roe_wide.columns]
+            # 丢弃 cumcount=0（最新年），已有基础 roe 列
+            if "roe_1y_ago" in roe_wide.columns:
+                del roe_wide["roe_1y_ago"]
+            # 重新编号：cumcount=1 → roe_1y_ago（上年），cumcount=2 → roe_2y_ago（前年）
+            rename_map = {
+                f"roe_{i}y_ago": f"roe_{i-1}y_ago"
+                for i in range(2, roe_years + 1)
+            }
+            roe_wide.rename(columns=rename_map, inplace=True)
+            filtered = filtered.merge(roe_wide, on="stock_code", how="left")
+
     if filtered.empty:
         print(f"\n无符合条件的股票（候选池: {n_before} → 过滤后: 0）")
         return
