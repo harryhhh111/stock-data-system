@@ -27,6 +27,7 @@
 | [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据现状（行数、覆盖率、修复记录） |
 | [core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md) | 历史市值 PIT 分批回算、审计、回滚与上线方案 |
 | [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案 |
+| [core/US_VERSIONING_PHASE0_EVIDENCE.md](core/US_VERSIONING_PHASE0_EVIDENCE.md) | Phase 0 冻结盘点证据：数据库快照、覆盖率、关键样本基线 |
 
 ---
 

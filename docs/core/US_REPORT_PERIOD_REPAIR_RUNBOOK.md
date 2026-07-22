@@ -11,26 +11,42 @@
 | 阶段 | 状态 | 提交 |
 |---|---|---|
 | Step 0: 基线保存 | ✅ 完成 | `aec24d8` |
-| Step 1: 失败测试 | ✅ 完成（13 tests） | `aec24d8` |
-| Step 2: 修复解析代码 | ✅ 完成 | `97eace7`, `0d1612a`, `29da68f` |
-| Step 3: 事实去重与版本选择 | ⬜ 未开始 | — |
+| Step 0: 基线保存 | ✅ 完成 | `aec24d8` |
+| Step 1: 失败测试 | ✅ 完成（44 tests） | `aec24d8`, `a502522` |
+| Step 2: 修复解析代码 | ✅ 完成 | `97eace7`, `0d1612a`, `29da68f`, `8011bb8` |
+| Step 3: 事实去重与版本选择 | ⬜ 未开始（→ P1） | — |
 | Step 4: 全库 dry-run 扫描 | ✅ 完成（见下方扫描结果） | — |
-| Step 5: staging/审计/历史重建 | ⬜ 未开始 | — |
+| Step 5: staging/审计/历史重建 | ⬜ 未开始（→ P1） | — |
 | Step 6: 刷新下游 | ✅ 完成（物化视图已刷新） | — |
 | Step 7: PLTR canary 验收 | ✅ 通过 | — |
-| Step 8-13: 全市场重建 + 验收 | ⬜ 未开始（需 staging 基础设施） | — |
+| Step 8-13: 全市场重建 + 验收 | ⬜ 未开始（需 P1 staging 基础设施） | — |
+| P0 收尾: Phase 0 盘点 | ✅ 完成 | 见 [US_VERSIONING_PHASE0_EVIDENCE.md](./US_VERSIONING_PHASE0_EVIDENCE.md) |
+| P0 收尾: invalid/unknown 隔离 | ✅ 完成 | `8011bb8`, `a502522` |
 
 ### 已完成详情
 
 **Parser 修复**（3 个提交）：
 - `97eace7`: 区分 instant vs duration frame，Q4I 不再覆盖 fp=FY
-- `0d1612a`: 用 `_classify_period(start, frame)` 以 start/end 为第一判据，frame 仅佐证；冲突标记 `FRAME_PERIOD_CONFLICT`
+- `0d1612a`: 用 `_classify_period(start, end, frame)` 以 start/end 为第一判据，frame 仅佐证；冲突标记 `FRAME_PERIOD_CONFLICT`
 - `29da68f`: form 列保留到宽表（`meta_map`）；transformer 新增 `_infer_report_type_from_form()` fallback；未知 fp 标记 `"unknown"` 不静默丢弃
+- `8011bb8`: **P0 安全隔离**：invalid period（start/end 均缺失或仅 start）在 fetcher 阶段隔离并记 `INVALID_PERIOD` 日志，禁止进入 pivot/宽表；duration fact 不允许 form-only fallback（10-K 不自动判 annual）；`_period_kind`/`_quality_flag` 经 `meta_cols` 保留到宽表；`_filter_unknown_records()` 接入三张 statement transformer 出口；移除 record 中的 `fp_raw`/`form` 字段避免 DB 列不存在警告
 
 **Fixture 与测试**：
 - `tests/fixtures/sec/pltr_company_facts.json`: 7 tags, 430 entries
 - `tests/fixtures/sec/meli_company_facts.json`: 8 tags, 1,681 entries
-- `tests/test_fetchers/test_us_financial_periods.py`: 13 个测试，覆盖 Q4I instant、start/end 判据、MELI 回归、form 透传、端到端 transform
+- `tests/test_fetchers/test_us_financial_periods.py`: 26 个测试
+  - `TestQ4IInstantFrame` (2): Q4I instant frame 保持 FY
+  - `TestPeriodKindFromStartEnd` (2): start/end 第一判据
+  - `TestClassifyPeriodDirect` (10): `_classify_period(start, end, frame)` 直接单测（4 种 period kind + frame 佐证/冲突 + invalid 跳过 frame + 空字符串边界）
+  - `TestInvalidPeriodQuarantine` (3): extract_table 端到端隔离（missing end / missing start+end / `_period_kind` 宽表保留）
+  - `TestMELIRegression` (2): MELI 改财年回归
+  - `TestFormPassThrough` (2): form 透传
+  - `TestAnnualQ4Standalone` (2): Q4 standalone 不覆盖 FY
+  - `TestUnknownFormNotSilentlyDropped` (1): 未知 form 不静默丢弃
+  - `TestFixtureTransformEndToEnd` (2): fixture → transform 端到端
+- `tests/test_transformers/test_us_gaap.py`: 18 个测试
+  - `TestUnknownFormFpFilter` (3): `_filter_unknown_records` 单测
+  - `TestUnknownFormFpEndToEnd` (7): `_build_record` → `transform_*` 完整链路（unknown fp+form / duration form blocked / instant form allowed / transform_income/balance/cashflow 出口过滤）
 
 **全库扫描结果**（Step 4）：
 | 扫描 | 结果 |
@@ -42,12 +58,17 @@
 
 **批量重建**（1006 只股票 reparse + 物化视图刷新）已完成，物化视图已恢复 annual 全覆盖。
 
-**待实现**：
+**待实现**（→ P1 版本层）：
 - `scripts/repair_us_report_periods.py`（scan/stage/apply/verify/rollback）
-- `scripts/us_report_period_repair.sql`（staging/版本/audit/batch 表）
+- `scripts/us_report_period_repair.sql`（staging/版本/audit/batch 表 DDL）
 - Step 3 事实去重与版本选择
 - Step 5 审计表、checksum、回滚机制
-- Step 7-13 正式 staging-first 全市场重建流程
+- Step 8-13 正式 staging-first 全市场重建流程
+
+**P0 临时隔离（已完成，P1 将迁入持久化 staging）**：
+- `period_kind=invalid` 在 fetcher 阶段隔离（`INVALID_PERIOD` 日志 + `continue`），不进入宽表
+- `report_type=unknown` 在 transformer 出口过滤（`UNKNOWN_FORM_FP` 日志）
+- 当前仅依赖日志，无持久化 review/staging 表。P1 双写上线后必须将 invalid/unknown 写入 staging 表，不得继续只依赖日志。
 
 ## 1. 已确认根因
 
