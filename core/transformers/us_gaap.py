@@ -92,6 +92,20 @@ SEC_FP_MAP: dict[str, str] = {
     "H1": "semi",
 }
 
+# SEC form → report_type 推断（fp 未知时的 fallback）
+ANNUAL_FORMS = {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}
+QUARTERLY_FORMS = {"10-Q", "10-Q/A"}
+
+
+def _infer_report_type_from_form(form: str, fp: str) -> str | None:
+    """当 fp 不在 SEC_FP_MAP 中时，尝试通过 SEC form 类型推断 report_type。"""
+    form_clean = str(form).strip().upper() if form else ""
+    if form_clean in ANNUAL_FORMS:
+        return "annual"
+    if form_clean in QUARTERLY_FORMS:
+        return "quarterly"
+    return None
+
 # ═══════════════════════════════════════════════════════════
 # 标签优先级映射（TAG_PRIORITY）
 # 同一字段可能有多个 US-GAAP 标签名，按优先级依次尝试
@@ -430,11 +444,19 @@ class USGAAPTransformer(BaseTransformer):
         if report_date is None:
             return None
 
-        # 解析 report_type
+        # 解析 report_type：优先 fp，未知时用 form 推断
         fp = str(row.get("fp", "")).strip()
         report_type = SEC_FP_MAP.get(fp)
         if report_type is None:
-            return None
+            form = str(row.get("form", "")).strip()
+            report_type = _infer_report_type_from_form(form, fp)
+        if report_type is None:
+            # 不静默丢弃：记录为 unknown 并保留，避免数据丢失
+            report_type = "unknown"
+            logger.warning(
+                "无法判定 report_type: stock=%s end=%s fp=%s form=%s",
+                stock_code, row.get("end"), fp, row.get("form", ""),
+            )
 
         # 解析 filed_date
         filed_date = parse_report_date(row.get("filed"))
