@@ -1,7 +1,12 @@
 """Screener wrapper — 复用 quant/screener 逻辑，返回结构化 dict。"""
 from quant.screener.presets import PRESETS, FACTOR_LABELS
 from quant.screener.query import get_universe, get_us_universe, compute_dividend_yield, get_roe_history
-from quant.screener.filters import apply_hard_filters, filter_consecutive_roe, apply_commodity_filter
+from quant.screener.filters import (
+    apply_hard_filters,
+    filter_consecutive_roe,
+    apply_commodity_filter,
+    pivot_roe_history,
+)
 from quant.screener.scorer import rank_factors
 
 
@@ -27,7 +32,8 @@ def get_presets() -> dict:
 OUTPUT_COLUMNS = [
     "score_rank", "score", "stock_code", "stock_name", "market",
     "industry", "market_cap", "pe_ttm", "pb", "dividend_yield",
-    "fcf_yield", "roe", "gross_margin", "net_margin", "debt_ratio",
+    "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago", "roe_3y_ago",
+    "gross_margin", "net_margin", "debt_ratio",
 ]
 
 
@@ -84,6 +90,8 @@ def run_screener(market: str, preset: str | None, top_n: int) -> dict:
         market_for_roe = market if market != "all" else None
         roe_hist = get_roe_history(market_for_roe, years=roe_years)
         filtered, _, total_after_filter = filter_consecutive_roe(filtered, roe_hist, roe_years, roe_min)
+        # 将多年 ROE pivot 为独立列，用于前端展示
+        filtered = pivot_roe_history(filtered, roe_hist, roe_years)
 
     if filtered.empty:
         return {

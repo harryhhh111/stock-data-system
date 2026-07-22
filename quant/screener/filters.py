@@ -142,6 +142,32 @@ def apply_hard_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.DataFrame:
     return result, n_before, n_after
 
 
+def pivot_roe_history(
+    df: pd.DataFrame,
+    roe_hist: pd.DataFrame,
+    roe_years: int,
+) -> pd.DataFrame:
+    """将多年 ROE 历史 pivot 为 roe_1y_ago / roe_2y_ago / ... 展示列。
+
+    - cumcount=0 是最新年度（与基础 roe 列重复），会被丢弃。
+    - cumcount=1 重命名为 roe_1y_ago（上年），依此类推。
+    - 与基础 roe 列 merge 后返回。
+    """
+    if df.empty or roe_hist.empty or not roe_years:
+        return df
+
+    roe_hist_in = roe_hist[roe_hist["stock_code"].isin(df["stock_code"])].copy()
+    roe_hist_in["year_rank"] = roe_hist_in.groupby("stock_code").cumcount()
+    roe_wide = roe_hist_in.pivot(index="stock_code", columns="year_rank", values="roe")
+    # cumcount=0 是最新年，已有基础 roe 列，丢弃
+    if 0 in roe_wide.columns:
+        roe_wide = roe_wide.drop(columns=[0])
+    # 重命名：cumcount=1 -> roe_1y_ago, ...
+    rename_map = {int(c): f"roe_{int(c)}y_ago" for c in roe_wide.columns}
+    roe_wide = roe_wide.rename(columns=rename_map)
+    return df.merge(roe_wide, on="stock_code", how="left")
+
+
 def apply_commodity_filter(
     df: pd.DataFrame,
     market: str,
