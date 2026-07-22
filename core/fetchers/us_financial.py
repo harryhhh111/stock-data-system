@@ -13,6 +13,7 @@ fetchers/us_financial.py — 美股 SEC EDGAR 数据拉取
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -29,6 +30,7 @@ import pandas as pd
 import requests
 
 import config
+from db import get_or_create_raw_snapshot_version, save_raw_snapshot_observation
 
 from .base import BaseFetcher, retry_with_backoff
 
@@ -168,6 +170,10 @@ class USFinancialFetcher(BaseFetcher):
         self._ticker_to_cik: dict[str, str] = {}
         self._cik_to_ticker: dict[str, str] = {}
         self._company_list_loaded = False
+        self._last_facts_snapshot_id: int | None = None
+        self._last_facts_content_hash: str | None = None
+        self._last_ticker: str | None = None
+        self._last_cik: str | None = None
 
     # ── 公司列表 ──────────────────────────────────────────
 
@@ -187,8 +193,8 @@ class USFinancialFetcher(BaseFetcher):
             logger.info("从 SEC 下载公司列表...")
             self._rate_limiter.wait()
             resp = self._request_sec(config.sec.ticker_url)
-            self._save_cache(cache_file, json.dumps(resp))
-            data = resp
+            data = resp.json()
+            self._save_cache(cache_file, json.dumps(data))
 
         # 解析：data 是 { "0": {"cik": "0000320193", "ticker": "AAPL", ...}, ... }
         records = []
@@ -445,7 +451,8 @@ class USFinancialFetcher(BaseFetcher):
     def fetch_company_facts(self, ticker: str) -> dict:
         """获取一家公司的完整 Company Facts 数据。
 
-        本地缓存 7 天过期。
+        本地缓存 7 天过期。每次调用都会写入/复用 raw_snapshot_version，
+        并记录一条 raw_snapshot_observation。
 
         Args:
             ticker: 股票代码，如 "AAPL"
@@ -456,18 +463,56 @@ class USFinancialFetcher(BaseFetcher):
         cik = self.ticker_to_cik(ticker)
         cache_file = CACHE_DIR / f"{ticker}.json"
 
+        fetched_at = datetime.now()
+        http_status: int | None = None
+        source_last_modified: str | None = None
+
         if self._load_cache(cache_file):
             data = json.loads(cache_file.read_text())
             logger.debug("Company Facts 缓存命中: %s", ticker)
-            return data
+        else:
+            url = config.sec.base_url.format(cik=cik)
+            logger.info("拉取 Company Facts: %s (CIK=%s)...", ticker, cik)
+            self._rate_limiter.wait()
+            resp = self._request_sec(url)
+            data = resp.json()
+            http_status = resp.status_code
+            source_last_modified = resp.headers.get("Last-Modified")
+            self._save_cache(cache_file, json.dumps(data))
+            logger.info("Company Facts 拉取完成: %s", ticker)
 
-        url = config.sec.base_url.format(cik=cik)
-        logger.info("拉取 Company Facts: %s (CIK=%s)...", ticker, cik)
-        self._rate_limiter.wait()
-        data = self._request_sec(url)
+        # ── 不可变 snapshot 双写 ──
+        content_hash = self._compute_content_hash(data)
+        try:
+            snapshot_id = get_or_create_raw_snapshot_version(
+                stock_code=ticker,
+                data_type="company_facts",
+                source="sec_edgar",
+                api_params={},
+                content_hash=content_hash,
+                raw_data=data,
+                fetched_at=fetched_at,
+                source_last_modified=source_last_modified,
+                parser_status="pending",
+            )
+            save_raw_snapshot_observation(
+                snapshot_id=snapshot_id,
+                fetched_at=fetched_at,
+                http_status=http_status,
+                source_last_modified=source_last_modified,
+            )
+            self._last_facts_snapshot_id = snapshot_id
+            self._last_facts_content_hash = content_hash
+        except Exception as exc:
+            logger.error(
+                "%s: raw_snapshot_version/observation 写入失败 (content_hash=%s): %s",
+                ticker, content_hash, exc,
+            )
+            self._last_facts_snapshot_id = None
+            self._last_facts_content_hash = content_hash
 
-        self._save_cache(cache_file, json.dumps(data))
-        logger.info("Company Facts 拉取完成: %s", ticker)
+        self._last_ticker = ticker
+        self._last_cik = cik
         return data
 
     # ── 三大报表提取（从 Company Facts 中提取宽表）───────
@@ -635,14 +680,25 @@ class USFinancialFetcher(BaseFetcher):
         "FreeCashFlow": "free_cash_flow",
     }
 
-    def extract_table(self, facts: dict, tag_mapping: dict[str, str]) -> pd.DataFrame:
+    def extract_table(
+        self,
+        facts: dict,
+        tag_mapping: dict[str, str],
+        stock_code: str | None = None,
+        cik: str | None = None,
+        statement: str | None = None,
+    ) -> pd.DataFrame:
         """从 Company Facts 中提取某张报表的数据，返回宽表 DataFrame。
 
         每家公司只调用一次 fetch_company_facts，然后用此方法分别提取三大表。
+        同时把原始 fact 写入不可变版本层（us_filing + us_financial_fact_version）。
 
         Args:
             facts: Company Facts JSON dict
             tag_mapping: {SEC标签: 标准字段名} 映射
+            stock_code: 股票代码（默认使用最近一次 fetch_company_facts 的值）
+            cik: SEC CIK（默认使用最近一次 fetch_company_facts 的值）
+            statement: 报表类型（income/balance/cashflow），默认从 tag_mapping 推断
 
         Returns:
             宽表 DataFrame，index 为 (end, fp)，列为各标准字段
@@ -652,6 +708,9 @@ class USFinancialFetcher(BaseFetcher):
         usgaap = facts.get("facts", {}).get("us-gaap", {})
         if not usgaap:
             return pd.DataFrame()
+
+        if statement is None:
+            statement = self._infer_statement(tag_mapping)
 
         # 收集所有标签的数据
         # SEC Company Facts 的单位不只是 USD：
@@ -663,6 +722,7 @@ class USFinancialFetcher(BaseFetcher):
         # SEC 为中概股同时提供 CNY 和 USD 版本，CNY 字典序靠前会被 dedup 保留
         _KEEP_UNITS = {"USD", "USD/shares", "shares"}
         records = []
+        fact_records: list[dict] = []  # 写入 us_financial_fact_version 的原始事实
         invalid_records: list[dict] = []  # quarantined, not entering wide table
         for tag, field_name in tag_mapping.items():
             if tag in usgaap:
@@ -670,7 +730,8 @@ class USFinancialFetcher(BaseFetcher):
                     if unit_name not in _KEEP_UNITS:
                         continue
                     for entry in entries:
-                        fp = entry.get("fp", "")
+                        fp_raw = entry.get("fp", "")
+                        fp = fp_raw
                         frame = str(entry.get("frame", ""))
                         start = entry.get("start")
                         form = entry.get("form", "")
@@ -737,6 +798,23 @@ class USFinancialFetcher(BaseFetcher):
                                 "_quality_flag": _quality_flag,
                             }
                         )
+                        fact_records.append({
+                            "tag": tag,
+                            "field": field_name,
+                            "unit": unit_name,
+                            "val": entry.get("val"),
+                            "fy": entry.get("fy"),
+                            "fp": fp_raw,
+                            "start": start,
+                            "end": end_val,
+                            "filed": entry.get("filed"),
+                            "accn": entry.get("accn"),
+                            "frame": frame,
+                            "form": form,
+                            "_period_kind": _period_kind,
+                            "_quality_flag": _quality_flag,
+                            "dimensions": entry.get("dimensions", {}),
+                        })
 
         if invalid_records:
             logger.warning(
@@ -744,6 +822,21 @@ class USFinancialFetcher(BaseFetcher):
                 len(invalid_records),
                 sorted(set(r["tag"] for r in invalid_records)),
             )
+
+        # ── 不可变版本层双写（失败不阻塞旧宽表）──
+        if fact_records:
+            try:
+                self._write_version_layer(
+                    fact_records,
+                    statement=statement,
+                    stock_code=stock_code,
+                    cik=cik,
+                )
+            except Exception as exc:
+                logger.error(
+                    "%s %s: 不可变版本层写入失败（旧宽表继续写入）: %s",
+                    stock_code or self._last_ticker, statement, exc,
+                )
 
         if not records:
             return pd.DataFrame()
@@ -986,6 +1079,214 @@ class USFinancialFetcher(BaseFetcher):
 
         return wide
 
+    # ── 不可变版本层写入辅助 ──────────────────────────────
+
+    def _infer_statement(self, tag_mapping: dict[str, str]) -> str:
+        """根据 tag_mapping 推断报表类型。"""
+        if tag_mapping is self.INCOME_TAGS:
+            return "income"
+        if tag_mapping is self.BALANCE_TAGS:
+            return "balance"
+        if tag_mapping is self.CASHFLOW_TAGS:
+            return "cashflow"
+        return "unknown"
+
+    def _write_version_layer(
+        self,
+        fact_records: list[dict],
+        statement: str,
+        stock_code: str | None = None,
+        cik: str | None = None,
+    ) -> None:
+        """把原始 fact 写入 us_filing + us_financial_fact_version。
+
+        失败直接抛出，由 extract_table 捕获并记录 error，不阻塞旧宽表。
+        """
+        from db import Connection
+        import psycopg2.extras as _pg_extras
+
+        stock_code = (stock_code or self._last_ticker or "").upper()
+        cik = (cik or self._last_cik or "").zfill(10)
+        snapshot_id = self._last_facts_snapshot_id
+
+        if not stock_code or not cik:
+            logger.warning("缺少 stock_code/cik，跳过版本层写入")
+            return
+        if snapshot_id is None:
+            logger.warning("缺少 snapshot_id，跳过版本层写入")
+            return
+        if not fact_records:
+            return
+
+        filing_rows: list[dict] = []
+        fact_rows: list[dict] = []
+        seen_accessions: set[str] = set()
+
+        for rec in fact_records:
+            accn = str(rec.get("accn") or "").strip()
+            if not accn:
+                continue
+
+            end = rec.get("end")
+            filed = rec.get("filed")
+            if not end or not filed:
+                continue
+
+            form = str(rec.get("form") or "").strip()
+            is_amendment = "/A" in form
+            fp_raw = str(rec.get("fp") or "").strip()
+            fy = rec.get("fy")
+            fiscal_year = int(fy) if isinstance(fy, int) else None
+            if fiscal_year is None and fy:
+                try:
+                    fiscal_year = int(fy)
+                except (ValueError, TypeError):
+                    fiscal_year = None
+
+            frame = rec.get("frame")
+            metadata = _pg_extras.Json({"frame": frame}) if frame else _pg_extras.Json({})
+
+            if accn not in seen_accessions:
+                seen_accessions.add(accn)
+                filing_rows.append({
+                    "accession_no": accn,
+                    "stock_code": stock_code,
+                    "cik": cik,
+                    "form": form,
+                    "filed_date": filed,
+                    "report_date": end,
+                    "fiscal_year": fiscal_year,
+                    "fiscal_period": fp_raw or None,
+                    "is_amendment": is_amendment,
+                    "source_snapshot_id": snapshot_id,
+                    "metadata": metadata,
+                })
+
+            val = rec.get("val")
+            if val is None:
+                continue
+
+            value_numeric: float | int | None = None
+            value_text: str | None = None
+            try:
+                value_numeric = float(val)
+            except (ValueError, TypeError):
+                value_text = str(val)
+
+            context_hash = self._compute_context_hash(
+                period_kind=rec["_period_kind"],
+                period_start=rec.get("start"),
+                report_date=end,
+                frame=frame,
+                fp=fp_raw,
+                dimensions=rec.get("dimensions", {}),
+            )
+            value_hash = self._compute_value_hash(val, rec["unit"])
+            quality_flags = [f for f in [rec.get("_quality_flag")] if f]
+
+            fact_rows.append({
+                "stock_code": stock_code,
+                "cik": cik,
+                "accession_no": accn,
+                "statement": statement,
+                "taxonomy": "us-gaap",
+                "sec_tag": rec["tag"],
+                "standard_field": rec.get("field"),
+                "period_kind": rec["_period_kind"],
+                "period_start": rec.get("start"),
+                "report_date": end,
+                "fiscal_year": fiscal_year,
+                "fiscal_period_raw": fp_raw or None,
+                "form": form,
+                "filed_date": filed,
+                "frame": frame,
+                "unit": rec["unit"],
+                "value_numeric": value_numeric,
+                "value_text": value_text,
+                "dimensions": _pg_extras.Json(rec.get("dimensions", {})),
+                "context_hash": context_hash,
+                "source_snapshot_id": snapshot_id,
+                "value_hash": value_hash,
+                "quality_flags": quality_flags,
+            })
+
+        if not fact_rows:
+            return
+
+        filing_sql = """
+            INSERT INTO us_filing (
+                accession_no, stock_code, cik, form, filed_date, report_date,
+                fiscal_year, fiscal_period, is_amendment, source_snapshot_id, metadata
+            ) VALUES (
+                %(accession_no)s, %(stock_code)s, %(cik)s, %(form)s, %(filed_date)s, %(report_date)s,
+                %(fiscal_year)s, %(fiscal_period)s, %(is_amendment)s, %(source_snapshot_id)s, %(metadata)s
+            )
+            ON CONFLICT (accession_no) DO UPDATE SET
+                metadata = COALESCE(us_filing.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
+                updated_at = NOW()
+        """
+        fact_sql = """
+            INSERT INTO us_financial_fact_version (
+                stock_code, cik, accession_no, statement, taxonomy, sec_tag, standard_field,
+                period_kind, period_start, report_date, fiscal_year, fiscal_period_raw, form,
+                filed_date, frame, unit, value_numeric, value_text, dimensions, context_hash,
+                source_snapshot_id, value_hash, quality_flags
+            ) VALUES (
+                %(stock_code)s, %(cik)s, %(accession_no)s, %(statement)s, %(taxonomy)s, %(sec_tag)s, %(standard_field)s,
+                %(period_kind)s, %(period_start)s, %(report_date)s, %(fiscal_year)s, %(fiscal_period_raw)s, %(form)s,
+                %(filed_date)s, %(frame)s, %(unit)s, %(value_numeric)s, %(value_text)s, %(dimensions)s, %(context_hash)s,
+                %(source_snapshot_id)s, %(value_hash)s, %(quality_flags)s
+            )
+            ON CONFLICT DO NOTHING
+        """
+
+        with Connection() as conn:
+            with conn.cursor() as cur:
+                if filing_rows:
+                    cur.executemany(filing_sql, filing_rows)
+                cur.executemany(fact_sql, fact_rows)
+            conn.commit()
+
+        logger.info(
+            "%s %s: 版本层写入 filing=%d fact=%d",
+            stock_code, statement, len(filing_rows), len(fact_rows),
+        )
+
+    def _compute_context_hash(
+        self,
+        period_kind: str,
+        period_start: str | None,
+        report_date: str,
+        frame: str | None,
+        fp: str | None,
+        dimensions: dict,
+    ) -> str:
+        """由 period、frame、fp、dimensions 生成稳定 context_hash。"""
+        canonical = json.dumps(
+            {
+                "period_kind": period_kind,
+                "period_start": period_start,
+                "report_date": report_date,
+                "frame": frame,
+                "fp": fp,
+                "dimensions": dimensions,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _compute_value_hash(self, value: Any, unit: str) -> str:
+        """由 value + unit 生成稳定 value_hash。"""
+        canonical = json.dumps(
+            {"value": value, "unit": unit},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
     def fetch_income(self, ticker: str) -> pd.DataFrame:
         """获取利润表宽表。"""
         facts = self.fetch_company_facts(ticker)
@@ -1003,11 +1304,11 @@ class USFinancialFetcher(BaseFetcher):
 
     # ── 内部工具方法 ──────────────────────────────────────
 
-    def _request_sec(self, url: str) -> dict:
+    def _request_sec(self, url: str) -> requests.Response:
         """向 SEC API 发送请求，带限流和重试。
 
         Returns:
-            JSON dict
+            requests.Response 对象，调用方自行取 .json()
         """
         resp = requests.get(url, headers=HEADERS, timeout=30)
         if resp.status_code == 429:
@@ -1017,7 +1318,12 @@ class USFinancialFetcher(BaseFetcher):
             self._rate_limiter.wait()
             resp = requests.get(url, headers=HEADERS, timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        return resp
+
+    def _compute_content_hash(self, data: dict) -> str:
+        """计算 SEC 响应的 SHA-256 content_hash（稳定 JSON 序列化）。"""
+        canonical = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _load_cache(self, cache_file: Path) -> bool:
         """检查缓存文件是否存在且未过期。"""

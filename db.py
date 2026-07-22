@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from typing import Any, Optional
 
 import psycopg2
@@ -235,6 +236,115 @@ def save_raw_snapshot(
         logger.info("raw_snapshot 已保存: stock=%s type=%s source=%s", stock_code, data_type, source)
     except Exception as exc:
         logger.error("raw_snapshot 保存失败: stock=%s type=%s err=%s", stock_code, data_type, exc)
+
+
+def get_or_create_raw_snapshot_version(
+    stock_code: str,
+    data_type: str,
+    source: str,
+    api_params: dict,
+    content_hash: str,
+    raw_data: Any,
+    fetched_at: Optional[datetime] = None,
+    source_last_modified: Optional[str] = None,
+    parser_status: str = "pending",
+) -> int:
+    """获取或创建 raw_snapshot_version 行，按 content_hash 去重。
+
+    相同 (stock_code, data_type, source, content_hash) 已存在时直接复用 snapshot_id；
+    否则插入新行。返回 snapshot_id。
+    """
+    import json as _json
+
+    if fetched_at is None:
+        fetched_at = datetime.now()
+
+    data_to_store = raw_data
+    if hasattr(raw_data, "to_dict"):
+        import pandas as _pd
+        data_to_store = raw_data.to_dict(orient="records")
+        data_to_store = _sanitize_records(data_to_store)
+
+    if _check_db_encoding() == "SQL_ASCII":
+        def _ascii_sanitize(obj):
+            if isinstance(obj, dict):
+                return {_ascii_sanitize(k): _ascii_sanitize(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [_ascii_sanitize(v) for v in obj]
+            elif isinstance(obj, str):
+                return obj.encode("ascii", errors="replace").decode("ascii")
+            return obj
+        data_to_store = _ascii_sanitize(data_to_store)
+        raw_json = _json.dumps(data_to_store, ensure_ascii=True, default=str)
+        raw_json = raw_json.encode("ascii", errors="replace").decode("ascii")
+    else:
+        raw_json = _json.dumps(data_to_store, ensure_ascii=False, default=str)
+
+    api_params_json = _json.dumps(api_params or {}, default=str)
+
+    sql = """
+        WITH ins AS (
+            INSERT INTO raw_snapshot_version (
+                stock_code, data_type, source, api_params, fetched_at,
+                source_last_modified, content_hash, raw_data, parser_status
+            )
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (stock_code, data_type, source, content_hash) DO NOTHING
+            RETURNING snapshot_id
+        )
+        SELECT snapshot_id FROM ins
+        UNION ALL
+        SELECT snapshot_id FROM raw_snapshot_version
+        WHERE stock_code = %s AND data_type = %s AND source = %s AND content_hash = %s
+        LIMIT 1
+    """
+    # 使用原始连接并显式 commit：db.execute(fetch=True) 默认不会提交
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    stock_code, data_type, source, api_params_json, fetched_at,
+                    source_last_modified, content_hash, raw_json, parser_status,
+                    stock_code, data_type, source, content_hash,
+                ),
+            )
+            result = cur.fetchall()
+        conn.commit()
+
+    if not result or result[0][0] is None:
+        raise RuntimeError(
+            f"无法获取或创建 raw_snapshot_version: stock={stock_code} data_type={data_type} hash={content_hash}"
+        )
+    snapshot_id = result[0][0]
+    logger.info(
+        "raw_snapshot_version 已就绪: stock=%s type=%s source=%s snapshot_id=%s",
+        stock_code, data_type, source, snapshot_id,
+    )
+    return snapshot_id
+
+
+def save_raw_snapshot_observation(
+    snapshot_id: int,
+    fetched_at: Optional[datetime] = None,
+    http_status: Optional[int] = None,
+    source_last_modified: Optional[str] = None,
+    request_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> None:
+    """记录一次实际抓取事件，即使 snapshot 内容复用也写一条 observation。"""
+    if fetched_at is None:
+        fetched_at = datetime.now()
+    execute(
+        """
+        INSERT INTO raw_snapshot_observation (
+            snapshot_id, fetched_at, http_status, source_last_modified, request_id, job_id
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (snapshot_id, fetched_at, http_status, source_last_modified, request_id, job_id),
+        commit=True,
+    )
+    logger.debug("raw_snapshot_observation 已写入: snapshot_id=%s", snapshot_id)
 
 
 def upsert(
