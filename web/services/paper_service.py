@@ -7,6 +7,11 @@ import uuid
 from datetime import date, datetime
 
 from db import Connection
+from quant.backtest.common import (
+    compute_benchmark_comparison,
+    compute_daily_metrics,
+    load_benchmark_prices,
+)
 from quant.paper.engine import PaperTradingEngine
 from quant.screener.presets import COMPOSITE_PRESETS, PRESETS
 
@@ -71,6 +76,61 @@ def _enrich_account(account: dict) -> dict:
             account.get("market", ""),
         )
     return account
+
+
+def _compute_account_performance(account: dict, nav_history: list[dict]) -> dict | None:
+    """从 NAV 历史计算日频绩效指标 + 基准对比（只读）。"""
+    if not nav_history:
+        return None
+
+    # nav_history 按 value_date DESC 返回，翻转为 ASC
+    daily_nav = {}
+    for snap in reversed(nav_history):
+        vd = snap.get("value_date")
+        nav_val = snap.get("nav")
+        if vd and nav_val is not None:
+            daily_nav[vd if isinstance(vd, date) else date.fromisoformat(str(vd)[:10])] = float(nav_val)
+
+    if len(daily_nav) < 2:
+        return None
+
+    metrics = compute_daily_metrics(daily_nav)
+    result = {
+        "total_return": round(metrics.total_return, 6),
+        "annualized_return": round(metrics.annualized_return, 6),
+        "max_drawdown": round(metrics.max_drawdown, 6),
+        "sharpe_ratio": round(metrics.sharpe_ratio, 4),
+        "volatility": round(metrics.volatility, 6),
+        "num_rebalances": metrics.num_rebalances,
+        "avg_holding_count": round(metrics.avg_holding_count, 1),
+        "total_trades": metrics.total_trades,
+    }
+
+    # 基准对比
+    market = account.get("market", "")
+    benchmark = account.get("benchmark")
+    if benchmark and daily_nav:
+        dates = sorted(daily_nav.keys())
+        bench_prices = load_benchmark_prices(benchmark, market, dates[0], dates[-1])
+        if bench_prices and len(bench_prices) >= 2:
+            base_price = list(bench_prices.values())[0]
+            if base_price > 0:
+                bench_nav = {d: p / base_price for d, p in bench_prices.items()}
+                comparison = compute_benchmark_comparison(benchmark, daily_nav, bench_nav)
+                result["benchmark"] = {
+                    "ticker": benchmark,
+                    "total_return": round(comparison.benchmark_total_return, 6),
+                    "annualized": round(comparison.benchmark_annualized, 6),
+                    "max_drawdown": round(comparison.benchmark_max_drawdown, 6),
+                    "excess_return": round(comparison.excess_return, 6),
+                    "alpha": round(comparison.annualized_alpha, 6),
+                    "beta": round(comparison.beta, 4),
+                    "information_ratio": round(comparison.information_ratio, 4),
+                    "tracking_error": round(comparison.tracking_error, 6),
+                    "correlation": round(comparison.correlation, 4),
+                }
+
+    return result
 
 
 def list_accounts(status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
@@ -193,12 +253,16 @@ def get_account_detail(account_id: str) -> dict | None:
         cur.close()
     runs = [_serialize(_to_dict(cols, r)) for r in rows]
 
+    # 计算日频绩效指标
+    performance = _compute_account_performance(account, nav_history)
+
     return {
         "account": _enrich_account(account),
         "current_holdings": holdings,
         "recent_trades": trades,
         "nav_history": nav_history,
         "recent_runs": runs,
+        "performance": performance,
     }
 
 
