@@ -26,7 +26,8 @@ export function ScreenerPage() {
   const { data: presetsData } = useQuery({
     queryKey: ["screener", "presets", market],
     queryFn: () => screenerApi.presets(market),
-    staleTime: 300_000,
+    // 开发/调试阶段不过度缓存，避免代码更新后前端仍展示旧预设文案
+    staleTime: 0,
     placeholderData: keepPreviousData,
   });
 

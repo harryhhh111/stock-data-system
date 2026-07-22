@@ -49,15 +49,19 @@ def rank_factors(df: pd.DataFrame, weights: dict[str, FactorWeight],
         if col not in result.columns:
             continue
 
+        # cfg["ascending"]=False 表示因子值越大越好，因此 pandas rank 需用 ascending=True，
+        # 使最大值获得最高百分位；cfg["ascending"]=True 则相反。
+        rank_ascending = not cfg["ascending"]
+
         if by_industry and "industry" in result.columns:
             # 统计每行业样本量
             industry_counts = result.groupby("industry")[col].transform("count")
             # 大行业内排名
             rank_industry = result.groupby("industry")[col].transform(
-                lambda x: x.rank(pct=True, ascending=cfg["ascending"]) * 100
+                lambda x: x.rank(pct=True, ascending=rank_ascending) * 100
             )
             # 全局排名（fallback）
-            rank_global = result[col].rank(pct=True, ascending=cfg["ascending"]) * 100
+            rank_global = result[col].rank(pct=True, ascending=rank_ascending) * 100
             # 小行业用全局排名
             rank = pd.Series(
                 np.where(industry_counts >= MIN_INDUSTRY_SIZE, rank_industry, rank_global),
@@ -65,7 +69,7 @@ def rank_factors(df: pd.DataFrame, weights: dict[str, FactorWeight],
             )
         else:
             # 全局百分位排名
-            rank = result[col].rank(pct=True, ascending=cfg["ascending"]) * 100
+            rank = result[col].rank(pct=True, ascending=rank_ascending) * 100
 
         result[f"{factor_name}_rank"] = rank
 

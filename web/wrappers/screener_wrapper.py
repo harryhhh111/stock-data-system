@@ -106,7 +106,8 @@ def run_screener(market: str, preset: str | None, top_n: int) -> dict:
     # 3. 打分排序
     scored = rank_factors(filtered, weights)
 
-    # 4. 构建结果
+    # 4. 构建结果（按综合得分排名升序取前 N）
+    scored = scored.sort_values("score_rank", ascending=True)
     top = scored.head(top_n)
     results = []
     for _, row in top.iterrows():

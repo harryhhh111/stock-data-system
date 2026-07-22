@@ -30,7 +30,12 @@ export async function apiFetch<T>(
   const { market, ...fetchInit } = init ?? {};
   const res = await fetch(`${base}/api/v1${path}`, {
     ...fetchInit,
-    headers: { "Content-Type": "application/json", ...fetchInit?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Pragma: "no-cache",
+      ...fetchInit?.headers,
+    },
   });
   if (!res.ok) {
     let detail: string | undefined;
