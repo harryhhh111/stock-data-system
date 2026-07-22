@@ -38,6 +38,7 @@
 | [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（选股、分析、回测） |
 | [quant/BACKTEST_DESIGN.md](quant/BACKTEST_DESIGN.md) | 因子策略回测系统设计（PIT、组合、基准对比） |
 | [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |
+| [quant/US_COMPOSITE_STRATEGY_SELECTION.md](quant/US_COMPOSITE_STRATEGY_SELECTION.md) | US 复合策略候选、回测依据、引擎改造与上线门槛 |
 | [quant/PAPER_TRADING_PLAN.md](quant/PAPER_TRADING_PLAN.md) | 模拟盘计划（复合策略前后端打通后的下一阶段） |
 | [quant/WEB_FRONTEND_PLAN.md](quant/WEB_FRONTEND_PLAN.md) | Web 前端仪表板设计方案 |
 | `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 5 个预设策略） |
@@ -93,6 +94,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-07-20 | 新增 US 复合策略选型与验证方案 |
 | 2026-07-20 | 新增历史市值 PIT 分批回算方案 |
 | 2026-06-15 | 补充复合策略与模拟盘计划文档入口 |
 | 2026-05-01 | 整理文档结构，新增 deployment/ 目录，归档临时文档 |

@@ -142,7 +142,7 @@ def test_save_trades_calculates_fee_and_slippage():
     new.positions["AAA"] = Position("AAA", 12.0, 11.0)
     new.positions["BBB"] = Position("BBB", 5.0, 20.0)
 
-    trades = engine._save_trades(
+    trades, cost_by_sub = engine._save_trades(
         {"base": old},
         {"base": new},
         date(2026, 1, 2),
@@ -151,6 +151,9 @@ def test_save_trades_calculates_fee_and_slippage():
     )
 
     assert len(trades) == 2
+    # AAA buy 2@11=$22, BBB buy 5@20=$100, total=$122
+    # fee=0.122, slippage=0.061, total_cost=0.183
+    assert cost_by_sub["base"] == pytest.approx(0.183)
     by_code = {trade["stock_code"]: trade for trade in trades}
     assert by_code["AAA"]["shares"] == 2.0
     assert by_code["AAA"]["amount"] == 22.0

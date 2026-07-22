@@ -465,27 +465,36 @@ def _rebalance_sub_portfolio(
     quote_by_date: dict[date, pd.DataFrame],
     signals: dict[str, str],
     valuation_snaps: dict[str, list[Snapshot]],
+    exec_date: date | None = None,
 ) -> None:
-    """单个子策略在一个调仓日的完整流程：记录快照 → 归一化 → 选股 → 调仓。"""
+    """单个子策略在一个调仓日的完整流程：记录快照 → 归一化 → 选股 → 调仓。
+
+    Args:
+        rb_date: 信号日，用于基本面选股和估值快照。
+        exec_date: 执行日，用于成交价格查询。为 None 时等于 rb_date。
+    """
+    trade_date = exec_date or rb_date
+
     _record_sub_valuation_snapshot(sub_pf, name, rb_date, benchmark, market, valuation_snaps)
 
-    # 资金归一化
+    # 资金归一化（使用执行日价格）
     current_codes = list(sub_pf.positions.keys())
-    current_prices = get_sell_prices_mixed(rb_date, current_codes, benchmark, market)
+    current_prices = get_sell_prices_mixed(trade_date, current_codes, benchmark, market)
     _normalize_sub_portfolio(sub_pf, target_capital, current_prices)
 
     if target_capital <= 0:
         sell_codes = list(sub_pf.positions.keys())
-        sell_p = get_sell_prices_mixed(rb_date, sell_codes, benchmark, market)
-        sub_pf.rebalance(rb_date, [], {}, sell_p)
+        sell_p = get_sell_prices_mixed(trade_date, sell_codes, benchmark, market)
+        sub_pf.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
         return
 
+    # 选股使用信号日基本面，价格使用执行日行情
     targets = _select_sub_targets(sub, signals, rb_date, market, preloader, quote_by_date)
 
     # 子组合调仓
     sell_codes = list(sub_pf.positions.keys())
     trade_codes = list(set(targets) | set(sell_codes))
-    all_prices = get_sell_prices_mixed(rb_date, trade_codes, benchmark, market)
+    all_prices = get_sell_prices_mixed(trade_date, trade_codes, benchmark, market)
 
     buy_prices = {
         c: p for c, p in all_prices.items()

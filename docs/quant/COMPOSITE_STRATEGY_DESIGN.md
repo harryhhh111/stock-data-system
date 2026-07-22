@@ -5,6 +5,8 @@
 > **实现同步**：2026-06-15
 > **当前代码**：`quant/backtest/composite.py`、`quant/screener/presets.py::COMPOSITE_PRESETS`、`quant/backtest/engine.py` 路由。
 
+> **US 选型补充**：现有 `commodity_rotation` 不适用于 US；US 专用固定权重复合策略候选、回测依据和评审项见 [US_COMPOSITE_STRATEGY_SELECTION.md](US_COMPOSITE_STRATEGY_SELECTION.md)。
+
 ## 当前进展
 
 已完成：

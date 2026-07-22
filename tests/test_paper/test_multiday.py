@@ -131,8 +131,9 @@ class _MemoryPaperEngine(PaperTradingEngine):
 
     def _save_trades(
         self, old_portfolios, new_portfolios, trade_date, signals, allocation,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict[str, float]]:
         result = []
+        cost_by_sub: dict[str, float] = {}
         for sub in set(old_portfolios) | set(new_portfolios):
             old = old_portfolios.get(sub, Portfolio(0.0))
             new = new_portfolios.get(sub, Portfolio(0.0))
@@ -147,7 +148,7 @@ class _MemoryPaperEngine(PaperTradingEngine):
                     "trade_date": str(trade_date),
                     "stock_code": code,
                     "market": "US",
-                    "sub_strategy": sub,
+                    "sub_strategy": sub or "",
                     "side": "buy" if diff > 0 else "sell",
                     "shares": abs(diff),
                     "price": self.prices[trade_date][code],
@@ -159,7 +160,7 @@ class _MemoryPaperEngine(PaperTradingEngine):
                 }
                 result.append(trade)
         self.trades.extend(result)
-        return result
+        return result, cost_by_sub
 
     def _save_strategy_run(
         self, run_date, run_type, status, signals, allocation,

@@ -15,11 +15,14 @@ from datetime import date, datetime
 
 import pandas as pd
 
+from dateutil.relativedelta import relativedelta
+
 from db import Connection
 from quant.backtest.common import (
     batch_query_quote,
     build_universe,
     compute_price_factors,
+    get_month_end,
     get_sell_prices_mixed,
     load_benchmark_prices,
     generate_rebalance_dates,
@@ -93,6 +96,89 @@ class PaperTradingEngine:
             raise ValueError(f"{strategy} is not a composite strategy")
         self._cfg = cfg
         return cfg
+
+    def _get_cohort_config(self) -> dict | None:
+        """从 account.config JSONB 读取 cohort 配置。
+
+        如果不存在 rebalance_signal_months，返回 None（使用旧月频逻辑）。
+        """
+        config = self._account.get("config") or {}
+        if isinstance(config, str):
+            import json
+            config = json.loads(config)
+        if not config.get("rebalance_signal_months"):
+            return None
+        return {
+            "signal_months": config["rebalance_signal_months"],
+            "execution_lag": config.get("execution_lag_sessions", 1),
+            "allocation": config.get("allocation", {}),
+            "portfolio_group": config.get("portfolio_group"),
+            "cohort_id": config.get("cohort_id"),
+        }
+
+    def _compute_signal_period(
+        self, as_of_date: date, cohort_cfg: dict
+    ) -> dict | None:
+        """根据当前日期和 cohort 配置，确定本轮信号周期。
+
+        逻辑：
+          1. 找到 as_of_date 之前（或等于）的最近一个 signal_month
+          2. signal_date = 该月最后一个 US 交易日
+          3. execution_date = signal_date 之后第 N 个 US 交易日
+          4. 如果 as_of_date >= execution_date，且尚未执行，返回周期信息
+
+        Returns:
+            {signal_date, exec_date, period_key} 或 None（未到执行日）。
+        """
+        market = self._account["market"]
+        signal_months = cohort_cfg["signal_months"]
+        lag = cohort_cfg["execution_lag"]
+        current_month = as_of_date.month
+        current_year = as_of_date.year
+
+        # 找最近的 signal_month：今年或去年的月份
+        candidates = []
+        for m in signal_months:
+            if m <= current_month:
+                candidates.append((current_year, m))
+            else:
+                candidates.append((current_year - 1, m))
+        candidates.sort(reverse=True)
+        signal_year, signal_month = candidates[0]
+
+        # 该月最后一天
+        month_start = date(signal_year, signal_month, 1)
+        month_end = get_month_end(month_start)
+        signal_date = get_nearest_trade_date(month_end, market=market)
+        if signal_date is None:
+            return None
+
+        # 执行日：signal_date 之后第 lag 个交易日
+        exec_date = signal_date
+        for _ in range(lag):
+            next_day = exec_date + relativedelta(days=1)
+            nt = get_nearest_trade_date(next_day, market=market)
+            if nt and nt > exec_date:
+                exec_date = nt
+            else:
+                # 往后多找几天
+                for offset in range(2, 8):
+                    nt = get_nearest_trade_date(
+                        exec_date + relativedelta(days=offset), market=market
+                    )
+                    if nt and nt > exec_date:
+                        exec_date = nt
+                        break
+
+        period_key = f"{signal_year}-{signal_month:02d}"
+
+        return {
+            "signal_date": signal_date,
+            "exec_date": exec_date,
+            "period_key": period_key,
+            "signal_month": signal_month,
+            "signal_year": signal_year,
+        }
 
     def _load_normal_preset(self) -> PresetConfig:
         strategy = self._account["strategy_name"]
@@ -295,8 +381,14 @@ class PaperTradingEngine:
         trade_date: date,
         signals: dict[str, str],
         allocation: dict[str, float],
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict[str, float]]:
+        """保存交易记录并计算各子策略成本。
+
+        Returns:
+            (trades, cost_by_sub): 交易列表和 {sub_name: total_cost} 用于扣减现金。
+        """
         trades: list[dict] = []
+        cost_by_sub: dict[str, float] = {}
         signal_json = json.dumps(signals, default=str)
         fee_rate = _acct_float(self._account, "fee_rate")
         slippage_bps = _acct_float(self._account, "slippage_bps")
@@ -367,9 +459,12 @@ class PaperTradingEngine:
                             "reason": reason,
                             "signal_snapshot": signals,
                         })
+                        # 累计子策略成本
+                        total_cost = fee + slippage
+                        cost_by_sub[sub] = cost_by_sub.get(sub, 0.0) + total_cost
             conn.commit()
             cur.close()
-        return trades
+        return trades, cost_by_sub
 
     def _save_nav_snapshot(
         self,
@@ -534,7 +629,49 @@ class PaperTradingEngine:
             conn.commit()
             cur.close()
 
+    def _is_cohort_rebalance_day(
+        self, as_of_date: date, cohort_cfg: dict
+    ) -> dict | None:
+        """Cohort 模式：检查今天是否是该 cohort 的执行日。
+
+        Returns:
+            {signal_date, exec_date, period_key} 或 None。
+        """
+        period = self._compute_signal_period(as_of_date, cohort_cfg)
+        if period is None:
+            return None
+        exec_date = period["exec_date"]
+        trade_date = get_nearest_trade_date(as_of_date, market=self._account["market"])
+        if trade_date is None:
+            return None
+        # 今天是执行日（或执行日之后的补执行日）
+        if trade_date >= exec_date:
+            # 检查是否已执行
+            if not self._check_period_already_run(period["signal_date"]):
+                return period
+        return None
+
+    def _check_period_already_run(self, signal_date: date) -> bool:
+        """检查某个 signal_date 的 rebalance 是否已成功执行。
+
+        (account_id, signal_date, run_type='rebalance') 的 UNIQUE 约束
+        天然阻止同周期重复执行。
+        """
+        with _get_conn(self._conn) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT 1 FROM paper_strategy_runs
+                   WHERE account_id=%s AND run_date=%s
+                     AND run_type='rebalance' AND status='success'
+                   LIMIT 1""",
+                (self.account_id, signal_date),
+            )
+            row = cur.fetchone()
+            cur.close()
+        return row is not None
+
     def _is_rebalance_day(self, as_of_date: date) -> bool:
+        """旧月频逻辑（无 cohort config 的账户使用）。"""
         market = self._account["market"]
         rb_dates = generate_rebalance_dates(
             as_of_date.replace(day=1), as_of_date, 1, market=market
@@ -563,12 +700,29 @@ class PaperTradingEngine:
         if trade_date is None:
             raise ValueError(f"No trade data for {as_of_date} in {market}")
 
+        # Cohort 模式检测
+        cohort_cfg = self._get_cohort_config()
+        cohort_period: dict | None = None
+        if cohort_cfg:
+            cohort_period = self._is_cohort_rebalance_day(as_of_date, cohort_cfg)
+            is_rebalance = cohort_period is not None
+        else:
+            is_rebalance = self._is_rebalance_day(trade_date)
+
         # 幂等检查
-        existing = self._check_already_run(trade_date)
-        if existing is not None:
-            logger.info("Already ran %s on %s, skipping", existing["run_type"], trade_date)
+        if is_rebalance:
+            if cohort_period:
+                already = self._check_period_already_run(cohort_period["signal_date"])
+            else:
+                already = self._check_already_run(trade_date) is not None
+        else:
+            already = self._check_already_run(trade_date) is not None
+
+        if already:
+            run_type = "rebalance" if is_rebalance else "valuation"
+            logger.info("Already ran %s on %s, skipping", run_type, trade_date)
             return {
-                "run_type": existing["run_type"],
+                "run_type": run_type,
                 "run_date": str(trade_date),
                 "status": "skipped",
                 "signals": {},
@@ -578,21 +732,23 @@ class PaperTradingEngine:
                 "nav_after": None,
             }
 
-        is_rebalance = self._is_rebalance_day(trade_date)
-
         # 加载当前持仓
         sub_portfolios = self._load_current_positions()
         self._restore_account_cash(sub_portfolios, preset_type, cfg)
         old_portfolios = deepcopy(sub_portfolios) if is_rebalance else None
 
+        # 估值/价格日期：cohort 使用执行日，否则使用交易日
+        pricing_date = cohort_period["exec_date"] if cohort_period else trade_date
+        pricing_date = get_nearest_trade_date(pricing_date, market=market) or pricing_date
+
         # 获取当前行情
         all_codes = list({c for pf in sub_portfolios.values() for c in pf.positions})
-        current_prices = get_sell_prices_mixed(trade_date, all_codes, account["benchmark"], market)
+        current_prices = get_sell_prices_mixed(pricing_date, all_codes, account["benchmark"], market)
 
         # 获取基准价格
         benchmark_nav_val = None
         if account["benchmark"]:
-            bp = load_benchmark_prices(account["benchmark"], market, trade_date, trade_date)
+            bp = load_benchmark_prices(account["benchmark"], market, pricing_date, pricing_date)
             if bp:
                 benchmark_nav_val = list(bp.values())[0]
                 # 按初始日归一化
@@ -615,13 +771,21 @@ class PaperTradingEngine:
         trades: list[dict] = []
 
         if is_rebalance:
+            # Cohort 模式：信号日用于选股，执行日用于成交价
+            signal_date = cohort_period["signal_date"] if cohort_period else trade_date
+            exec_date = cohort_period["exec_date"] if cohort_period else trade_date
+
             with _get_conn(self._conn) as conn:
-                quote_by_date = batch_query_quote(conn, [trade_date], market)
+                quote_by_date = batch_query_quote(conn, [signal_date], market)
 
             if preset_type == "composite":
                 assert cfg is not None
-                signals = _check_all_signals(cfg, market, trade_date)
+                signals = _check_all_signals(cfg, market, signal_date)
                 allocation = _allocate(cfg, signals)
+
+                # Cohort 模式：使用 config 中的固定权重覆盖宏观信号分配
+                if cohort_cfg and cohort_cfg.get("allocation"):
+                    allocation = dict(cohort_cfg["allocation"])
 
                 preloader = PaperPreloader(market)
                 valuation_snaps = {sub["name"]: [] for sub in cfg["sub_strategies"]}
@@ -635,7 +799,7 @@ class PaperTradingEngine:
                         sub=sub,
                         sub_pf=sub_portfolios[name],
                         name=name,
-                        rb_date=trade_date,
+                        rb_date=signal_date,
                         target_capital=target_capital,
                         benchmark=account["benchmark"],
                         market=market,
@@ -643,22 +807,33 @@ class PaperTradingEngine:
                         quote_by_date=quote_by_date,
                         signals=signals,
                         valuation_snaps=valuation_snaps,
+                        exec_date=exec_date,
                     )
             else:
                 allocation = {"base": 1.0}
                 self._rebalance_normal_portfolio(
                     pf=sub_portfolios["base"],
-                    trade_date=trade_date,
+                    trade_date=signal_date,
                     market=market,
                     benchmark=account["benchmark"],
                     quote_by_date=quote_by_date,
                 )
                 signals = {"strategy": account["strategy_name"]}
 
-            trades = self._save_trades(old_portfolios or {}, sub_portfolios, trade_date, signals, allocation)
+            trades, cost_by_sub = self._save_trades(
+                old_portfolios or {}, sub_portfolios,
+                exec_date, signals, allocation,
+            )
+            # 真实扣减成本
+            for sub_name, cost in cost_by_sub.items():
+                if sub_name in sub_portfolios:
+                    sub_portfolios[sub_name].cash -= cost
 
-        # 估值
-        nav_snap = self._save_nav_snapshot(trade_date, sub_portfolios, current_prices, benchmark_nav_val)
+        # 估值（使用执行日/交易日价格，已在 pricing_date 获取）
+        all_codes = list({c for pf in sub_portfolios.values() for c in pf.positions})
+        current_prices = get_sell_prices_mixed(pricing_date, all_codes, account["benchmark"], market)
+
+        nav_snap = self._save_nav_snapshot(pricing_date, sub_portfolios, current_prices, benchmark_nav_val)
 
         # 持久化仓位
         self._save_positions(sub_portfolios, current_prices)
@@ -667,7 +842,7 @@ class PaperTradingEngine:
         total_cash = sum(float(pf.cash) for pf in sub_portfolios.values())
         total_value = nav_snap["total_value"]
         nav_val = nav_snap["nav"]
-        self._update_account_summary(total_value, total_cash, nav_val, trade_date)
+        self._update_account_summary(total_value, total_cash, nav_val, pricing_date)
 
         # 记录运行
         target_positions: dict[str, list[str]] = {}
@@ -678,8 +853,11 @@ class PaperTradingEngine:
             "buy": [t for t in trades if t["side"] == "buy"],
             "sell": [t for t in trades if t["side"] == "sell"],
         }
+        # Cohort 模式使用 signal_date 作为 run_date 防重复
+        # (account_id, signal_date, 'rebalance') UNIQUE 阻止同周期重复执行
+        run_date_key = cohort_period["signal_date"] if cohort_period else pricing_date
         self._save_strategy_run(
-            run_date=trade_date,
+            run_date=run_date_key,
             run_type="rebalance" if is_rebalance else "valuation",
             status="success",
             signals=signals,
