@@ -10,7 +10,7 @@ interface Props {
   results: ScreenerStock[];
 }
 
-type SortKey = "score" | "market_cap" | "pe_ttm" | "pb" | "fcf_yield" | "roe" | "roe_1y_ago" | "roe_2y_ago" | "roe_3y_ago" | "gross_margin" | "net_margin";
+type SortKey = "score" | "market_cap" | "pe_ttm" | "pb" | "fcf_yield" | "roe" | "roe_1y_ago" | "roe_2y_ago" | "gross_margin" | "net_margin";
 
 function pctColor(value: number | null, good: number, bad: number): string | undefined {
   if (value == null) return undefined;
@@ -32,7 +32,7 @@ function escapeCsv(val: unknown): string {
 }
 
 function exportCsv(results: ScreenerStock[]) {
-  const headers = ["排名", "代码", "名称", "市场", "行业", "市值", "PE", "PB", "FCF Yield", "ROE", "ROE(上年)", "ROE(前年)", "ROE(大前年)", "毛利率", "净利率", "得分"];
+  const headers = ["排名", "代码", "名称", "市场", "行业", "市值", "PE", "PB", "FCF Yield", "ROE", "ROE(上年)", "ROE(前年)", "毛利率", "净利率", "得分"];
   const rows = results.map((s) => [
     s.score_rank,
     s.stock_code,
@@ -46,7 +46,6 @@ function exportCsv(results: ScreenerStock[]) {
     s.roe ?? "",
     s.roe_1y_ago ?? "",
     s.roe_2y_ago ?? "",
-    s.roe_3y_ago ?? "",
     s.gross_margin ?? "",
     s.net_margin ?? "",
     s.score,
@@ -122,7 +121,6 @@ export function ResultTable({ results }: Props) {
               {headerCell("roe", "ROE")}
               {headerCell("roe_1y_ago", "ROE(上年)")}
               {headerCell("roe_2y_ago", "ROE(前年)")}
-              {headerCell("roe_3y_ago", "ROE(大前年)")}
               {headerCell("gross_margin", "毛利率")}
               {headerCell("net_margin", "净利率")}
               {headerCell("score", "得分")}
@@ -152,9 +150,6 @@ export function ResultTable({ results }: Props) {
                 </TableCell>
                 <TableCell className={`text-right ${pctColor(stock.roe_2y_ago, 0.15, 0.05) ?? ""}`}>
                   {fmtPct(stock.roe_2y_ago)}
-                </TableCell>
-                <TableCell className={`text-right ${pctColor(stock.roe_3y_ago, 0.15, 0.05) ?? ""}`}>
-                  {fmtPct(stock.roe_3y_ago)}
                 </TableCell>
                 <TableCell className="text-right">{fmtPct(stock.gross_margin)}</TableCell>
                 <TableCell className="text-right">{fmtPct(stock.net_margin)}</TableCell>

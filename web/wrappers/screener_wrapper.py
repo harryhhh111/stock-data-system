@@ -32,7 +32,7 @@ def get_presets() -> dict:
 OUTPUT_COLUMNS = [
     "score_rank", "score", "stock_code", "stock_name", "market",
     "industry", "market_cap", "pe_ttm", "pb", "dividend_yield",
-    "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago", "roe_3y_ago",
+    "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago",
     "gross_margin", "net_margin", "debt_ratio",
 ]
 

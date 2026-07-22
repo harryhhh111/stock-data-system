@@ -45,7 +45,6 @@ export interface ScreenerStock {
   roe: number | null;
   roe_1y_ago: number | null;
   roe_2y_ago: number | null;
-  roe_3y_ago: number | null;
   gross_margin: number | null;
   net_margin: number | null;
   debt_ratio: number | null;

@@ -525,7 +525,6 @@ OUTPUT_COLUMNS = [
     ("roe", "ROE", "pct_1"),
     ("roe_1y_ago", "ROE(上年)", "pct_1"),
     ("roe_2y_ago", "ROE(前年)", "pct_1"),
-    ("roe_3y_ago", "ROE(大前年)", "pct_1"),
     ("gross_margin", "毛利率", "pct_1"),
     ("net_margin", "净利率", "pct_1"),
     ("debt_ratio", "负债率", "pct_1"),
