@@ -203,7 +203,7 @@ PRESETS: dict[str, PresetConfig] = {
             "仅选黄金相关股票（A股:有色金属名含金/矿, 港股:黄金及贵金属）",
             "金价 > 200MA 且 60日动量 > 0 时开仓",
             "金价 bear 时排除该行业",
-            "FCF Yield ≥ 12% (A股/港股)，ROE ≥ 10% 连续3年",
+            "FCF Yield ≥ 5% (A股/港股)，ROE ≥ 5% 连续3年",
         ],
         "scoring": "FCF Yield 30% · CFO质量 25% · PB 20% · 营收同比 15% · 毛利率 10%",
         "macro_filter": ["XAU"],
@@ -218,10 +218,10 @@ PRESETS: dict[str, PresetConfig] = {
                 "CN_HK": ["银行", "保险", "其他金融", "地产"],
             },
             "fcf_yield_min_by_market": {
-                "CN_A": 0.12,
-                "CN_HK": 0.12,
+                "CN_A": 0.05,
+                "CN_HK": 0.05,
             },
-            "roe_min": 0.10,
+            "roe_min": 0.05,
             "roe_consecutive_years": 3,
         },
         "weights": {
