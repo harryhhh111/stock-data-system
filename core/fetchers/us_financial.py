@@ -80,6 +80,46 @@ class SECRateLimiter:
 
 
 # ═══════════════════════════════════════════════════════════
+# Period classification（start/end 第一判据，frame 仅佐证）
+# ═══════════════════════════════════════════════════════════
+
+def _classify_period(start: str | None, frame: str) -> tuple[str, str | None]:
+    """以 SEC fact 的 start/end 判定 period kind，frame 仅作佐证。
+
+    规则:
+        start 缺失 + end 存在  → instant
+        start 存在 + end 存在  → duration
+        start 存在 + end 缺失  → invalid
+
+    frame 佐证:
+        instant + frame=~Q#I$  → 一致
+        duration + frame=~Q#$  → 一致
+        冲突                   → FRAME_PERIOD_CONFLICT
+        无 frame               → 允许
+
+    Returns:
+        (period_kind, quality_flag or None)
+    """
+    has_start = bool(start)
+    if not has_start:
+        period_kind = "instant"
+    else:
+        period_kind = "duration"
+
+    # frame 佐证检查
+    quality_flag = None
+    if frame:
+        frame_is_instant = bool(frame) and bool(re.search(r"Q\d+I$", frame))
+        frame_is_duration = bool(frame) and bool(re.search(r"Q\d+$", frame)) and not frame.endswith("I")
+        if period_kind == "instant" and frame_is_duration:
+            quality_flag = "FRAME_PERIOD_CONFLICT"
+        elif period_kind == "duration" and frame_is_instant:
+            quality_flag = "FRAME_PERIOD_CONFLICT"
+
+    return period_kind, quality_flag
+
+
+# ═══════════════════════════════════════════════════════════
 # US Financial Fetcher
 # ═══════════════════════════════════════════════════════════
 class USFinancialFetcher(BaseFetcher):
@@ -626,26 +666,26 @@ class USFinancialFetcher(BaseFetcher):
                         start = entry.get("start")
                         form = entry.get("form", "")
 
-                        # 用 frame 修正 fp（仅当需要时）
-                        # frame 是日历年（CY），fp 是财年，非 12 月财年公司两者不一致
-                        # 只在 fp 为 FY 或空时用 frame 修正（如 MELI 改财年 case）
-                        # 已有正确季度 fp 的不覆盖
-                        #
-                        # 关键：区分 instant frame（CY2025Q4I）和 duration frame（CY2025Q1）
-                        # - Q4I: 资产负债表时点值，form=10-K + fp=FY → 应保持 annual
-                        # - Q1/Q2/Q3/Q4: 流量期间值，可辅助修正缺失/错误的 fp
-                        _frame_is_instant = bool(frame) and frame.endswith("I")
+                        # ── period kind：以 start/end 为第一判据 ──
+                        # SEC Company Facts 的每个 fact 都有 start(可选) 和 end(必填)
+                        #   start 缺失 + end 存在  → instant（资产负债表时点）
+                        #   start 存在 + end 存在  → duration（利润表/现金流期间）
+                        #   start 存在 + end 缺失  → invalid
+                        _period_kind, _quality_flag = _classify_period(start, frame)
+
+                        # frame 仅作佐证，不覆盖 period kind
                         _frame_has_q = "Q" in frame
-                        if frame:
-                            if not _frame_is_instant:
-                                # duration frame (CY2025Q1, CY2025Q4): 可辅助修正 fp
-                                frame_match = _re.search(r"Q(\d+)$", frame)
-                                if frame_match and fp in ("FY", "", None):
-                                    fp = f"Q{frame_match.group(1)}"
-                                elif not frame_match and "CY" in frame and not _frame_has_q:
-                                    fp = "FY"
-                            # instant frame (CY2025Q4I): fp 保持不变
-                            # 10-K 年报资产负债表时点事实保持 FY → annual
+                        _frame_is_instant = _period_kind == "instant"
+
+                        if frame and _period_kind == "duration":
+                            # duration frame (CY2025Q1, CY2025Q4): 可辅助修正 fp
+                            frame_match = _re.search(r"Q(\d+)$", frame)
+                            if frame_match and fp in ("FY", "", None):
+                                fp = f"Q{frame_match.group(1)}"
+                            elif not frame_match and "CY" in frame and not _frame_has_q:
+                                fp = "FY"
+                        # instant fact (period_kind=instant): fp 保持不变
+                        # 10-K 年报资产负债表时点事实保持 FY → annual
 
                         records.append(
                             {
@@ -662,6 +702,8 @@ class USFinancialFetcher(BaseFetcher):
                                 "form": form,
                                 "_frame_has_q": _frame_has_q,
                                 "_frame_is_instant": _frame_is_instant,
+                                "_period_kind": _period_kind,
+                                "_quality_flag": _quality_flag,
                             }
                         )
 
