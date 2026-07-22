@@ -368,7 +368,7 @@ python -m core.validate
 行业 ≠ 银行、证券、保险、地产、ST
 市值 > 500 亿
 PE（TTM）> 0 且 < 30
-ROE 连续 3 年 > 15%
+ROE 连续 3 年 > 12%
 FCF Yield > 5%
 ```
 
