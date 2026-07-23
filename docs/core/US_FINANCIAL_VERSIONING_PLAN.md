@@ -517,12 +517,19 @@ form 为 amendment 只是强信号，不代表所有事实都替代原 10-K。�
 - 记录 PLTR、ONTO、SAM、ASML、MELI 等基线；
 - 统计哪些股票只有当前 JSON、哪些有多个本地历史文件。
 
-### Phase 1：新表与双写
+### Phase 1A：新表与双写（当前）
 
-- 创建 snapshot version、filing、fact version、relation、audit/staging 表；
+- 创建 snapshot version、observation、filing、fact version、conflict、staging、ingest_run 表；
 - 新同步先写不可变层，再继续写旧宽表；
 - 双写期间比较新旧当前结果，不切换消费者；
-- 新链路失败不能阻止原数据获取，但必须报警且不能宣称版本层完整。
+- 新链路失败不能阻止原数据获取，但必须报警且不能宣称版本层完整；
+- 未知 form/fp 组合进入 staging，已知冲突进入 conflict 表。
+
+### Phase 1B：relation 与 selection audit（P1 收尾）
+
+- 创建 `us_fact_version_relation` 和 `us_fact_selection_audit` 表；
+- 在 conflict/staging 稳定后实现 repeat/amendment/recast 等 relation 分类；
+- 建立 selector audit trail，记录每次宽表生成所选用的 fact version。
 
 ### Phase 2：回填事实版本
 

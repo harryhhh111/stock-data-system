@@ -1100,6 +1100,18 @@ class USFinancialFetcher(BaseFetcher):
 
     # ── 不可变版本层写入辅助 ──────────────────────────────
 
+    # 允许进入正式 fact version 的 form/fp 矩阵。
+    # 其他 form（8-K / DEF 14A / 6-K 等）或无法识别的 fp 进入 staging。
+    ACCEPTED_FORMS: set[str] = {
+        "10-K", "10-K/A",
+        "10-Q", "10-Q/A",
+        "10-QT", "10-QT/A",
+        "20-F", "20-F/A",
+        "40-F", "40-F/A",
+    }
+    ACCEPTED_FP: set[str | None] = {"FY", "Q1", "Q2", "Q3", "Q4", "H1", "H2", None}
+    ACCEPTED_FP.update({f"M{i}" for i in range(1, 13)})
+
     def _infer_statement(self, tag_mapping: dict[str, str]) -> str:
         """根据 tag_mapping 推断报表类型。"""
         if tag_mapping is self.INCOME_TAGS:
@@ -1109,6 +1121,38 @@ class USFinancialFetcher(BaseFetcher):
         if tag_mapping is self.CASHFLOW_TAGS:
             return "cashflow"
         return "unknown"
+
+    def _classify_record(self, rec: dict) -> tuple[str, str | None]:
+        """对有效 period 的事实做 form/fp/period_kind 允许矩阵分类。
+
+        Returns:
+            (decision, flag)，decision 取值：
+            - ACCEPT：直接进入正式 fact_version
+            - ACCEPT_WITH_FLAG：进入正式表，但附加质量标记
+            - STAGING_UNKNOWN_FORM_FP：未知 form/fp，进 staging
+            - STAGING_UNKNOWN_PERIOD_KIND：period_kind 异常，进 staging
+        """
+        period_kind = rec.get("_period_kind")
+        if period_kind not in ("instant", "duration"):
+            return "STAGING_UNKNOWN_PERIOD_KIND", None
+
+        form = str(rec.get("form") or "").strip().upper()
+        fp_raw = str(rec.get("fp") or "").strip().upper() or None
+
+        if form not in self.ACCEPTED_FORMS:
+            return "STAGING_UNKNOWN_FORM_FP", None
+
+        if fp_raw is not None and fp_raw not in self.ACCEPTED_FP:
+            return "STAGING_UNKNOWN_FORM_FP", None
+
+        if form in {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
+            if fp_raw != "FY":
+                return "ACCEPT_WITH_FLAG", "FISCAL_PERIOD_MISMATCH_ANNUAL"
+        elif form in {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}:
+            if fp_raw not in {"Q1", "Q2", "Q3", "Q4"}:
+                return "ACCEPT_WITH_FLAG", "FISCAL_PERIOD_MISMATCH_QUARTERLY"
+
+        return "ACCEPT", None
 
     # ── 不可变版本层写入辅助 ──────────────────────────────
 
@@ -1130,9 +1174,10 @@ class USFinancialFetcher(BaseFetcher):
 
         started_at = datetime.now()
         parser_git_sha = self._get_parser_git_sha()
+        run_id = None
 
-        with Connection() as conn:
-            try:
+        try:
+            with Connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -1144,6 +1189,14 @@ class USFinancialFetcher(BaseFetcher):
                     )
                     run_id = cur.fetchone()[0]
 
+                # run 记录先单独提交，确保后续数据事务失败时仍能更新为 failed。
+                conn.commit()
+
+                # 对同一 snapshot 的 ingest 加事务级 advisory lock，避免并发
+                # 竞争导致 existing 查询与 INSERT 之间出现重复/异值静默丢失。
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (context.snapshot_id,))
+
                 # 1. 拆分有效候选 vs 需要进 staging 的记录
                 candidate_rows: list[dict] = []
                 staging_rows: list[dict] = []
@@ -1153,6 +1206,16 @@ class USFinancialFetcher(BaseFetcher):
                     if reject_reason:
                         staging_rows.append(self._staging_row(rec, statement, context, reject_reason, run_id))
                         continue
+
+                    decision, flag = self._classify_record(rec)
+                    if decision.startswith("STAGING"):
+                        staging_rows.append(self._staging_row(rec, statement, context, decision, run_id))
+                        continue
+
+                    if flag:
+                        rec = dict(rec)
+                        existing_flag = rec.get("_quality_flag")
+                        rec["_quality_flag"] = flag if existing_flag is None else f"{existing_flag},{flag}"
                     candidate_rows.append(rec)
 
                 for rec in invalid_records:
@@ -1172,6 +1235,12 @@ class USFinancialFetcher(BaseFetcher):
                 # 3. 写入/更新 filing（只允许 metadata 补充）
                 filing_rows = []
                 for accn, meta in filing_meta.items():
+                    filing_metadata = {"report_date_source": "derived_from_company_facts"}
+                    if meta.get("frame"):
+                        filing_metadata["frame"] = meta["frame"]
+                    if meta.get("derived"):
+                        filing_metadata["report_date_derived"] = True
+
                     filing_rows.append({
                         "accession_no": accn,
                         "stock_code": context.stock_code,
@@ -1183,7 +1252,7 @@ class USFinancialFetcher(BaseFetcher):
                         "fiscal_period": meta["fiscal_period"] or None,
                         "is_amendment": "/A" in meta["form"],
                         "source_snapshot_id": context.snapshot_id,
-                        "metadata": psycopg2.extras.Json({"frame": meta.get("frame")} if meta.get("frame") else {}),
+                        "metadata": psycopg2.extras.Json(filing_metadata),
                     })
 
                 filing_sql = """
@@ -1250,66 +1319,66 @@ class USFinancialFetcher(BaseFetcher):
                     row["_key"] = self._fact_key(row)
                     fact_rows.append(row)
 
-                # 5. 检测 repeat / conflict
-                existing = self._load_existing_value_hashes(conn, fact_rows)
-                new_rows: list[dict] = []
-                conflict_rows: list[dict] = []
-                repeated = 0
+                # 5. 同批去重：相同唯一键按 value_hash 归并
+                unique_rows, batch_repeats, batch_conflicts = self._dedup_batch(
+                    fact_rows, run_id
+                )
 
-                for row in fact_rows:
-                    key = row.pop("_key")
+                # 6. 检测与已存在事实的 repeat / conflict
+                existing = self._load_existing_value_hashes(conn, unique_rows)
+                new_rows: list[dict] = []
+                conflict_rows: list[dict] = batch_conflicts
+                repeated = batch_repeats
+
+                for row in unique_rows:
+                    key = self._fact_key(row)
                     existing_info = existing.get(key)
                     if existing_info is None:
                         new_rows.append(row)
                     elif existing_info["value_hash"] == row["value_hash"]:
                         repeated += 1
                     else:
-                        conflict_rows.append({
-                            "run_id": run_id,
-                            "stock_code": row["stock_code"],
-                            "cik": row["cik"],
-                            "accession_no": row["accession_no"],
-                            "statement": row["statement"],
-                            "taxonomy": row["taxonomy"],
-                            "sec_tag": row["sec_tag"],
-                            "period_kind": row["period_kind"],
-                            "period_start": row["period_start"],
-                            "report_date": row["report_date"],
-                            "fiscal_year": row["fiscal_year"],
-                            "fiscal_period_raw": row["fiscal_period_raw"],
-                            "form": row["form"],
-                            "filed_date": row["filed_date"],
-                            "frame": row["frame"],
-                            "unit": row["unit"],
-                            "existing_value_hash": existing_info["value_hash"],
-                            "new_value_hash": row["value_hash"],
-                            "existing_value_numeric": existing_info.get("value_numeric"),
-                            "existing_value_text": existing_info.get("value_text"),
-                            "new_value_numeric": row["value_numeric"],
-                            "new_value_text": row["value_text"],
-                            "dimensions": row["dimensions"],
-                            "context_hash": row["context_hash"],
-                            "source_snapshot_id": row["source_snapshot_id"],
-                        })
+                        conflict_rows.append(
+                            self._build_conflict_row(
+                                run_id,
+                                {
+                                    "value_hash": existing_info["value_hash"],
+                                    "value_numeric": existing_info.get("value_numeric"),
+                                    "value_text": existing_info.get("value_text"),
+                                },
+                                row,
+                            )
+                        )
 
-                # 6. 写入新 fact
-                fact_sql = """
-                    INSERT INTO us_financial_fact_version (
-                        stock_code, cik, accession_no, statement, taxonomy, sec_tag, standard_field,
-                        period_kind, period_start, report_date, fiscal_year, fiscal_period_raw, form,
-                        filed_date, frame, unit, value_numeric, value_text, dimensions, context_hash,
-                        source_snapshot_id, ingest_run_id, value_hash, quality_flags
-                    ) VALUES (
-                        %(stock_code)s, %(cik)s, %(accession_no)s, %(statement)s, %(taxonomy)s, %(sec_tag)s, %(standard_field)s,
-                        %(period_kind)s, %(period_start)s, %(report_date)s, %(fiscal_year)s, %(fiscal_period_raw)s, %(form)s,
-                        %(filed_date)s, %(frame)s, %(unit)s, %(value_numeric)s, %(value_text)s, %(dimensions)s, %(context_hash)s,
-                        %(source_snapshot_id)s, %(ingest_run_id)s, %(value_hash)s, %(quality_flags)s
-                    )
-                    ON CONFLICT DO NOTHING
-                """
+                # 7. 写入新 fact，使用 RETURNING 得到真实插入数
+                facts_inserted = 0
+                if new_rows:
+                    fact_columns = [
+                        "stock_code", "cik", "accession_no", "statement", "taxonomy", "sec_tag", "standard_field",
+                        "period_kind", "period_start", "report_date", "fiscal_year", "fiscal_period_raw", "form",
+                        "filed_date", "frame", "unit", "value_numeric", "value_text", "dimensions", "context_hash",
+                        "source_snapshot_id", "ingest_run_id", "value_hash", "quality_flags"
+                    ]
+                    fact_sql = f"""
+                        INSERT INTO us_financial_fact_version (
+                            {', '.join(fact_columns)}
+                        ) VALUES %s
+                        ON CONFLICT DO NOTHING
+                        RETURNING fact_version_id
+                    """
+                    with conn.cursor() as cur:
+                        psycopg2.extras.execute_values(
+                            cur,
+                            fact_sql,
+                            [tuple(row[c] for c in fact_columns) for row in new_rows],
+                            template="(" + ", ".join(["%s"] * len(fact_columns)) + ")",
+                            page_size=1000,
+                            fetch=True,
+                        )
+                        facts_inserted = len(cur.fetchall())
+
+                # 8. 写入 conflict 与 staging
                 with conn.cursor() as cur:
-                    if new_rows:
-                        cur.executemany(fact_sql, new_rows)
                     if conflict_rows:
                         cur.executemany(
                             """
@@ -1333,7 +1402,7 @@ class USFinancialFetcher(BaseFetcher):
 
                 self._finish_run(
                     conn, run_id, "success",
-                    inserted=len(new_rows),
+                    inserted=facts_inserted,
                     repeated=repeated,
                     conflicted=len(conflict_rows),
                     reviewed=len(staging_rows),
@@ -1346,10 +1415,24 @@ class USFinancialFetcher(BaseFetcher):
                     len(new_rows), repeated, len(conflict_rows), len(staging_rows),
                 )
 
-            except Exception as exc:
-                self._finish_run(conn, run_id, "failed", error=str(exc))
-                conn.commit()
-                raise
+        except Exception as exc:
+            # 数据事务已失败；用独立事务记录 ingest run 失败状态，
+            # 避免在 aborted 事务中 UPDATE 导致 InFailedSqlTransaction。
+            logger.error(
+                "%s %s: ingest failed before completion: %s",
+                context.stock_code, statement, exc,
+            )
+            if run_id is not None:
+                try:
+                    with Connection() as fail_conn:
+                        self._finish_run(fail_conn, run_id, "failed", error=str(exc))
+                        fail_conn.commit()
+                except Exception as inner_exc:
+                    logger.error(
+                        "Failed to persist failed status for run_id=%s: %s",
+                        run_id, inner_exc,
+                    )
+            raise
 
     # ── 版本层内部 helper ─────────────────────────────────
 
@@ -1366,6 +1449,75 @@ class USFinancialFetcher(BaseFetcher):
             row["context_hash"],
             row["unit"],
         )
+
+    def _dedup_batch(
+        self,
+        fact_rows: list[dict],
+        run_id: int,
+    ) -> tuple[list[dict], int, list[dict]]:
+        """对同一输入批次内的事实按唯一键归并。
+
+        相同唯一键 + 相同 value_hash 计为 batch repeat；
+        相同唯一键 + 不同 value_hash 写入 conflict（以首次出现为基准）。
+
+        Returns:
+            (unique_rows, batch_repeat_count, batch_conflict_rows)
+        """
+        by_key: dict[tuple, list[dict]] = {}
+        for row in fact_rows:
+            key = row.pop("_key")
+            by_key.setdefault(key, []).append(row)
+
+        unique_rows: list[dict] = []
+        batch_repeats = 0
+        batch_conflicts: list[dict] = []
+
+        for key, rows in by_key.items():
+            base = rows[0]
+            unique_rows.append(base)
+            base_hash = base["value_hash"]
+            for dup in rows[1:]:
+                if dup["value_hash"] == base_hash:
+                    batch_repeats += 1
+                else:
+                    batch_conflicts.append(self._build_conflict_row(run_id, base, dup))
+
+        return unique_rows, batch_repeats, batch_conflicts
+
+    def _build_conflict_row(
+        self,
+        run_id: int,
+        existing_row: dict,
+        new_row: dict,
+    ) -> dict:
+        """构造 conflict 表行（existing_row 为基准，new_row 为冲突值）。"""
+        return {
+            "run_id": run_id,
+            "stock_code": new_row["stock_code"],
+            "cik": new_row["cik"],
+            "accession_no": new_row["accession_no"],
+            "statement": new_row["statement"],
+            "taxonomy": new_row["taxonomy"],
+            "sec_tag": new_row["sec_tag"],
+            "period_kind": new_row["period_kind"],
+            "period_start": new_row["period_start"],
+            "report_date": new_row["report_date"],
+            "fiscal_year": new_row["fiscal_year"],
+            "fiscal_period_raw": new_row["fiscal_period_raw"],
+            "form": new_row["form"],
+            "filed_date": new_row["filed_date"],
+            "frame": new_row["frame"],
+            "unit": new_row["unit"],
+            "existing_value_hash": existing_row["value_hash"],
+            "new_value_hash": new_row["value_hash"],
+            "existing_value_numeric": existing_row.get("value_numeric"),
+            "existing_value_text": existing_row.get("value_text"),
+            "new_value_numeric": new_row["value_numeric"],
+            "new_value_text": new_row["value_text"],
+            "dimensions": new_row["dimensions"],
+            "context_hash": new_row["context_hash"],
+            "source_snapshot_id": new_row["source_snapshot_id"],
+        }
 
     @staticmethod
     def _split_value(val: Any) -> tuple[Decimal | None, str | None]:
