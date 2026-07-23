@@ -168,8 +168,17 @@ CREATE TABLE IF NOT EXISTS us_financial_fact_exclusion (
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_fact_exclusion_status
-        CHECK (status IN ('active', 'revoked', 'superseded'))
+        CHECK (status IN ('active', 'revoked', 'superseded')),
+    CONSTRAINT chk_fact_exclusion_reason_code
+        CHECK (reason_code IN ('PARSER_TECHNICAL_ERROR', 'BUSINESS_VETO'))
 );
+
+-- 早期 Gate A 环境可能已经建表，显式升级约束。
+ALTER TABLE us_financial_fact_exclusion
+    DROP CONSTRAINT IF EXISTS chk_fact_exclusion_reason_code;
+ALTER TABLE us_financial_fact_exclusion
+    ADD CONSTRAINT chk_fact_exclusion_reason_code
+    CHECK (reason_code IN ('PARSER_TECHNICAL_ERROR', 'BUSINESS_VETO'));
 
 -- 从 Gate A 初版普通 UNIQUE 迁移为 active partial unique：
 -- revoked/superseded 历史可以保留多条，active 仍只能有一条。

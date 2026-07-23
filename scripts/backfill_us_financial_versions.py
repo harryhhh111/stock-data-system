@@ -930,7 +930,11 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def _rollback_create_exclusions(batch_id: str, reason: str, reason_code: str) -> int:
-    """为 batch 涉及的所有 fact_version 创建显式 exclusion。"""
+    """为 batch 首次引入的 fact_version 创建显式 exclusion。
+
+    repeated 仅表示本批次再次观察到既有事实；自动 rollback 不得据此排除
+    其他批次已经建立的事实。若 repeated 事实本身需要否决，应走独立人工审核。
+    """
     with Connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -946,6 +950,7 @@ def _rollback_create_exclusions(batch_id: str, reason: str, reason_code: str) ->
                 JOIN us_financial_fact_source s ON s.fact_version_id = f.fact_version_id
                 JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
                 WHERE i.batch_id = %s
+                  AND s.observation_kind IN ('inserted', 'reconstructed')
                 ON CONFLICT (fact_version_id, reason_code) WHERE status = 'active'
                 DO NOTHING
                 """,

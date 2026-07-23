@@ -17,6 +17,7 @@ EXCLUSION_POLICY_VERSION = "us_fact_exclusion_v1"
 # - 业务否决：从 effective_from 起生效，支持按生效时间做 PIT 选择。
 TECHNICAL_REASON_CODES = {"PARSER_TECHNICAL_ERROR"}
 BUSINESS_REASON_CODES = {"BUSINESS_VETO"}
+VALID_REASON_CODES = TECHNICAL_REASON_CODES | BUSINESS_REASON_CODES
 
 
 def create_exclusion(
@@ -32,6 +33,11 @@ def create_exclusion(
     同一 fact_version_id + reason_code 只能有一条 active exclusion；
     若已存在，则先撤销旧记录再新增。
     """
+    if reason_code not in VALID_REASON_CODES:
+        raise ValueError(
+            f"unsupported exclusion reason_code: {reason_code!r}; "
+            f"expected one of {sorted(VALID_REASON_CODES)}"
+        )
     if effective_from is None:
         effective_from = datetime.now()
 

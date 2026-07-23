@@ -294,6 +294,25 @@ def test_exclusion_uses_active_partial_unique_and_preserves_history():
     assert third not in {first, second}
 
 
+def test_exclusion_rejects_unknown_reason_code():
+    snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
+    ctx = FetchContext(stock_code=TEST_STOCK, cik=TEST_CIK, snapshot_id=snapshot_id, content_hash=content_hash)
+    rec = _fact_record("accn-invalid-exclusion", "Assets", "2025-12-31", 100)
+    with Connection() as conn:
+        result = USFactVersionWriter().write_facts(
+            conn, ctx, run_id=None, fact_records=[rec], invalid_records=[], statement="balance"
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="unsupported exclusion reason_code"):
+        create_exclusion(
+            result["fact_version_ids"][0],
+            "TYPO_REASON",
+            "must not be silently ignored",
+            "test",
+        )
+
+
 def test_fact_source_dual_write_on_insert_and_repeat():
     fetcher = USFinancialFetcher()
     snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
@@ -664,6 +683,70 @@ def test_cli_rollback_creates_exclusion():
         (TEST_STOCK,), fetch=True,
     )[0][0]
     assert exclusion_count > 0
+
+
+def test_cli_rollback_does_not_exclude_fact_only_repeated_by_batch():
+    _ensure_company_facts_snapshot()
+
+    first_batch_id = str(uuid.uuid4())
+    cli.cmd_stage(SimpleNamespace(batch_id=first_batch_id, stocks=TEST_STOCK, dry_run=False))
+    cli.cmd_verify(SimpleNamespace(batch_id=first_batch_id, output=None))
+    first_manifest = _build_dir() / first_batch_id / "manifest.json"
+    cli.cmd_approve(SimpleNamespace(batch_id=first_batch_id, manifest=str(first_manifest), by="tester", note="approved"))
+    assert cli.cmd_apply(
+        SimpleNamespace(
+            manifest=str(first_manifest),
+            require_status="approved",
+            lease_seconds=300,
+            heartbeat_interval=30,
+        )
+    ) == 0
+
+    second_batch_id = str(uuid.uuid4())
+    cli.cmd_stage(SimpleNamespace(batch_id=second_batch_id, stocks=TEST_STOCK, dry_run=False))
+    cli.cmd_verify(SimpleNamespace(batch_id=second_batch_id, output=None))
+    second_manifest = _build_dir() / second_batch_id / "manifest.json"
+    cli.cmd_approve(SimpleNamespace(batch_id=second_batch_id, manifest=str(second_manifest), by="tester", note="approved"))
+    assert cli.cmd_apply(
+        SimpleNamespace(
+            manifest=str(second_manifest),
+            require_status="approved",
+            lease_seconds=300,
+            heartbeat_interval=30,
+        )
+    ) == 0
+
+    repeated_count = execute(
+        """
+        SELECT COUNT(*)
+        FROM us_financial_fact_source s
+        JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
+        WHERE i.batch_id = %s AND s.observation_kind = 'repeated'
+        """,
+        (second_batch_id,),
+        fetch=True,
+    )[0][0]
+    assert repeated_count > 0
+
+    assert cli.cmd_rollback(
+        SimpleNamespace(
+            batch_id=second_batch_id,
+            reason="reject repeated observation batch",
+            create_exclusion=True,
+            exclusion_kind="technical",
+        )
+    ) == 0
+
+    exclusion_count = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_exclusion WHERE batch_id = %s AND status = 'active'",
+        (second_batch_id,),
+        fetch=True,
+    )[0][0]
+    assert exclusion_count == 0
+
+    from core.selectors.us_financial import USFactSelector
+
+    assert USFactSelector().select(stock_codes=[TEST_STOCK], basis="latest-restated")
 
 
 def test_cli_resume_takes_over_after_interrupted():
