@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS us_financial_backfill_batch (
     parser_git_sha           VARCHAR(40) NOT NULL,
     mapping_version          VARCHAR(40),
     selector_version         VARCHAR(40),
-    manifest_schema_version  VARCHAR(20) NOT NULL,
+    manifest_schema_version  VARCHAR(30) NOT NULL,
     manifest_hash            CHAR(64),
     approved_manifest_hash   CHAR(64),
     source_count             INTEGER NOT NULL DEFAULT 0,
@@ -66,6 +66,10 @@ CREATE INDEX IF NOT EXISTS idx_us_financial_backfill_batch_status
     ON us_financial_backfill_batch(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_us_financial_backfill_batch_parent
     ON us_financial_backfill_batch(parent_batch_id);
+
+-- 从 Gate A 补齐：manifest_schema_version 原 20 字符不足以容纳 'us_financial_phase2_v1'
+ALTER TABLE us_financial_backfill_batch
+    ALTER COLUMN manifest_schema_version TYPE VARCHAR(30);
 
 -- ═══════════════════════════════════════════════════════════
 -- 2. 批次 item（每只股票每个来源一条）

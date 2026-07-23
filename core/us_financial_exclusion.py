@@ -12,6 +12,12 @@ from db import Connection, execute
 
 EXCLUSION_POLICY_VERSION = "us_fact_exclusion_v1"
 
+# reason_code 分类：
+# - 技术解析错误：对所有时间无效，selector 中无条件排除；
+# - 业务否决：从 effective_from 起生效，支持按生效时间做 PIT 选择。
+TECHNICAL_REASON_CODES = {"PARSER_TECHNICAL_ERROR"}
+BUSINESS_REASON_CODES = {"BUSINESS_VETO"}
+
 
 def create_exclusion(
     fact_version_id: int,

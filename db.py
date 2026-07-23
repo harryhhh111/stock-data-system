@@ -101,6 +101,12 @@ class Connection:
 
     def __enter__(self) -> psycopg2.extensions.connection:
         self.conn = get_connection()
+        # 连接池可能归还来自 BatchWorker 等 autocommit 会话的连接；
+        # 进入上下文时强制恢复默认事务模式，避免 ON COMMIT DROP 临时表等异常。
+        try:
+            self.conn.set_session(autocommit=False)
+        except Exception:
+            pass
         return self.conn
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

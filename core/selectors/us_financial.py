@@ -18,6 +18,7 @@ from typing import Any
 import psycopg2.extras
 
 from core.relations.us_financial import build_economic_fact_key, compute_economic_key_hash
+from core.us_financial_exclusion import BUSINESS_REASON_CODES, TECHNICAL_REASON_CODES
 from db import Connection, execute
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,8 @@ class USFactSelector:
         if isinstance(as_of_date, str):
             as_of_date = date.fromisoformat(as_of_date)
 
-        facts = self._load_facts(stock_codes, fields, as_of_date if basis == "as-of" else None)
+        reference_date = as_of_date if basis == "as-of" else datetime.now().date()
+        facts = self._load_facts(stock_codes, fields, reference_date)
 
         by_key: dict[tuple, list[dict[str, Any]]] = {}
         for fact in facts:
@@ -246,7 +248,7 @@ class USFactSelector:
         self,
         stock_codes: list[str] | None,
         fields: list[str] | None,
-        as_of_date: date | None,
+        reference_date: date | datetime,
     ) -> list[dict[str, Any]]:
         sql = """
             SELECT
@@ -271,13 +273,19 @@ class USFactSelector:
             LEFT JOIN us_financial_fact_exclusion e
               ON e.fact_version_id = f.fact_version_id
              AND e.status = 'active'
+             AND (
+                 e.reason_code = ANY(%s)
+                 OR (
+                     e.reason_code = ANY(%s)
+                     AND e.effective_from::date <= %s
+                 )
+             )
         """
-        params: list[Any] = []
-
-        # 对 as-of 口径，业务性 exclusion 从 effective_from 起生效
-        if as_of_date is not None:
-            sql += " AND (e.effective_from IS NULL OR e.effective_from <= %s)"
-            params.append(as_of_date)
+        params: list[Any] = [
+            list(TECHNICAL_REASON_CODES),
+            list(BUSINESS_REASON_CODES),
+            reference_date,
+        ]
 
         sql += " WHERE e.fact_version_id IS NULL"
 

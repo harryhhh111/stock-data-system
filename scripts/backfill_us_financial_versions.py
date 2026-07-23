@@ -7,15 +7,18 @@ Usage:
     python scripts/backfill_us_financial_versions.py stage \
         --batch-id <uuid> --stocks PLTR,MELI,ONTO,SAM,HRB [--dry-run]
 
-    python scripts/backfill_us_financial_versions.py apply \
-        --manifest build/us_financial_phase2/<batch-id>/manifest.json \
-        --require-status approved
+    python scripts/backfill_us_financial_versions.py verify \
+        --batch-id <uuid> [--output build/us_financial_phase2/<batch-id>/verify.json]
 
     python scripts/backfill_us_financial_versions.py approve \
         --batch-id <uuid> --manifest <path> --by "<审批人>" --note "<说明>"
 
+    python scripts/backfill_us_financial_versions.py apply \
+        --manifest build/us_financial_phase2/<batch-id>/manifest.json \
+        --require-status approved
+
     python scripts/backfill_us_financial_versions.py rollback \
-        --batch-id <uuid> --reason "<原因>"
+        --batch-id <uuid> --reason "<原因>" [--create-exclusion]
 
     python scripts/backfill_us_financial_versions.py resume \
         --batch-id <uuid>
@@ -30,7 +33,7 @@ import os
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,13 +42,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import psycopg2.extras
 
 from core.fetchers.us_financial import FetchContext, USFinancialFetcher
+from core.us_financial_exclusion import create_exclusion
 from core.us_financial_manifest import (
     build_manifest,
     compute_manifest_hash,
-    extract_deterministic_payload,
     verify_manifest_hash,
 )
+from core.us_financial_verify import verify_batch
 from core.us_financial_versioning import USFactVersionWriter
+from core.us_financial_worker import BatchWorker, check_old_worker_gone, should_stop, update_batch_lease
 from db import Connection, execute, get_or_create_raw_snapshot_version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -207,18 +212,22 @@ def _get_or_create_item(
     if rows:
         return rows[0][0]
 
-    new_rows = execute(
-        """
-        INSERT INTO us_financial_backfill_item (
-            batch_id, stock_code, source_kind, source_locator, source_content_hash,
-            source_snapshot_id, status
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'created')
-        RETURNING item_id
-        """,
-        (batch_id, stock_code, source_kind, source_locator, source_content_hash, source_snapshot_id),
-        fetch=True,
-    )
-    return new_rows[0][0]
+    # INSERT ... RETURNING 需要显式 commit（db.execute(fetch=True) 不自动提交）
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO us_financial_backfill_item (
+                    batch_id, stock_code, source_kind, source_locator, source_content_hash,
+                    source_snapshot_id, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'created')
+                RETURNING item_id
+                """,
+                (batch_id, stock_code, source_kind, source_locator, source_content_hash, source_snapshot_id),
+            )
+            item_id = cur.fetchone()[0]
+        conn.commit()
+    return item_id
 
 
 def _update_item(
@@ -341,6 +350,108 @@ def _discover_sources(stock_codes: list[str]) -> list[dict[str, Any]]:
     return sources
 
 
+def _parse_facts_from_source(source: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """读取来源原始 JSON 并解析为 SEC Company Facts dict。"""
+    if source["source_kind"] == "raw_snapshot_version":
+        rows = execute(
+            "SELECT raw_data FROM raw_snapshot_version WHERE snapshot_id = %s",
+            (source["source_snapshot_id"],),
+            fetch=True,
+        )
+        if not rows:
+            return None, "SOURCE_SNAPSHOT_NOT_FOUND"
+        return rows[0][0], None
+
+    if source["source_kind"] == "legacy_raw_snapshot":
+        rows = execute(
+            "SELECT raw_data FROM raw_snapshot WHERE stock_code = %s AND data_type = 'company_facts' LIMIT 1",
+            (source["stock_code"],),
+            fetch=True,
+        )
+        if not rows:
+            return None, "LEGACY_SNAPSHOT_NOT_FOUND"
+        return rows[0][0], None
+
+    return None, "UNSUPPORTED_SOURCE_KIND"
+
+
+def _extract_source_records(
+    source: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], str | None]:
+    """把 source 解析为 fact_records / invalid_records / statement_results。
+
+    Returns:
+        (fact_records, invalid_records, statement_results, error)
+    """
+    raw_data, error = _parse_facts_from_source(source)
+    if raw_data is None:
+        return [], [], {}, error
+
+    fetcher = USFinancialFetcher()
+    fact_records: list[dict[str, Any]] = []
+    invalid_records: list[dict[str, Any]] = []
+    statement_results: dict[str, dict[str, Any]] = {}
+
+    for statement, tags in [
+        ("income", fetcher.INCOME_TAGS),
+        ("balance", fetcher.BALANCE_TAGS),
+        ("cashflow", fetcher.CASHFLOW_TAGS),
+    ]:
+        records, stmt_invalid, stmt_fact_records = fetcher._extract_facts(raw_data, tags, statement=statement)
+        fact_records.extend(stmt_fact_records)
+        invalid_records.extend(stmt_invalid)
+        statement_results[statement] = {
+            "record_count": len(records),
+            "invalid_count": len(stmt_invalid),
+            "fact_count": len(stmt_fact_records),
+        }
+
+    return fact_records, invalid_records, statement_results, None
+
+
+def _source_drifted(source: dict[str, Any]) -> bool:
+    """校验 source snapshot/content hash 未变。"""
+    snapshot_id = source.get("source_snapshot_id")
+    content_hash = source.get("source_content_hash")
+    if not snapshot_id:
+        return False
+    rows = execute(
+        "SELECT content_hash FROM raw_snapshot_version WHERE snapshot_id = %s",
+        (snapshot_id,),
+        fetch=True,
+    )
+    if not rows:
+        logger.error("source snapshot %s 不存在", snapshot_id)
+        return True
+    if rows[0][0] != content_hash:
+        logger.error("source snapshot %s content hash 已变", snapshot_id)
+        return True
+    return False
+
+
+# ═══════════════════════════════════════════════════════════
+# Manifest IO
+# ═══════════════════════════════════════════════════════════
+
+
+def _manifest_path(batch_id: str) -> Path:
+    return BUILD_DIR / batch_id / "manifest.json"
+
+
+def _load_manifest(batch_id: str) -> dict[str, Any] | None:
+    path = _manifest_path(batch_id)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_manifest(manifest: dict[str, Any]) -> Path:
+    path = _manifest_path(manifest["batch_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    return path
+
+
 # ═══════════════════════════════════════════════════════════
 # scan
 # ═══════════════════════════════════════════════════════════
@@ -374,33 +485,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 # ═══════════════════════════════════════════════════════════
-# stage
+# stage — 只写 batch/item/manifest，不写正式版本层
 # ═══════════════════════════════════════════════════════════
-
-
-def _parse_facts_from_source(source: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """读取来源原始 JSON 并解析为 SEC Company Facts dict。"""
-    if source["source_kind"] == "raw_snapshot_version":
-        rows = execute(
-            "SELECT raw_data FROM raw_snapshot_version WHERE snapshot_id = %s",
-            (source["source_snapshot_id"],),
-            fetch=True,
-        )
-        if not rows:
-            return None, "SOURCE_SNAPSHOT_NOT_FOUND"
-        return rows[0][0], None
-
-    if source["source_kind"] == "legacy_raw_snapshot":
-        rows = execute(
-            "SELECT raw_data FROM raw_snapshot WHERE stock_code = %s AND data_type = 'company_facts' LIMIT 1",
-            (source["stock_code"],),
-            fetch=True,
-        )
-        if not rows:
-            return None, "LEGACY_SNAPSHOT_NOT_FOUND"
-        return rows[0][0], None
-
-    return None, "UNSUPPORTED_SOURCE_KIND"
 
 
 def cmd_stage(args: argparse.Namespace) -> int:
@@ -413,7 +499,8 @@ def cmd_stage(args: argparse.Namespace) -> int:
 
     existing = _get_batch(batch_id)
     if existing is None:
-        _create_batch(batch_id, "stage", stock_codes, status="staged")
+        if not dry_run:
+            _create_batch(batch_id, "stage", stock_codes, status="staged")
     elif existing["status"] not in {"created", "scanning", "staged", "interrupted", "resume_pending"}:
         logger.error("batch %s 状态 %s 不允许 stage", batch_id, existing["status"])
         return 1
@@ -423,108 +510,71 @@ def cmd_stage(args: argparse.Namespace) -> int:
         logger.error("未找到任何来源")
         return 1
 
-    fetcher = USFinancialFetcher()
-
-    total_inserted = 0
-    total_repeated = 0
-    total_conflicted = 0
-    total_staged = 0
     success_count = 0
     failed_count = 0
     source_manifests = []
+    expected_counts: dict[str, int] = {
+        "facts_candidate": 0,
+        "facts_inserted": 0,
+        "facts_repeated": 0,
+        "facts_conflicted": 0,
+        "facts_staged": 0,
+    }
 
     for source in sources:
         stock_code = source["stock_code"]
-        item_id = _get_or_create_item(
-            batch_id=batch_id,
-            stock_code=stock_code,
-            source_kind=source["source_kind"],
-            source_content_hash=source["source_content_hash"],
-            source_locator=source.get("source_locator"),
-            source_snapshot_id=source.get("source_snapshot_id"),
-        )
-        _update_item(item_id, "applying")
+        if not dry_run:
+            item_id = _get_or_create_item(
+                batch_id=batch_id,
+                stock_code=stock_code,
+                source_kind=source["source_kind"],
+                source_content_hash=source["source_content_hash"],
+                source_locator=source.get("source_locator"),
+                source_snapshot_id=source.get("source_snapshot_id"),
+            )
+            _update_item(item_id, "applying")
 
         try:
-            raw_data, error = _parse_facts_from_source(source)
-            if raw_data is None:
-                raise RuntimeError(error or "无法读取来源")
+            fact_records, invalid_records, statement_results, error = _extract_source_records(source)
+            if error:
+                raise RuntimeError(error)
 
-            snapshot_id = source.get("source_snapshot_id") or 0
-            ctx = FetchContext(
-                stock_code=stock_code,
-                cik=str(raw_data.get("cik", "")).zfill(10),
-                snapshot_id=snapshot_id,
-                content_hash=source["source_content_hash"],
-            )
-
-            statement_results: dict[str, dict] = {}
-            for statement, tags in [
-                ("income", fetcher.INCOME_TAGS),
-                ("balance", fetcher.BALANCE_TAGS),
-                ("cashflow", fetcher.CASHFLOW_TAGS),
-            ]:
-                records, invalid_records, fact_records = fetcher._extract_facts(
-                    raw_data, tags, statement=statement
+            candidate = len(fact_records) + len(invalid_records)
+            if not dry_run:
+                _update_item(
+                    item_id,
+                    "staged",
+                    counts={
+                        "facts_candidate": candidate,
+                        "facts_inserted": 0,
+                        "facts_repeated": 0,
+                        "facts_conflicted": 0,
+                        "facts_staged": len(invalid_records),
+                    },
+                    item_manifest={
+                        "source": source,
+                        "statement_results": statement_results,
+                        "dry_run": dry_run,
+                    },
                 )
-                if not fact_records:
-                    continue
-
-                if not dry_run:
-                    with Connection() as conn:
-                        writer = USFactVersionWriter(parser_git_sha=parser_git_sha)
-                        result = writer.write_facts(
-                            conn=conn,
-                            context=ctx,
-                            run_id=None,
-                            fact_records=fact_records,
-                            invalid_records=invalid_records,
-                            statement=statement,
-                            reconstruction_flag=source.get("reconstruction_flag"),
-                            batch_item_id=item_id,
-                        )
-                        conn.commit()
-                        total_inserted += result["facts_inserted"]
-                        total_repeated += result["facts_repeated"]
-                        total_conflicted += result["facts_conflicted"]
-                        total_staged += result["facts_staged"]
-                        statement_results[statement] = result
-
-            _update_item(
-                item_id,
-                "staged",
-                counts={
-                    "facts_candidate": sum(
-                        r.get("facts_inserted", 0) + r.get("facts_repeated", 0) +
-                        r.get("facts_conflicted", 0) + r.get("facts_staged", 0)
-                        for r in statement_results.values()
-                    ) if not dry_run else 0,
-                    "facts_inserted": sum(r.get("facts_inserted", 0) for r in statement_results.values()) if not dry_run else 0,
-                    "facts_repeated": sum(r.get("facts_repeated", 0) for r in statement_results.values()) if not dry_run else 0,
-                    "facts_conflicted": sum(r.get("facts_conflicted", 0) for r in statement_results.values()) if not dry_run else 0,
-                    "facts_staged": sum(r.get("facts_staged", 0) for r in statement_results.values()) if not dry_run else 0,
-                },
-                item_manifest={
-                    "source": source,
-                    "statement_results": statement_results,
-                    "dry_run": dry_run,
-                },
-            )
             source_manifests.append({"stock_code": stock_code, "source": source, "status": "staged"})
             success_count += 1
 
+            expected_counts["facts_candidate"] += candidate
+            expected_counts["facts_staged"] += len(invalid_records)
+
         except Exception as exc:
             logger.error("%s stage 失败: %s", stock_code, exc)
-            _update_item(
-                item_id,
-                "failed",
-                error_code="STAGE_FAILED",
-                error_message=str(exc),
-            )
+            if not dry_run:
+                _update_item(
+                    item_id,
+                    "failed",
+                    error_code="STAGE_FAILED",
+                    error_message=str(exc),
+                )
             source_manifests.append({"stock_code": stock_code, "source": source, "status": "failed", "error": str(exc)})
             failed_count += 1
 
-    # 构建并保存 manifest
     manifest = build_manifest(
         batch_id=batch_id,
         environment="US",
@@ -534,49 +584,76 @@ def cmd_stage(args: argparse.Namespace) -> int:
         parser_git_sha=parser_git_sha,
         sources=[s["source"] for s in source_manifests],
         source_counts={"total": len(sources), "staged": success_count, "failed": failed_count},
+        expected_counts=expected_counts,
         failed_items=[s for s in source_manifests if s.get("status") == "failed"],
     )
 
-    manifest_path = BUILD_DIR / batch_id / "manifest.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    manifest_path = _save_manifest(manifest)
 
-    execute(
-        """
-        UPDATE us_financial_backfill_batch
-        SET status = 'staged',
-            stock_count = %s,
-            success_count = %s,
-            failed_count = %s,
-            source_count = %s,
-            facts_inserted = %s,
-            facts_repeated = %s,
-            facts_conflicted = %s,
-            facts_staged = %s,
-            manifest = %s,
-            manifest_hash = %s
-        WHERE batch_id = %s
-        """,
-        (
-            len(stock_codes), success_count, failed_count, len(sources),
-            total_inserted, total_repeated, total_conflicted, total_staged,
-            psycopg2.extras.Json(manifest),
-            manifest["manifest_hash"],
-            batch_id,
-        ),
-        commit=True,
-    )
+    if not dry_run:
+        execute(
+            """
+            UPDATE us_financial_backfill_batch
+            SET status = 'staged',
+                stock_count = %s,
+                success_count = %s,
+                failed_count = %s,
+                source_count = %s,
+                facts_inserted = 0,
+                facts_repeated = 0,
+                facts_conflicted = 0,
+                facts_staged = %s,
+                manifest = %s,
+                manifest_hash = %s
+            WHERE batch_id = %s
+            """,
+            (
+                len(stock_codes), success_count, failed_count, len(sources),
+                expected_counts["facts_staged"],
+                psycopg2.extras.Json(manifest),
+                manifest["manifest_hash"],
+                batch_id,
+            ),
+            commit=True,
+        )
 
     logger.info(
-        "stage 完成: 成功=%d 失败=%d inserted=%d repeated=%d conflicted=%d staged=%d",
-        success_count, failed_count, total_inserted, total_repeated, total_conflicted, total_staged,
+        "stage 完成: 成功=%d 失败=%d candidate=%d staged=%d manifest=%s",
+        success_count, failed_count, expected_counts["facts_candidate"], expected_counts["facts_staged"], manifest_path,
     )
     return 0 if failed_count == 0 else 1
 
 
 # ═══════════════════════════════════════════════════════════
-# apply
+# apply — 读取已批准 manifest，获取锁后写入正式版本层
 # ═══════════════════════════════════════════════════════════
+
+
+def _validate_manifest_for_apply(manifest: dict[str, Any], batch: dict[str, Any]) -> bool:
+    """apply 前校验 manifest 完整性、冻结状态与来源漂移。"""
+    if not verify_manifest_hash(manifest):
+        logger.error("manifest hash 校验失败")
+        return False
+
+    parser_git_sha = _get_parser_git_sha()
+    if manifest.get("parser_git_sha") and manifest["parser_git_sha"] != parser_git_sha:
+        logger.error("parser git SHA 不匹配: manifest=%s current=%s", manifest["parser_git_sha"], parser_git_sha)
+        return False
+
+    if _is_git_dirty():
+        logger.error("git 工作树脏，禁止生产 apply")
+        return False
+
+    if batch.get("approved_manifest_hash") and batch["approved_manifest_hash"] != manifest["manifest_hash"]:
+        logger.error("approved_manifest_hash 与 manifest 不匹配")
+        return False
+
+    for source in manifest.get("sources", []):
+        if _source_drifted(source):
+            logger.error("source 已漂移: %s", source.get("stock_code"))
+            return False
+
+    return True
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
@@ -588,10 +665,6 @@ def cmd_apply(args: argparse.Namespace) -> int:
         return 1
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not verify_manifest_hash(manifest):
-        logger.error("manifest hash 校验失败")
-        return 1
-
     batch_id = manifest["batch_id"]
     batch = _get_batch(batch_id)
     if batch is None:
@@ -602,49 +675,158 @@ def cmd_apply(args: argparse.Namespace) -> int:
         logger.error("batch 状态 %s 不符合要求 %s", batch["status"], args.require_status)
         return 1
 
-    if batch.get("approved_manifest_hash") and batch["approved_manifest_hash"] != manifest["manifest_hash"]:
-        logger.error("approved_manifest_hash 与 manifest 不匹配")
+    if not _validate_manifest_for_apply(manifest, batch):
         return 1
 
     parser_git_sha = _get_parser_git_sha()
-    if manifest.get("parser_git_sha") and manifest["parser_git_sha"] != parser_git_sha:
-        logger.error("parser git SHA 不匹配: manifest=%s current=%s", manifest["parser_git_sha"], parser_git_sha)
-        return 1
 
-    if _is_git_dirty():
-        logger.error("git 工作树脏，禁止生产 apply")
-        return 1
+    with BatchWorker(batch_id, lease_seconds=args.lease_seconds, heartbeat_interval=args.heartbeat_interval):
+        _update_batch_status(batch_id, "applying")
+        _audit_batch_status(batch_id, batch["status"], "applying", None, "apply start")
 
-    # 校验所有 source snapshot/content hash 未变
-    for source in manifest.get("sources", []):
-        snapshot_id = source.get("source_snapshot_id")
-        content_hash = source.get("source_content_hash")
-        if snapshot_id:
-            rows = execute(
-                "SELECT content_hash FROM raw_snapshot_version WHERE snapshot_id = %s",
-                (snapshot_id,),
+        sources = manifest.get("sources", [])
+
+        total_inserted = 0
+        total_repeated = 0
+        total_conflicted = 0
+        total_staged = 0
+
+        for source in sources:
+            if should_stop():
+                logger.warning("apply 收到停机信号，提前退出")
+                _update_batch_status(batch_id, "interrupted", error_message="interrupted by signal")
+                _audit_batch_status(batch_id, "applying", "interrupted", None, "signal interrupt")
+                return 130
+
+            stock_code = source["stock_code"]
+            item_rows = execute(
+                "SELECT item_id FROM us_financial_backfill_item WHERE batch_id = %s AND stock_code = %s",
+                (batch_id, stock_code),
                 fetch=True,
             )
-            if not rows:
-                logger.error("source snapshot %s 不存在", snapshot_id)
-                return 1
-            if rows[0][0] != content_hash:
-                logger.error("source snapshot %s content hash 已变", snapshot_id)
+            item_id = item_rows[0][0] if item_rows else None
+            if item_id:
+                _update_item(item_id, "applying")
+
+            try:
+                raw_data, error = _parse_facts_from_source(source)
+                if raw_data is None:
+                    raise RuntimeError(error or "无法读取来源")
+
+                snapshot_id = source.get("source_snapshot_id") or 0
+                ctx = FetchContext(
+                    stock_code=stock_code,
+                    cik="",  # backfill 不依赖 cik
+                    snapshot_id=snapshot_id,
+                    content_hash=source["source_content_hash"],
+                )
+
+                statement_results_write: dict[str, dict] = {}
+                with Connection() as conn:
+                    writer = USFactVersionWriter(parser_git_sha=parser_git_sha)
+                    for statement, tags in [
+                        ("income", USFinancialFetcher().INCOME_TAGS),
+                        ("balance", USFinancialFetcher().BALANCE_TAGS),
+                        ("cashflow", USFinancialFetcher().CASHFLOW_TAGS),
+                    ]:
+                        # 仅提取该 statement 的记录
+                        _, stmt_invalid, stmt_facts = USFinancialFetcher()._extract_facts(raw_data, tags, statement=statement)
+                        if not stmt_facts and not stmt_invalid:
+                            continue
+                        result = writer.write_facts(
+                            conn=conn,
+                            context=ctx,
+                            run_id=None,
+                            fact_records=stmt_facts,
+                            invalid_records=stmt_invalid,
+                            statement=statement,
+                            reconstruction_flag=source.get("reconstruction_flag"),
+                            batch_item_id=item_id,
+                        )
+                        conn.commit()
+                        total_inserted += result["facts_inserted"]
+                        total_repeated += result["facts_repeated"]
+                        total_conflicted += result["facts_conflicted"]
+                        total_staged += result["facts_staged"]
+                        statement_results_write[statement] = result
+
+                if item_id:
+                    _update_item(
+                        item_id,
+                        "applied",
+                        counts={
+                            "facts_candidate": sum(
+                                r.get("facts_inserted", 0) + r.get("facts_repeated", 0) +
+                                r.get("facts_conflicted", 0) + r.get("facts_staged", 0)
+                                for r in statement_results_write.values()
+                            ),
+                            "facts_inserted": sum(r.get("facts_inserted", 0) for r in statement_results_write.values()),
+                            "facts_repeated": sum(r.get("facts_repeated", 0) for r in statement_results_write.values()),
+                            "facts_conflicted": sum(r.get("facts_conflicted", 0) for r in statement_results_write.values()),
+                            "facts_staged": sum(r.get("facts_staged", 0) for r in statement_results_write.values()),
+                        },
+                        item_manifest={
+                            "source": source,
+                            "statement_results": statement_results_write,
+                        },
+                    )
+
+            except Exception as exc:
+                logger.error("%s apply 失败: %s", stock_code, exc)
+                if item_id:
+                    _update_item(item_id, "failed", error_code="APPLY_FAILED", error_message=str(exc))
+                _update_batch_status(batch_id, "failed", error_message=str(exc))
+                _audit_batch_status(batch_id, "applying", "failed", None, str(exc))
                 return 1
 
-    _update_batch_status(batch_id, "applying")
-    _audit_batch_status(batch_id, batch["status"], "applying", None, "apply start")
-
-    # Gate A: apply 在 stage 已完成实际写入，此处执行最终校验与状态迁移
-    # （如需严格区分 stage 与 apply，可将 stage 的 dry-run 与 apply 的写入拆开）
-    _update_batch_status(batch_id, "applied")
-    _audit_batch_status(batch_id, "applying", "applied", None, "apply complete")
-    logger.info("apply 完成: batch=%s", batch_id)
+        _update_batch_status(
+            batch_id,
+            "applied",
+            counts={
+                "facts_inserted": total_inserted,
+                "facts_repeated": total_repeated,
+                "facts_conflicted": total_conflicted,
+                "facts_staged": total_staged,
+            },
+        )
+        _audit_batch_status(batch_id, "applying", "applied", None, "apply complete")
+        logger.info(
+            "apply 完成: batch=%s inserted=%d repeated=%d conflicted=%d staged=%d",
+            batch_id, total_inserted, total_repeated, total_conflicted, total_staged,
+        )
     return 0
 
 
 # ═══════════════════════════════════════════════════════════
-# approve
+# verify — 使用共享 verify 逻辑，通过后迁移到 verified
+# ═══════════════════════════════════════════════════════════
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    _require_us_market()
+    batch_id = str(args.batch_id)
+    output_path = Path(args.output) if args.output else BUILD_DIR / batch_id / "verify.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = verify_batch(batch_id, BUILD_DIR)
+
+    output_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    logger.info("verify 完成: passed=%s 输出=%s", result["passed"], output_path)
+
+    if not result["passed"]:
+        return 1
+
+    batch = _get_batch(batch_id)
+    if batch and batch["status"] == "staged":
+        _update_batch_status(batch_id, "verified")
+        _audit_batch_status(batch_id, "staged", "verified", None, "verify passed")
+        logger.info("batch %s 已迁移到 verified", batch_id)
+
+    return 0
+
+
+# ═══════════════════════════════════════════════════════════
+# approve — 冻结 manifest hash
 # ═══════════════════════════════════════════════════════════
 
 
@@ -693,8 +875,34 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 # ═══════════════════════════════════════════════════════════
-# rollback
+# rollback — 标记 rejected，可选创建 exclusion
 # ═══════════════════════════════════════════════════════════
+
+
+def _rollback_create_exclusions(batch_id: str, reason: str) -> int:
+    """为 batch 涉及的所有 fact_version 创建 BUSINESS_VETO exclusion。"""
+    rows = execute(
+        """
+        SELECT DISTINCT f.fact_version_id
+        FROM us_financial_fact_version f
+        JOIN us_financial_fact_source s ON s.fact_version_id = f.fact_version_id
+        JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
+        WHERE i.batch_id = %s
+        """,
+        (batch_id,),
+        fetch=True,
+    ) or []
+    count = 0
+    for (fact_version_id,) in rows:
+        create_exclusion(
+            fact_version_id=fact_version_id,
+            reason_code="BUSINESS_VETO",
+            reason=reason,
+            reviewed_by="rollback_cli",
+            batch_id=batch_id,
+        )
+        count += 1
+    return count
 
 
 def cmd_rollback(args: argparse.Namespace) -> int:
@@ -718,15 +926,15 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     _audit_batch_status(batch_id, batch["status"], "rejected", None, args.reason)
 
     if args.create_exclusion:
-        # 为 batch 涉及的所有 fact 创建 exclusion（仅示例入口，实际按 affected fact ids）
-        logger.warning("create-exclusion 需要显式 affected fact ids，Gate A 仅作占位")
+        count = _rollback_create_exclusions(batch_id, args.reason)
+        logger.info("rollback 创建 %d 条 BUSINESS_VETO exclusion", count)
 
     logger.info("batch %s 已 rollback: %s", batch_id, args.reason)
     return 0
 
 
 # ═══════════════════════════════════════════════════════════
-# resume
+# resume — 校验 lease、旧 worker 会话、重新获取 advisory lock
 # ═══════════════════════════════════════════════════════════
 
 
@@ -752,118 +960,46 @@ def cmd_resume(args: argparse.Namespace) -> int:
         logger.error("parser git SHA 已变，不能 resume")
         return 1
 
-    # 校验 source 未变
     for source in manifest.get("sources", []):
-        snapshot_id = source.get("source_snapshot_id")
-        content_hash = source.get("source_content_hash")
-        if snapshot_id:
-            rows = execute(
-                "SELECT content_hash FROM raw_snapshot_version WHERE snapshot_id = %s",
-                (snapshot_id,),
-                fetch=True,
+        if _source_drifted(source):
+            logger.error("source 已漂移，不能 resume")
+            return 1
+
+    # lease 过期检查（DB 返回带时区，使用同 timezone 比较）
+    lease_expires_at = batch.get("lease_expires_at")
+    now = datetime.now(tz=lease_expires_at.tzinfo) if lease_expires_at else datetime.now()
+    if lease_expires_at and lease_expires_at > now:
+        logger.warning("batch %s lease 尚未过期 (%s)，尝试检查旧 worker 是否仍存活", batch_id, lease_expires_at)
+
+    # 通过 advisory lock 判断旧 worker 是否已消失
+    if not check_old_worker_gone(batch_id):
+        logger.error("旧 worker 仍持有 advisory lock，不能 resume")
+        return 1
+
+    # 重新获取 lock 并更新状态（模拟“接管”）
+    worker_id = f"{os.getpid()}@{__import__('socket').gethostname()}"
+    try:
+        with BatchWorker(batch_id, lease_seconds=args.lease_seconds, heartbeat_interval=args.heartbeat_interval):
+            execute(
+                """
+                UPDATE us_financial_backfill_batch
+                SET status = 'staged',
+                    resume_count = resume_count + 1,
+                    error_message = NULL,
+                    worker_id = %s,
+                    heartbeat_at = NOW()
+                WHERE batch_id = %s
+                """,
+                (worker_id, batch_id),
+                commit=True,
             )
-            if not rows or rows[0][0] != content_hash:
-                logger.error("source 已变，不能 resume")
-                return 1
+            _audit_batch_status(batch_id, batch["status"], "staged", None, "resume takeover")
+            logger.info("batch %s 已 resume 并接管", batch_id)
+    except Exception as exc:
+        logger.error("resume 接管失败: %s", exc)
+        return 1
 
-    # 更新 resume_count 并恢复为 staged，供重新 apply
-    execute(
-        """
-        UPDATE us_financial_backfill_batch
-        SET status = 'staged',
-            resume_count = resume_count + 1,
-            error_message = NULL
-        WHERE batch_id = %s
-        """,
-        (batch_id,),
-        commit=True,
-    )
-    _audit_batch_status(batch_id, batch["status"], "staged", None, "resume")
-    logger.info("batch %s 已 resume", batch_id)
     return 0
-
-
-# ═══════════════════════════════════════════════════════════
-# verify（内嵌子命令，亦可调用 scripts/verify_us_financial_phase2.py）
-# ═══════════════════════════════════════════════════════════
-
-
-def cmd_verify(args: argparse.Namespace) -> int:
-    _require_us_market()
-    batch_id = str(args.batch_id)
-    output_path = Path(args.output) if args.output else BUILD_DIR / batch_id / "verify.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    result = {
-        "batch_id": batch_id,
-        "checks": {},
-        "passed": True,
-    }
-
-    # 1. 批次状态与计数
-    batch = _get_batch(batch_id)
-    if batch:
-        result["checks"]["batch_status"] = {
-            "status": batch["status"],
-            "stock_count": batch["stock_count"],
-            "success_count": batch["success_count"],
-            "failed_count": batch["failed_count"],
-            "manifest_hash": batch["manifest_hash"],
-            "passed": batch["stock_count"] == batch["success_count"] + batch["failed_count"],
-        }
-    else:
-        result["checks"]["batch_status"] = {"passed": False, "error": "batch not found"}
-        result["passed"] = False
-
-    # 2. item 状态残留检查
-    rows = execute(
-        "SELECT status, COUNT(*) FROM us_financial_backfill_item WHERE batch_id = %s GROUP BY status",
-        (batch_id,),
-        fetch=True,
-    ) or []
-    bad_statuses = {"created", "scanning", "applying", "running"}
-    has_bad = any(status in bad_statuses for status, _ in rows)
-    result["checks"]["item_status"] = {"status_counts": dict(rows), "passed": not has_bad}
-    if has_bad:
-        result["passed"] = False
-
-    # 3. fact 来源与跨股票污染
-    rows = execute(
-        """
-        SELECT COUNT(*) FROM us_financial_fact_version f
-        JOIN raw_snapshot_version s ON s.snapshot_id = f.source_snapshot_id
-        WHERE f.stock_code <> s.stock_code
-        """,
-        fetch=True,
-    )
-    cross_stock = rows[0][0] if rows else 0
-    result["checks"]["cross_stock_pollution"] = {"count": cross_stock, "passed": cross_stock == 0}
-    if cross_stock:
-        result["passed"] = False
-
-    # 4. NULL 与硬约束
-    rows = execute(
-        """
-        SELECT COUNT(*) FROM us_financial_fact_version
-        WHERE accession_no IS NULL
-           OR filed_date IS NULL
-           OR report_date IS NULL
-           OR period_kind NOT IN ('instant', 'duration')
-           OR (period_kind = 'instant' AND period_start IS NOT NULL)
-           OR (period_kind = 'duration' AND period_start IS NULL)
-           OR (value_numeric IS NULL AND value_text IS NULL)
-           OR (value_numeric IS NOT NULL AND value_text IS NOT NULL)
-        """,
-        fetch=True,
-    )
-    bad_facts = rows[0][0] if rows else 0
-    result["checks"]["hard_constraints"] = {"count": bad_facts, "passed": bad_facts == 0}
-    if bad_facts:
-        result["passed"] = False
-
-    output_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-    logger.info("verify 完成: passed=%s 输出=%s", result["passed"], output_path)
-    return 0 if result["passed"] else 1
 
 
 # ═══════════════════════════════════════════════════════════
@@ -880,16 +1016,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--output", required=True, help="Output JSON path")
     p_scan.set_defaults(func=cmd_scan)
 
-    p_stage = sub.add_parser("stage", help="解析到 staging/内存，生成 manifest")
+    p_stage = sub.add_parser("stage", help="解析到 staging/内存，生成 manifest；不写正式版本层")
     p_stage.add_argument("--batch-id", required=True, help="UUID for this batch")
     p_stage.add_argument("--stocks", required=True, help="Comma-separated stock codes")
-    p_stage.add_argument("--dry-run", action="store_true", help="Do not write formal version tables")
+    p_stage.add_argument("--dry-run", action="store_true", help="不持久化 batch/item")
     p_stage.set_defaults(func=cmd_stage)
 
-    p_apply = sub.add_parser("apply", help="应用已批准的 manifest")
-    p_apply.add_argument("--manifest", required=True, help="Path to manifest.json")
-    p_apply.add_argument("--require-status", default="approved", help="Required batch status")
-    p_apply.set_defaults(func=cmd_apply)
+    p_verify = sub.add_parser("verify", help="校验 batch 结果并迁移到 verified")
+    p_verify.add_argument("--batch-id", required=True)
+    p_verify.add_argument("--output", help="Output JSON path")
+    p_verify.set_defaults(func=cmd_verify)
 
     p_approve = sub.add_parser("approve", help="批准 verified 的 batch")
     p_approve.add_argument("--batch-id", required=True)
@@ -897,6 +1033,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_approve.add_argument("--by", required=True)
     p_approve.add_argument("--note", required=True)
     p_approve.set_defaults(func=cmd_approve)
+
+    p_apply = sub.add_parser("apply", help="应用已批准的 manifest 到正式版本层")
+    p_apply.add_argument("--manifest", required=True, help="Path to manifest.json")
+    p_apply.add_argument("--require-status", default="approved", help="Required batch status")
+    p_apply.add_argument("--lease-seconds", type=int, default=300, help="Worker lease duration")
+    p_apply.add_argument("--heartbeat-interval", type=int, default=30, help="Heartbeat interval")
+    p_apply.set_defaults(func=cmd_apply)
 
     p_rollback = sub.add_parser("rollback", help="将 batch 标记为 rejected")
     p_rollback.add_argument("--batch-id", required=True)
@@ -906,12 +1049,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_resume = sub.add_parser("resume", help="从中断点继续")
     p_resume.add_argument("--batch-id", required=True)
+    p_resume.add_argument("--lease-seconds", type=int, default=300)
+    p_resume.add_argument("--heartbeat-interval", type=int, default=30)
     p_resume.set_defaults(func=cmd_resume)
-
-    p_verify = sub.add_parser("verify", help="校验 batch 结果")
-    p_verify.add_argument("--batch-id", required=True)
-    p_verify.add_argument("--output", help="Output JSON path")
-    p_verify.set_defaults(func=cmd_verify)
 
     return parser
 
