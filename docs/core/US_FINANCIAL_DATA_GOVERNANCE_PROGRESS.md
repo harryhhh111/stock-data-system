@@ -1,7 +1,7 @@
 # 美股财务数据治理进度总览
 
-> 最后更新：2026-07-23  
-> 当前状态：P0 已关闭；版本层 Phase 1A 已关闭；Phase 1B v1 已关闭；5 只 canary 已验证；生产消费者尚未切换；下一阶段 Phase 2 全市场历史版本回填。
+> 最后更新：2026-07-24
+> 当前状态：P0 已关闭；版本层 Phase 1A 已关闭；Phase 1B v1 已关闭；Phase 2 Gate A 第一批已完成；生产消费者尚未切换。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
 
@@ -22,7 +22,7 @@
 | 生产筛选 PE/PB | ✅ 快速修复完成 | 停用腾讯 PE/PB，按市值/TTM 利润和市值/权益自算 | 接入 latest-restated selector；完善普通股口径与最新季度权益 |
 | ROE 年份连续性 | ✅ 已修复 | 不再过滤 NULL 后排序；缺年/缺值不再由旧年份顶替 | 年度 ROE 改为平均权益并增加异常 flags |
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
-| Phase 2 历史事实版本回填 | 🟡 Runbook 已完成 | 5 只 canary 已验证；执行门槛与批次流程已冻结 | 开发 scan/stage/apply/verify/rollback 工具 |
+| Phase 2 历史事实版本回填 | 🟡 Gate A 第一批完成 | DDL、共享 writer、fact-source/exclusion、manifest、完整 CLI 状态机及安全回滚已落地 | Gate A 剩余测试库演练与 Gate B 准入验收 |
 | 当前分析 latest-restated | ⬜ 未切换 | 数据底座已具备 | 影子选择、差异报告、切换消费者 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 方案完成 | 前置与本体方案已形成 | 权益/债务/税率治理完成后落地 |

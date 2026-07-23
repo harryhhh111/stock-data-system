@@ -21,8 +21,13 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import backfill_us_financial_versions as cli
 
 from core.fetchers.us_financial import FetchContext, USFinancialFetcher
-from core.us_financial_exclusion import BUSINESS_REASON_CODES, create_exclusion
-from core.us_financial_manifest import build_manifest, verify_manifest_hash
+from core.us_financial_exclusion import BUSINESS_REASON_CODES, create_exclusion, revoke_exclusion
+from core.us_financial_manifest import (
+    build_manifest,
+    compute_manifest_hash,
+    extract_deterministic_payload,
+    verify_manifest_hash,
+)
 from core.us_financial_versioning import USFactVersionWriter
 from core.us_financial_worker import BatchWorker, check_old_worker_gone
 from db import Connection, execute, get_or_create_raw_snapshot_version
@@ -137,6 +142,7 @@ def _cleanup_test_stock():
         commit=True,
     )
     execute("DELETE FROM raw_snapshot_version WHERE stock_code = %s", (TEST_STOCK,), commit=True)
+    execute("DELETE FROM raw_snapshot WHERE stock_code = %s", (TEST_STOCK,), commit=True)
 
 
 def _ensure_snapshot(raw_data: dict) -> tuple[int, str]:
@@ -243,6 +249,49 @@ def test_ddl_is_idempotent():
         with conn.cursor() as cur:
             cur.execute(ddl_sql)
         conn.commit()
+
+
+def test_exclusion_uses_active_partial_unique_and_preserves_history():
+    index_rows = execute(
+        """
+        SELECT indexdef FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'us_financial_fact_exclusion'
+          AND indexname = 'uq_us_financial_fact_exclusion_active'
+        """,
+        fetch=True,
+    )
+    assert index_rows
+    assert "UNIQUE INDEX" in index_rows[0][0]
+    assert "WHERE" in index_rows[0][0]
+    assert "'active'::text" in index_rows[0][0]
+
+    snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
+    ctx = FetchContext(stock_code=TEST_STOCK, cik=TEST_CIK, snapshot_id=snapshot_id, content_hash=content_hash)
+    rec = _fact_record("accn-exclusion-cycle", "Assets", "2025-12-31", 100)
+    with Connection() as conn:
+        result = USFactVersionWriter().write_facts(
+            conn, ctx, run_id=None, fact_records=[rec], invalid_records=[], statement="balance"
+        )
+        conn.commit()
+    fact_id = result["fact_version_ids"][0]
+
+    first = create_exclusion(fact_id, "PARSER_TECHNICAL_ERROR", "first", "test")
+    second = create_exclusion(fact_id, "PARSER_TECHNICAL_ERROR", "second", "test")
+    assert revoke_exclusion(second, "test") is True
+    third = create_exclusion(fact_id, "PARSER_TECHNICAL_ERROR", "third", "test")
+
+    rows = execute(
+        """
+        SELECT status, COUNT(*) FROM us_financial_fact_exclusion
+        WHERE fact_version_id = %s AND reason_code = 'PARSER_TECHNICAL_ERROR'
+        GROUP BY status
+        """,
+        (fact_id,),
+        fetch=True,
+    )
+    assert dict(rows) == {"active": 1, "revoked": 2}
+    assert third not in {first, second}
 
 
 def test_fact_source_dual_write_on_insert_and_repeat():
@@ -412,6 +461,31 @@ def test_cli_scan_zero_writes():
     assert execute("SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s", (TEST_STOCK,), fetch=True)[0][0] == 0
 
 
+def test_cli_scan_legacy_only_zero_database_writes():
+    raw_data = _make_company_facts()
+    execute(
+        """
+        INSERT INTO raw_snapshot (stock_code, data_type, source, api_params, raw_data)
+        VALUES (%s, 'company_facts', 'sec_edgar', '{}'::jsonb, %s)
+        """,
+        (TEST_STOCK, json.dumps(raw_data)),
+        commit=True,
+    )
+    before = execute(
+        "SELECT COUNT(*) FROM raw_snapshot_version WHERE stock_code = %s",
+        (TEST_STOCK,),
+        fetch=True,
+    )[0][0]
+    output = _build_dir() / str(uuid.uuid4()) / "legacy-scan.json"
+    assert cli.cmd_scan(SimpleNamespace(stocks=TEST_STOCK, output=str(output))) == 0
+    after = execute(
+        "SELECT COUNT(*) FROM raw_snapshot_version WHERE stock_code = %s",
+        (TEST_STOCK,),
+        fetch=True,
+    )[0][0]
+    assert before == after == 0
+
+
 def test_cli_stage_zero_formal_writes():
     _ensure_company_facts_snapshot()
     batch_id = str(uuid.uuid4())
@@ -463,6 +537,26 @@ def test_cli_approve_freezes_manifest_hash():
     assert batch["approved_manifest_hash"] == batch["manifest_hash"]
 
 
+def test_cli_approve_rejects_alternate_self_consistent_manifest():
+    _ensure_company_facts_snapshot()
+    batch_id = str(uuid.uuid4())
+    cli.cmd_stage(SimpleNamespace(batch_id=batch_id, stocks=TEST_STOCK, dry_run=False))
+    cli.cmd_verify(SimpleNamespace(batch_id=batch_id, output=None))
+
+    manifest_path = _build_dir() / batch_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["source_counts"] = {**manifest["source_counts"], "tampered": 1}
+    manifest["manifest_hash"] = compute_manifest_hash(extract_deterministic_payload(manifest))
+    alternate = _build_dir() / batch_id / "alternate-manifest.json"
+    alternate.write_text(json.dumps(manifest))
+
+    rc = cli.cmd_approve(
+        SimpleNamespace(batch_id=batch_id, manifest=str(alternate), by="tester", note="bad alternate")
+    )
+    assert rc == 1
+    assert cli._get_batch(batch_id)["status"] == "verified"
+
+
 def test_cli_apply_writes_formal_layer():
     _ensure_company_facts_snapshot()
     batch_id = str(uuid.uuid4())
@@ -495,6 +589,49 @@ def test_cli_apply_writes_formal_layer():
         (TEST_STOCK,), fetch=True,
     )[0][0]
     assert source_count > 0
+    ciks = execute(
+        "SELECT DISTINCT cik FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,),
+        fetch=True,
+    )
+    assert ciks == [(TEST_CIK,)]
+
+    assert cli.cmd_verify(SimpleNamespace(batch_id=batch_id, output=None)) == 0
+    assert cli._get_batch(batch_id)["status"] == "post_verified"
+
+
+def test_cli_apply_rolls_back_entire_stock_on_statement_failure(monkeypatch):
+    _ensure_company_facts_snapshot()
+    batch_id = str(uuid.uuid4())
+    cli.cmd_stage(SimpleNamespace(batch_id=batch_id, stocks=TEST_STOCK, dry_run=False))
+    cli.cmd_verify(SimpleNamespace(batch_id=batch_id, output=None))
+    manifest_path = _build_dir() / batch_id / "manifest.json"
+    cli.cmd_approve(SimpleNamespace(batch_id=batch_id, manifest=str(manifest_path), by="tester", note="approved"))
+
+    original = USFactVersionWriter.write_facts
+    calls = {"count": 0}
+
+    def fail_second_statement(self, *args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("injected statement failure")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(USFactVersionWriter, "write_facts", fail_second_statement)
+    rc = cli.cmd_apply(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            require_status="approved",
+            lease_seconds=300,
+            heartbeat_interval=30,
+        )
+    )
+    assert rc == 1
+    assert execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,),
+        fetch=True,
+    )[0][0] == 0
 
 
 def test_cli_rollback_creates_exclusion():
@@ -506,7 +643,12 @@ def test_cli_rollback_creates_exclusion():
     cli.cmd_approve(SimpleNamespace(batch_id=batch_id, manifest=str(manifest_path), by="tester", note="approved"))
     cli.cmd_apply(SimpleNamespace(manifest=str(manifest_path), require_status="approved", lease_seconds=300, heartbeat_interval=30))
 
-    args = SimpleNamespace(batch_id=batch_id, reason="bad data", create_exclusion=True)
+    args = SimpleNamespace(
+        batch_id=batch_id,
+        reason="bad data",
+        create_exclusion=True,
+        exclusion_kind="business",
+    )
     rc = cli.cmd_rollback(args)
     assert rc == 0
 

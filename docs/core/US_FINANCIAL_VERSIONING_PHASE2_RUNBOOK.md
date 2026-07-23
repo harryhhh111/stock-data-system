@@ -1,7 +1,7 @@
 # 美股财报版本化 Phase 2 全市场历史回填 Runbook
 
-> 状态：待开发与演练；未批准全市场生产 apply  
-> 日期：2026-07-23  
+> 状态：Gate A 第一批已完成；尚未批准 Gate B 或全市场生产 apply
+> 日期：2026-07-24
 > 适用环境：`STOCK_MARKETS=US` 海外服务器  
 > 前置状态：Phase 1A、Phase 1B v1 已关闭；生产消费者尚未切换  
 > 上位方案：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)  

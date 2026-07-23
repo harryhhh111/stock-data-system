@@ -171,19 +171,14 @@ CREATE TABLE IF NOT EXISTS us_financial_fact_exclusion (
         CHECK (status IN ('active', 'revoked', 'superseded'))
 );
 
--- 同一 fact 同一 reason 只能有一条 active exclusion
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'uq_us_financial_fact_exclusion_active'
-          AND conrelid = 'us_financial_fact_exclusion'::regclass
-    ) THEN
-        ALTER TABLE us_financial_fact_exclusion
-            ADD CONSTRAINT uq_us_financial_fact_exclusion_active
-            UNIQUE (fact_version_id, reason_code, status);
-    END IF;
-END $$;
+-- 从 Gate A 初版普通 UNIQUE 迁移为 active partial unique：
+-- revoked/superseded 历史可以保留多条，active 仍只能有一条。
+ALTER TABLE us_financial_fact_exclusion
+    DROP CONSTRAINT IF EXISTS uq_us_financial_fact_exclusion_active;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_us_financial_fact_exclusion_active
+    ON us_financial_fact_exclusion(fact_version_id, reason_code)
+    WHERE status = 'active';
 
 CREATE INDEX IF NOT EXISTS idx_us_financial_fact_exclusion_fact
     ON us_financial_fact_exclusion(fact_version_id)

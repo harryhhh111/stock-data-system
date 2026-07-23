@@ -42,7 +42,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import psycopg2.extras
 
 from core.fetchers.us_financial import FetchContext, USFinancialFetcher
-from core.us_financial_exclusion import create_exclusion
 from core.us_financial_manifest import (
     build_manifest,
     compute_manifest_hash,
@@ -310,7 +309,7 @@ def _discover_sources(stock_codes: list[str]) -> list[dict[str, Any]]:
         rows = execute(
             f"""
             SELECT DISTINCT ON (stock_code)
-                stock_code, raw_data
+                stock_code, raw_data, sync_time
             FROM raw_snapshot
             WHERE stock_code IN ({placeholders})
               AND data_type = 'company_facts'
@@ -321,28 +320,19 @@ def _discover_sources(stock_codes: list[str]) -> list[dict[str, Any]]:
             fetch=True,
         ) or []
 
-        for stock_code, raw_data in rows:
+        for stock_code, raw_data, sync_time in rows:
             canonical = json.dumps(raw_data, sort_keys=True, ensure_ascii=False, default=str)
             content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-            # legacy 来源需先登记到 raw_snapshot_version，保证 fact_source 外键有效
-            snapshot_id = get_or_create_raw_snapshot_version(
-                stock_code=stock_code,
-                data_type="company_facts",
-                source="legacy_migration",
-                api_params={"origin": "raw_snapshot"},
-                content_hash=content_hash,
-                raw_data=raw_data,
-                fetched_at=datetime.now(),
-            )
 
             sources.append({
                 "stock_code": stock_code,
                 "source_kind": "legacy_raw_snapshot",
-                "source_locator": f"raw_snapshot->raw_snapshot_version.snapshot_id={snapshot_id}",
+                "source_locator": f"raw_snapshot.stock_code={stock_code}",
                 "source_content_hash": content_hash,
-                "source_snapshot_id": snapshot_id,
+                "source_snapshot_id": None,
                 "fetched_at": None,
+                "legacy_cache_updated_at": sync_time.isoformat() if sync_time else None,
+                "source_original_fetched_at": None,
                 "priority": 4,
                 "reconstruction_flag": "RECONSTRUCTED_FROM_LEGACY_SNAPSHOT",
             })
@@ -364,7 +354,14 @@ def _parse_facts_from_source(source: dict[str, Any]) -> tuple[dict[str, Any] | N
 
     if source["source_kind"] == "legacy_raw_snapshot":
         rows = execute(
-            "SELECT raw_data FROM raw_snapshot WHERE stock_code = %s AND data_type = 'company_facts' LIMIT 1",
+            """
+            SELECT raw_data FROM raw_snapshot
+            WHERE stock_code = %s
+              AND data_type = 'company_facts'
+              AND source = 'sec_edgar'
+            ORDER BY sync_time DESC
+            LIMIT 1
+            """,
             (source["stock_code"],),
             fetch=True,
         )
@@ -414,7 +411,14 @@ def _source_drifted(source: dict[str, Any]) -> bool:
     snapshot_id = source.get("source_snapshot_id")
     content_hash = source.get("source_content_hash")
     if not snapshot_id:
-        return False
+        if source.get("source_kind") != "legacy_raw_snapshot":
+            return True
+        raw_data, error = _parse_facts_from_source(source)
+        if raw_data is None:
+            logger.error("legacy source 无法读取: %s", error)
+            return True
+        canonical = json.dumps(raw_data, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest() != content_hash
     rows = execute(
         "SELECT content_hash FROM raw_snapshot_version WHERE snapshot_id = %s",
         (snapshot_id,),
@@ -644,7 +648,11 @@ def _validate_manifest_for_apply(manifest: dict[str, Any], batch: dict[str, Any]
         logger.error("git 工作树脏，禁止生产 apply")
         return False
 
-    if batch.get("approved_manifest_hash") and batch["approved_manifest_hash"] != manifest["manifest_hash"]:
+    if batch.get("manifest_hash") != manifest["manifest_hash"]:
+        logger.error("传入 manifest 与 stage/verify 冻结的 manifest 不匹配")
+        return False
+
+    if not batch.get("approved_manifest_hash") or batch["approved_manifest_hash"] != manifest["manifest_hash"]:
         logger.error("approved_manifest_hash 与 manifest 不匹配")
         return False
 
@@ -713,15 +721,45 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 if raw_data is None:
                     raise RuntimeError(error or "无法读取来源")
 
-                snapshot_id = source.get("source_snapshot_id") or 0
+                snapshot_id = source.get("source_snapshot_id")
+                if snapshot_id is None and source.get("source_kind") == "legacy_raw_snapshot":
+                    snapshot_id = get_or_create_raw_snapshot_version(
+                        stock_code=stock_code,
+                        data_type="company_facts",
+                        source="legacy_migration",
+                        api_params={
+                            "origin": "raw_snapshot",
+                            "source_original_fetched_at": None,
+                            "legacy_cache_updated_at": source.get("legacy_cache_updated_at"),
+                        },
+                        content_hash=source["source_content_hash"],
+                        raw_data=raw_data,
+                        fetched_at=datetime.now(),
+                    )
+                    if item_id:
+                        execute(
+                            "UPDATE us_financial_backfill_item SET source_snapshot_id = %s WHERE item_id = %s",
+                            (snapshot_id, item_id),
+                            commit=True,
+                        )
+                if snapshot_id is None:
+                    raise RuntimeError("SOURCE_SNAPSHOT_NOT_REGISTERED")
+
+                raw_cik = str(raw_data.get("cik") or "").strip()
+                if not raw_cik:
+                    raise RuntimeError("MISSING_CIK")
                 ctx = FetchContext(
                     stock_code=stock_code,
-                    cik="",  # backfill 不依赖 cik
+                    cik=raw_cik.zfill(10),
                     snapshot_id=snapshot_id,
                     content_hash=source["source_content_hash"],
                 )
 
                 statement_results_write: dict[str, dict] = {}
+                source_inserted = 0
+                source_repeated = 0
+                source_conflicted = 0
+                source_staged = 0
                 with Connection() as conn:
                     writer = USFactVersionWriter(parser_git_sha=parser_git_sha)
                     for statement, tags in [
@@ -743,12 +781,17 @@ def cmd_apply(args: argparse.Namespace) -> int:
                             reconstruction_flag=source.get("reconstruction_flag"),
                             batch_item_id=item_id,
                         )
-                        conn.commit()
-                        total_inserted += result["facts_inserted"]
-                        total_repeated += result["facts_repeated"]
-                        total_conflicted += result["facts_conflicted"]
-                        total_staged += result["facts_staged"]
+                        source_inserted += result["facts_inserted"]
+                        source_repeated += result["facts_repeated"]
+                        source_conflicted += result["facts_conflicted"]
+                        source_staged += result["facts_staged"]
                         statement_results_write[statement] = result
+                    conn.commit()
+
+                total_inserted += source_inserted
+                total_repeated += source_repeated
+                total_conflicted += source_conflicted
+                total_staged += source_staged
 
                 if item_id:
                     _update_item(
@@ -821,6 +864,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
         _update_batch_status(batch_id, "verified")
         _audit_batch_status(batch_id, "staged", "verified", None, "verify passed")
         logger.info("batch %s 已迁移到 verified", batch_id)
+    elif batch and batch["status"] == "applied":
+        _update_batch_status(batch_id, "post_verified")
+        _audit_batch_status(batch_id, "applied", "post_verified", None, "post-verify passed")
+        logger.info("batch %s 已迁移到 post_verified", batch_id)
 
     return 0
 
@@ -855,6 +902,9 @@ def cmd_approve(args: argparse.Namespace) -> int:
     if manifest["batch_id"] != batch_id:
         logger.error("manifest batch_id 不匹配")
         return 1
+    if batch.get("manifest_hash") != manifest["manifest_hash"]:
+        logger.error("传入 manifest 与 stage/verify 冻结的 manifest 不匹配")
+        return 1
 
     execute(
         """
@@ -879,29 +929,30 @@ def cmd_approve(args: argparse.Namespace) -> int:
 # ═══════════════════════════════════════════════════════════
 
 
-def _rollback_create_exclusions(batch_id: str, reason: str) -> int:
-    """为 batch 涉及的所有 fact_version 创建 BUSINESS_VETO exclusion。"""
-    rows = execute(
-        """
-        SELECT DISTINCT f.fact_version_id
-        FROM us_financial_fact_version f
-        JOIN us_financial_fact_source s ON s.fact_version_id = f.fact_version_id
-        JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
-        WHERE i.batch_id = %s
-        """,
-        (batch_id,),
-        fetch=True,
-    ) or []
-    count = 0
-    for (fact_version_id,) in rows:
-        create_exclusion(
-            fact_version_id=fact_version_id,
-            reason_code="BUSINESS_VETO",
-            reason=reason,
-            reviewed_by="rollback_cli",
-            batch_id=batch_id,
-        )
-        count += 1
+def _rollback_create_exclusions(batch_id: str, reason: str, reason_code: str) -> int:
+    """为 batch 涉及的所有 fact_version 创建显式 exclusion。"""
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO us_financial_fact_exclusion (
+                    fact_version_id, batch_id, reason_code, reason, status,
+                    effective_from, reviewed_by, reviewed_at
+                )
+                SELECT DISTINCT
+                    f.fact_version_id, %s::uuid, %s, %s, 'active',
+                    NOW(), 'rollback_cli', NOW()
+                FROM us_financial_fact_version f
+                JOIN us_financial_fact_source s ON s.fact_version_id = f.fact_version_id
+                JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
+                WHERE i.batch_id = %s
+                ON CONFLICT (fact_version_id, reason_code) WHERE status = 'active'
+                DO NOTHING
+                """,
+                (batch_id, reason_code, reason, batch_id),
+            )
+            count = cur.rowcount
+        conn.commit()
     return count
 
 
@@ -912,6 +963,18 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     if batch is None:
         logger.error("batch %s 不存在", batch_id)
         return 1
+    exclusion_kind = getattr(args, "exclusion_kind", None)
+    if args.create_exclusion and exclusion_kind not in {"technical", "business"}:
+        logger.error("--create-exclusion 时必须指定 --exclusion-kind technical|business")
+        return 1
+    if batch["status"] in {"applied", "post_verified", "completed"} and not args.create_exclusion:
+        logger.error("已写入正式事实的 batch rollback 必须使用 --create-exclusion")
+        return 1
+
+    if args.create_exclusion:
+        reason_code = "PARSER_TECHNICAL_ERROR" if exclusion_kind == "technical" else "BUSINESS_VETO"
+        count = _rollback_create_exclusions(batch_id, args.reason, reason_code)
+        logger.info("rollback 创建 %d 条 %s exclusion", count, reason_code)
 
     execute(
         """
@@ -924,10 +987,6 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         commit=True,
     )
     _audit_batch_status(batch_id, batch["status"], "rejected", None, args.reason)
-
-    if args.create_exclusion:
-        count = _rollback_create_exclusions(batch_id, args.reason)
-        logger.info("rollback 创建 %d 条 BUSINESS_VETO exclusion", count)
 
     logger.info("batch %s 已 rollback: %s", batch_id, args.reason)
     return 0
@@ -969,7 +1028,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
     lease_expires_at = batch.get("lease_expires_at")
     now = datetime.now(tz=lease_expires_at.tzinfo) if lease_expires_at else datetime.now()
     if lease_expires_at and lease_expires_at > now:
-        logger.warning("batch %s lease 尚未过期 (%s)，尝试检查旧 worker 是否仍存活", batch_id, lease_expires_at)
+        logger.error("batch %s lease 尚未过期 (%s)，不能接管", batch_id, lease_expires_at)
+        return 1
 
     # 通过 advisory lock 判断旧 worker 是否已消失
     if not check_old_worker_gone(batch_id):
@@ -1045,6 +1105,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rollback.add_argument("--batch-id", required=True)
     p_rollback.add_argument("--reason", required=True)
     p_rollback.add_argument("--create-exclusion", action="store_true")
+    p_rollback.add_argument("--exclusion-kind", choices=["technical", "business"])
     p_rollback.set_defaults(func=cmd_rollback)
 
     p_resume = sub.add_parser("resume", help="从中断点继续")
