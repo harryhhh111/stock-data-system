@@ -6,6 +6,7 @@ from core.relations.us_financial import (
     USFactRelationBuilder,
     build_economic_fact_key,
     compare_fact_context,
+    compute_economic_key_hash,
 )
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "USFactRelationBuilder",
     "build_economic_fact_key",
     "compare_fact_context",
+    "compute_economic_key_hash",
 ]

@@ -17,7 +17,7 @@ from typing import Any
 
 import psycopg2.extras
 
-from core.relations.us_financial import build_economic_fact_key
+from core.relations.us_financial import build_economic_fact_key, compute_economic_key_hash
 from db import Connection, execute
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ class SelectedFact:
     unit: str
     accession_no: str
     filed_date: date
+    sec_tag: str | None
+    context_hash: str
+    dimensions: dict
+    economic_key_hash: str
     selection_basis: str
     selection_reason: str
     quality_flags: list[str] = field(default_factory=list)
@@ -210,6 +214,11 @@ class USFactSelector:
         flags: list[str],
         candidate_count: int,
     ) -> SelectedFact:
+        dimensions = fact.get("dimensions", {})
+        if isinstance(dimensions, psycopg2.extras.Json):
+            dimensions = dimensions.adapted
+        if isinstance(dimensions, str):
+            dimensions = json.loads(dimensions)
         return SelectedFact(
             fact_version_id=fact["fact_version_id"],
             stock_code=fact["stock_code"],
@@ -221,6 +230,10 @@ class USFactSelector:
             value_numeric=fact.get("value_numeric"),
             value_text=fact.get("value_text"),
             unit=fact["unit"],
+            sec_tag=fact.get("sec_tag"),
+            context_hash=fact.get("context_hash", ""),
+            dimensions=dimensions or {},
+            economic_key_hash=compute_economic_key_hash(fact),
             accession_no=fact["accession_no"],
             filed_date=fact["filed_date"],
             selection_basis=basis,
@@ -400,6 +413,11 @@ class USFactSelector:
                             "period_kind": s.period_kind,
                             "period_start": s.period_start,
                             "report_date": s.report_date,
+                            "unit": s.unit,
+                            "sec_tag": s.sec_tag,
+                            "context_hash": s.context_hash,
+                            "dimensions": psycopg2.extras.Json(s.dimensions),
+                            "economic_key_hash": s.economic_key_hash,
                             "selection_basis": s.selection_basis,
                             "as_of_date": as_of_date,
                             "selected_fact_id": s.fact_version_id,
@@ -416,19 +434,21 @@ class USFactSelector:
                         """
                         INSERT INTO us_fact_selection_audit (
                             run_id, stock_code, statement, standard_field,
-                            period_kind, period_start, report_date, selection_basis,
+                            period_kind, period_start, report_date, unit, sec_tag,
+                            context_hash, dimensions, economic_key_hash, selection_basis,
                             as_of_date, selected_fact_id, selected_accession,
                             selected_filed_date, candidate_count, selection_reason,
                             quality_flags, selector_version
                         ) VALUES (
                             %(run_id)s, %(stock_code)s, %(statement)s, %(standard_field)s,
-                            %(period_kind)s, %(period_start)s, %(report_date)s, %(selection_basis)s,
+                            %(period_kind)s, %(period_start)s, %(report_date)s, %(unit)s, %(sec_tag)s,
+                            %(context_hash)s, %(dimensions)s, %(economic_key_hash)s, %(selection_basis)s,
                             %(as_of_date)s, %(selected_fact_id)s, %(selected_accession)s,
                             %(selected_filed_date)s, %(candidate_count)s, %(selection_reason)s,
                             %(quality_flags)s, %(selector_version)s
                         )
                         ON CONFLICT (run_id, stock_code, statement, standard_field,
-                                     period_kind, period_start, report_date) DO NOTHING
+                                     period_kind, period_start, report_date, economic_key_hash) DO NOTHING
                         """,
                         audit_rows,
                     )
@@ -436,7 +456,7 @@ class USFactSelector:
             conn.commit()
 
     def _compute_checksum(self, selected: list[SelectedFact]) -> str:
-        """计算稳定 checksum，包含 schema version 和 selector version。"""
+        """计算稳定 checksum，包含 schema version、selector version 和 context。"""
         lines = [f"schema_version:{_CHECKSUM_SCHEMA_VERSION}", f"selector_version:{self.VERSION}"]
         for s in sorted(
             selected,
@@ -447,13 +467,17 @@ class USFactSelector:
                 x.period_kind,
                 x.report_date.isoformat() if x.report_date else "",
                 x.period_start.isoformat() if x.period_start else "",
+                x.unit,
+                x.economic_key_hash,
+                x.sec_tag or "",
             ),
         ):
             value = s.value_numeric if s.value_numeric is not None else s.value_text
             # Decimal 统一用 str 规范化
             lines.append(
                 f"{s.stock_code}|{s.statement}|{s.standard_field}|{s.period_kind}|"
-                f"{s.report_date}|{s.period_start}|{value}|{s.accession_no}|{s.filed_date}|"
+                f"{s.report_date}|{s.period_start}|{s.unit}|{s.economic_key_hash}|{s.sec_tag or ''}|"
+                f"{value}|{s.accession_no}|{s.filed_date}|"
                 f"{s.selection_basis}|{s.candidate_count}"
             )
         canonical = "\n".join(lines)

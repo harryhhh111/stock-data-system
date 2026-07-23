@@ -18,11 +18,13 @@ TEST_CIK = "0000888888"
 
 
 def _cleanup():
-    execute("DELETE FROM us_fact_selection_audit WHERE stock_code = %s", (TEST_STOCK,), commit=True)
+    # 先删除 run，CASCADE 会清理 audit；否则先删 audit 后无法通过 audit 找到 run。
     execute(
-        "DELETE FROM us_fact_selection_run WHERE run_id IN (SELECT run_id FROM us_fact_selection_audit WHERE stock_code = %s)",
-        (TEST_STOCK,), commit=True,
+        "DELETE FROM us_fact_selection_run WHERE stock_scope->>'stock_codes' LIKE %s",
+        (f'%"{TEST_STOCK}"%',), commit=True,
     )
+    # 兜底：直接删除残留 audit（理论上 CASCADE 已处理）
+    execute("DELETE FROM us_fact_selection_audit WHERE stock_code = %s", (TEST_STOCK,), commit=True)
     execute("DELETE FROM us_financial_fact_version WHERE stock_code = %s", (TEST_STOCK,), commit=True)
     execute("DELETE FROM us_filing WHERE stock_code = %s", (TEST_STOCK,), commit=True)
     execute(
@@ -114,19 +116,27 @@ def cleanup():
 
 
 def test_selector_loads_dimensions_from_database():
-    """真实 DB 路径中 selector 必须按 dimensions 分组，不合并不同 context。"""
+    """真实 DB 路径中 selector 必须按 dimensions 分组，不合并不同 context，并保存完整 context 到 audit。"""
     snapshot_id = _ensure_snapshot()
     _insert_filing(snapshot_id, "accn-1", "2025-02-20")
     _insert_fact(snapshot_id, 1, "accn-1", "Revenues", "revenues", 100, "2025-02-20", "h1", dimensions={})
     _insert_fact(snapshot_id, 2, "accn-1", "Revenues", "revenues", 50, "2025-02-20", "h2", dimensions={"member": "segment_a"})
 
     selector = USFactSelector()
-    selected = selector.select(stock_codes=[TEST_STOCK], basis="first-reported")
+    run_id, selected = selector.select_and_audit(stock_codes=[TEST_STOCK], basis="first-reported", persist=True)
 
     # 两个不同 dimensions 应该分成两组，各自选择
     assert len(selected) == 2
     fields = {s.standard_field for s in selected}
     assert fields == {"revenues"}
+
+    # audit 中应有两条，且 economic_key_hash 不同
+    rows = execute(
+        "SELECT economic_key_hash, dimensions FROM us_fact_selection_audit WHERE run_id = %s ORDER BY selection_id",
+        (str(run_id),), fetch=True,
+    )
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
 
 
 def test_three_node_pit_timeline():
@@ -211,6 +221,10 @@ def _make_selected_fact(fact_id: int, standard_field: str, value: float):
         unit="USD",
         accession_no="accn-1",
         filed_date=date(2025, 2, 20),
+        sec_tag="Revenues",
+        context_hash="a" * 64,
+        dimensions={},
+        economic_key_hash="b" * 64,
         selection_basis="first-reported",
         selection_reason="test",
         quality_flags=[],

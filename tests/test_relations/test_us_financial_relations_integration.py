@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS us_ingest_run (
 );
 CREATE TABLE IF NOT EXISTS us_financial_fact_version (
     fact_version_id BIGSERIAL PRIMARY KEY,
-    accession_no VARCHAR(30) NOT NULL REFERENCES us_filing(accession_no)
+    accession_no VARCHAR(30) NOT NULL REFERENCES us_filing(accession_no),
+    unit VARCHAR(50),
+    sec_tag VARCHAR(200),
+    context_hash CHAR(64),
+    dimensions JSONB
 );
 CREATE TABLE IF NOT EXISTS us_financial_fact_conflict (
     conflict_id BIGSERIAL PRIMARY KEY
@@ -40,7 +44,19 @@ CREATE TABLE IF NOT EXISTS us_financial_fact_conflict (
 CREATE TABLE IF NOT EXISTS us_financial_fact_staging (
     staging_id BIGSERIAL PRIMARY KEY
 );
+-- Phase 1A 不含关系表，由 Phase 1B DDL 创建
 """
+
+
+def _assert_selection_basis_includes_latest_observed(cur, schema):
+    cur.execute(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conrelid = (SELECT oid FROM pg_class WHERE relname = 'us_fact_selection_run' AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = %s)) "
+        "AND contype = 'c'",
+        (schema,),
+    )
+    defs = " ".join(r[0] for r in cur.fetchall())
+    assert "latest-observed" in defs
 
 
 def test_phase1b_ddl_migrates_from_phase1a():
@@ -75,14 +91,113 @@ def test_phase1b_ddl_migrates_from_phase1a():
         tables = {r[0] for r in cur.fetchall()}
         assert tables == {"us_fact_version_relation", "us_fact_selection_run", "us_fact_selection_audit"}
 
-        cur.execute(
-            "SELECT constraint_name FROM information_schema.table_constraints "
-            "WHERE table_schema = %s AND table_name = 'us_fact_selection_run' "
-            "AND constraint_type = 'CHECK'",
-            (schema,),
-        )
-        check_names = " ".join(r[0] for r in cur.fetchall())
-        assert "chk_selection_basis" in check_names
+        _assert_selection_basis_includes_latest_observed(cur, schema)
+    finally:
+        cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        cur.close()
+        conn.close()
+
+
+_PHASE1B_OLD_DDL = """
+-- b3d41b0 旧 relation 表结构（已完整，不需要列迁移）
+CREATE TABLE IF NOT EXISTS us_fact_version_relation (
+    relation_id           BIGSERIAL PRIMARY KEY,
+    stock_code            VARCHAR(20) NOT NULL,
+    standard_field        VARCHAR(100) NOT NULL,
+    period_kind           VARCHAR(10) NOT NULL,
+    period_start          DATE,
+    report_date           DATE NOT NULL,
+    earlier_fact_id       BIGINT NOT NULL,
+    later_fact_id         BIGINT NOT NULL,
+    relation_type         VARCHAR(30) NOT NULL,
+    value_changed         BOOLEAN NOT NULL,
+    change_amount         NUMERIC,
+    change_ratio          NUMERIC,
+    classification_method VARCHAR(30) NOT NULL,
+    reason                TEXT,
+    quality_flags         TEXT[] NOT NULL DEFAULT '{}',
+    reviewed_by           VARCHAR(100),
+    reviewed_at           TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS us_financial_fact_version (
+    fact_version_id BIGSERIAL PRIMARY KEY,
+    accession_no VARCHAR(30),
+    unit VARCHAR(50),
+    sec_tag VARCHAR(200),
+    context_hash CHAR(64),
+    dimensions JSONB
+);
+CREATE TABLE IF NOT EXISTS us_fact_selection_run (
+    run_id              UUID PRIMARY KEY,
+    selection_basis     VARCHAR(20) NOT NULL,
+    as_of_date          DATE,
+    selector_version    VARCHAR(40) NOT NULL,
+    mapping_version     VARCHAR(40),
+    stock_scope         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at         TIMESTAMPTZ,
+    status              VARCHAR(20) NOT NULL DEFAULT 'running',
+    selected_count      INTEGER NOT NULL DEFAULT 0,
+    rejected_count      INTEGER NOT NULL DEFAULT 0,
+    checksum_algorithm  VARCHAR(40),
+    result_checksum     VARCHAR(64),
+    manifest            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message       TEXT,
+    CONSTRAINT chk_selection_basis CHECK (selection_basis IN ('first-reported', 'latest-restated', 'as-of'))
+);
+-- b3d41b0 旧 audit 表结构（不含本轮新增的 context 字段）
+CREATE TABLE IF NOT EXISTS us_fact_selection_audit (
+    selection_id        BIGSERIAL PRIMARY KEY,
+    run_id              UUID NOT NULL REFERENCES us_fact_selection_run(run_id),
+    stock_code          VARCHAR(20) NOT NULL,
+    statement           VARCHAR(20) NOT NULL,
+    standard_field      VARCHAR(100) NOT NULL,
+    period_kind         VARCHAR(10) NOT NULL,
+    period_start        DATE,
+    report_date         DATE NOT NULL,
+    selection_basis     VARCHAR(20) NOT NULL,
+    as_of_date          DATE,
+    selected_fact_id    BIGINT REFERENCES us_financial_fact_version(fact_version_id),
+    selected_accession  VARCHAR(30),
+    selected_filed_date DATE,
+    candidate_count     INTEGER NOT NULL,
+    selection_reason    TEXT NOT NULL,
+    quality_flags       TEXT[] NOT NULL DEFAULT '{}',
+    selector_version    VARCHAR(40) NOT NULL,
+    selected_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_us_fact_selection_audit
+        UNIQUE (run_id, stock_code, statement, standard_field,
+                period_kind, period_start, report_date)
+);
+"""
+
+
+def test_phase1b_ddl_migrates_from_old_phase1b_constraint():
+    """Phase 1B DDL 应能从 b3d41b0 旧 constraint 原地升级，添加 latest-observed。"""
+    with open("scripts/us_financial_phase1b.sql") as f:
+        phase1b_ddl = f.read()
+
+    schema = "p1b_old_migration_test"
+    conn = psycopg2.connect(
+        host=config.db.host, port=config.db.port, dbname=config.db.dbname,
+        user=config.db.user, password=config.db.password,
+    )
+    conn.set_client_encoding("UTF8")
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        cur.execute(f"CREATE SCHEMA {schema}")
+        cur.execute(f"SET search_path TO {schema}")
+
+        cur.execute(_PHASE1B_OLD_DDL)
+        cur.execute(phase1b_ddl)
+        cur.execute(phase1b_ddl)  # idempotent
+
+        _assert_selection_basis_includes_latest_observed(cur, schema)
     finally:
         cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         cur.close()
@@ -93,9 +208,9 @@ TEST_CIK = "0000999999"
 
 
 def _cleanup():
-    execute(f"DELETE FROM us_fact_version_relation WHERE stock_code = %s", (TEST_STOCK,), commit=True)
-    execute(f"DELETE FROM us_financial_fact_version WHERE stock_code = %s", (TEST_STOCK,), commit=True)
-    execute(f"DELETE FROM us_filing WHERE stock_code = %s", (TEST_STOCK,), commit=True)
+    execute("DELETE FROM us_fact_version_relation WHERE stock_code = %s", (TEST_STOCK,), commit=True)
+    execute("DELETE FROM us_financial_fact_version WHERE stock_code = %s", (TEST_STOCK,), commit=True)
+    execute("DELETE FROM us_filing WHERE stock_code = %s", (TEST_STOCK,), commit=True)
     execute(
         "DELETE FROM us_ingest_run WHERE snapshot_id IN (SELECT snapshot_id FROM raw_snapshot_version WHERE stock_code = %s)",
         (TEST_STOCK,), commit=True,

@@ -47,6 +47,13 @@ def build_economic_fact_key(fact: dict[str, Any]) -> tuple:
     )
 
 
+def compute_economic_key_hash(fact: dict[str, Any]) -> str:
+    """由经济事实兼容键生成稳定的 SHA-256 hash。"""
+    key = build_economic_fact_key(fact)
+    canonical = json.dumps(key, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _normalize_period_start(value: Any) -> str | None:
     if value is None:
         return None
@@ -287,15 +294,16 @@ class USFactRelationBuilder:
     def _relation_type(earlier: dict[str, Any], later: dict[str, Any], value_changed: bool) -> str:
         later_form = str(later.get("form") or "").upper()
 
+        # tag 不同但 standard_field 相同：优先识别为 tag migration，
+        # 即使数值相同也要保留映射迁移信息。
+        if str(earlier.get("sec_tag") or "").lower() != str(later.get("sec_tag") or "").lower():
+            return "tag_migration_candidate"
+
         if not value_changed:
             return "repeat"
 
         if "/A" in later_form:
             return "amendment_candidate"
-
-        # tag 不同但 standard_field 相同
-        if str(earlier.get("sec_tag") or "").lower() != str(later.get("sec_tag") or "").lower():
-            return "tag_migration_candidate"
 
         # 值不同且后续正常 filing：保守标为 unknown_change
         return "unknown_change"
