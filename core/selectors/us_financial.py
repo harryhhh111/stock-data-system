@@ -250,39 +250,48 @@ class USFactSelector:
     ) -> list[dict[str, Any]]:
         sql = """
             SELECT
-                fact_version_id,
-                stock_code,
-                statement,
-                standard_field,
-                period_kind,
-                period_start,
-                report_date,
-                unit,
-                value_hash,
-                value_numeric,
-                value_text,
-                accession_no,
-                form,
-                filed_date,
-                dimensions,
-                sec_tag,
-                context_hash
-            FROM us_financial_fact_version
-            WHERE 1=1
+                f.fact_version_id,
+                f.stock_code,
+                f.statement,
+                f.standard_field,
+                f.period_kind,
+                f.period_start,
+                f.report_date,
+                f.unit,
+                f.value_hash,
+                f.value_numeric,
+                f.value_text,
+                f.accession_no,
+                f.form,
+                f.filed_date,
+                f.dimensions,
+                f.sec_tag,
+                f.context_hash
+            FROM us_financial_fact_version f
+            LEFT JOIN us_financial_fact_exclusion e
+              ON e.fact_version_id = f.fact_version_id
+             AND e.status = 'active'
         """
         params: list[Any] = []
 
+        # 对 as-of 口径，业务性 exclusion 从 effective_from 起生效
+        if as_of_date is not None:
+            sql += " AND (e.effective_from IS NULL OR e.effective_from <= %s)"
+            params.append(as_of_date)
+
+        sql += " WHERE e.fact_version_id IS NULL"
+
         if stock_codes:
             placeholders = ", ".join(["%s"] * len(stock_codes))
-            sql += f" AND stock_code IN ({placeholders})"
+            sql += f" AND f.stock_code IN ({placeholders})"
             params.extend(stock_codes)
 
         if fields:
             placeholders = ", ".join(["%s"] * len(fields))
-            sql += f" AND standard_field IN ({placeholders})"
+            sql += f" AND f.standard_field IN ({placeholders})"
             params.extend(fields)
 
-        sql += " ORDER BY stock_code, standard_field, period_kind, report_date, filed_date, fact_version_id"
+        sql += " ORDER BY f.stock_code, f.standard_field, f.period_kind, f.report_date, f.filed_date, f.fact_version_id"
 
         rows = execute(sql, tuple(params), fetch=True)
         if rows is None:
@@ -363,6 +372,8 @@ class USFactSelector:
         checksum = self._compute_checksum(selected)
         git_sha = self._get_selector_git_sha()
 
+        from core.us_financial_exclusion import EXCLUSION_POLICY_VERSION
+
         manifest = {
             "checksum_schema_version": _CHECKSUM_SCHEMA_VERSION,
             "checksum_algorithm": "sha256",
@@ -374,6 +385,7 @@ class USFactSelector:
             "value_normalization": "Decimal/str",
             "selector_git_sha": git_sha,
             "mapping_version": None,
+            "exclusion_policy_version": EXCLUSION_POLICY_VERSION,
         }
 
         with Connection() as conn:

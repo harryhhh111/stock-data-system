@@ -34,6 +34,15 @@ import psycopg2.extras
 import requests
 
 import config
+from core.us_financial_versioning import (
+    USFactVersionWriter,
+    classify_record,
+    compute_context_hash,
+    compute_value_hash,
+    derive_filing_meta,
+    reject_reason,
+    split_value,
+)
 from db import Connection, get_or_create_raw_snapshot_version, save_raw_snapshot_observation
 
 from .base import BaseFetcher, retry_with_backoff
@@ -693,6 +702,116 @@ class USFinancialFetcher(BaseFetcher):
         "FreeCashFlow": "free_cash_flow",
     }
 
+    def _extract_facts(
+        self,
+        facts: dict,
+        tag_mapping: dict[str, str],
+        statement: str | None = None,
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """从 Company Facts 中提取原始 fact 记录。
+
+        Returns:
+            (records, invalid_records, fact_records)
+            records: 用于构建宽表 DataFrame
+            invalid_records: period invalid 被隔离的记录
+            fact_records: 用于写入 us_financial_fact_version 的原始事实
+        """
+        import re as _re
+
+        usgaap = facts.get("facts", {}).get("us-gaap", {})
+        if not usgaap:
+            return [], [], []
+
+        if statement is None:
+            statement = self._infer_statement(tag_mapping)
+
+        _KEEP_UNITS = {"USD", "USD/shares", "shares"}
+        records = []
+        fact_records: list[dict] = []
+        invalid_records: list[dict] = []
+
+        for tag, field_name in tag_mapping.items():
+            if tag not in usgaap:
+                continue
+            for unit_name, entries in usgaap[tag].get("units", {}).items():
+                if unit_name not in _KEEP_UNITS:
+                    continue
+                for entry in entries:
+                    fp_raw = entry.get("fp", "")
+                    fp = fp_raw
+                    frame = str(entry.get("frame", ""))
+                    start = entry.get("start")
+                    form = entry.get("form", "")
+
+                    end_val = entry.get("end")
+                    _period_kind, _quality_flag = _classify_period(start, end_val, frame)
+
+                    if _period_kind == "invalid":
+                        invalid_records.append({
+                            "tag": tag,
+                            "field": field_name,
+                            "fp": fp,
+                            "start": start,
+                            "end": end_val,
+                            "frame": frame,
+                            "form": form,
+                            "filed": entry.get("filed"),
+                            "accn": entry.get("accn"),
+                        })
+                        logger.warning(
+                            "INVALID_PERIOD 隔离: tag=%s field=%s start=%s end=%s fp=%s frame=%s form=%s accn=%s",
+                            tag, field_name, start, end_val, fp, frame, form,
+                            entry.get("accn", ""),
+                        )
+                        continue
+
+                    _frame_has_q = "Q" in frame
+                    _frame_is_instant = _period_kind == "instant"
+
+                    if frame and _period_kind == "duration":
+                        frame_match = _re.search(r"Q(\d+)$", frame)
+                        if frame_match and fp in ("FY", "", None):
+                            fp = f"Q{frame_match.group(1)}"
+                        elif not frame_match and "CY" in frame and not _frame_has_q:
+                            fp = "FY"
+
+                    records.append({
+                        "tag": tag,
+                        "field": field_name,
+                        "val": entry.get("val"),
+                        "fy": entry.get("fy"),
+                        "fp": fp,
+                        "end": entry.get("end"),
+                        "start": start,
+                        "filed": entry.get("filed"),
+                        "accn": entry.get("accn"),
+                        "frame": frame,
+                        "form": form,
+                        "_frame_has_q": _frame_has_q,
+                        "_frame_is_instant": _frame_is_instant,
+                        "_period_kind": _period_kind,
+                        "_quality_flag": _quality_flag,
+                    })
+                    fact_records.append({
+                        "tag": tag,
+                        "field": field_name,
+                        "unit": unit_name,
+                        "val": entry.get("val"),
+                        "fy": entry.get("fy"),
+                        "fp": fp_raw,
+                        "start": start,
+                        "end": end_val,
+                        "filed": entry.get("filed"),
+                        "accn": entry.get("accn"),
+                        "frame": frame,
+                        "form": form,
+                        "_period_kind": _period_kind,
+                        "_quality_flag": _quality_flag,
+                        "dimensions": entry.get("dimensions", {}),
+                    })
+
+        return records, invalid_records, fact_records
+
     def extract_table(
         self,
         facts: dict,
@@ -702,131 +821,16 @@ class USFinancialFetcher(BaseFetcher):
     ) -> pd.DataFrame:
         """从 Company Facts 中提取某张报表的数据，返回宽表 DataFrame。
 
-        每家公司只调用一次 fetch_company_facts，然后用此方法分别提取三大表。
         同时把原始 fact 写入不可变版本层（us_filing + us_financial_fact_version）。
-
-        Args:
-            facts: Company Facts JSON dict
-            tag_mapping: {SEC标签: 标准字段名} 映射
-            context: fetch_company_facts_with_context 返回的不可变上下文；
-                     为 None 时跳过版本层写入（用于测试/reparse 无 snapshot 场景）
-            statement: 报表类型（income/balance/cashflow），默认从 tag_mapping 推断
-
-        Returns:
-            宽表 DataFrame，index 为 (end, fp)，列为各标准字段
         """
-        import re as _re
-
-        usgaap = facts.get("facts", {}).get("us-gaap", {})
-        if not usgaap:
-            return pd.DataFrame()
+        records, invalid_records, fact_records = self._extract_facts(
+            facts, tag_mapping, statement=statement
+        )
 
         if statement is None:
             statement = self._infer_statement(tag_mapping)
 
-        # 收集所有标签的数据
-        # SEC Company Facts 的单位不只是 USD：
-        #   - 金额: "USD"
-        #   - 每股: "USD/shares"（EPS）
-        #   - 股数: "shares"（加权平均股数）
-        # 必须遍历所有单位类型，否则 EPS 和 Shares 字段会全量缺失
-        # 只使用 USD 本位的单位，跳过 CNY 等外币单位
-        # SEC 为中概股同时提供 CNY 和 USD 版本，CNY 字典序靠前会被 dedup 保留
-        _KEEP_UNITS = {"USD", "USD/shares", "shares"}
-        records = []
-        fact_records: list[dict] = []  # 写入 us_financial_fact_version 的原始事实
-        invalid_records: list[dict] = []  # quarantined, not entering wide table
-        for tag, field_name in tag_mapping.items():
-            if tag in usgaap:
-                for unit_name, entries in usgaap[tag].get("units", {}).items():
-                    if unit_name not in _KEEP_UNITS:
-                        continue
-                    for entry in entries:
-                        fp_raw = entry.get("fp", "")
-                        fp = fp_raw
-                        frame = str(entry.get("frame", ""))
-                        start = entry.get("start")
-                        form = entry.get("form", "")
-
-                        # ── period kind：以 start/end 为第一判据 ──
-                        # SEC Company Facts 的每个 fact 都有 start(可选) 和 end(必填)
-                        #   start 缺失 + end 存在  → instant（资产负债表时点）
-                        #   start 存在 + end 存在  → duration（利润表/现金流期间）
-                        #   start 缺失 + end 缺失  → invalid（缺少期间信息）
-                        #   start 存在 + end 缺失  → invalid（期间不完整）
-                        end_val = entry.get("end")
-                        _period_kind, _quality_flag = _classify_period(start, end_val, frame)
-
-                        # ── 隔离 invalid period：禁止进入正式宽表 ──
-                        if _period_kind == "invalid":
-                            invalid_records.append({
-                                "tag": tag,
-                                "field": field_name,
-                                "fp": fp,
-                                "start": start,
-                                "end": end_val,
-                                "frame": frame,
-                                "form": form,
-                                "filed": entry.get("filed"),
-                                "accn": entry.get("accn"),
-                            })
-                            logger.warning(
-                                "INVALID_PERIOD 隔离: tag=%s field=%s start=%s end=%s fp=%s frame=%s form=%s accn=%s",
-                                tag, field_name, start, end_val, fp, frame, form,
-                                entry.get("accn", ""),
-                            )
-                            continue  # 不进入 records，不进入后续 pivot 和宽表
-
-                        # frame 仅作佐证，不覆盖 period kind
-                        _frame_has_q = "Q" in frame
-                        _frame_is_instant = _period_kind == "instant"
-
-                        if frame and _period_kind == "duration":
-                            # duration frame (CY2025Q1, CY2025Q4): 可辅助修正 fp
-                            frame_match = _re.search(r"Q(\d+)$", frame)
-                            if frame_match and fp in ("FY", "", None):
-                                fp = f"Q{frame_match.group(1)}"
-                            elif not frame_match and "CY" in frame and not _frame_has_q:
-                                fp = "FY"
-                        # instant fact (period_kind=instant): fp 保持不变
-                        # 10-K 年报资产负债表时点事实保持 FY → annual
-
-                        records.append(
-                            {
-                                "tag": tag,
-                                "field": field_name,
-                                "val": entry.get("val"),
-                                "fy": entry.get("fy"),
-                                "fp": fp,
-                                "end": entry.get("end"),
-                                "start": start,
-                                "filed": entry.get("filed"),
-                                "accn": entry.get("accn"),
-                                "frame": frame,
-                                "form": form,
-                                "_frame_has_q": _frame_has_q,
-                                "_frame_is_instant": _frame_is_instant,
-                                "_period_kind": _period_kind,
-                                "_quality_flag": _quality_flag,
-                            }
-                        )
-                        fact_records.append({
-                            "tag": tag,
-                            "field": field_name,
-                            "unit": unit_name,
-                            "val": entry.get("val"),
-                            "fy": entry.get("fy"),
-                            "fp": fp_raw,
-                            "start": start,
-                            "end": end_val,
-                            "filed": entry.get("filed"),
-                            "accn": entry.get("accn"),
-                            "frame": frame,
-                            "form": form,
-                            "_period_kind": _period_kind,
-                            "_quality_flag": _quality_flag,
-                            "dimensions": entry.get("dimensions", {}),
-                        })
+        usgaap = facts.get("facts", {}).get("us-gaap", {})
 
         if invalid_records:
             logger.warning(
@@ -1123,38 +1127,9 @@ class USFinancialFetcher(BaseFetcher):
         return "unknown"
 
     def _classify_record(self, rec: dict) -> tuple[str, str | None]:
-        """对有效 period 的事实做 form/fp/period_kind 允许矩阵分类。
-
-        Returns:
-            (decision, flag)，decision 取值：
-            - ACCEPT：直接进入正式 fact_version
-            - ACCEPT_WITH_FLAG：进入正式表，但附加质量标记
-            - STAGING_UNKNOWN_FORM_FP：未知 form/fp，进 staging
-            - STAGING_UNKNOWN_PERIOD_KIND：period_kind 异常，进 staging
-        """
-        period_kind = rec.get("_period_kind")
-        if period_kind not in ("instant", "duration"):
-            return "STAGING_UNKNOWN_PERIOD_KIND", None
-
-        form = str(rec.get("form") or "").strip().upper()
-        fp_raw = str(rec.get("fp") or "").strip().upper() or None
-
-        if form not in self.ACCEPTED_FORMS:
-            return "STAGING_UNKNOWN_FORM_FP", None
-
-        if fp_raw is None:
-            return "STAGING_UNKNOWN_FORM_FP", None
-        if fp_raw not in self.ACCEPTED_FP:
-            return "STAGING_UNKNOWN_FORM_FP", None
-
-        if form in {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
-            if fp_raw != "FY":
-                return "ACCEPT_WITH_FLAG", "FISCAL_PERIOD_MISMATCH_ANNUAL"
-        elif form in {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}:
-            if fp_raw not in {"Q1", "Q2", "Q3", "Q4"}:
-                return "ACCEPT_WITH_FLAG", "FISCAL_PERIOD_MISMATCH_QUARTERLY"
-
-        return "ACCEPT", None
+        """对有效 period 的事实做 form/fp/period_kind 允许矩阵分类。"""
+        from core.us_financial_versioning import classify_record
+        return classify_record(rec)
 
     # ── 不可变版本层写入辅助 ──────────────────────────────
 
@@ -1167,11 +1142,11 @@ class USFinancialFetcher(BaseFetcher):
     ) -> None:
         """把原始 fact 写入 us_filing + us_financial_fact_version。
 
-        包含 filing-level report_date 推断、repeat/conflict 分流、staging 写入、
-        ingest_run 追踪。失败直接抛出，由 extract_table 捕获并记录 error，
-        不阻塞旧宽表。
+        通过 USFactVersionWriter 与 Phase 2 backfill 共用同一写入逻辑，
+        包含 filing 推断、repeat/conflict 分流、staging、fact_source 关系写入。
+        失败直接抛出，由 extract_table 捕获并记录 error，不阻塞旧宽表。
         """
-        if not fact_records:
+        if not fact_records and not invalid_records:
             return
 
         started_at = datetime.now()
@@ -1199,222 +1174,31 @@ class USFinancialFetcher(BaseFetcher):
                 with conn.cursor() as cur:
                     cur.execute("SELECT pg_advisory_xact_lock(%s)", (context.snapshot_id,))
 
-                # 1. 拆分有效候选 vs 需要进 staging 的记录
-                candidate_rows: list[dict] = []
-                staging_rows: list[dict] = []
-
-                for rec in fact_records:
-                    reject_reason = self._reject_reason(rec)
-                    if reject_reason:
-                        staging_rows.append(self._staging_row(rec, statement, context, reject_reason, run_id))
-                        continue
-
-                    decision, flag = self._classify_record(rec)
-                    if decision.startswith("STAGING"):
-                        staging_rows.append(self._staging_row(rec, statement, context, decision, run_id))
-                        continue
-
-                    if flag:
-                        rec = dict(rec)
-                        existing_flag = rec.get("_quality_flag")
-                        rec["_quality_flag"] = flag if existing_flag is None else f"{existing_flag},{flag}"
-                    candidate_rows.append(rec)
-
-                for rec in invalid_records:
-                    staging_rows.append(
-                        self._staging_row(rec, statement, context, "INVALID_PERIOD", run_id)
-                    )
-
-                if not candidate_rows:
-                    self._flush_staging(conn, staging_rows)
-                    self._finish_run(conn, run_id, "success", 0, 0, 0, len(staging_rows))
-                    conn.commit()
-                    return
-
-                # 2. 推断 filing-level 当前报告期
-                filing_meta = self._derive_filing_meta(candidate_rows)
-
-                # 3. 写入/更新 filing（只允许 metadata 补充）
-                filing_rows = []
-                for accn, meta in filing_meta.items():
-                    filing_metadata = {"report_date_source": "derived_from_company_facts"}
-                    if meta.get("frame"):
-                        filing_metadata["frame"] = meta["frame"]
-                    if meta.get("derived"):
-                        filing_metadata["report_date_derived"] = True
-
-                    filing_rows.append({
-                        "accession_no": accn,
-                        "stock_code": context.stock_code,
-                        "cik": context.cik,
-                        "form": meta["form"],
-                        "filed_date": meta["filed_date"],
-                        "report_date": meta["report_date"],
-                        "fiscal_year": meta["fiscal_year"],
-                        "fiscal_period": meta["fiscal_period"] or None,
-                        "is_amendment": "/A" in meta["form"],
-                        "source_snapshot_id": context.snapshot_id,
-                        "metadata": psycopg2.extras.Json(filing_metadata),
-                    })
-
-                filing_sql = """
-                    INSERT INTO us_filing (
-                        accession_no, stock_code, cik, form, filed_date, report_date,
-                        fiscal_year, fiscal_period, is_amendment, source_snapshot_id, metadata
-                    ) VALUES (
-                        %(accession_no)s, %(stock_code)s, %(cik)s, %(form)s, %(filed_date)s, %(report_date)s,
-                        %(fiscal_year)s, %(fiscal_period)s, %(is_amendment)s, %(source_snapshot_id)s, %(metadata)s
-                    )
-                    ON CONFLICT (accession_no) DO UPDATE SET
-                        metadata = COALESCE(us_filing.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
-                        updated_at = NOW()
-                """
-                with conn.cursor() as cur:
-                    cur.executemany(filing_sql, filing_rows)
-
-                # 4. 构建完整 fact 行并预计算 hash
-                fact_rows: list[dict] = []
-                for rec in candidate_rows:
-                    end = rec["end"]
-                    val = rec["val"]
-                    value_numeric, value_text = self._split_value(val)
-                    context_hash = self._compute_context_hash(
-                        period_kind=rec["_period_kind"],
-                        period_start=rec.get("start"),
-                        report_date=end,
-                        frame=rec.get("frame"),
-                        fp=rec.get("fp"),
-                        dimensions=rec.get("dimensions", {}),
-                    )
-                    value_hash = self._compute_value_hash(val, rec["unit"])
-                    quality_flags = [f for f in [rec.get("_quality_flag")] if f]
-                    meta = filing_meta.get(str(rec.get("accn") or "").strip(), {})
-                    if meta.get("derived"):
-                        quality_flags.append("REPORT_DATE_DERIVED")
-
-                    row = {
-                        "stock_code": context.stock_code,
-                        "cik": context.cik,
-                        "accession_no": rec["accn"],
-                        "statement": statement,
-                        "taxonomy": "us-gaap",
-                        "sec_tag": rec["tag"],
-                        "standard_field": rec.get("field"),
-                        "period_kind": rec["_period_kind"],
-                        "period_start": rec.get("start"),
-                        "report_date": end,
-                        "fiscal_year": meta.get("fiscal_year"),
-                        "fiscal_period_raw": rec.get("fp") or None,
-                        "form": rec.get("form"),
-                        "filed_date": rec.get("filed"),
-                        "frame": rec.get("frame"),
-                        "unit": rec["unit"],
-                        "value_numeric": value_numeric,
-                        "value_text": value_text,
-                        "dimensions": psycopg2.extras.Json(rec.get("dimensions", {})),
-                        "context_hash": context_hash,
-                        "source_snapshot_id": context.snapshot_id,
-                        "ingest_run_id": run_id,
-                        "value_hash": value_hash,
-                        "quality_flags": quality_flags,
-                    }
-                    row["_key"] = self._fact_key(row)
-                    fact_rows.append(row)
-
-                # 5. 同批去重：相同唯一键按 value_hash 归并
-                unique_rows, batch_repeats, batch_conflicts = self._dedup_batch(
-                    fact_rows, run_id
+                writer = USFactVersionWriter(parser_git_sha=parser_git_sha)
+                result = writer.write_facts(
+                    conn=conn,
+                    context=context,
+                    run_id=run_id,
+                    fact_records=fact_records,
+                    invalid_records=invalid_records,
+                    statement=statement,
+                    derive_filing_meta_func=self._derive_filing_meta,
                 )
-
-                # 6. 检测与已存在事实的 repeat / conflict
-                existing = self._load_existing_value_hashes(conn, unique_rows)
-                new_rows: list[dict] = []
-                conflict_rows: list[dict] = batch_conflicts
-                repeated = batch_repeats
-
-                for row in unique_rows:
-                    key = self._fact_key(row)
-                    existing_info = existing.get(key)
-                    if existing_info is None:
-                        new_rows.append(row)
-                    elif existing_info["value_hash"] == row["value_hash"]:
-                        repeated += 1
-                    else:
-                        conflict_rows.append(
-                            self._build_conflict_row(
-                                run_id,
-                                {
-                                    "value_hash": existing_info["value_hash"],
-                                    "value_numeric": existing_info.get("value_numeric"),
-                                    "value_text": existing_info.get("value_text"),
-                                },
-                                row,
-                            )
-                        )
-
-                # 7. 写入新 fact，使用 RETURNING 得到真实插入数
-                facts_inserted = 0
-                if new_rows:
-                    fact_columns = [
-                        "stock_code", "cik", "accession_no", "statement", "taxonomy", "sec_tag", "standard_field",
-                        "period_kind", "period_start", "report_date", "fiscal_year", "fiscal_period_raw", "form",
-                        "filed_date", "frame", "unit", "value_numeric", "value_text", "dimensions", "context_hash",
-                        "source_snapshot_id", "ingest_run_id", "value_hash", "quality_flags"
-                    ]
-                    fact_sql = f"""
-                        INSERT INTO us_financial_fact_version (
-                            {', '.join(fact_columns)}
-                        ) VALUES %s
-                        ON CONFLICT DO NOTHING
-                        RETURNING fact_version_id
-                    """
-                    with conn.cursor() as cur:
-                        inserted = psycopg2.extras.execute_values(
-                            cur,
-                            fact_sql,
-                            [tuple(row[c] for c in fact_columns) for row in new_rows],
-                            template="(" + ", ".join(["%s"] * len(fact_columns)) + ")",
-                            page_size=1000,
-                            fetch=True,
-                        )
-                        facts_inserted = len(inserted or [])
-
-                # 8. 写入 conflict 与 staging
-                with conn.cursor() as cur:
-                    if conflict_rows:
-                        cur.executemany(
-                            """
-                            INSERT INTO us_financial_fact_conflict (
-                                run_id, stock_code, cik, accession_no, statement, taxonomy, sec_tag,
-                                period_kind, period_start, report_date, fiscal_year, fiscal_period_raw,
-                                form, filed_date, frame, unit, existing_value_hash, new_value_hash,
-                                existing_value_numeric, existing_value_text, new_value_numeric, new_value_text,
-                                dimensions, context_hash, source_snapshot_id
-                            ) VALUES (
-                                %(run_id)s, %(stock_code)s, %(cik)s, %(accession_no)s, %(statement)s, %(taxonomy)s, %(sec_tag)s,
-                                %(period_kind)s, %(period_start)s, %(report_date)s, %(fiscal_year)s, %(fiscal_period_raw)s,
-                                %(form)s, %(filed_date)s, %(frame)s, %(unit)s, %(existing_value_hash)s, %(new_value_hash)s,
-                                %(existing_value_numeric)s, %(existing_value_text)s, %(new_value_numeric)s, %(new_value_text)s,
-                                %(dimensions)s, %(context_hash)s, %(source_snapshot_id)s
-                            )
-                            """,
-                            conflict_rows,
-                        )
-                    self._flush_staging(cur, staging_rows)
 
                 self._finish_run(
                     conn, run_id, "success",
-                    inserted=facts_inserted,
-                    repeated=repeated,
-                    conflicted=len(conflict_rows),
-                    reviewed=len(staging_rows),
+                    inserted=result["facts_inserted"],
+                    repeated=result["facts_repeated"],
+                    conflicted=result["facts_conflicted"],
+                    reviewed=result["facts_staged"],
                 )
                 conn.commit()
 
                 logger.info(
-                    "%s %s: ingest_run=%s filing=%d new=%d repeated=%d conflict=%d staging=%d",
-                    context.stock_code, statement, run_id, len(filing_rows),
-                    len(new_rows), repeated, len(conflict_rows), len(staging_rows),
+                    "%s %s: ingest_run=%s new=%d repeated=%d conflict=%d staging=%d",
+                    context.stock_code, statement, run_id,
+                    result["facts_inserted"], result["facts_repeated"],
+                    result["facts_conflicted"], result["facts_staged"],
                 )
 
         except Exception as exc:
@@ -1438,53 +1222,20 @@ class USFinancialFetcher(BaseFetcher):
 
     # ── 版本层内部 helper ─────────────────────────────────
 
+    # ── 版本层内部 helper（已迁移到 core.us_financial_versioning，保留薄包装） ──
+
     @staticmethod
     def _fact_key(row: dict) -> tuple:
-        """由已重命名为 DB 列名的事实行生成唯一键元组。"""
-        return (
-            row["stock_code"],
-            row["accession_no"],
-            row["taxonomy"],
-            row["sec_tag"],
-            row["period_kind"],
-            row["report_date"],
-            row["context_hash"],
-            row["unit"],
-        )
+        from core.us_financial_versioning import fact_key
+        return fact_key(row)
 
     def _dedup_batch(
         self,
         fact_rows: list[dict],
         run_id: int,
     ) -> tuple[list[dict], int, list[dict]]:
-        """对同一输入批次内的事实按唯一键归并。
-
-        相同唯一键 + 相同 value_hash 计为 batch repeat；
-        相同唯一键 + 不同 value_hash 写入 conflict（以首次出现为基准）。
-
-        Returns:
-            (unique_rows, batch_repeat_count, batch_conflict_rows)
-        """
-        by_key: dict[tuple, list[dict]] = {}
-        for row in fact_rows:
-            key = row.pop("_key")
-            by_key.setdefault(key, []).append(row)
-
-        unique_rows: list[dict] = []
-        batch_repeats = 0
-        batch_conflicts: list[dict] = []
-
-        for key, rows in by_key.items():
-            base = rows[0]
-            unique_rows.append(base)
-            base_hash = base["value_hash"]
-            for dup in rows[1:]:
-                if dup["value_hash"] == base_hash:
-                    batch_repeats += 1
-                else:
-                    batch_conflicts.append(self._build_conflict_row(run_id, base, dup))
-
-        return unique_rows, batch_repeats, batch_conflicts
+        from core.us_financial_versioning import USFactVersionWriter
+        return USFactVersionWriter._dedup_batch(fact_rows, run_id)
 
     def _build_conflict_row(
         self,
@@ -1492,57 +1243,18 @@ class USFinancialFetcher(BaseFetcher):
         existing_row: dict,
         new_row: dict,
     ) -> dict:
-        """构造 conflict 表行（existing_row 为基准，new_row 为冲突值）。"""
-        return {
-            "run_id": run_id,
-            "stock_code": new_row["stock_code"],
-            "cik": new_row["cik"],
-            "accession_no": new_row["accession_no"],
-            "statement": new_row["statement"],
-            "taxonomy": new_row["taxonomy"],
-            "sec_tag": new_row["sec_tag"],
-            "period_kind": new_row["period_kind"],
-            "period_start": new_row["period_start"],
-            "report_date": new_row["report_date"],
-            "fiscal_year": new_row["fiscal_year"],
-            "fiscal_period_raw": new_row["fiscal_period_raw"],
-            "form": new_row["form"],
-            "filed_date": new_row["filed_date"],
-            "frame": new_row["frame"],
-            "unit": new_row["unit"],
-            "existing_value_hash": existing_row["value_hash"],
-            "new_value_hash": new_row["value_hash"],
-            "existing_value_numeric": existing_row.get("value_numeric"),
-            "existing_value_text": existing_row.get("value_text"),
-            "new_value_numeric": new_row["value_numeric"],
-            "new_value_text": new_row["value_text"],
-            "dimensions": new_row["dimensions"],
-            "context_hash": new_row["context_hash"],
-            "source_snapshot_id": new_row["source_snapshot_id"],
-        }
+        from core.us_financial_versioning import _build_conflict_row_static
+        return _build_conflict_row_static(run_id, existing_row, new_row)
 
     @staticmethod
     def _split_value(val: Any) -> tuple[Decimal | None, str | None]:
-        """把 SEC value 拆成精确 NUMERIC 或 TEXT，不损失精度。"""
-        if val is None:
-            return None, None
-        try:
-            return Decimal(str(val)), None
-        except Exception:
-            return None, str(val)
+        from core.us_financial_versioning import split_value
+        return split_value(val)
 
     @staticmethod
     def _reject_reason(rec: dict) -> str | None:
-        """判断一条有效 period 的 fact 是否因缺少关键元数据进 staging。"""
-        if not str(rec.get("accn") or "").strip():
-            return "MISSING_ACCESSION"
-        if not rec.get("end"):
-            return "MISSING_REPORT_DATE"
-        if not rec.get("filed"):
-            return "MISSING_FILED_DATE"
-        if rec.get("val") is None:
-            return "MISSING_VALUE"
-        return None
+        from core.us_financial_versioning import reject_reason
+        return reject_reason(rec)
 
     def _staging_row(
         self,
@@ -1552,54 +1264,17 @@ class USFinancialFetcher(BaseFetcher):
         reject_reason: str,
         run_id: int,
     ) -> dict:
-        value_numeric, value_text = self._split_value(rec.get("val"))
-        return {
-            "run_id": run_id,
-            "stock_code": context.stock_code,
-            "cik": context.cik,
-            "accession_no": str(rec.get("accn") or "").strip() or None,
-            "statement": statement,
-            "taxonomy": "us-gaap",
-            "sec_tag": rec.get("tag"),
-            "period_kind": rec.get("_period_kind"),
-            "period_start": rec.get("start"),
-            "report_date": rec.get("end"),
-            "fiscal_year": rec.get("fy"),
-            "fiscal_period_raw": rec.get("fp") or None,
-            "form": rec.get("form"),
-            "filed_date": rec.get("filed"),
-            "frame": rec.get("frame"),
-            "unit": rec.get("unit"),
-            "value_numeric": value_numeric,
-            "value_text": value_text,
-            "dimensions": psycopg2.extras.Json(rec.get("dimensions", {})),
-            "context_hash": None,
-            "source_snapshot_id": context.snapshot_id,
-            "reject_reason": reject_reason,
-            "raw_fact": psycopg2.extras.Json(rec),
-        }
+        from core.us_financial_versioning import USFactVersionWriter
+        writer = USFactVersionWriter()
+        return writer._staging_row(rec, statement, context, reject_reason, run_id)
 
     def _flush_staging(self, conn_or_cur, rows: list[dict]) -> None:
-        if not rows:
-            return
-        sql = """
-            INSERT INTO us_financial_fact_staging (
-                run_id, stock_code, cik, accession_no, statement, taxonomy, sec_tag,
-                period_kind, period_start, report_date, fiscal_year, fiscal_period_raw,
-                form, filed_date, frame, unit, value_numeric, value_text, dimensions,
-                context_hash, source_snapshot_id, reject_reason, raw_fact
-            ) VALUES (
-                %(run_id)s, %(stock_code)s, %(cik)s, %(accession_no)s, %(statement)s, %(taxonomy)s, %(sec_tag)s,
-                %(period_kind)s, %(period_start)s, %(report_date)s, %(fiscal_year)s, %(fiscal_period_raw)s,
-                %(form)s, %(filed_date)s, %(frame)s, %(unit)s, %(value_numeric)s, %(value_text)s, %(dimensions)s,
-                %(context_hash)s, %(source_snapshot_id)s, %(reject_reason)s, %(raw_fact)s
-            )
-        """
+        from core.us_financial_versioning import USFactVersionWriter
         if hasattr(conn_or_cur, "cursor"):
             with conn_or_cur.cursor() as cur:
-                cur.executemany(sql, rows)
+                USFactVersionWriter._flush_staging(cur, rows)
         else:
-            conn_or_cur.executemany(sql, rows)
+            USFactVersionWriter._flush_staging(conn_or_cur, rows)
 
     def _finish_run(
         self,
@@ -1629,64 +1304,14 @@ class USFinancialFetcher(BaseFetcher):
             )
 
     def _derive_filing_meta(self, records: list[dict]) -> dict[str, dict]:
-        """从 fact 记录推断 filing-level 当前报告期。
-
-        10-K/20-F 等年报取 fp=FY 中 end 最大者；
-        10-Q 等季报取 Q1-Q4 中 end 最大者；
-        其他 form 回退到全部 fact 的 max(end) 并标记 derived。
-        """
-        from collections import Counter
-
-        ANNUAL_FORMS = {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}
-        QUARTERLY_FORMS = {"10-Q", "10-Q/A"}
-
-        by_accn: dict[str, list[dict]] = {}
-        for rec in records:
-            accn = str(rec.get("accn") or "").strip()
-            if not accn:
-                continue
-            by_accn.setdefault(accn, []).append(rec)
-
-        meta: dict[str, dict] = {}
-        for accn, recs in by_accn.items():
-            forms = Counter(str(r.get("form") or "").strip() for r in recs if r.get("form"))
-            form = forms.most_common(1)[0][0] if forms else ""
-            filed = next((r.get("filed") for r in recs if r.get("filed")), None)
-
-            if form.upper() in ANNUAL_FORMS:
-                current_fps = {"FY"}
-            elif form.upper() in QUARTERLY_FORMS:
-                current_fps = {"Q1", "Q2", "Q3", "Q4"}
-            else:
-                current_fps = set()
-
-            candidates = [r for r in recs if str(r.get("fp") or "").strip() in current_fps]
-            if not candidates:
-                candidates = recs
-                derived = True
-            else:
-                derived = form.upper() not in ANNUAL_FORMS and form.upper() not in QUARTERLY_FORMS
-
-            current = max(candidates, key=lambda r: r.get("end") or "")
-            meta[accn] = {
-                "form": form,
-                "filed_date": filed,
-                "report_date": current.get("end"),
-                "fiscal_year": self._int_or_none(current.get("fy")),
-                "fiscal_period": str(current.get("fp") or "").strip() or None,
-                "frame": current.get("frame"),
-                "derived": derived,
-            }
-        return meta
+        """从 fact 记录推断 filing-level 当前报告期。"""
+        from core.us_financial_versioning import derive_filing_meta
+        return derive_filing_meta(records)
 
     @staticmethod
     def _int_or_none(val: Any) -> int | None:
-        if val is None:
-            return None
-        try:
-            return int(val)
-        except (ValueError, TypeError):
-            return None
+        from core.us_financial_versioning import _int_or_none
+        return _int_or_none(val)
 
     def _load_existing_value_hashes(
         self,
@@ -1694,58 +1319,16 @@ class USFinancialFetcher(BaseFetcher):
         fact_rows: list[dict],
     ) -> dict[tuple, dict]:
         """批量查询已存在的 fact value_hash，用于 repeat/conflict 判断。"""
-        if not fact_rows:
-            return {}
-
-        keys = [self._fact_key(r) for r in fact_rows]
-
-        # 使用临时表避免超长大 IN 列表
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TEMP TABLE IF NOT EXISTS _tmp_fact_keys (
-                    stock_code VARCHAR(20),
-                    accession_no VARCHAR(30),
-                    taxonomy VARCHAR(30),
-                    sec_tag VARCHAR(200),
-                    period_kind VARCHAR(10),
-                    report_date DATE,
-                    context_hash CHAR(64),
-                    unit VARCHAR(50)
-                ) ON COMMIT DROP
-            """)
-            cur.execute("TRUNCATE _tmp_fact_keys")
-            psycopg2.extras.execute_values(
-                cur,
-                "INSERT INTO _tmp_fact_keys VALUES %s",
-                keys,
-                template="(%s, %s, %s, %s, %s, %s, %s, %s)",
-            )
-            cur.execute("""
-                SELECT v.stock_code, v.accession_no, v.taxonomy, v.sec_tag,
-                       v.period_kind, v.report_date::text, v.context_hash, v.unit,
-                       v.value_hash, v.value_numeric, v.value_text
-                FROM us_financial_fact_version v
-                INNER JOIN _tmp_fact_keys k
-                  ON v.stock_code = k.stock_code
-                 AND v.accession_no = k.accession_no
-                 AND v.taxonomy = k.taxonomy
-                 AND v.sec_tag = k.sec_tag
-                 AND v.period_kind = k.period_kind
-                 AND v.report_date = k.report_date
-                 AND v.context_hash = k.context_hash
-                 AND v.unit = k.unit
-            """)
-            rows = cur.fetchall()
-
-        result: dict[tuple, dict] = {}
-        for row in rows:
-            key = tuple(row[:8])
-            result[key] = {
-                "value_hash": row[8],
-                "value_numeric": row[9],
-                "value_text": row[10],
+        from core.us_financial_versioning import USFactVersionWriter
+        existing = USFactVersionWriter()._load_existing_facts(conn, fact_rows)
+        return {
+            key: {
+                "value_hash": info["value_hash"],
+                "value_numeric": info.get("value_numeric"),
+                "value_text": info.get("value_text"),
             }
-        return result
+            for key, info in existing.items()
+        }
 
     def _compute_context_hash(
         self,
@@ -1757,30 +1340,13 @@ class USFinancialFetcher(BaseFetcher):
         dimensions: dict,
     ) -> str:
         """由 period、frame、fp、dimensions 生成稳定 context_hash。"""
-        canonical = json.dumps(
-            {
-                "period_kind": period_kind,
-                "period_start": period_start,
-                "report_date": report_date,
-                "frame": frame,
-                "fp": fp,
-                "dimensions": dimensions,
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-            default=str,
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        from core.us_financial_versioning import compute_context_hash
+        return compute_context_hash(period_kind, period_start, report_date, frame, fp, dimensions)
 
     def _compute_value_hash(self, value: Any, unit: str) -> str:
         """由 value + unit 生成稳定 value_hash。"""
-        canonical = json.dumps(
-            {"value": value, "unit": unit},
-            sort_keys=True,
-            ensure_ascii=False,
-            default=str,
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        from core.us_financial_versioning import compute_value_hash
+        return compute_value_hash(value, unit)
 
     def fetch_income(self, ticker: str) -> pd.DataFrame:
         """获取利润表宽表。"""
