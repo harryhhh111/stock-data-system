@@ -329,6 +329,7 @@ def save_raw_snapshot_observation(
     fetched_at: Optional[datetime] = None,
     http_status: Optional[int] = None,
     source_last_modified: Optional[str] = None,
+    fetch_source: str = "network",
     request_id: Optional[str] = None,
     job_id: Optional[str] = None,
 ) -> None:
@@ -338,13 +339,13 @@ def save_raw_snapshot_observation(
     execute(
         """
         INSERT INTO raw_snapshot_observation (
-            snapshot_id, fetched_at, http_status, source_last_modified, request_id, job_id
-        ) VALUES (%s, %s, %s, %s, %s, %s)
+            snapshot_id, fetched_at, http_status, source_last_modified, fetch_source, request_id, job_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (snapshot_id, fetched_at, http_status, source_last_modified, request_id, job_id),
+        (snapshot_id, fetched_at, http_status, source_last_modified, fetch_source, request_id, job_id),
         commit=True,
     )
-    logger.debug("raw_snapshot_observation 已写入: snapshot_id=%s", snapshot_id)
+    logger.debug("raw_snapshot_observation 已写入: snapshot_id=%s source=%s", snapshot_id, fetch_source)
 
 
 def upsert(

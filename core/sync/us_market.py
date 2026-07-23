@@ -2,24 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
+
+from core.fetchers.us_financial import FetchContext
 from db import upsert, execute, save_raw_snapshot
 from ._utils import MARKET_CONFIG, logger
 
 
-def _process_us_company_data(fetcher, transformer, ticker: str, cik: str, facts: dict) -> list[str]:
+def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list[str]:
     """Extract, transform, and upsert 3 financial statements from SEC Company Facts.
+
+    Args:
+        context: core.fetchers.us_financial.FetchContext or None
 
     Returns list of table names successfully written.
     """
-    income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS)
-    balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS)
-    cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+    income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS, context=context)
+    balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS, context=context)
+    cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS, context=context)
 
     cfg = MARKET_CONFIG["US"]
     tables_synced = []
+    stock_code = context.stock_code if context else ""
+    cik = context.cik if context else ""
     for table, df, transform_method in zip(
         cfg["tables"],
         [income_df, balance_df, cashflow_df],
@@ -27,7 +35,7 @@ def _process_us_company_data(fetcher, transformer, ticker: str, cik: str, facts:
     ):
         if df is None or df.empty:
             continue
-        records = getattr(transformer, transform_method)(df, stock_code=ticker, cik=cik)
+        records = getattr(transformer, transform_method)(df, stock_code=stock_code, cik=cik)
         if records:
             upsert(table, records, cfg["conflict_keys"])
             tables_synced.append(table)
@@ -149,16 +157,16 @@ def sync_us_market(args) -> dict:
             continue
 
         try:
-            raw_data = fetcher.fetch_company_facts(ticker)
+            raw_data, ctx = fetcher.fetch_company_facts_with_context(ticker)
             if not raw_data:
                 failed += 1
                 errors.append(f"{ticker}: 无 Company Facts 数据")
                 continue
 
-            # 保存原始快照
+            # 保存原始快照（兼容旧 raw_snapshot 表）
             save_raw_snapshot(ticker, "company_facts", source="sec_edgar", api_params={}, raw_data=raw_data)
 
-            tables_synced = _process_us_company_data(fetcher, transformer, ticker, cik, raw_data)
+            tables_synced = _process_us_company_data(fetcher, transformer, raw_data, ctx)
 
             if tables_synced:
                 success += 1
@@ -319,8 +327,33 @@ def sync_us_market_reparse(args) -> dict:
                 facts = raw_data
 
             cik = str(facts.get("cik", "")).strip().zfill(10)
+            content_hash = hashlib.sha256(
+                json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            snapshot_rows = execute(
+                """
+                SELECT snapshot_id FROM raw_snapshot_version
+                WHERE stock_code = %s AND data_type = 'company_facts'
+                  AND source = 'sec_edgar' AND content_hash = %s
+                LIMIT 1
+                """,
+                (ticker, content_hash),
+                fetch=True,
+            )
+            if snapshot_rows:
+                ctx = FetchContext(
+                    stock_code=ticker,
+                    cik=cik,
+                    snapshot_id=snapshot_rows[0][0],
+                    content_hash=content_hash,
+                )
+            else:
+                logger.warning(
+                    "%s: raw_snapshot_version 中未找到对应 snapshot，版本层跳过", ticker
+                )
+                ctx = None
 
-            tables_synced = _process_us_company_data(fetcher, transformer, ticker, cik, facts)
+            tables_synced = _process_us_company_data(fetcher, transformer, facts, ctx)
 
             if tables_synced:
                 success += 1
