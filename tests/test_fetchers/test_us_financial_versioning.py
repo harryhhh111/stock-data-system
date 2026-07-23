@@ -8,8 +8,10 @@ import json
 from datetime import datetime
 from decimal import Decimal
 
+import psycopg2
 import pytest
 
+import config
 from core.fetchers.us_financial import FetchContext, USFinancialFetcher
 from db import (
     Connection,
@@ -406,3 +408,260 @@ def test_filing_metadata_records_report_date_source():
         fetch=True,
     )[0][0]
     assert meta.get("report_date_source") == "derived_from_company_facts"
+
+
+def test_null_fp_goes_to_staging():
+    """缺失 fp 应进入 staging，不写入正式 fact_version。"""
+    fetcher = USFinancialFetcher()
+    snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
+    ctx = FetchContext(
+        stock_code=TEST_STOCK, cik=TEST_CIK,
+        snapshot_id=snapshot_id, content_hash=content_hash,
+    )
+
+    rec = _fact_record(
+        "accn-null-fp", "Assets", "2025-12-31", 100,
+        form="10-K", fp=None, period_kind="instant",
+    )
+    fetcher._write_version_layer([rec], [], "balance", ctx)
+
+    staging = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_staging "
+        "WHERE stock_code = %s AND reject_reason = 'STAGING_UNKNOWN_FORM_FP'",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert staging == 1
+    fact_count = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count == 0
+
+
+def test_facts_inserted_count_matches_new_rows():
+    """首次写入 facts_inserted 等于实际新增行数，二次写入为 0。"""
+    fetcher = USFinancialFetcher()
+    snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
+    ctx = FetchContext(
+        stock_code=TEST_STOCK, cik=TEST_CIK,
+        snapshot_id=snapshot_id, content_hash=content_hash,
+    )
+
+    recs = [
+        _fact_record("accn-count", "Assets", "2025-12-31", 100, period_kind="instant"),
+        _fact_record("accn-count", "Liabilities", "2025-12-31", 50, period_kind="instant"),
+    ]
+    fetcher._write_version_layer(recs, [], "balance", ctx)
+
+    inserted1, repeated1 = execute(
+        "SELECT facts_inserted, facts_repeated FROM us_ingest_run WHERE snapshot_id = %s",
+        (snapshot_id,), fetch=True,
+    )[0]
+    assert inserted1 == 2
+    assert repeated1 == 0
+
+    fact_count1 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count1 == 2
+
+    # 第二次写入全部重复
+    fetcher._write_version_layer(recs, [], "balance", ctx)
+    inserted2, repeated2 = execute(
+        "SELECT facts_inserted, facts_repeated FROM us_ingest_run "
+        "WHERE snapshot_id = %s ORDER BY run_id DESC LIMIT 1",
+        (snapshot_id,), fetch=True,
+    )[0]
+    assert inserted2 == 0
+    assert repeated2 == 2
+
+    fact_count2 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count2 == 2
+
+
+# 8a82e78 旧 P1 DDL：只有 4 张基础表，无 ingest_run/conflict/staging，
+# 也无 fetch_source / ingest_run_id 列。
+_OLD_P1_DDL = """
+CREATE TABLE IF NOT EXISTS raw_snapshot_version (
+    snapshot_id          BIGSERIAL PRIMARY KEY,
+    stock_code           VARCHAR(20) NOT NULL,
+    data_type            VARCHAR(50) NOT NULL,
+    source               VARCHAR(30) NOT NULL,
+    api_params           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    fetched_at           TIMESTAMPTZ NOT NULL,
+    source_last_modified TEXT,
+    content_hash         CHAR(64) NOT NULL,
+    raw_data             JSONB NOT NULL,
+    parser_status        VARCHAR(20) NOT NULL DEFAULT 'pending',
+    parser_git_sha       VARCHAR(40),
+    parsed_at            TIMESTAMPTZ,
+    error_message        TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_raw_snapshot_content
+        UNIQUE (stock_code, data_type, source, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_snapshot_version_lookup
+    ON raw_snapshot_version(stock_code, data_type, source, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS raw_snapshot_observation (
+    observation_id      BIGSERIAL PRIMARY KEY,
+    snapshot_id         BIGINT NOT NULL REFERENCES raw_snapshot_version(snapshot_id),
+    fetched_at          TIMESTAMPTZ NOT NULL,
+    http_status         INTEGER,
+    source_last_modified TEXT,
+    request_id          VARCHAR(100),
+    job_id              VARCHAR(100),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_snapshot_observation_snapshot
+    ON raw_snapshot_observation(snapshot_id, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS us_filing (
+    accession_no         VARCHAR(30) PRIMARY KEY,
+    stock_code           VARCHAR(20) NOT NULL,
+    cik                  VARCHAR(20) NOT NULL,
+    form                 VARCHAR(20) NOT NULL,
+    filed_date           DATE NOT NULL,
+    report_date          DATE,
+    fiscal_year          INTEGER,
+    fiscal_period        VARCHAR(10),
+    is_amendment         BOOLEAN NOT NULL DEFAULT FALSE,
+    amendment_of         VARCHAR(30),
+    source_snapshot_id   BIGINT NOT NULL REFERENCES raw_snapshot_version(snapshot_id),
+    metadata             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_us_filing_stock_filed
+    ON us_filing(stock_code, filed_date, accession_no);
+CREATE INDEX IF NOT EXISTS idx_us_filing_report
+    ON us_filing(stock_code, report_date, fiscal_period);
+
+CREATE TABLE IF NOT EXISTS us_financial_fact_version (
+    fact_version_id      BIGSERIAL PRIMARY KEY,
+    stock_code           VARCHAR(20) NOT NULL,
+    cik                  VARCHAR(20) NOT NULL,
+    accession_no         VARCHAR(30) NOT NULL REFERENCES us_filing(accession_no),
+    statement            VARCHAR(20) NOT NULL,
+    taxonomy             VARCHAR(30) NOT NULL,
+    sec_tag              VARCHAR(200) NOT NULL,
+    standard_field       VARCHAR(100),
+    period_kind          VARCHAR(10) NOT NULL,
+    period_start         DATE,
+    report_date          DATE NOT NULL,
+    fiscal_year          INTEGER,
+    fiscal_period_raw    VARCHAR(10),
+    form                 VARCHAR(20) NOT NULL,
+    filed_date           DATE NOT NULL,
+    frame                VARCHAR(30),
+    unit                 VARCHAR(50) NOT NULL,
+    value_numeric        NUMERIC,
+    value_text           TEXT,
+    dimensions           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    context_hash         CHAR(64) NOT NULL,
+    source_snapshot_id   BIGINT NOT NULL REFERENCES raw_snapshot_version(snapshot_id),
+    value_hash           CHAR(64) NOT NULL,
+    quality_flags        TEXT[] NOT NULL DEFAULT '{}',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_fact_period_kind CHECK (
+        (period_kind = 'instant' AND period_start IS NULL)
+        OR
+        (period_kind = 'duration' AND period_start IS NOT NULL)
+    ),
+    CONSTRAINT chk_fact_one_value CHECK (
+        (value_numeric IS NOT NULL AND value_text IS NULL)
+        OR
+        (value_numeric IS NULL AND value_text IS NOT NULL)
+    ),
+    CONSTRAINT uq_us_financial_fact_version UNIQUE (
+        stock_code,
+        accession_no,
+        taxonomy,
+        sec_tag,
+        period_kind,
+        report_date,
+        context_hash,
+        unit
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_us_fact_period
+    ON us_financial_fact_version(stock_code, standard_field, report_date, filed_date);
+CREATE INDEX IF NOT EXISTS idx_us_fact_accession
+    ON us_financial_fact_version(accession_no);
+CREATE INDEX IF NOT EXISTS idx_us_fact_asof
+    ON us_financial_fact_version(stock_code, filed_date, report_date);
+"""
+
+
+def test_migration_from_8a82e78_schema():
+    """新 DDL 脚本应能从旧 P1 schema 原地升级，且可重复执行。"""
+    with open("scripts/us_financial_versioning.sql") as f:
+        new_ddl = f.read()
+
+    schema = "p1_migration_test"
+    conn = psycopg2.connect(
+        host=config.db.host,
+        port=config.db.port,
+        dbname=config.db.dbname,
+        user=config.db.user,
+        password=config.db.password,
+    )
+    conn.set_client_encoding("UTF8")
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        cur.execute(f"CREATE SCHEMA {schema}")
+        cur.execute(f"SET search_path TO {schema}")
+
+        # 先建旧 P1 schema，再执行新迁移脚本两次验证幂等
+        cur.execute(_OLD_P1_DDL)
+        cur.execute(new_ddl)
+        cur.execute(new_ddl)
+
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = 'raw_snapshot_observation'",
+            (schema,),
+        )
+        observation_cols = {r[0] for r in cur.fetchall()}
+        assert "fetch_source" in observation_cols
+
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = 'us_financial_fact_version'",
+            (schema,),
+        )
+        fact_cols = {r[0] for r in cur.fetchall()}
+        assert "ingest_run_id" in fact_cols
+
+        cur.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_schema = %s AND table_name = 'us_financial_fact_version' "
+            "AND constraint_type = 'FOREIGN KEY'",
+            (schema,),
+        )
+        fk_names = {r[0] for r in cur.fetchall()}
+        assert any("ingest_run" in name for name in fk_names)
+
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = %s AND table_name IN "
+            "('us_ingest_run', 'us_financial_fact_conflict', 'us_financial_fact_staging')",
+            (schema,),
+        )
+        new_tables = {r[0] for r in cur.fetchall()}
+        assert new_tables == {"us_ingest_run", "us_financial_fact_conflict", "us_financial_fact_staging"}
+    finally:
+        cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        cur.close()
+        conn.close()

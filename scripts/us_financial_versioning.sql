@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS raw_snapshot_observation (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 从旧 P1 DDL 升级：确保 observation 来源列存在
+ALTER TABLE raw_snapshot_observation
+    ADD COLUMN IF NOT EXISTS fetch_source VARCHAR(20) NOT NULL DEFAULT 'network';
+
 CREATE INDEX IF NOT EXISTS idx_raw_snapshot_observation_snapshot
     ON raw_snapshot_observation(snapshot_id, fetched_at DESC);
 
@@ -143,6 +147,60 @@ CREATE TABLE IF NOT EXISTS us_financial_fact_version (
     )
 );
 
+-- 从旧 P1 DDL 升级：确保 ingest_run_id 列存在
+ALTER TABLE us_financial_fact_version
+    ADD COLUMN IF NOT EXISTS ingest_run_id BIGINT;
+
+-- 为已有数据补充默认 ingest_run 引用，避免外键添加后因孤儿行失败。
+-- 找每个 snapshot 最早的 running/success 运行作为默认值；如果没有则创建一个占位 run。
+DO $$
+DECLARE
+    r RECORD;
+    placeholder_run_id BIGINT;
+BEGIN
+    -- 仅当存在 NULL 行时才需要回填
+    IF EXISTS (SELECT 1 FROM us_financial_fact_version WHERE ingest_run_id IS NULL) THEN
+        FOR r IN
+            SELECT DISTINCT v.source_snapshot_id
+            FROM us_financial_fact_version v
+            WHERE v.ingest_run_id IS NULL
+        LOOP
+            SELECT run_id INTO placeholder_run_id
+            FROM us_ingest_run
+            WHERE snapshot_id = r.source_snapshot_id
+            ORDER BY started_at ASC
+            LIMIT 1;
+
+            IF placeholder_run_id IS NULL THEN
+                INSERT INTO us_ingest_run (snapshot_id, parser_git_sha, started_at, status)
+                SELECT r.source_snapshot_id, s.parser_git_sha, COALESCE(s.parsed_at, s.created_at), 'success'
+                FROM raw_snapshot_version s
+                WHERE s.snapshot_id = r.source_snapshot_id
+                RETURNING run_id INTO placeholder_run_id;
+            END IF;
+
+            UPDATE us_financial_fact_version
+            SET ingest_run_id = placeholder_run_id
+            WHERE ingest_run_id IS NULL
+              AND source_snapshot_id = r.source_snapshot_id;
+        END LOOP;
+    END IF;
+END $$;
+
+-- 外键：fact_version → ingest_run（如不存在）
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_us_financial_fact_version_ingest_run'
+          AND conrelid = 'us_financial_fact_version'::regclass
+    ) THEN
+        ALTER TABLE us_financial_fact_version
+            ADD CONSTRAINT fk_us_financial_fact_version_ingest_run
+            FOREIGN KEY (ingest_run_id) REFERENCES us_ingest_run(run_id);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_us_fact_period
     ON us_financial_fact_version(stock_code, standard_field, report_date, filed_date);
 CREATE INDEX IF NOT EXISTS idx_us_fact_accession
@@ -225,69 +283,3 @@ CREATE INDEX IF NOT EXISTS idx_us_fact_staging_reason
     ON us_financial_fact_staging(stock_code, reject_reason);
 CREATE INDEX IF NOT EXISTS idx_us_fact_staging_run
     ON us_financial_fact_staging(run_id);
-
--- ═══════════════════════════════════════════════════════════
--- 4.6 可重复执行的升级迁移（从 8a82e78 等旧 P1 DDL 升级）
--- ═══════════════════════════════════════════════════════════
-
--- 旧 P1 表缺少的 observation 来源列
-ALTER TABLE raw_snapshot_observation
-    ADD COLUMN IF NOT EXISTS fetch_source VARCHAR(20) NOT NULL DEFAULT 'network';
-
--- 旧 P1 事实表缺少的 ingest run 关联
-ALTER TABLE us_financial_fact_version
-    ADD COLUMN IF NOT EXISTS ingest_run_id BIGINT;
-
--- 为已有数据补充默认 ingest_run 引用，避免外键添加后因孤儿行失败。
--- 找每个 snapshot 最早的 running/success 运行作为默认值；如果没有则创建一个占位 run。
-DO $$
-DECLARE
-    r RECORD;
-    placeholder_run_id BIGINT;
-BEGIN
-    -- 仅当存在 NULL 行时才需要回填
-    IF EXISTS (SELECT 1 FROM us_financial_fact_version WHERE ingest_run_id IS NULL) THEN
-        FOR r IN
-            SELECT DISTINCT v.source_snapshot_id
-            FROM us_financial_fact_version v
-            WHERE v.ingest_run_id IS NULL
-        LOOP
-            SELECT run_id INTO placeholder_run_id
-            FROM us_ingest_run
-            WHERE snapshot_id = r.source_snapshot_id
-            ORDER BY started_at ASC
-            LIMIT 1;
-
-            IF placeholder_run_id IS NULL THEN
-                INSERT INTO us_ingest_run (snapshot_id, parser_git_sha, started_at, status)
-                SELECT r.source_snapshot_id, s.parser_git_sha, COALESCE(s.parsed_at, s.created_at), 'success'
-                FROM raw_snapshot_version s
-                WHERE s.snapshot_id = r.source_snapshot_id
-                RETURNING run_id INTO placeholder_run_id;
-            END IF;
-
-            UPDATE us_financial_fact_version
-            SET ingest_run_id = placeholder_run_id
-            WHERE ingest_run_id IS NULL
-              AND source_snapshot_id = r.source_snapshot_id;
-        END LOOP;
-    END IF;
-END $$;
-
--- 外键：fact_version → ingest_run（如不存在）
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'fk_us_financial_fact_version_ingest_run'
-          AND conrelid = 'us_financial_fact_version'::regclass
-    ) THEN
-        ALTER TABLE us_financial_fact_version
-            ADD CONSTRAINT fk_us_financial_fact_version_ingest_run
-            FOREIGN KEY (ingest_run_id) REFERENCES us_ingest_run(run_id);
-    END IF;
-END $$;
-
--- 确保 ingest_run 索引存在（旧 P1 可能已建，但可重复执行无害）
-CREATE INDEX IF NOT EXISTS idx_us_fact_ingest_run
-    ON us_financial_fact_version(ingest_run_id);

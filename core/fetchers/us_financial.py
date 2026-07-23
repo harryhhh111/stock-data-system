@@ -1109,7 +1109,7 @@ class USFinancialFetcher(BaseFetcher):
         "20-F", "20-F/A",
         "40-F", "40-F/A",
     }
-    ACCEPTED_FP: set[str | None] = {"FY", "Q1", "Q2", "Q3", "Q4", "H1", "H2", None}
+    ACCEPTED_FP: set[str] = {"FY", "Q1", "Q2", "Q3", "Q4", "H1", "H2"}
     ACCEPTED_FP.update({f"M{i}" for i in range(1, 13)})
 
     def _infer_statement(self, tag_mapping: dict[str, str]) -> str:
@@ -1142,7 +1142,9 @@ class USFinancialFetcher(BaseFetcher):
         if form not in self.ACCEPTED_FORMS:
             return "STAGING_UNKNOWN_FORM_FP", None
 
-        if fp_raw is not None and fp_raw not in self.ACCEPTED_FP:
+        if fp_raw is None:
+            return "STAGING_UNKNOWN_FORM_FP", None
+        if fp_raw not in self.ACCEPTED_FP:
             return "STAGING_UNKNOWN_FORM_FP", None
 
         if form in {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
@@ -1367,7 +1369,7 @@ class USFinancialFetcher(BaseFetcher):
                         RETURNING fact_version_id
                     """
                     with conn.cursor() as cur:
-                        psycopg2.extras.execute_values(
+                        inserted = psycopg2.extras.execute_values(
                             cur,
                             fact_sql,
                             [tuple(row[c] for c in fact_columns) for row in new_rows],
@@ -1375,7 +1377,7 @@ class USFinancialFetcher(BaseFetcher):
                             page_size=1000,
                             fetch=True,
                         )
-                        facts_inserted = len(cur.fetchall())
+                        facts_inserted = len(inserted or [])
 
                 # 8. 写入 conflict 与 staging
                 with conn.cursor() as cur:
