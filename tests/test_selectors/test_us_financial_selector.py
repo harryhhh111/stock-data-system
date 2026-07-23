@@ -47,19 +47,6 @@ def _fact(
 def test_first_reported_selects_earliest_filed_date():
     selector = USFactSelector()
     facts = [
-        _fact(1, filed_date="2025-08-10"),
-        _fact(2, filed_date="2025-02-20"),
-    ]
-    selected = selector._select_latest_restated(facts)  # 用最新规则
-    # first-reported 需要显式调用 select
-    result = selector.select(stock_codes=["TEST"], basis="first-reported")
-    # 但 select 会走 _load_facts，无法直接注入。这里用 _select_latest_restated 做内部测试。
-
-
-def test_first_reported_selector_picks_first():
-    selector = USFactSelector()
-    # monkeypatch load_facts
-    facts = [
         _fact(1, filed_date="2025-08-10", value_numeric=110),
         _fact(2, filed_date="2025-02-20", value_numeric=100),
     ]
@@ -79,10 +66,10 @@ def test_latest_restated_preserves_first_filed_date_on_repeat():
     selector._load_facts = lambda *args, **kwargs: facts
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
     assert selected[0].fact_version_id == 1
-    assert selected[0].selection_reason == "same value repeat; preserve first filed date"
+    assert "first filed date preserved" in selected[0].selection_reason
 
 
-def test_latest_restated_selects_amendment_on_value_change():
+def test_latest_restated_rejects_unapproved_amendment():
     selector = USFactSelector()
     facts = [
         _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100, form="10-K"),
@@ -90,6 +77,19 @@ def test_latest_restated_selects_amendment_on_value_change():
     ]
     selector._load_facts = lambda *args, **kwargs: facts
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+    # unapproved amendment candidate must not replace old version
+    assert selected[0].fact_version_id == 1
+    assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
+
+
+def test_latest_observed_selects_amendment():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100, form="10-K"),
+        _fact(2, filed_date="2025-08-10", value_hash="new", value_numeric=90, form="10-K/A"),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    selected = selector.select(stock_codes=["TEST"], basis="latest-observed")
     assert selected[0].fact_version_id == 2
     assert "AMENDMENT_CANDIDATE" in selected[0].quality_flags
 
@@ -121,7 +121,7 @@ def test_as_of_ignores_group_with_no_candidate():
     assert len(selected) == 0
 
 
-def test_latest_restated_marks_unknown_change_for_review():
+def test_latest_restated_rejects_unknown_change():
     selector = USFactSelector()
     facts = [
         _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100, form="10-K"),
@@ -129,16 +129,15 @@ def test_latest_restated_marks_unknown_change_for_review():
     ]
     selector._load_facts = lambda *args, **kwargs: facts
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
-    assert selected[0].fact_version_id == 2
-    assert "UNKNOWN_CHANGE_REVIEW_NEEDED" in selected[0].quality_flags
+    assert selected[0].fact_version_id == 1
+    assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
 
 
 def test_checksum_is_stable():
     selector = USFactSelector()
     f1 = _fact(1, filed_date="2025-02-20")
-    f2 = _fact(2, filed_date="2025-08-10", value_hash="same")
     selected = [selector._to_selected_fact(f1, "latest-restated", "reason", [], 2)]
     checksum1 = selector._compute_checksum(selected)
     checksum2 = selector._compute_checksum(selected)
     assert checksum1 == checksum2
-    assert len(checksum1) == 32
+    assert len(checksum1) == 64

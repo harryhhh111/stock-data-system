@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run US financial fact version selector")
-    parser.add_argument("--basis", required=True, choices=["first-reported", "latest-restated", "as-of"])
+    parser.add_argument("--basis", required=True, choices=["first-reported", "latest-restated", "latest-observed", "as-of"])
     parser.add_argument("--stocks", type=str, help="Comma-separated stock codes")
     parser.add_argument("--fields", type=str, help="Comma-separated standard fields")
     parser.add_argument("--as-of-date", type=str, help="YYYY-MM-DD, required for as-of")

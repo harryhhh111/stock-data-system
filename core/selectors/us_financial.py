@@ -7,10 +7,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import psycopg2.extras
@@ -19,6 +21,9 @@ from core.relations.us_financial import build_economic_fact_key
 from db import Connection, execute
 
 logger = logging.getLogger(__name__)
+
+
+_CHECKSUM_SCHEMA_VERSION = "v1"
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,8 @@ class USFactSelector:
                 flags = []
             elif basis == "latest-restated":
                 fact, reason, flags = self._select_latest_restated(group)
+            elif basis == "latest-observed":
+                fact, reason, flags = self._select_latest_observed(group)
             else:  # as-of
                 result = self._select_as_of(group, as_of_date)
                 if result is None:
@@ -107,33 +114,74 @@ class USFactSelector:
         self,
         group: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], str, list[str]]:
-        """选择最新 restated 版本。
+        """选择最新已审核/可信 restated 版本。
 
-        第一版策略：
+        安全策略：
         - 同值 repeat 保留最早 filed_date 的事实来源；
-        - 后续 amendment_candidate 若值不同，选择 latest；
-        - unknown_change 标记复核。
+        - amendment_candidate / unknown_change 未经审核不得替代旧版；
+        - 因此 effective latest-restated 退化为最后一个可信版本。
         """
-        # 按 filed_date 升序
         sorted_group = sorted(
             group,
             key=lambda f: (f["filed_date"] or "", f["accession_no"] or "", f["fact_version_id"]),
         )
 
-        # 默认选择 filed_date 最新的
+        # 至少保留最早披露
+        approved = sorted_group[0]
+        pending_review: list[dict[str, Any]] = []
+
+        for fact in sorted_group[1:]:
+            if fact["value_hash"] == approved["value_hash"]:
+                # 同值 repeat：不改变 approved（保留首次披露）
+                continue
+
+            later_form = str(fact.get("form") or "").upper()
+            if "/A" in later_form:
+                # amendment candidate：未审核，不替代
+                pending_review.append(fact)
+                continue
+
+            # 普通后续 filing 的异值：未审核，不替代
+            pending_review.append(fact)
+
+        if pending_review:
+            latest_pending = pending_review[-1]
+            reason = (
+                f"preserving last approved version {approved['accession_no']} "
+                f"({approved['filed_date']}); {len(pending_review)} pending review "
+                f"up to {latest_pending['accession_no']} ({latest_pending['filed_date']})"
+            )
+            flags = ["LATEST_RESTATED_APPROVED_ONLY", f"PENDING_REVIEW_COUNT_{len(pending_review)}"]
+        else:
+            reason = "no subsequent revision; first filed date preserved"
+            flags = []
+
+        return approved, reason, flags
+
+    def _select_latest_observed(
+        self,
+        group: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str, list[str]]:
+        """选择最新 observed 版本（包含未审核 candidate）。
+
+        仅用于影子观察，不应用于正式当前分析。
+        """
+        sorted_group = sorted(
+            group,
+            key=lambda f: (f["filed_date"] or "", f["accession_no"] or "", f["fact_version_id"]),
+        )
+
         latest = sorted_group[-1]
         earliest = sorted_group[0]
 
         if latest["value_hash"] == earliest["value_hash"]:
-            # 同值 repeat：保留最早披露来源
             return earliest, "same value repeat; preserve first filed date", []
 
         later_form = str(latest.get("form") or "").upper()
         if "/A" in later_form:
-            return latest, f"amendment {latest['form']} restates value", ["AMENDMENT_CANDIDATE"]
+            return latest, f"latest observed amendment {latest['form']}", ["AMENDMENT_CANDIDATE"]
 
-        # 保守处理：标记 unknown_change 待复核
-        return latest, f"latest filed date with value change; review needed", ["UNKNOWN_CHANGE_REVIEW_NEEDED"]
+        return latest, "latest observed value with unreviewed change", ["UNKNOWN_CHANGE_REVIEW_NEEDED"]
 
     def _select_as_of(
         self,
@@ -202,7 +250,10 @@ class USFactSelector:
                 value_text,
                 accession_no,
                 form,
-                filed_date
+                filed_date,
+                dimensions,
+                sec_tag,
+                context_hash
             FROM us_financial_fact_version
             WHERE 1=1
         """
@@ -239,6 +290,9 @@ class USFactSelector:
             "accession_no",
             "form",
             "filed_date",
+            "dimensions",
+            "sec_tag",
+            "context_hash",
         ]
         return [dict(zip(cols, row)) for row in rows]
 
@@ -294,6 +348,19 @@ class USFactSelector:
         error_message: str | None,
     ) -> None:
         checksum = self._compute_checksum(selected)
+        git_sha = self._get_selector_git_sha()
+
+        manifest = {
+            "checksum_schema_version": _CHECKSUM_SCHEMA_VERSION,
+            "checksum_algorithm": "sha256",
+            "sort_keys": [
+                "stock_code", "statement", "standard_field", "period_kind",
+                "report_date", "period_start",
+            ],
+            "value_normalization": "Decimal/str",
+            "selector_git_sha": git_sha,
+            "mapping_version": None,
+        }
 
         with Connection() as conn:
             with conn.cursor() as cur:
@@ -303,8 +370,8 @@ class USFactSelector:
                         run_id, selection_basis, as_of_date, selector_version,
                         stock_scope, started_at, finished_at, status,
                         selected_count, rejected_count, checksum_algorithm,
-                        result_checksum, error_message
-                    ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s)
+                        result_checksum, manifest, error_message
+                    ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         str(run_id),
@@ -316,8 +383,9 @@ class USFactSelector:
                         status,
                         len(selected),
                         0,
-                        "md5",
+                        "sha256",
                         checksum,
+                        psycopg2.extras.Json(manifest),
                         error_message,
                     ),
                 )
@@ -367,9 +435,9 @@ class USFactSelector:
 
             conn.commit()
 
-    @staticmethod
-    def _compute_checksum(selected: list[SelectedFact]) -> str:
-        lines = []
+    def _compute_checksum(self, selected: list[SelectedFact]) -> str:
+        """计算稳定 checksum，包含 schema version 和 selector version。"""
+        lines = [f"schema_version:{_CHECKSUM_SCHEMA_VERSION}", f"selector_version:{self.VERSION}"]
         for s in sorted(
             selected,
             key=lambda x: (
@@ -382,9 +450,24 @@ class USFactSelector:
             ),
         ):
             value = s.value_numeric if s.value_numeric is not None else s.value_text
+            # Decimal 统一用 str 规范化
             lines.append(
                 f"{s.stock_code}|{s.statement}|{s.standard_field}|{s.period_kind}|"
-                f"{s.report_date}|{s.period_start}|{value}|{s.accession_no}|{s.filed_date}"
+                f"{s.report_date}|{s.period_start}|{value}|{s.accession_no}|{s.filed_date}|"
+                f"{s.selection_basis}|{s.candidate_count}"
             )
         canonical = "\n".join(lines)
-        return hashlib.md5(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _get_selector_git_sha() -> str | None:
+        """获取当前代码 Git SHA，用于 checksum/manifest 追溯。"""
+        try:
+            return subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=Path(__file__).resolve().parent.parent.parent,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception:
+            return None

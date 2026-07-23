@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS us_fact_selection_run (
     error_message       TEXT,
 
     CONSTRAINT chk_selection_basis
-        CHECK (selection_basis IN ('first-reported', 'latest-restated', 'as-of')),
+        CHECK (selection_basis IN ('first-reported', 'latest-restated', 'latest-observed', 'as-of')),
     CONSTRAINT chk_selection_status
         CHECK (status IN ('running', 'success', 'failed'))
 );

@@ -184,14 +184,16 @@ normalized_dimensions_scope
 - 明显不同的 duration 起止期间；
 - 无法解释的 dimensions 差异。
 
-### 5.2 受控兼容
+### 5.2 受控兼容（P1B v1 未实现）
 
-- tag 不同但 standard field 相同；
+以下规则已纳入设计，但当前 P1B v1 采用**严格经济事实键匹配**，尚未落地：
+
+- tag 不同但 standard field 相同 → 已在 relation builder 中识别为 `tag_migration_candidate`，但选择器仍按 strict key 分组；
 - 52/53 周公司在允许日期窗口内的同一财政期间；
 - frame 不同但 start/end、单位和 dimensions 一致；
 - 后续 filing 重复披露相同经济期间。
 
-所有受控兼容都应输出匹配原因和 quality flag。
+这些需要在 P1B v2 或后续阶段实现，并配套 context compatibility 函数与受控兼容 quality flag。
 
 ### 5.3 需要的纯函数
 
@@ -243,7 +245,7 @@ standard_field 相同 + tag 不同 + context 兼容
 -> tag_migration_candidate
 
 期间相同但 context/dimensions 不兼容
--> context_changed
+-> context_changed（P1B v1 不会生成，因为 builder 先按完整经济键严格分组）
 ```
 
 要求：
@@ -254,6 +256,8 @@ standard_field 相同 + tag 不同 + context 兼容
 - 非数值事实只比较 `value_hash`；
 - relation builder 重跑不得重复插入；
 - 无法分类不能丢弃，写 `unknown_change`。
+
+P1B v1 实际输出类型：`repeat`、`amendment_candidate`、`tag_migration_candidate`、`unknown_change`。
 
 ## 7. Selector
 
@@ -304,18 +308,28 @@ Selector 只选择事实，不计算 PE、PB、ROE、ROIC。
 
 用途：未来的当前分析、当前筛选和横向比较。
 
-规则：
+**P1B v1 策略（保守）**：
 
 1. 排除 staging、conflict 和不兼容 context；
 2. 只在同一经济事实兼容组内选择；
-3. 经确认的 amendment/recast 可以替代旧事实；
-4. 未确认的 `unknown_change` 默认不得静默替代；
-5. 同值 repeat 保留最早事实来源，可记录最新重复披露；
-6. 每个 selected fact 输出 relation 和选择原因。
+3. **经审核确认**的 amendment/recast 才允许替代旧事实；
+4. 未确认的 `amendment_candidate` / `unknown_change` **不得替代**旧事实；
+5. 同值 repeat 保留最早事实来源；
+6. 若存在未审核 candidate，返回最后一个可信（approved）版本，并附加 `LATEST_RESTATED_APPROVED_ONLY` 与 `PENDING_REVIEW_COUNT_N` flag。
 
-第一版在缺少人工审核时应偏保守：不确定是否兼容或是否替代时，输出待复核状态，不猜测。
+> 说明：当前 P1B 未实现人工审核工作流，因此 `latest-restated` 实际退化为“最后一个可信版本”。在审核机制落地前，不能把它直接当作生产当前值消费。
 
-### 7.3 `as-of` / PIT
+### 7.3 `latest-observed`
+
+用途：影子观察和数据探索，不用于正式当前分析。
+
+规则：
+
+1. 选择 filed_date 最新的 fact；
+2. amendment candidate 和 unknown_change 仅附加 review flag，不阻止选择；
+3. 输出明确标记为未审核，下游不得直接消费。
+
+### 7.4 `as-of` / PIT
 
 用途：历史回测和历史决策复现。
 
@@ -361,14 +375,16 @@ python scripts/build_us_fact_relations.py \
 
 python scripts/run_us_fact_selector.py \
   --basis latest-restated \
-  --stocks PLTR,MELI,ONTO,SAM,HRB \
-  --shadow
+  --stocks PLTR,MELI,ONTO,SAM,HRB
+
+python scripts/run_us_fact_selector.py \
+  --basis latest-observed \
+  --stocks PLTR,MELI,ONTO,SAM,HRB
 
 python scripts/run_us_fact_selector.py \
   --basis as-of \
   --as-of-date 2025-08-10 \
-  --stocks PLTR \
-  --shadow
+  --stocks PLTR
 ```
 
 所有命令必须默认不切换生产消费者。
@@ -468,22 +484,33 @@ Phase 1B 不允许因为影子结果看起来合理就直接修改物化视图�
 
 ## 12. 完成定义
 
-以下条件全部满足才能关闭 Phase 1B：
+### 12.1 P1B v1 关闭条件（当前阶段）
+
+以下条件全部满足，可关闭 P1B v1：
 
 - relation、selection run、selection audit 表可重复迁移；
-- compatibility 规则有明确测试；
+- compatibility 规则有明确测试（严格 context match）；
 - 5 只 canary 的 relation 可解释；
-- 三种 selector 均通过时间线测试；
+- `first-reported`、`latest-restated`、`latest-observed`、`as-of` 均通过时间线测试；
 - PIT 不读取未来 filing；
-- context 不兼容事实不会互相替换；
+- context 不兼容事实不会互相替换（通过严格经济键实现）；
 - 同值 repeat 不改变首次披露时间；
-- unknown change 不被静默当作正式修订；
+- unknown change / amendment_candidate 不被静默当作正式修订；
 - 每个 selected fact 可追溯 snapshot、filing、fact 和 selector version；
 - builder 和 selector 重跑幂等；
 - checksum 算法、字段、规范化和排序规则已归档；
 - selection run 失败可审计；
-- 完成新旧结果影子差异报告；
 - 未切换任何生产消费者。
+
+### 12.2 明确移到后续阶段
+
+以下能力不属于 P1B v1 关闭条件，将在 P1B v2 / Phase 3 实现：
+
+- 52/53 周受控兼容；
+- `context_changed` relation 分类；
+- amendment/recast 人工审核工作流；
+- 经审核后 `latest-restated` 真正消费修订值；
+- selector 与旧宽表完整影子差异报告（字段级、数值级）。
 
 ## 13. 进入 Phase 2 的条件
 

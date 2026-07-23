@@ -187,7 +187,9 @@ class USFactRelationBuilder:
                 accession_no,
                 form,
                 filed_date,
-                dimensions
+                dimensions,
+                sec_tag,
+                context_hash
             FROM us_financial_fact_version
         """
         params: tuple[Any, ...] = ()
@@ -218,6 +220,8 @@ class USFactRelationBuilder:
             "form",
             "filed_date",
             "dimensions",
+            "sec_tag",
+            "context_hash",
         ]
         return [dict(zip(cols, row)) for row in rows]
 
