@@ -23,7 +23,7 @@ from db import Connection, execute
 logger = logging.getLogger(__name__)
 
 
-_CHECKSUM_SCHEMA_VERSION = "v1"
+_CHECKSUM_SCHEMA_VERSION = "v2"
 
 
 @dataclass(frozen=True)

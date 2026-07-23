@@ -206,10 +206,10 @@ CREATE INDEX IF NOT EXISTS idx_us_fact_selection_audit_fact
 DO $$
 BEGIN
     IF EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE table_schema = 'public'
-          AND table_name = 'us_fact_selection_run'
-          AND constraint_name = 'chk_selection_basis'
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'us_fact_selection_run'::regclass
+          AND conname = 'chk_selection_basis'
+          AND contype = 'c'
     ) THEN
         ALTER TABLE us_fact_selection_run
             DROP CONSTRAINT chk_selection_basis;
