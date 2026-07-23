@@ -18,11 +18,14 @@ Phase 2 将现有美股全市场 SEC Company Facts 原始证据，按可审计�
 - `us_ingest_run`；
 - `us_financial_fact_version`；
 - `us_financial_fact_source`；
+- `us_financial_fact_exclusion`；
 - `us_financial_fact_conflict`；
 - `us_financial_fact_staging`；
 - `us_fact_version_relation`；
 - `us_fact_selection_run`；
-- `us_fact_selection_audit`。
+- `us_fact_selection_audit`；
+- `us_financial_backfill_batch`；
+- `us_financial_backfill_item`。
 
 本阶段必须证明：
 
@@ -82,6 +85,15 @@ RECONSTRUCTED_FROM_FILING_XBRL
 
 之一。不得伪造历史 `fetched_at`。`filed_date` 是披露时间，不等于原始 API 抓取时间。
 
+legacy 来源时间口径写死为：
+
+- `raw_snapshot_version.fetched_at`：本次迁移实际读取 legacy 缓存的时间；
+- 原始采集时间未知，`source_original_fetched_at` 保存为 NULL；
+- legacy `sync_time/updated_at` 只能放入 metadata 的 `legacy_cache_updated_at`；
+- `fetch_source=legacy_migration`；
+- 必须带 `RECONSTRUCTED_FROM_LEGACY_SNAPSHOT`；
+- legacy 时间不得用于 PIT 可得性判断。
+
 每个来源必须保存：
 
 ```text
@@ -131,6 +143,13 @@ python scripts/verify_us_financial_phase2.py \
   --batch-id <uuid> \
   --output build/us_financial_phase2/<batch-id>/verify.json
 
+# 批准 verified 且 manifest 未变化的批次
+python scripts/backfill_us_financial_versions.py approve \
+  --batch-id <uuid> \
+  --manifest build/us_financial_phase2/<batch-id>/manifest.json \
+  --by "<审批人>" \
+  --note "<审批说明>"
+
 # 将错误批次标记为 rejected/superseded；不删除原始证据
 python scripts/backfill_us_financial_versions.py rollback \
   --batch-id <uuid> \
@@ -148,6 +167,9 @@ CLI 必须满足：
 - `--dry-run` 与 `--apply` 互斥；
 - 未设置 `STOCK_MARKETS=US` 时立即失败；
 - manifest hash 不匹配时立即失败；
+- `approve` 只能作用于 `verified` 批次，并保存 approver、审批说明、时间及 approved manifest hash；
+- `apply` 必须重新校验 `approved_by/approved_at/approved_manifest_hash`；
+- manifest、source hash、parser SHA 任一变化都会使原批准失效；
 - git 工作树脏、parser SHA 不一致时，生产 apply 默认失败；
 - 任何股票失败必须记录，不能只打印后继续并最终返回 0；
 - 退出码：全成功为 0，部分失败或校验失败为非 0。
@@ -173,6 +195,7 @@ mapping_version          VARCHAR(40)
 selector_version         VARCHAR(40)
 manifest_schema_version  VARCHAR(20) NOT NULL
 manifest_hash            CHAR(64)
+approved_manifest_hash   CHAR(64)
 source_count             INTEGER NOT NULL DEFAULT 0
 stock_count              INTEGER NOT NULL DEFAULT 0
 success_count            INTEGER NOT NULL DEFAULT 0
@@ -188,6 +211,12 @@ started_at               TIMESTAMPTZ
 finished_at              TIMESTAMPTZ
 approved_by              VARCHAR(100)
 approved_at              TIMESTAMPTZ
+approval_note            TEXT
+heartbeat_at             TIMESTAMPTZ
+lease_expires_at         TIMESTAMPTZ
+worker_id                VARCHAR(100)
+resume_count             INTEGER NOT NULL DEFAULT 0
+last_completed_item_id   BIGINT
 error_message            TEXT
 manifest                 JSONB NOT NULL DEFAULT '{}'::jsonb
 created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -210,6 +239,8 @@ created
 异常状态：
 
 ```text
+interrupted
+resume_pending
 failed
 rejected
 superseded
@@ -218,6 +249,8 @@ rolled_back
 ```
 
 禁止跳过 `staged -> verified -> approved` 直接进入 `applying`。
+
+`interrupted -> resume_pending -> applying` 只能在冻结 manifest 不变、原 lease 过期且成功重新获取 advisory lock 后发生。
 
 ### 5.2 `us_financial_backfill_item`
 
@@ -287,6 +320,46 @@ reconstructed
 
 禁止直接给不可变 fact 行覆盖新的 batch/snapshot id。首次来源继续保留在 fact 表，所有后续观察写关联表。conflict 和 staging 继续使用各自的 source snapshot/run 字段。
 
+Phase 2 上线时必须同时修改在线 SEC ingest：
+
+- 新 fact 写 `observation_kind=inserted`；
+- 已存在的相同 fact 写 `observation_kind=repeated`；
+- 重建来源写 `observation_kind=reconstructed`；
+- 在线与 Phase 2 路径调用同一个 fact-source 写入函数；
+- 对现有 P1A/P1B fact 按其 `source_snapshot_id/ingest_run_id` 回填首条 source relation；
+- 存量回填和在线同步连续执行两次均不得翻倍。
+
+### 5.4 `us_financial_fact_exclusion`
+
+错误 parser 产生的事实不能只靠 batch 状态隐式排除。新增显式 exclusion 表：
+
+```sql
+exclusion_id             BIGSERIAL PRIMARY KEY
+fact_version_id          BIGINT NOT NULL
+batch_id                 UUID
+reason_code              VARCHAR(60) NOT NULL
+reason                   TEXT NOT NULL
+status                   VARCHAR(20) NOT NULL
+effective_from           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+effective_to             TIMESTAMPTZ
+superseded_by_fact_id    BIGINT
+reviewed_by              VARCHAR(100) NOT NULL
+reviewed_at              TIMESTAMPTZ NOT NULL
+created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+```
+
+约束与行为：
+
+- `status` 至少包括 `active/revoked/superseded`；
+- 同一 fact、同一 reason 只能存在一条 active exclusion；
+- 四种 selector 都必须 anti-join active exclusion；
+- PIT 查询按 exclusion 的公开/生效语义处理，不能用今天新增的排除记录静默改写历史数据集；
+- selector manifest 保存 exclusion policy/version；
+- exclusion 的新增、撤销和 supersede 必须审计；
+- 仅将 batch 标为 rejected 不会自动安全，必须创建对应 exclusion。
+
+在 Gate A 评审时必须冻结 PIT exclusion 规则。默认安全规则是：技术解析错误可追溯到错误 parser 版本时，该 parser 产生的 fact 对所有 selector 不可用；业务性人工否决则从 `effective_from` 起生效，并保留此前已冻结的 PIT manifest。
+
 ## 6. Manifest 规范
 
 manifest 使用 canonical JSON 和 SHA-256，至少包含：
@@ -350,7 +423,19 @@ build/us_financial_phase2/<batch-id>/verify.json
 3. 导出表结构；
 4. 保存数据库快照/备份位置及校验值；
 5. 保存 5 只 canary 的 fact/relation/selection checksum；
-6. 确认旧三张宽表和物化视图在 Phase 2 期间只读。
+6. 确认 Phase 2 专用数据库角色无旧三张宽表和物化视图写权限。
+
+旧宽表不做跨整个 Phase 2 的长期冻结。每个生产 apply 使用短 freeze window：
+
+1. 记录负责人、计划开始/结束时间；
+2. 暂停 US financial scheduler，并确认没有在途 sync；
+3. Phase 2 使用专用 DB role，该角色只有版本层目标表写权限；
+4. apply 前计算旧宽表 checksum；
+5. apply/post-verify 后立即再次计算；
+6. checksum 一致后恢复 scheduler；
+7. manifest 保存 pause/resume 时间、负责人和 checksum。
+
+测试库必须通过权限或拒写 trigger 强制旧宽表只读。生产不建议使用跨批次长期 table lock。
 
 必须记录的基线表：
 
@@ -411,6 +496,18 @@ stage 对每个 item：
 8. dry-run 时不写正式版本表。
 
 stage 必须使用与在线双写相同的 parser 纯逻辑，禁止复制一套逐渐分叉的解析规则。
+
+stage 完成后必须冻结每个 item 的：
+
+```text
+source_snapshot_id
+source_content_hash
+source_kind
+parser_git_sha
+mapping_version
+```
+
+apply 只能读取 manifest 指定的 snapshot，禁止重新 refetch 或自动选择更新来源。任一 source 缺失、hash 改变、出现未冻结网络来源，必须使原批准失效并重新 stage。
 
 ### Step 4：测试库 canary
 
@@ -502,6 +599,28 @@ python scripts/run_us_fact_selector.py \
 
 注意：P1B v1 尚未自动兼容 52/53 周日期窗口或 `context_changed`。这类记录必须保守分组并进入差异/复核清单，Phase 2 不得临时放宽 selector。
 
+四种 selector 用途固定为：
+
+```text
+first-reported   首次可信披露
+latest-restated  当前分析候选口径；未审核 unknown change 不替代
+latest-observed  最后观测版本，仅用于诊断和差异分析
+as-of            PIT 口径，硬约束 filed_date <= as_of_date
+```
+
+`latest-observed` 已在 Phase 1B v1 实现，但不得作为生产 current 或 PIT 口径。
+
+relation builder 必须增量运行：
+
+- 仅加载当前 batch `stock_scope`；
+- 按经济事实键分组并按 `filed_date/accession/fact_version_id` 排序；
+- 默认只比较相邻版本，禁止组内两两笛卡尔积；
+- 新 fact 只与必要的前后邻接事实比较；
+- 每个 relation build run 保存 stock scope、候选对数、插入/重复数、耗时和 checkpoint；
+- 半批失败后按同一 scope/checkpoint 幂等重跑；
+- 5/50/100 只样本分别记录 facts、候选对、relations、峰值内存和耗时；
+- 在 100 只基准完成前，不冻结全市场批次上限。
+
 ### Step 8：旧宽表差异报告
 
 只读比较：
@@ -535,6 +654,10 @@ UNEXPLAINED_DIFFERENCE
 - batch 状态更新使用短事务；
 - 不在长事务内进行网络请求；
 - 使用 advisory lock 防止同股票并发回填；
+- worker 每 60 秒更新 `heartbeat_at` 和 `lease_expires_at`；
+- SIGINT/SIGTERM 将当前 item/batch 标为 `interrupted`；
+- advisory lock 随连接释放，但接管者仍必须确认 lease 过期并成功获取同一 lock；
+- resume 必须核对 worker 已无活动会话、manifest/source/parser 均未变化；
 - DDL 和数据批次分开执行；
 - relation/selector 在 fact apply 完成后运行；
 - SEC 官方上限为 10 req/s，本项目默认不超过 2 req/s；
@@ -559,6 +682,15 @@ UNEXPLAINED_DIFFERENCE
 - item/batch 增加 conflict 数；
 - 是否阻断该股票由配置决定，但不得静默成功。
 
+conflict 实体的稳定幂等键至少由以下内容计算：
+
+```text
+stock_code/accession_no/taxonomy/sec_tag/period_kind/period_start/report_date
+context_hash/unit/existing_value_hash/new_value_hash
+```
+
+同一 conflict 被不同 batch 观察时，不重复创建 conflict 实体；通过独立 observation/relation 记录 batch/item。
+
 ### 9.3 staging
 
 至少包含：
@@ -575,6 +707,15 @@ UNMAPPED_SOURCE
 ```
 
 staging 行必须保存原始字段、source snapshot、parser SHA、batch/item 和原因。
+
+staging 实体的稳定幂等键至少由以下内容计算：
+
+```text
+source_snapshot_id/accession_no/sec_tag/period_kind/period_start/report_date
+context_hash/unit/value_hash/reason_code
+```
+
+resume 或 child batch 再次观察同一异常时，不重复创建 staging 实体；批次观察关系单独记录。若原始字段不足以形成上述键，使用 canonical raw payload hash，不得退化为仅按 batch id 去重。
 
 ### 9.4 不允许的自动修正
 
@@ -684,6 +825,21 @@ updated_at max（如有）
 
 Phase 2 结束前必须与基线一致。若不一致，批次立即进入 `rollback_required`。
 
+### 10.8 exclusion 强制生效
+
+对四种 selector 分别构造含 active exclusion 的 fixture，断言被排除 fact 不会进入 selection audit。生产 verify 还必须检查：
+
+```sql
+SELECT COUNT(*)
+FROM us_fact_selection_audit a
+JOIN us_financial_fact_exclusion e
+  ON e.fact_version_id = a.selected_fact_id
+ AND e.status = 'active'
+WHERE a.selected_at >= e.effective_from;
+```
+
+结果必须为 0。PIT 技术错误/业务否决的时间语义按冻结的 exclusion policy 单独验证。
+
 ## 11. 回滚策略
 
 ### 11.1 事实层
@@ -692,11 +848,12 @@ Phase 2 结束前必须与基线一致。若不一致，批次立即进入 `roll
 
 1. 将 batch/item 标记 `rejected`；
 2. 保存错误原因和受影响 fact ids；
-3. 新 parser 以 child batch 重建；
-4. selector 排除 rejected/superseded 来源；
-5. 保留原始 snapshot、ingest、conflict、staging 和 audit。
+3. 为受影响 fact 创建 active `us_financial_fact_exclusion`；
+4. 四种 selector 通过统一 anti-join 排除；
+5. 新 parser 以 child batch 重建，并记录 `superseded_by_fact_id`；
+6. 保留原始 snapshot、ingest、conflict、staging 和 audit。
 
-若当前 schema 尚不支持 selector 排除 rejected batch，生产 apply 前必须先补齐该能力；不能只在文档中声明。
+exclusion 表、selector anti-join 和集成测试是 Gate A 硬条件。没有该机制时禁止任何生产版本层 apply。
 
 ### 11.2 派生层
 
@@ -735,10 +892,16 @@ Phase 2 不切换消费者，因此回滚应表现为：
 - dry-run 零正式写入；
 - apply 幂等；
 - 相同事实从后续 snapshot 再次出现时，fact 不翻倍且 `us_financial_fact_source` 新增证据关系；
+- 在线 ingest 与 Phase 2 都写 fact-source，存量首条来源回填幂等；
 - conflict/staging 分流；
+- conflict/staging 在 resume 和 child batch 中不重复；
+- active exclusion 对四种 selector 全部生效；
 - 单股票事务回滚；
 - batch 部分失败状态；
 - interrupted/resume；
+- heartbeat/lease 超时接管；
+- approve 后 manifest/source/parser 改变会使 apply 失败；
+- apply 期间禁止网络 refetch；
 - manifest 篡改拒绝；
 - parser SHA 不一致拒绝；
 - relation 幂等；
@@ -772,7 +935,11 @@ Phase 2 不切换消费者，因此回滚应表现为：
 
 ### Gate A：允许测试库 apply
 
-- DDL、scan、stage、apply、verify、rollback 工具齐全；
+- DDL、scan、stage、verify、approve、apply、rollback、resume 工具齐全；
+- `us_financial_fact_exclusion` 和四种 selector anti-join 已落地；
+- `us_financial_fact_source` 在线双写及存量回填已落地；
+- conflict/staging 稳定幂等键和批次 observation 已落地；
+- stage/apply source snapshot/content hash 冻结已落地；
 - 单元/集成测试通过；
 - dry-run 不写正式表；
 - manifest 可复算；
@@ -783,6 +950,10 @@ Phase 2 不切换消费者，因此回滚应表现为：
 
 - 数据库快照完成；
 - 测试库 rollback 演练完成；
+- 专用 DB role 无旧宽表写权限；
+- scheduler freeze window、负责人和恢复步骤已演练；
+- interrupted/heartbeat/lease/resume 已演练；
+- legacy 时间语义及 reconstruction flag 已验证；
 - 5 只 canary 连续两次结果稳定；
 - 第二次 facts inserted 为 0；
 - 旧宽表 checksum 不变；
@@ -794,11 +965,13 @@ Phase 2 不切换消费者，因此回滚应表现为：
 - conflict/staging 全部可解释；
 - selector checksum 稳定；
 - 性能、磁盘和锁指标达标；
+- relation builder 已限定 scope、使用相邻候选对并保存 checkpoint；
 - 无 unexplained critical-field difference。
 
 ### Gate D：允许全市场分批 apply
 
 - 100 只分层样本通过；
+- 5/50/100 只 relation 复杂度基准已完成；
 - resume/失败 child batch 已演练；
 - 备份恢复演练通过；
 - 批次大小和并发参数冻结；
