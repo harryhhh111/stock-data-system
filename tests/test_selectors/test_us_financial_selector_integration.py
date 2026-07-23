@@ -182,12 +182,25 @@ def test_selection_run_and_audit_persisted():
     assert len(selected) == 1
 
     run_row = execute(
-        "SELECT status, selected_count, result_checksum FROM us_fact_selection_run WHERE run_id = %s",
+        "SELECT status, selected_count, result_checksum, manifest FROM us_fact_selection_run WHERE run_id = %s",
         (str(run_id),), fetch=True,
     )
     assert run_row[0][0] == "success"
     assert run_row[0][1] == 1
     assert run_row[0][2] is not None
+    manifest = run_row[0][3]
+    assert manifest["checksum_schema_version"] == "v2"
+    assert manifest["sort_keys"] == [
+        "stock_code",
+        "statement",
+        "standard_field",
+        "period_kind",
+        "report_date",
+        "period_start",
+        "unit",
+        "economic_key_hash",
+        "sec_tag",
+    ]
 
     audit_row = execute(
         "SELECT selected_fact_id, selection_reason FROM us_fact_selection_audit WHERE run_id = %s",

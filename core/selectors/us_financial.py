@@ -368,7 +368,8 @@ class USFactSelector:
             "checksum_algorithm": "sha256",
             "sort_keys": [
                 "stock_code", "statement", "standard_field", "period_kind",
-                "report_date", "period_start",
+                "report_date", "period_start", "unit", "economic_key_hash",
+                "sec_tag",
             ],
             "value_normalization": "Decimal/str",
             "selector_git_sha": git_sha,
