@@ -1,11 +1,14 @@
 # 美股财报版本化与双口径数据层实施方案
 
-> 状态：设计稿  
+> 状态：Phase 1A 已关闭，Phase 1B v1 已关闭，生产消费者尚未切换
 > 日期：2026-07-22  
+> 最后更新：2026-07-23
 > 适用范围：SEC Company Facts、10-K/10-Q/修订报告、当前分析、选股和历史 PIT 回测  
+> 统一进度：[US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](./US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md)
 > 前置治理：[../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)  
 > 报告期修复：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)  
 > 比较规范：[../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
+> Phase 1B 实施：[US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
 
 ## 1. 目标
 
@@ -517,7 +520,7 @@ form 为 amendment 只是强信号，不代表所有事实都替代原 10-K。�
 - 记录 PLTR、ONTO、SAM、ASML、MELI 等基线；
 - 统计哪些股票只有当前 JSON、哪些有多个本地历史文件。
 
-### Phase 1A：新表与双写（当前）
+### Phase 1A：新表与双写（✅ 已关闭）
 
 - 创建 snapshot version、observation、filing、fact version、conflict、staging、ingest_run 表；
 - 新同步先写不可变层，再继续写旧宽表；
@@ -525,11 +528,25 @@ form 为 amendment 只是强信号，不代表所有事实都替代原 10-K。�
 - 新链路失败不能阻止原数据获取，但必须报警且不能宣称版本层完整；
 - 未知 form/fp 组合进入 staging，已知冲突进入 conflict 表。
 
-### Phase 1B：relation 与 selection audit（P1 收尾）
+完成提交：`8a82e78`、`04cb111`、`36fefc8`、`9c93308`。
+5 只 canary 的正式事实为 34,840 条，二次运行不翻倍；unknown form/fp 共 442 条进入 staging，失败 run、同批重复/冲突、旧 schema 幂等迁移均有集成测试。
 
-- 创建 `us_fact_version_relation` 和 `us_fact_selection_audit` 表；
-- 在 conflict/staging 稳定后实现 repeat/amendment/recast 等 relation 分类；
-- 建立 selector audit trail，记录每次宽表生成所选用的 fact version。
+### Phase 1B v1：relation 与 selection audit（✅ 已关闭）
+
+- 创建 `us_fact_version_relation`、`us_fact_selection_run`、`us_fact_selection_audit` 表；
+- 实现 repeat/amendment_candidate/tag_migration_candidate/unknown_change 等 relation 分类；
+- 建立 `first-reported`/`latest-restated`/`latest-observed`/`as-of` selector 及 audit trail；
+- 5 只 canary（PLTR、MELI、ONTO、SAM、HRB）影子选择已验证；
+- DDL 从 Phase 1A 和旧 P1B schema 原地升级、幂等执行已有集成测试；
+- selector checksum 包含 context（`unit`/`economic_key_hash`/`sec_tag`），schema 版本为 `v2`。
+
+具体交付、规则、测试矩阵和完成定义见 [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)。
+
+### Phase 2：全市场历史版本回填（⬜ 下一步）
+
+- 从 snapshot/cache 以 staging-first 方式分批回填全市场历史 fact version；
+- 每批保存独立 run/batch、行数、checksum 和错误清单；
+- canary 与已知异常样本自动回归。
 
 ### Phase 2：回填事实版本
 

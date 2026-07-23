@@ -37,6 +37,8 @@
 
 | 文档 | 内容 |
 |------|------|
+| [core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md) | 美股报告期、版本化、PE/PB/ROE、PIT 与 ROIC 的统一进度总览 |
+| [core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md) | 美股财报版本关系、latest-restated/first-reported/as-of selector 与选择审计开发手册 |
 | [quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md) | 跨财年股票比较统一规范（TTM、Snapshot、年度历史、PIT 与新鲜度） |
 | [quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md) | ROE/ROIC 等财务指标的数据治理前置条件 |
 | [quant/ROIC_IMPLEMENTATION_PLAN.md](quant/ROIC_IMPLEMENTATION_PLAN.md) | 三市场 ROIC 计算与接入方案 |
@@ -99,6 +101,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-07-23 | 更新美股财报版本化 Phase 1B v1 为已关闭；Phase 2 全市场历史版本回填为下一步 |
 | 2026-07-20 | 新增 US 复合策略选型与验证方案 |
 | 2026-07-20 | 新增历史市值 PIT 分批回算方案 |
 | 2026-06-15 | 补充复合策略与模拟盘计划文档入口 |

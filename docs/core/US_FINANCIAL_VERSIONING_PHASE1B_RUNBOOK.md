@@ -1,6 +1,6 @@
 # 美股财报版本化 Phase 1B 开发 Runbook
 
-> 状态：待开发  
+> 状态：Phase 1B v1 已关闭；生产消费者尚未切换  
 > 日期：2026-07-23  
 > 前置条件：Phase 1A 已关闭  
 > 上位方案：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)  

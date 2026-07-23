@@ -2,24 +2,26 @@
 
 > 首个确认样本：PLTR 2025-12-31  
 > 日期：2026-07-22  
-> 最后更新：2026-07-22  
+> 最后更新：2026-07-23
 > 目标：修复解析根因、识别全部受影响数据、可审计地重建历史，并恢复下游页面和指标。
 > 财报版本长期模型：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)
+> 统一进度：[US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](./US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md)
 
 ## 实施进度
 
 | 阶段 | 状态 | 提交 |
 |---|---|---|
 | Step 0: 基线保存 | ✅ 完成 | `aec24d8` |
-| Step 0: 基线保存 | ✅ 完成 | `aec24d8` |
 | Step 1: 失败测试 | ✅ 完成（44 tests） | `aec24d8`, `a502522` |
 | Step 2: 修复解析代码 | ✅ 完成 | `97eace7`, `0d1612a`, `29da68f`, `8011bb8` |
-| Step 3: 事实去重与版本选择 | ⬜ 未开始（→ P1） | — |
+| Step 3A: 事实去重与不可变入库 | ✅ 完成（Phase 1A） | `8a82e78` → `9c93308` |
+| Step 3B: 版本关系与事实选择 | ✅ 完成（Phase 1B v1 已关闭） | `b3d41b0` → `0958d7c` |
 | Step 4: 全库 dry-run 扫描 | ✅ 完成（见下方扫描结果） | — |
-| Step 5: staging/审计/历史重建 | ⬜ 未开始（→ P1） | — |
+| Step 5A: staging/conflict/ingest 审计基础设施 | ✅ 完成（5 只 canary） | `04cb111` → `9c93308` |
+| Step 5B: 全市场历史重建 | ⬜ 未开始（Phase 2） | — |
 | Step 6: 刷新下游 | ✅ 完成（物化视图已刷新） | — |
 | Step 7: PLTR canary 验收 | ✅ 通过 | — |
-| Step 8-13: 全市场重建 + 验收 | ⬜ 未开始（需 P1 staging 基础设施） | — |
+| Step 8-13: 全市场重建 + 验收 | ⬜ 未开始（staging 基础设施已具备） | — |
 | P0 收尾: Phase 0 盘点 | ✅ 完成 | 见 [US_VERSIONING_PHASE0_EVIDENCE.md](./US_VERSIONING_PHASE0_EVIDENCE.md) |
 | P0 收尾: invalid/unknown 隔离 | ✅ 完成 | `8011bb8`, `a502522` |
 
@@ -58,17 +60,22 @@
 
 **批量重建**（1006 只股票 reparse + 物化视图刷新）已完成，物化视图已恢复 annual 全覆盖。
 
-**待实现**（→ P1 版本层）：
+**Phase 1A 已完成**：
+- `scripts/us_financial_versioning.sql` 已建立 snapshot、observation、filing、fact version、ingest run、conflict 和 staging；
+- unknown form/fp、invalid period 已持久化进入 staging；
+- repeat/conflict 分流、失败 run、同批去重、advisory lock 和真实插入计数已实现；
+- PLTR、MELI、ONTO、SAM、HRB canary 共写入 34,840 条正式事实，二次运行不翻倍；
+- 旧 `8a82e78` schema 的原地迁移和重复执行已有集成测试。
+
+**待实现**：
 - `scripts/repair_us_report_periods.py`（scan/stage/apply/verify/rollback）
-- `scripts/us_report_period_repair.sql`（staging/版本/audit/batch 表 DDL）
-- Step 3 事实去重与版本选择
-- Step 5 审计表、checksum、回滚机制
+- Step 5B 全市场历史版本回填、批次 manifest 和回滚演练（Phase 2）
 - Step 8-13 正式 staging-first 全市场重建流程
 
-**P0 临时隔离（已完成，P1 将迁入持久化 staging）**：
+**P0 临时隔离及 P1 持久化（已完成）**：
 - `period_kind=invalid` 在 fetcher 阶段隔离（`INVALID_PERIOD` 日志 + `continue`），不进入宽表
 - `report_type=unknown` 在 transformer 出口过滤（`UNKNOWN_FORM_FP` 日志）
-- 当前仅依赖日志，无持久化 review/staging 表。P1 双写上线后必须将 invalid/unknown 写入 staging 表，不得继续只依赖日志。
+- 版本层双写时 invalid/unknown 同时进入 `us_financial_fact_staging`，不再只依赖日志。
 
 ## 1. 已确认根因
 

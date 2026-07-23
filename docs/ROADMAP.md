@@ -75,6 +75,10 @@
 - [x] 个股分析 `analyzer/`（盈利/负债/现金流/估值四维分析，支持 CN_A/CN_HK/US）
 - [x] Phase 1.5 筛选器改进（NaN 权重重分配、小行业 fallback、因子去共线性、US 列补全）
 - [x] Phase 2.0 美股完善（公式法 TTM、Russell 1000 扩展至 1,002 只、行业分类全覆盖、PB 修复）
+- [x] 美股生产筛选估值修复（2026-07-23）：停用腾讯 PE/PB，统一自算；ROE 历史保留 NULL 财年，缺年不再由旧年份顶替（`511aea1`）
+- [x] 美股财报版本层 Phase 1A（2026-07-23）：不可变 snapshot/filing/fact、ingest/conflict/staging 双写及 5 只 canary 完成（`8a82e78` → `9c93308`）
+- [x] 美股财报版本层 Phase 1B v1（2026-07-23）：relation、selection run/audit、first-reported/latest-restated/latest-observed/as-of selector 及 5 只 canary 影子验证完成（`b3d41b0` → `0958d7c`）；生产消费者尚未切换
+- [ ] 美股历史事实 Phase 2：staging-first 全市场回填、manifest/checksum、回滚演练
 - [x] A股/港股 2025 年报补齐（2026-07-21）：A 股 2025-12-31 年报覆盖 99.8%+，港股财年落在 2025 年内覆盖 95.7%+；同步修复 BSE 920xxx 代码前缀映射（→BJ）
 
 ## Phase 5.2：回测系统 + 复合策略 🔄 进行中
