@@ -10,6 +10,7 @@ from core.relations.us_financial import (
     USFactRelationBuilder,
     build_economic_fact_key,
     compare_fact_context,
+    compute_economic_key_hash,
 )
 
 
@@ -71,6 +72,26 @@ def test_economic_fact_key_differs_by_dimensions():
     f1 = _fact(1, dimensions={})
     f2 = _fact(2, dimensions={"member": "segment_a"})
     assert build_economic_fact_key(f1) != build_economic_fact_key(f2)
+
+
+def test_economic_key_hash_has_canonical_dimension_order():
+    dimensions_a = {
+        "SegmentAxis": "CloudMember",
+        "GeographyAxis": "USMember",
+        "ProductAxis": "CoreMember",
+    }
+    dimensions_b = {
+        "ProductAxis": "CoreMember",
+        "SegmentAxis": "CloudMember",
+        "GeographyAxis": "USMember",
+    }
+
+    digest_a = compute_economic_key_hash(_fact(1, dimensions=dimensions_a))
+    digest_b = compute_economic_key_hash(_fact(2, dimensions=dimensions_b))
+
+    assert digest_a == digest_b
+    # 固定向量能在不同 PYTHONHASHSEED 的测试进程中验证跨进程确定性。
+    assert digest_a == "23828702e26f823ceee9c4c3d5ba00f0550f51c0256243112c8261d440efcd1e"
 
 
 def test_compare_fact_context_compatible():

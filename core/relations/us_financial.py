@@ -50,7 +50,15 @@ def build_economic_fact_key(fact: dict[str, Any]) -> tuple:
 def compute_economic_key_hash(fact: dict[str, Any]) -> str:
     """由经济事实兼容键生成稳定的 SHA-256 hash。"""
     key = build_economic_fact_key(fact)
-    canonical = json.dumps(key, sort_keys=True, ensure_ascii=False, default=str)
+    # build_economic_fact_key() 使用 frozenset 保证键可 hash；但 frozenset
+    # 的字符串表示顺序受进程 hash seed 影响，不能直接用于持久化摘要。
+    # 在序列化前显式转成排序后的二维数组，保证跨进程结果一致。
+    canonical_key = [*key[:-1], sorted(key[-1])]
+    canonical = json.dumps(
+        canonical_key,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
