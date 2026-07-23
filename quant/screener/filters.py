@@ -34,16 +34,17 @@ def filter_consecutive_roe(
     if roe_history.empty:
         return df, n_before, 0
 
-    # 每只股票取最近 N 条年度记录
+    # 明确按报告期倒序；最近 N 个年度报告期里任何一个 ROE 缺失都视为不连续。
+    roe_history = roe_history.sort_values(
+        ["stock_code", "report_date"], ascending=[True, False]
+    )
     grouped = roe_history.groupby("stock_code")
-    # 只保留恰好有 >= min_years 条记录的股票
     valid_codes = set()
     for code, group in grouped:
         if len(group) < min_years:
             continue
-        # 已按 report_date DESC 排序，取前 N 条
         recent = group.head(min_years)
-        if (recent["roe"] >= min_roe).all():
+        if recent["roe"].notna().all() and (recent["roe"] >= min_roe).all():
             valid_codes.add(code)
 
     result = df[df["stock_code"].isin(valid_codes)]
@@ -157,6 +158,10 @@ def pivot_roe_history(
         return df
 
     roe_hist_in = roe_hist[roe_hist["stock_code"].isin(df["stock_code"])].copy()
+    # 必须先按报告期倒序，再 cumcount；否则“上年/前年”可能不是真实相邻财年。
+    roe_hist_in = roe_hist_in.sort_values(
+        ["stock_code", "report_date"], ascending=[True, False]
+    )
     roe_hist_in["year_rank"] = roe_hist_in.groupby("stock_code").cumcount()
     roe_wide = roe_hist_in.pivot(index="stock_code", columns="year_rank", values="roe")
     # cumcount=0 是最新年，已有基础 roe 列，丢弃

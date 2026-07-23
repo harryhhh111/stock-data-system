@@ -5,6 +5,7 @@
 
 import pandas as pd
 from db import Connection
+from quant.metrics import compute_pb, compute_pe
 
 
 def get_universe(market: str | None = None) -> pd.DataFrame:
@@ -135,10 +136,13 @@ def compute_dividend_yield(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_roe_history(market: str | None = None, years: int = 3) -> pd.DataFrame:
-    """查询每只股票最近 N 年的年度 ROE。
+    """查询每只股票最近 N 个年度报告期的 ROE。
+
+    注意：这里不能过滤 roe IS NOT NULL。否则缺失 ROE 的年份会被跳过，
+    更老年份的 ROE 会顶替成为“前年”，造成 VZ/ACGL 这类错位。
 
     Returns:
-        DataFrame with columns: stock_code, report_date, roe
+        DataFrame with columns: stock_code, report_date, roe（roe 可能为 NULL）
     """
     market_filter = ""
     if market and market != "all":
@@ -158,7 +162,7 @@ def get_roe_history(market: str | None = None, years: int = 3) -> pd.DataFrame:
         SELECT stock_code, report_date, roe,
                ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn
         FROM {table}
-        WHERE report_type = 'annual' AND roe IS NOT NULL
+        WHERE report_type = 'annual'
     ) f
     JOIN stock_info s ON f.stock_code = s.stock_code
     WHERE f.rn <= %s {market_filter}
@@ -188,8 +192,6 @@ def get_us_universe() -> pd.DataFrame:
         q.close,
         q.market_cap,
         NULL::numeric AS float_market_cap,
-        q.pe_ttm,
-        q.pb,
         q.currency AS quote_currency,
 
         f.roe,
@@ -247,4 +249,15 @@ def get_us_universe() -> pd.DataFrame:
 
     with Connection() as conn:
         df = pd.read_sql(sql, conn)
+
+    # 美股 PE/PB 统一自算，停用腾讯 daily_quote.pe_ttm/pb。
+    # 输入无效（市值<=0、TTM盈利<=0、净资产<=0）时返回 None，不使用 vendor 值兜底。
+    df["pb"] = [
+        compute_pb(market_cap, parent_equity)
+        for market_cap, parent_equity in zip(df["market_cap"], df["parent_equity"])
+    ]
+    df["pe_ttm"] = [
+        compute_pe(market_cap, net_profit_ttm)
+        for market_cap, net_profit_ttm in zip(df["market_cap"], df["net_profit_ttm"])
+    ]
     return df
