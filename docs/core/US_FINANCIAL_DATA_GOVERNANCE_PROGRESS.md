@@ -8,6 +8,7 @@
 - [报告期修复 Runbook](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)
 - [财报版本化方案](./US_FINANCIAL_VERSIONING_PLAN.md)
 - [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
+- [Phase 2 全市场回填 Runbook](./US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
 - [跨财年比较框架](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
 - [财务指标前置治理](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)
 - [ROIC 实施方案](../quant/ROIC_IMPLEMENTATION_PLAN.md)
@@ -21,7 +22,7 @@
 | 生产筛选 PE/PB | ✅ 快速修复完成 | 停用腾讯 PE/PB，按市值/TTM 利润和市值/权益自算 | 接入 latest-restated selector；完善普通股口径与最新季度权益 |
 | ROE 年份连续性 | ✅ 已修复 | 不再过滤 NULL 后排序；缺年/缺值不再由旧年份顶替 | 年度 ROE 改为平均权益并增加异常 flags |
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
-| Phase 2 历史事实版本回填 | ⬜ 下一步 | 5 只 canary 已验证 | staging-first 分批回填全市场 |
+| Phase 2 历史事实版本回填 | 🟡 Runbook 已完成 | 5 只 canary 已验证；执行门槛与批次流程已冻结 | 开发 scan/stage/apply/verify/rollback 工具 |
 | 当前分析 latest-restated | ⬜ 未切换 | 数据底座已具备 | 影子选择、差异报告、切换消费者 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 方案完成 | 前置与本体方案已形成 | 权益/债务/税率治理完成后落地 |
@@ -40,9 +41,11 @@
 | `b3d41b0` | Phase 1B：relation、selection run/audit、selector 初版 |
 | `17e0be0` | Phase 1B：selector 完整 context、未审核 candidate 不替代、checksum 归档 |
 | `483b389` | Phase 1B v1 收尾：audit context 唯一性、旧 DDL 迁移、同值 tag migration、测试 cleanup |
+| `f0fb03c` | Phase 1B v1 收尾：经济事实键跨进程稳定哈希 |
 | `0958d7c` | Phase 1B v1 收尾：checksum schema v2、DDL 移除硬编码 public schema |
+| `afd08e3` | Phase 1B v1 收尾：checksum manifest 排序字段补全 |
 
-`511aea1` 已在 `main` 和 `origin/main`。
+以上实现提交均已进入 `main` 和 `origin/main`。
 
 ## 3. Phase 1A Canary 基线
 

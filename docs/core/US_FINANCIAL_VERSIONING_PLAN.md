@@ -9,6 +9,7 @@
 > 报告期修复：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)  
 > 比较规范：[../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
 > Phase 1B 实施：[US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
+> Phase 2 实施：[US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md](./US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
 
 ## 1. 目标
 
@@ -542,19 +543,17 @@ form 为 amendment 只是强信号，不代表所有事实都替代原 10-K。�
 
 具体交付、规则、测试矩阵和完成定义见 [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)。
 
-### Phase 2：全市场历史版本回填（⬜ 下一步）
+### Phase 2：全市场历史事实版本回填（⬜ 下一步）
 
 - 从 snapshot/cache 以 staging-first 方式分批回填全市场历史 fact version；
 - 每批保存独立 run/batch、行数、checksum 和错误清单；
 - canary 与已知异常样本自动回归。
 
-### Phase 2：回填事实版本
-
 数据来源优先级：
 
-1. 现有 `raw_snapshot.raw_data`；
-2. 本地 `data/sec_cache/*.json`；
-3. 其他历史 raw snapshot 文件；
+1. 现有不可变 `raw_snapshot_version.raw_data`；
+2. 本地 `data/sec_cache/*.json` 及其他不可变历史 snapshot 文件；
+3. legacy `raw_snapshot.raw_data`，仅作为带重建标记的最新缓存来源；
 4. SEC Company Facts refetch；
 5. 必要时按 accession 读取 filing XBRL，补充 Company Facts 无法恢复的 context/版本。
 

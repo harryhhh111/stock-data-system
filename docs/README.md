@@ -39,6 +39,7 @@
 |------|------|
 | [core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md) | 美股报告期、版本化、PE/PB/ROE、PIT 与 ROIC 的统一进度总览 |
 | [core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md) | 美股财报版本关系、latest-restated/first-reported/as-of selector 与选择审计开发手册 |
+| [core/US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md](core/US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md) | 美股全市场历史事实版本 staging-first 回填、批次审计、验证与回滚手册 |
 | [quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md) | 跨财年股票比较统一规范（TTM、Snapshot、年度历史、PIT 与新鲜度） |
 | [quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md) | ROE/ROIC 等财务指标的数据治理前置条件 |
 | [quant/ROIC_IMPLEMENTATION_PLAN.md](quant/ROIC_IMPLEMENTATION_PLAN.md) | 三市场 ROIC 计算与接入方案 |
