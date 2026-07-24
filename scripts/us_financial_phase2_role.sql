@@ -1,8 +1,9 @@
 -- Phase 2 美股财报版本化专用数据库角色与登录身份
--- 用途：限制生产 apply worker 只能写必要的版本层/批次/审计/关系表，禁止写旧三张宽表；
---       不可变表仅授 INSERT/SELECT，不授 UPDATE/DELETE。
+-- 用途：限制生产 worker 只能执行 writer/CLI 真实需要的 SQL，禁止写旧三张宽表；
+--       不可变表不授 UPDATE/DELETE，可变表不授 DELETE/TRUNCATE。
 -- 执行权限：必须由 superuser 或拥有 CREATEROLE 权限的用户在生产库执行。
--- 当前测试库用户 stock_user 无 CREATEROLE，因此本 SQL 仅作为生产准入证据包，未在测试库执行。
+-- 密码：本 SQL 不硬编码密码。DBA 应在执行后通过安全方式设置：
+--       ALTER ROLE us_financial_phase2_worker WITH PASSWORD '<VAULT_PASSWORD>';
 
 -- ═══════════════════════════════════════════════════════════
 -- 1. 创建角色（若不存在）
@@ -26,13 +27,12 @@ COMMENT ON ROLE us_financial_phase2_writer IS
 -- ═══════════════════════════════════════════════════════════
 -- 2. 创建真实 worker 登录身份（若不存在）
 -- ═══════════════════════════════════════════════════════════
--- 密码请由 DBA 在部署时通过环境变量或保险库注入，不要硬编码。
+-- 密码由 DBA 在部署后通过 ALTER ROLE 设置，不要在版本控制中写入真实密码。
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'us_financial_phase2_worker') THEN
         CREATE ROLE us_financial_phase2_worker WITH
             LOGIN
-            PASSWORD 'REPLACE_WITH_VAULT_PASSWORD'
             NOSUPERUSER
             NOCREATEDB
             NOCREATEROLE
@@ -42,7 +42,7 @@ BEGIN
 END $$;
 
 COMMENT ON ROLE us_financial_phase2_worker IS
-    'Phase 2 US financial versioning worker login. Member of us_financial_phase2_writer.';
+    'Phase 2 US financial versioning worker login. Member of us_financial_phase2_writer. Set password via ALTER ROLE after creation.';
 
 -- 将 worker 加入角色
 GRANT us_financial_phase2_writer TO us_financial_phase2_worker;
@@ -51,16 +51,16 @@ GRANT us_financial_phase2_writer TO us_financial_phase2_worker;
 -- 3. 数据库与 schema 权限
 -- ═══════════════════════════════════════════════════════════
 -- 请按实际数据库名替换 stock_data
-GRANT CONNECT ON DATABASE stock_data TO us_financial_phase2_writer;
+GRANT CONNECT, TEMPORARY ON DATABASE stock_data TO us_financial_phase2_writer;
 GRANT USAGE ON SCHEMA public TO us_financial_phase2_writer;
 
 -- ═══════════════════════════════════════════════════════════
--- 4. 不可变版本层（仅 SELECT/INSERT，禁止 UPDATE/DELETE）
+-- 4. 不可变版本层（仅 SELECT/INSERT）
+--    writer 真实 SQL：INSERT ... ON CONFLICT；SELECT 用于去重/证据；不 UPDATE/DELETE。
 -- ═══════════════════════════════════════════════════════════
 GRANT SELECT, INSERT ON TABLE
     raw_snapshot_version,
     raw_snapshot_observation,
-    us_filing,
     us_financial_fact_version,
     us_financial_fact_conflict,
     us_financial_fact_staging,
@@ -74,7 +74,6 @@ TO us_financial_phase2_writer;
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE
     raw_snapshot_version,
     raw_snapshot_observation,
-    us_filing,
     us_financial_fact_version,
     us_financial_fact_conflict,
     us_financial_fact_staging,
@@ -86,8 +85,10 @@ FROM us_financial_phase2_writer;
 
 -- ═══════════════════════════════════════════════════════════
 -- 5. 可变运行/批次层（SELECT/INSERT/UPDATE，禁止 DELETE/TRUNCATE）
+--    writer 对 us_filing 使用 ON CONFLICT DO UPDATE，因此需要 UPDATE。
 -- ═══════════════════════════════════════════════════════════
 GRANT SELECT, INSERT, UPDATE ON TABLE
+    us_filing,
     us_ingest_run,
     us_financial_backfill_batch,
     us_financial_backfill_item,
@@ -96,6 +97,7 @@ GRANT SELECT, INSERT, UPDATE ON TABLE
 TO us_financial_phase2_writer;
 
 REVOKE DELETE, TRUNCATE ON TABLE
+    us_filing,
     us_ingest_run,
     us_financial_backfill_batch,
     us_financial_backfill_item,
@@ -137,7 +139,7 @@ GRANT USAGE, SELECT ON SEQUENCE
 TO us_financial_phase2_writer;
 
 -- ═══════════════════════════════════════════════════════════
--- 8. 默认权限（仅对后续该角色创建的对象生效，superuser 表仍需单独授权）
+-- 8. 默认权限（仅对后续该角色创建的对象生效）
 -- ═══════════════════════════════════════════════════════════
 ALTER DEFAULT PRIVILEGES FOR ROLE us_financial_phase2_writer IN SCHEMA public
     GRANT SELECT, INSERT ON TABLES TO us_financial_phase2_writer;
@@ -148,7 +150,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE us_financial_phase2_writer IN SCHEMA public
 -- 9. 验证查询（DBA 执行后检查）
 -- ═══════════════════════════════════════════════════════════
 /*
--- 9.1 角色与成员关系
+-- 9.1 角色属性
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolcanlogin
 FROM pg_roles
 WHERE rolname IN ('us_financial_phase2_writer', 'us_financial_phase2_worker')
@@ -181,7 +183,7 @@ SELECT
 FROM information_schema.table_privileges
 WHERE grantee = 'US_FINANCIAL_PHASE2_WRITER'
   AND table_name IN (
-      'raw_snapshot_version', 'raw_snapshot_observation', 'us_filing',
+      'raw_snapshot_version', 'raw_snapshot_observation',
       'us_financial_fact_version', 'us_financial_fact_conflict', 'us_financial_fact_staging'
   )
 GROUP BY table_name;
