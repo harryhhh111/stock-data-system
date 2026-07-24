@@ -6,6 +6,7 @@
 
 > 前置依赖：必须先完成 [财务指标前置数据治理方案](./FINANCIAL_METRICS_DATA_PREREQUISITES.md)。本文件只定义 ROIC 本体；`report_type`、filing 版本、PIT 和 ROE 修复不再作为 ROIC 实现过程中的隐含假设。
 > 横向比较：ROIC 的比较日期、新鲜度与跨财年展示遵循 [跨财年股票财务比较框架](./CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)。
+> 当前开发任务：先执行 [ROIC MVP 开发 Runbook](./ROIC_MVP_RUNBOOK.md)，仅交付美股 5 只 canary shadow，不直接展开本文件的三市场完整范围。
 
 ## 1. 结论与实施原则
 
