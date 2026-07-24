@@ -10,6 +10,9 @@ Usage:
     python scripts/backfill_us_financial_versions.py verify \
         --batch-id <uuid> [--output build/us_financial_phase2/<batch-id>/verify.json]
 
+    python scripts/backfill_us_financial_versions.py post-verify \
+        --batch-id <uuid> [--output build/us_financial_phase2/<batch-id>/post_verify.json]
+
     python scripts/backfill_us_financial_versions.py approve \
         --batch-id <uuid> --manifest <path> --by "<审批人>" --note "<说明>"
 
@@ -848,6 +851,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     _require_us_market()
     batch_id = str(args.batch_id)
+    batch = _get_batch(batch_id)
+    if batch is None:
+        logger.error("batch %s 不存在", batch_id)
+        return 1
+    if batch["status"] != "staged":
+        logger.error("verify 只能作用于 staged 的 batch，当前状态: %s", batch["status"])
+        return 1
+
     output_path = Path(args.output) if args.output else BUILD_DIR / batch_id / "verify.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -859,16 +870,42 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if not result["passed"]:
         return 1
 
-    batch = _get_batch(batch_id)
-    if batch and batch["status"] == "staged":
-        _update_batch_status(batch_id, "verified")
-        _audit_batch_status(batch_id, "staged", "verified", None, "verify passed")
-        logger.info("batch %s 已迁移到 verified", batch_id)
-    elif batch and batch["status"] == "applied":
-        _update_batch_status(batch_id, "post_verified")
-        _audit_batch_status(batch_id, "applied", "post_verified", None, "post-verify passed")
-        logger.info("batch %s 已迁移到 post_verified", batch_id)
+    _update_batch_status(batch_id, "verified")
+    _audit_batch_status(batch_id, "staged", "verified", None, "verify passed")
+    logger.info("batch %s 已迁移到 verified", batch_id)
 
+    return 0
+
+
+# ═══════════════════════════════════════════════════════════
+# post-verify — 对 applied batch 执行最终校验并迁移到 post_verified
+# ═══════════════════════════════════════════════════════════
+
+
+def cmd_post_verify(args: argparse.Namespace) -> int:
+    _require_us_market()
+    batch_id = str(args.batch_id)
+    batch = _get_batch(batch_id)
+    if batch is None:
+        logger.error("batch %s 不存在", batch_id)
+        return 1
+    if batch["status"] != "applied":
+        logger.error("post-verify 只能作用于 applied 的 batch，当前状态: %s", batch["status"])
+        return 1
+
+    output_path = Path(args.output) if args.output else BUILD_DIR / batch_id / "post_verify.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = verify_batch(batch_id, BUILD_DIR)
+    output_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    logger.info("post-verify 完成: passed=%s 输出=%s", result["passed"], output_path)
+
+    if not result["passed"]:
+        return 1
+
+    _update_batch_status(batch_id, "post_verified")
+    _audit_batch_status(batch_id, "applied", "post_verified", None, "post-verify passed")
+    logger.info("batch %s 已迁移到 post_verified", batch_id)
     return 0
 
 
@@ -1091,6 +1128,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--batch-id", required=True)
     p_verify.add_argument("--output", help="Output JSON path")
     p_verify.set_defaults(func=cmd_verify)
+
+    p_post_verify = sub.add_parser("post-verify", help="对 applied batch 执行最终校验并迁移到 post_verified")
+    p_post_verify.add_argument("--batch-id", required=True)
+    p_post_verify.add_argument("--output", help="Output JSON path")
+    p_post_verify.set_defaults(func=cmd_post_verify)
 
     p_approve = sub.add_parser("approve", help="批准 verified 的 batch")
     p_approve.add_argument("--batch-id", required=True)

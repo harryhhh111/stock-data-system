@@ -615,7 +615,17 @@ def test_cli_apply_writes_formal_layer():
     )
     assert ciks == [(TEST_CIK,)]
 
-    assert cli.cmd_verify(SimpleNamespace(batch_id=batch_id, output=None)) == 0
+    assert cli.cmd_verify(SimpleNamespace(batch_id=batch_id, output=None)) == 1
+    assert cli._get_batch(batch_id)["status"] == "applied"
+
+    post_verify_path = _build_dir() / batch_id / "post_verify_test.json"
+    assert cli.cmd_post_verify(SimpleNamespace(batch_id=batch_id, output=str(post_verify_path))) == 0
+    assert cli._get_batch(batch_id)["status"] == "post_verified"
+    post_verify_result = json.loads(post_verify_path.read_text())
+    assert post_verify_result["passed"] is True
+
+    # 专用入口严格限制 applied；重复执行不得再次迁移状态。
+    assert cli.cmd_post_verify(SimpleNamespace(batch_id=batch_id, output=None)) == 1
     assert cli._get_batch(batch_id)["status"] == "post_verified"
 
 
