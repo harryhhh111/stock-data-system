@@ -9,14 +9,15 @@
 
 | 项目 | 值 |
 |------|-----|
-| Git SHA | `54908f0cd1b0b80c8b4fe9f2cd3bac99423032fc` |
-| 最近提交信息 | `feat(us): finalize Gate A post-verify workflow` |
+| Git SHA | `07687dc9252dd00879d3395d762c6e2465ac57fc` |
+| 最近提交信息 | `fix(us): tighten Phase 2 worker role perms and add SAVEPOINT-based verification` |
 | 测试数据库 | `localhost:5432/stock_data` |
 | 连接用户 | `stock_user` |
 | 当前 schema | `public` |
 | 演练结果文件 | `build/us_financial_phase2/gate_b_drill_result.json` |
 | 角色 SQL | `scripts/us_financial_phase2_role.sql` |
 | 角色权限测试脚本 | `scripts/verify_us_financial_phase2_role.py` |
+| 隔离 schema 文件 | `scripts/us_financial_phase2_isolated_schema.sql` |
 
 ---
 
@@ -34,6 +35,7 @@
 | 扩展 Q4I 异常 | CRM | 历史数据长、heartbeat/lease/resume 演练用 |
 | 扩展 Q4I 异常 | CRWD | Q4I 异常候选 |
 | 扩展 Q4I 异常 | LULU | 原始 XBRL 含非 USD 单位（CAD/CNY 等），已被过滤 |
+| Dimensions 控制样本 | DIM1 | 受控合成样本，验证 parser 对多 dimensions 的保留能力 |
 
 ### 2.2 场景覆盖矩阵
 
@@ -41,9 +43,9 @@
 |----------|------|----------|
 | 10-K/A | MELI | `us_filing.is_amendment=true`, `form='10-K/A'` |
 | 10-Q/A | HRB | `us_filing.is_amendment=true`, `form='10-Q/A'` |
-| 同值 tag migration | 全样本 | relation type `tag_migration_candidate`，全量 2,084 条；本轮 704 条，其中 `value_changed=false` 55 条 |
-| 异值 unknown change | 全样本 | relation type `unknown_change`，全量 1,204 条；本轮 430 条，全部 `value_changed=true` |
-| 多 dimensions | **未覆盖** | 当前测试库 `raw_snapshot_version.raw_data` 样本无显著 dimensions 字段；需在后续样本或测试中补充 |
+| 同值 tag migration | 全样本 | relation type `tag_migration_candidate`，全量 2,084 条；Round 2/3 范围 704 条，其中 `value_changed=false` 55 条 |
+| 异值 unknown change | 全样本 | relation type `unknown_change`，全量 1,204 条；Round 2/3 范围 430 条，全部 `value_changed=true` |
+| 多 dimensions | DIM1 | `us_financial_fact_version.dimensions` 非空；同一 tag 因 dimensions 不同产生多条 fact_version |
 | 非 USD 原始单位 | MELI、LULU | 原始 XBRL 单位含 ARS（MELI）、CAD/CNY（LULU）；当前 parser 仅保留 `USD`、`USD/shares`、`shares`，非 USD 记录被过滤，**未进行汇率换算** |
 
 ### 2.3 样本—场景映射表
@@ -58,39 +60,66 @@
 | CRM | 扩展 Q4I 异常、heartbeat/lease/interrupted/resume 演练 |
 | CRWD | 扩展 Q4I 异常、同值 tag migration、异值 unknown change |
 | LULU | 扩展 Q4I 异常、非 USD 原始单位（过滤）、同值 tag migration、异值 unknown change |
+| DIM1 | 多 dimensions（控制样本） |
+
+### 2.4 多 Dimensions 样本说明
+
+- 股票代码：`DIM1`
+- Batch ID：`a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+- Snapshot ID：`1260`
+- 结果：`inserted=2`，`repeated=0`，`conflicted=0`，`staged=0`
+- 写入 `us_financial_fact_version` 的 2 条记录：
+
+| sec_tag | standard_field | unit | value_numeric | dimensions |
+|---------|----------------|------|---------------|------------|
+| Revenues | revenues | USD | 1,000,000 | `{"ProductOrServiceAxis": "ProductMember"}` |
+| Revenues | revenues | USD | 2,000,000 | `{"ProductOrServiceAxis": "ServiceMember"}` |
+
+- 说明：SEC company facts API 在当前 fetcher 使用的端点上不持续暴露 dimensions。因此使用受控合成样本 `DIM1` 证明 pipeline 能正确解析、保留并区分不同 dimensions 下的事实。该样本不是生产数据，仅用于能力验证。
 
 ---
 
-## 3. 两轮相同输入演练结果
+## 3. 两轮相同输入演练结果（Round 2 / Round 3）
+
+> 注：Round 1 中 CRM、CRWD、LULU 使用 legacy source（`source_snapshot_id=NULL`）；Round 2 已将其转为正式 `raw_snapshot_version` 来源。因此 **Round 2 与 Round 3 使用完全相同的 snapshot identity**，构成真正的幂等证据对。
 
 ### 3.1 Batch 信息
 
 | 轮次 | Batch ID | 最终状态 | facts_inserted | facts_repeated | facts_conflicted | facts_staged |
 |------|----------|----------|----------------|----------------|------------------|--------------|
-| Round 1 | `eb422910-94dc-4afa-ad69-5a710dbed3dd` | `post_verified` | 20,051 | 40,328 | 0 | 410 |
-| Round 2 | `927f1857-761c-4135-a649-5baceb62fa50` | `post_verified` | **0** | 60,379 | 0 | 410 |
+| Round 2 | `927f1857-761c-4135-a649-5baceb62fa50` | `post_verified` | 0 | 60,379 | 0 | 410 |
+| Round 3 | `4d7f6c1b-8e3a-4f2d-9b6a-5c4d3e2f1a0b` | `post_verified` | **0** | 60,379 | 0 | 410 |
 
 ### 3.2 Manifest Hash
 
 | 轮次 | Manifest Hash |
 |------|---------------|
-| Round 1 | `036b2d78d67a53df4beb176e0c63ff4f6235304bceeebf702436414cc221597f` |
 | Round 2 | `6347e7fbfd7e75fe82c86f4ac222f27309b6e18d14feb8fc0d3fd6038a52a579` |
+| Round 3 | `6efca66a8140088e31e87a75d64b0f3bbbb3ba2af51ac9017b865ba19508e217` |
 
-> 说明：Round 2 使用完全相同的 source snapshot/content hash，不重新抓取。manifest hash 不同是因为 batch_id、created_at 等元数据不同，但 source content hash 与 snapshot_id 完全一致。
+> 说明：manifest hash 不同是因为 batch_id、created_at 等元数据不同；source content hash 与 snapshot_id 完全一致。
 
-### 3.3 Checksum 一致性
+### 3.3 Snapshot Identity 验证
 
-| 检查项 | Round 1 | Round 2 | 是否一致 |
+| 检查项 | Round 2 | Round 3 | 是否一致 |
 |--------|---------|---------|----------|
-| Fact checksum | `f38a5a0c3683818daa2d0009ad4e8c7dbd37e13c3ceca20c14158a647ced7f6a` | `f38a5a0c3683818daa2d0009ad4e8c7dbd37e13c3ceca20c14158a647ced7f6a` | ✅ |
+| 来源数量 | 18,184 | 18,184 | ✅ |
+| Snapshot IDs（8 只股票） | 144, 145, 146, 147, 148, 1235, 1236, 1237 | 144, 145, 146, 147, 148, 1235, 1236, 1237 | ✅ |
+
+### 3.4 Checksum 一致性
+
+| 检查项 | Round 2 | Round 3 | 是否一致 |
+|--------|---------|---------|----------|
+| Fact checksum | `c8f4ab35c4b4816219912480914e0640bd159e4e9c60096b328dad195b7524de` | `c8f4ab35c4b4816219912480914e0640bd159e4e9c60096b328dad195b7524de` | ✅ |
 | Fact count | 54,891 | 54,891 | ✅ |
-| Relation checksum | `ea431e0a921c194ab754c590b0ff262a0b9ddf940663f699c04a5d4d2cf6c094` | `ea431e0a921c194ab754c590b0ff262a0b9ddf940663f699c04a5d4d2cf6c094` | ✅ |
+| Relation checksum | `d3307f67bf269414af87250f86c6dad2636fffcb79dd6865ce0a63b713e13127` | `d3307f67bf269414af87250f86c6dad2636fffcb79dd6865ce0a63b713e13127` | ✅ |
 | Relation count | 29,660 | 29,660 | ✅ |
 | Latest-restated selector checksum | `2863505ddb9fc50400edadb48e1d83566b5e545a741896c56da1ad2aaa204475` | `2863505ddb9fc50400edadb48e1d83566b5e545a741896c56da1ad2aaa204475` | ✅ |
 | As-of (2024-09-30) selector checksum | `d0363eb10d261c0b3d8a24332355a2054de682cc41e367429699ccfec7a1bb89` | `d0363eb10d261c0b3d8a24332355a2054de682cc41e367429699ccfec7a1bb89` | ✅ |
 
-### 3.4 旧宽表 Checksum（前后不变）
+> 复算命令见附录 A.3。
+
+### 3.5 旧宽表 Checksum（前后不变）
 
 > 算法：`core/us_financial_verify.py:_table_checksum()` 使用 SHA-256，对 `stock_code, report_date, accession_no` 三列排序后序列化（`ensure_ascii=False, separators=(",", ":")`）。
 > 股票范围：旧宽表全表（不限于 8 只样本）。
@@ -108,12 +137,12 @@
 
 ### 4.1 Conflict
 
-- 两轮 `us_financial_fact_conflict` 新增均为 **0**。
+- Round 2/3 `us_financial_fact_conflict` 新增均为 **0**。
 - 说明：同 accession/context 异值冲突未出现；幂等 dedup key 机制有效。
 
 ### 4.2 Staging：410 vs 798 解释
 
-`us_financial_backfill_batch.facts_staged=410` 与 `us_financial_fact_staging` 表行数 798 是**两个不同统计口径**：
+`us_financial_backfill_batch.facts_staged=410` 与 `us_financial_fact_staging` 表累计行数 798 是**两个不同统计口径**：
 
 1. **batch.facts_staged = 410**：本次 apply 过程中，writer 在内存里识别出的 invalid records 数量，按 item 汇总后写入 batch 元数据。
 2. **us_financial_fact_staging 累计行数 = 798**：这些 source snapshot 在历史上所有解析运行中产生的 staging 记录总数（含本次之前的其他 batch/scheduler run）。
@@ -140,33 +169,33 @@
 ```sql
 -- batch.facts_staged 按 item 汇总
 SELECT SUM(facts_staged) FROM us_financial_backfill_item
-WHERE batch_id = 'eb422910-94dc-4afa-ad69-5a710dbed3dd';
+WHERE batch_id = '927f1857-761c-4135-a649-5baceb62fa50';
 
 -- 累计 staging 表行数（按 source_snapshot_id 关联）
 SELECT COUNT(*)
 FROM us_financial_fact_staging st
 JOIN us_financial_backfill_item i
   ON i.source_snapshot_id = st.source_snapshot_id
-WHERE i.batch_id = 'eb422910-94dc-4afa-ad69-5a710dbed3dd';
+WHERE i.batch_id = '927f1857-761c-4135-a649-5baceb62fa50';
 
 -- 按 ingest_run 关联的 staging 行数
 SELECT COUNT(*)
 FROM us_financial_fact_staging st
 JOIN us_ingest_run r ON r.run_id = st.run_id
 JOIN us_financial_backfill_item i ON i.source_snapshot_id = r.snapshot_id
-WHERE i.batch_id = 'eb422910-94dc-4afa-ad69-5a710dbed3dd';
+WHERE i.batch_id = '927f1857-761c-4135-a649-5baceb62fa50';
 
 -- staging 原因
 SELECT reject_reason, COUNT(*) AS n
 FROM us_financial_fact_staging st
 JOIN us_financial_backfill_item i ON i.source_snapshot_id = st.source_snapshot_id
-WHERE i.batch_id = 'eb422910-94dc-4afa-ad69-5a710dbed3dd'
+WHERE i.batch_id = '927f1857-761c-4135-a649-5baceb62fa50'
 GROUP BY reject_reason;
 ```
 
 结果：所有 staging 原因均为 `STAGING_UNKNOWN_FORM_FP`，表示 parser 无法从来源中识别出标准的 fiscal period 映射，属于已知待 review 场景，不阻塞 apply。
 
-### 4.3 Relation 类型分布（Round 1 涉及范围）
+### 4.3 Relation 类型分布（Round 2/3 涉及范围）
 
 | Relation Type | Value Changed | 数量 |
 |---------------|---------------|------|
@@ -194,19 +223,26 @@ GROUP BY reject_reason;
 
 - SQL 文件：`scripts/us_financial_phase2_role.sql`
 - 测试脚本：`scripts/verify_us_financial_phase2_role.py`
+- 隔离 schema 文件：`scripts/us_financial_phase2_isolated_schema.sql`
 - 角色/登录身份：
   - `us_financial_phase2_writer`（角色，NOLOGIN）
   - `us_financial_phase2_worker`（登录身份，INHERIT）
 - 设计原则：
   - 不可变表（`raw_snapshot_version`、`us_financial_fact_version`、`us_fact_version_relation` 等）：仅 `SELECT/INSERT`，禁止 `UPDATE/DELETE/TRUNCATE`。
   - 可变运行/批次表（`us_ingest_run`、`us_financial_backfill_batch`、`us_financial_fact_exclusion` 等）：`SELECT/INSERT/UPDATE`，禁止 `DELETE/TRUNCATE`。
+  - `us_filing` 需要 `UPDATE` 以支持 `ON CONFLICT DO UPDATE`。
   - 旧三张宽表（`us_income_statement`、`us_balance_sheet`、`us_cash_flow_statement`）：仅 `SELECT`。
-  - 序列：仅授予实际需要的序列，不授 `ALL SEQUENCES IN SCHEMA`。
-- 当前测试库用户 `stock_user` 无 `CREATEROLE` 权限，无法创建该角色，错误：
-  ```
-  permission denied to create role
-  ```
-- 该 SQL 必须由生产库 superuser / DBA 执行，执行后运行 `scripts/verify_us_financial_phase2_role.py` 进行正向/负向权限验证。
+  - 序列：仅授予实际需要的 12 个序列，不授 `ALL SEQUENCES IN SCHEMA`。
+  - 密码：SQL 不硬编码；DBA 执行后通过 `ALTER ROLE us_financial_phase2_worker WITH PASSWORD '<VAULT_PASSWORD>';` 设置。
+- 当前测试库用户 `stock_user` 无 `CREATEROLE` 权限，无法在生产/测试库直接创建角色。
+- 已在隔离数据库完成验证：
+  - 启动本地 PostgreSQL 实例：`build/pg_isolated/`
+  - 端口：`15432`
+  - 应用 schema + 角色 SQL
+  - 运行 `scripts/verify_us_financial_phase2_role.py`
+  - 结果：**58/58 通过**
+  - 正向：可 INSERT 不可变表、INSERT/UPDATE 可变表、SELECT 旧宽表、CREATE TEMP TABLE。
+  - 负向：不可 UPDATE/DELETE 不可变表、不可 INSERT/UPDATE/DELETE/TRUNCATE 旧宽表、不可 DELETE/TRUNCATE 可变表。
 
 ### 5.3 Scheduler Freeze / Resume 计划
 
@@ -258,9 +294,9 @@ GROUP BY reject_reason;
 
 | 编号 | 问题 | 影响 | 建议 |
 |------|------|------|------|
-| 1 | 多 dimensions 场景未覆盖 | 关系/选择器对复杂 context 的校验证据不足 | 在 Gate B 后续或 Gate C 中补充至少 1 只含显著 dimensions 的股票 |
-| 2 | Phase 2 专用角色未在测试库实际创建与验证 | 当前用户无 CREATEROLE | 由生产 DBA 执行 `scripts/us_financial_phase2_role.sql` 后，运行 `scripts/verify_us_financial_phase2_role.py` 验证 |
-| 3 | Scheduler freeze 未实际执行 | 仅形成计划 | 生产 apply 前由负责人执行并记录实际起止时间 |
+| 1 | Scheduler freeze 未实际执行 | 仅形成计划 | 生产 apply 前由负责人执行并记录实际起止时间 |
+| 2 | Phase 2 专用角色未在生产库实际创建 | 当前用户无 CREATEROLE | 由生产 DBA 执行 `scripts/us_financial_phase2_role.sql` 后，运行 `scripts/verify_us_financial_phase2_role.py` 验证 |
+| 3 | Dimensions 样本为受控合成数据 | 非真实 SEC 数据 | 后续如 SEC API 暴露 dimensions，替换为真实股票样本 |
 | 4 | 生产 shadow（20–50 只）、全市场回填、消费者切换等 | 明确不在本次范围 | 按 Runbook 第 5 条禁止扩大范围 |
 
 ---
@@ -270,12 +306,13 @@ GROUP BY reject_reason;
 | 检查项 | 结论 |
 |--------|------|
 | Gate A | **通过** |
-| Gate A canary 演练 | **基本通过，post_verified 状态已收尾**（Round 1/2 均达到 `post_verified`） |
+| Gate A canary 演练 | **通过，post_verified 状态已收尾** |
 | Gate B | **尚未准入** |
-| 扩展样本两轮演练 | 通过：Round 2 `facts_inserted=0`，checksum 一致 |
+| Round 2/3 相同 snapshot identity | 通过：source snapshot IDs 一致，Round 3 `facts_inserted=0`，checksum 一致 |
 | Heartbeat/Lease/Resume | 通过 |
 | Rollback 幂等 | 通过 |
-| 生产角色权限 SQL | 已准备，待 DBA 执行并运行验证脚本 |
+| 多 dimensions 覆盖 | 通过：DIM1 控制样本产生 2 条不同 dimensions 的 fact_version |
+| 生产角色权限 SQL | 已准备并在隔离数据库验证 58/58 通过，待 DBA 在生产库执行 |
 | Scheduler Freeze 计划 | 已准备，待执行 |
 
 **综合判定：附条件通过 Gate B 演练，但尚未获得生产 apply 准入。需完成以下事项后方可申请生产 apply：**
@@ -284,8 +321,7 @@ GROUP BY reject_reason;
 2. 运行 `scripts/verify_us_financial_phase2_role.py` 验证正向/负向权限（不能写旧宽表、不能 UPDATE/DELETE 不可变表）。
 3. 完成生产数据库快照并记录恢复点。
 4. 负责人执行 scheduler freeze 并记录实际起止时间。
-5. 补充至少 1 只多 dimensions 样本（可选，但建议完成）。
-6. 负责人书面批准生产 apply。
+5. 负责人书面批准生产 apply。
 
 ---
 
@@ -294,7 +330,7 @@ GROUP BY reject_reason;
 ### A.1 角色权限验证
 
 ```sql
--- 角色与登录身份
+-- 角色属性
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolcanlogin
 FROM pg_roles
 WHERE rolname IN ('us_financial_phase2_writer', 'us_financial_phase2_worker')
@@ -327,29 +363,86 @@ SELECT
 FROM information_schema.table_privileges
 WHERE grantee = 'US_FINANCIAL_PHASE2_WRITER'
   AND table_name IN (
-      'raw_snapshot_version', 'raw_snapshot_observation', 'us_filing',
+      'raw_snapshot_version', 'raw_snapshot_observation',
       'us_financial_fact_version', 'us_financial_fact_conflict', 'us_financial_fact_staging'
   )
 GROUP BY table_name;
 ```
 
-### A.2 关键计数验证
+### A.2 隔离数据库角色测试命令
+
+```bash
+# 1. 初始化并启动隔离数据库
+mkdir -p build/pg_isolated/run
+initdb -D build/pg_isolated/data -U postgres --auth=trust --no-locale --encoding=UTF8
+echo "port = 15432" >> build/pg_isolated/data/postgresql.conf
+echo "listen_addresses = 'localhost'" >> build/pg_isolated/data/postgresql.conf
+echo "unix_socket_directories = '/home/vinci/projects/stock_data/build/pg_isolated/run'" >> build/pg_isolated/data/postgresql.conf
+pg_ctl -D build/pg_isolated/data -l build/pg_isolated/postgres.log start
+createdb -h localhost -p 15432 -U postgres stock_data
+
+# 2. 应用 schema
+psql "postgresql://postgres@localhost:15432/stock_data" -f scripts/us_financial_versioning.sql
+psql "postgresql://postgres@localhost:15432/stock_data" -f scripts/us_financial_phase1b.sql
+psql "postgresql://postgres@localhost:15432/stock_data" -f scripts/us_financial_phase2.sql
+psql "postgresql://postgres@localhost:15432/stock_data" -f scripts/us_financial_phase2_isolated_schema.sql
+
+# 3. 应用角色 SQL
+psql "postgresql://postgres@localhost:15432/stock_data" -f scripts/us_financial_phase2_role.sql
+
+# 4. 运行权限测试
+STOCK_DB_USER=us_financial_phase2_worker \
+STOCK_DB_PASSWORD='' \
+STOCK_DB_HOST=localhost \
+STOCK_DB_PORT=15432 \
+STOCK_DB_NAME=stock_data \
+python scripts/verify_us_financial_phase2_role.py
+
+# 5. 停止隔离数据库
+pg_ctl -D build/pg_isolated/data stop
+```
+
+### A.3 关键计数与 Checksum 复算
 
 ```sql
 -- 两轮 batch 状态
 SELECT batch_id, status, facts_inserted, facts_repeated, facts_staged
 FROM us_financial_backfill_batch
 WHERE batch_id IN (
-    'eb422910-94dc-4afa-ad69-5a710dbed3dd',
-    '927f1857-761c-4135-a649-5baceb62fa50'
+    '927f1857-761c-4135-a649-5baceb62fa50',
+    '4d7f6c1b-8e3a-4f2d-9b6a-5c4d3e2f1a0b'
 );
 
--- 旧宽表 checksum（与文档值比对，复算命令见 A.3）
+-- 8 只样本的 source snapshot IDs
+SELECT stock_code, source_snapshot_id
+FROM us_financial_backfill_item
+WHERE batch_id = '927f1857-761c-4135-a649-5baceb62fa50'
+ORDER BY stock_code;
 ```
 
-### A.3 旧宽表 checksum 复算命令
-
 ```bash
+# fact/relation 全表 checksum（SHA-256，全列，按主键排序，JSON 序列化）
+venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0, '.')
+from db import execute
+import hashlib, json
+
+def checksum(table, order_by):
+    rows = execute(f"SELECT * FROM {table} ORDER BY {order_by}", fetch=True)
+    canonical = json.dumps(
+        [[str(c) if c is not None else None for c in r] for r in rows],
+        ensure_ascii=False, separators=(',', ':'), default=str
+    )
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest(), len(rows)
+
+fact_ck, fact_cnt = checksum('us_financial_fact_version', 'fact_version_id')
+rel_ck, rel_cnt = checksum('us_fact_version_relation', 'relation_id')
+print(f'fact: {fact_ck} ({fact_cnt})')
+print(f'relation: {rel_ck} ({rel_cnt})')
+PY
+
+# 旧宽表 checksum（与 post_verify.json 一致）
 venv/bin/python - <<'PY'
 import sys
 sys.path.insert(0, '.')
@@ -358,5 +451,3 @@ import json
 print(json.dumps(_compute_legacy_checksums(), indent=2))
 PY
 ```
-
-算法说明：`core/us_financial_verify.py:_table_checksum()` 使用 SHA-256，对 `stock_code, report_date, accession_no` 三列排序后序列化，范围是旧宽表全表。
