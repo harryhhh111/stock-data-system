@@ -1,8 +1,8 @@
 # ROIC MVP 开发 Runbook（美股 Shadow）
 
-> 状态：待执行
+> 状态：已完成
 > 日期：2026-07-24
-> 负责人：待指定
+> 负责人：Kimi Code
 > 范围：仅美股、固定 canary、`latest-restated` 当前分析口径
 > 完整方案：[ROIC_IMPLEMENTATION_PLAN.md](./ROIC_IMPLEMENTATION_PLAN.md)
 > 数据前置：[FINANCIAL_METRICS_DATA_PREREQUISITES.md](./FINANCIAL_METRICS_DATA_PREREQUISITES.md)
@@ -470,3 +470,30 @@ MVP 完成后只做一次决策评审：
 4. 数据底座仍有结构性问题：暂停 ROIC 产品化，不自动恢复 Phase 2 扩张。
 
 未经该评审，不进入 A/H 股实现，也不接正式策略。
+
+
+## 12. 完成摘要
+
+- Git SHA：`c5c610e52725b7c68c360043174ddd699bdab1a3`（以实际提交为准）
+- 代码：
+  - `quant/metrics/roic.py`：税率、NOPAT、投入资本、平均资本、ROIC、质量等级纯函数。
+  - `quant/metrics/us_roic_mvp.py`：`latest-restated` 事实装配、年度/TTM 期间配对、PIT as-of 支持。
+  - `scripts/run_us_roic_mvp.py`：固定 canary shadow CLI。
+  - `tests/test_metrics/test_roic.py`、`tests/test_metrics/test_us_roic_mvp.py`。
+- 产物（位于 `build/roic_mvp/`）：
+  - `field_audit.json`
+  - `us_roic_mvp.json`
+  - `us_roic_mvp.csv`
+  - `us_roic_mvp_reconciliation.md`
+  - `us_roic_mvp_as_of_2024-12-31.json`
+- 验收：
+  - 5 只 canary 年度 ROIC 全部有效（PLTR/VZ 为 B；HRB/MELI/ONTO 为 C，主因 debt/lease/equity fallback）。
+  - 5 只 canary 最新 TTM ROIC 全部有效。
+  - 固定 as-of 2024-12-31 测试未使用未来 filing。
+  - 纯函数与装配测试通过；全量 410 条测试通过。
+- 已知限制：
+  - `current_operating_lease` / `non_current_operating_lease` 在 canary 中缺失，按 0 处理并标记 `MISSING_LEASE`。
+  - PLTR/ONTO 无 debt 事实，按 0 处理并标记 `DEBT_ZERO_CONFIRMED`。
+  - VZ `long_term_debt` 在版本层缺失，标记 `MISSING_LONG_TERM_DEBT`，投入资本显著低估。
+  - HRB 近年 10-K 未映射 `operating_income`，使用 `income_before_tax + interest_expense` fallback。
+  - TTM 完全基于 `report_date` 与 `period_start` 匹配，以规避当前 `fiscal_year` 字段错位。
