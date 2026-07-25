@@ -117,23 +117,75 @@ def _check_legacy_checksums(post: dict[str, Any] | None) -> list[str]:
     return errors
 
 
+def _load_existing_results() -> list[dict[str, Any]]:
+    """从已保存的 batch_id 文件和 post_verify.json 重建批次结果（用于 resume）。"""
+    results: list[dict[str, Any]] = []
+    batch_no = 1
+    while True:
+        batch_id_file = BUILD_DIR / f"full_market_batch_{batch_no}_id.txt"
+        if not batch_id_file.exists():
+            break
+        batch_id = batch_id_file.read_text(encoding="utf-8").strip()
+        post = _parse_post_verify(batch_id)
+        if post is None:
+            raise RuntimeError(f"batch {batch_no} ({batch_id}) 缺少 post_verify.json，无法 resume")
+        results.append({
+            "batch_no": batch_no,
+            "batch_id": batch_id,
+            "stock_count": len(post["checks"]["batch_status"].get("stock_codes", [])),
+            "elapsed_seconds": 0.0,
+            "timing": {},
+            "post_verify": post,
+            "new_staging_reasons": [],
+            "errors": [],
+        })
+        batch_no += 1
+    if not results:
+        raise RuntimeError("未找到已保存的 batch_id 文件")
+    return results
+
+
+SELECTOR_CHUNK_SIZE = 100
+
+
 def _run_selector(basis: str, as_of: str | None = None) -> dict[str, Any]:
+    """运行全市场 selector；按股票分块以避免单进程 OOM/超时。
+
+    返回包含所有 chunk run_id 和 checksum 的字典；不返回明细。
+    """
     stocks = _stocks_from_file(BUILD_DIR / "full_market_all_stocks.txt")
-    cmd = [
-        sys.executable,
-        "scripts/run_us_fact_selector.py",
-        "--basis",
-        basis,
-        "--stocks",
-        ",".join(stocks),
-    ]
-    if as_of:
-        cmd += ["--as-of-date", as_of]
-    result = _run(cmd, timeout=3600)
-    if result.returncode != 0:
-        logger.error("selector %s 失败:\n%s", basis, result.stderr)
-        raise RuntimeError(f"selector {basis} failed")
-    return json.loads(result.stdout)
+    chunks = _split_batches(stocks, SELECTOR_CHUNK_SIZE)
+    run_ids: list[str] = []
+    checksums: list[str] = []
+    total_selected = 0
+    for i, chunk in enumerate(chunks, start=1):
+        cmd = [
+            sys.executable,
+            "scripts/run_us_fact_selector.py",
+            "--basis",
+            basis,
+            "--stocks",
+            ",".join(chunk),
+        ]
+        if as_of:
+            cmd += ["--as-of-date", as_of]
+        logger.info("selector %s 第 %d/%d 块 (%d 只)", basis, i, len(chunks), len(chunk))
+        result = _run(cmd, timeout=3600)
+        if result.returncode != 0:
+            logger.error("selector %s 第 %d 块失败:\n%s", basis, i, result.stderr)
+            raise RuntimeError(f"selector {basis} chunk {i} failed")
+        parsed = json.loads(result.stdout)
+        run_ids.append(parsed["run_id"])
+        checksums.append(_run_id_to_checksum(parsed["run_id"]))
+        total_selected += parsed["selected_count"]
+    return {
+        "basis": basis,
+        "as_of_date": as_of,
+        "run_ids": run_ids,
+        "chunk_checksums": checksums,
+        "selected_count": total_selected,
+        "chunk_count": len(chunks),
+    }
 
 
 def _resume_scheduler() -> None:
@@ -244,6 +296,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=250, help="每批股票数量")
     parser.add_argument("--report", default=str(BUILD_DIR / "full_market_backfill_report.md"), help="报告输出路径")
     parser.add_argument("--skip-first-check", action="store_true", help="跳过首批特殊暂停（连续跑时使用）")
+    parser.add_argument("--resume-from-selectors", action="store_true", help="数据批次已完成，只跑 selector、恢复 scheduler 并生成报告")
     args = parser.parse_args()
 
     if os.environ.get("STOCK_MARKETS") != "US":
@@ -261,25 +314,29 @@ def main() -> int:
     (BUILD_DIR / "full_market_all_stocks.txt").write_text("\n".join(all_stocks) + "\n", encoding="utf-8")
     logger.info("全市场共 %d 只股票（已回填 %d，剩余 %d）", len(all_stocks), len(done_100), len(remaining))
 
-    batches = _split_batches(remaining, args.batch_size)
-    logger.info("剩余分成 %d 批（每批最多 %d 只）", len(batches), args.batch_size)
+    if args.resume_from_selectors:
+        logger.info("--resume-from-selectors：跳过批次处理，直接复用已有 batch_id 和 post_verify.json")
+        results = _load_existing_results()
+    else:
+        batches = _split_batches(remaining, args.batch_size)
+        logger.info("剩余分成 %d 批（每批最多 %d 只）", len(batches), args.batch_size)
 
-    results: list[dict[str, Any]] = []
-    for i, batch in enumerate(batches, start=1):
-        is_first = (i == 1) and not args.skip_first_check
-        if is_first:
-            logger.info("执行首批 %d 只，完成后将检查验收条件", len(batch))
-        else:
-            logger.info("执行第 %d 批 %d 只", i, len(batch))
-        result = run_batch(batch, i, is_first)
-        results.append(result)
-        if result["errors"]:
-            logger.error("第 %d 批存在警告但已继续: %s", i, result["errors"])
-        logger.info("第 %d 批完成: batch_id=%s inserted=%s repeated=%s staged=%s",
-                    i, result["batch_id"],
-                    result["post_verify"]["checks"]["batch_status"]["facts_inserted"],
-                    result["post_verify"]["checks"]["batch_status"]["facts_repeated"],
-                    result["post_verify"]["checks"]["batch_status"]["facts_staged"])
+        results = []
+        for i, batch in enumerate(batches, start=1):
+            is_first = (i == 1) and not args.skip_first_check
+            if is_first:
+                logger.info("执行首批 %d 只，完成后将检查验收条件", len(batch))
+            else:
+                logger.info("执行第 %d 批 %d 只", i, len(batch))
+            result = run_batch(batch, i, is_first)
+            results.append(result)
+            if result["errors"]:
+                logger.error("第 %d 批存在警告但已继续: %s", i, result["errors"])
+            logger.info("第 %d 批完成: batch_id=%s inserted=%s repeated=%s staged=%s",
+                        i, result["batch_id"],
+                        result["post_verify"]["checks"]["batch_status"]["facts_inserted"],
+                        result["post_verify"]["checks"]["batch_status"]["facts_repeated"],
+                        result["post_verify"]["checks"]["batch_status"]["facts_staged"])
 
     # 全市场 selector
     logger.info("运行全市场 selectors")
@@ -331,12 +388,17 @@ def _render_report(results: list[dict[str, Any]], selectors: dict[str, Any]) -> 
         "",
         "## 全市场 Selector 结果",
         "",
-        "| basis | as-of-date | run_id | selected_count | checksum |",
-        "|---|---|---|---|---|",
+        "> 由于全市场 777 只股票事实版本总量超过 640 万条，单进程 selector 在 3.6 GB 内存环境下会 OOM/超时，",
+        "> 因此按股票分块（每块 ≤100 只）运行，每个块产生独立 run_id 和 checksum。",
+        "",
+        "| basis | as-of-date | 块数 | selected_count | run_ids | checksums |",
+        "|---|---|---:|---:|---|---|",
     ])
     for name, sel in selectors.items():
+        run_ids = ", ".join(f"`{rid}`" for rid in sel["run_ids"])
+        checksums = ", ".join(f"`{cs}`" for cs in sel["chunk_checksums"])
         lines.append(
-            f"| {sel['basis']} | {sel.get('as_of_date') or '-'} | `{sel['run_id']}` | {sel['selected_count']} | `{_run_id_to_checksum(sel['run_id'])}` |"
+            f"| {sel['basis']} | {sel.get('as_of_date') or '-'} | {sel['chunk_count']} | {sel['selected_count']} | {run_ids} | {checksums} |"
         )
     lines.extend([
         "",
