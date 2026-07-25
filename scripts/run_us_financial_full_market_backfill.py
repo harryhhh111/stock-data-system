@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -55,6 +56,27 @@ def _env() -> dict[str, str]:
 def _run(cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
     logger.info("执行: %s", " ".join(cmd))
     return subprocess.run(cmd, env=_env(), capture_output=True, text=True, timeout=timeout)
+
+
+def _create_backup(batch_no: int) -> dict[str, str]:
+    """apply 前创建可恢复备份并记录 SHA-256。"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = BUILD_DIR / f"full_market_batch_{batch_no}_pre_apply_snapshot_{timestamp}.dump"
+    cmd = [
+        "pg_dump",
+        "-h", "localhost",
+        "-p", "5432",
+        "-U", "stock_user",
+        "-Fc",
+        "stock_data",
+    ]
+    with open(path, "wb") as f:
+        result = subprocess.run(cmd, env=_env(), stdout=f, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"备份失败: {result.stderr.decode('utf-8', errors='ignore')}")
+    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    logger.info("批次 %d 备份完成: %s SHA-256=%s", batch_no, path, sha256)
+    return {"path": str(path), "sha256": sha256}
 
 
 def _stocks_from_file(path: Path) -> list[str]:
@@ -143,11 +165,13 @@ def run_batch(stocks: list[str], batch_no: int, is_first: bool) -> dict[str, Any
     stocks_csv = ",".join(stocks)
     manifest_path = batch_dir / "manifest.json"
 
-    steps: list[tuple[str, list[str]]] = [
+    pre_steps: list[tuple[str, list[str]]] = [
         ("scan", ["scripts/backfill_us_financial_versions.py", "scan", "--stocks", stocks_csv, "--output", str(batch_dir / "scan.json")]),
         ("stage", ["scripts/backfill_us_financial_versions.py", "stage", "--batch-id", batch_id, "--stocks", stocks_csv]),
         ("verify", ["scripts/backfill_us_financial_versions.py", "verify", "--batch-id", batch_id]),
         ("approve", ["scripts/backfill_us_financial_versions.py", "approve", "--batch-id", batch_id, "--manifest", str(manifest_path), "--by", "Kimi Code", "--note", f"full market batch {batch_no}"]),
+    ]
+    post_steps: list[tuple[str, list[str]]] = [
         ("apply", ["scripts/backfill_us_financial_versions.py", "apply", "--manifest", str(manifest_path), "--require-status", "approved"]),
         ("post-verify", ["scripts/backfill_us_financial_versions.py", "post-verify", "--batch-id", batch_id]),
         ("relations", ["scripts/build_us_fact_relations.py", "--stocks", stocks_csv, "--apply"]),
@@ -157,7 +181,18 @@ def run_batch(stocks: list[str], batch_no: int, is_first: bool) -> dict[str, Any
     start = datetime.now()
     timing: dict[str, float] = {}
 
-    for step_name, cmd in steps:
+    for step_name, cmd in pre_steps:
+        step_start = datetime.now()
+        result = _run(cmd, timeout=1800)
+        timing[step_name] = (datetime.now() - step_start).total_seconds()
+        if result.returncode != 0:
+            logger.error("批次 %d 步骤 %s 失败:\nstdout:\n%s\nstderr:\n%s", batch_no, step_name, result.stdout, result.stderr)
+            raise RuntimeError(f"batch {batch_no} step {step_name} failed")
+        logger.info("批次 %d 步骤 %s 完成 (%.1fs)", batch_no, step_name, timing[step_name])
+
+    backup_info = _create_backup(batch_no)
+
+    for step_name, cmd in post_steps:
         step_start = datetime.now()
         result = _run(cmd, timeout=7200 if step_name == "apply" else 1800)
         timing[step_name] = (datetime.now() - step_start).total_seconds()
@@ -198,6 +233,7 @@ def run_batch(stocks: list[str], batch_no: int, is_first: bool) -> dict[str, Any
         "post_verify": post,
         "new_staging_reasons": sorted(new_reasons),
         "errors": errors,
+        "backup": backup_info,
     }
 
 
