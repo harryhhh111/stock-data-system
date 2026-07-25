@@ -1,7 +1,7 @@
 # 价值投资选股系统 — 规划方案
 
 > 创建时间：2026-04-23（v2）
-> 更新时间：2026-06-15（v7）
+> 更新时间：2026-07-23（v8）
 > 状态：选股 ✅ | 个股分析 ✅ | 普通回测 ✅ | 复合策略引擎 ✅ | 复合策略前后端 🔄 | 模拟盘计划中
 
 ## 一、定位
@@ -24,8 +24,8 @@
 | 指标 | CN_A (5,493) | CN_HK (2,743) | US (1,002) |
 |------|:---:|:---:|:---:|
 | FCF Yield | ✅ 3,612 | ✅ 1,950 | ✅ 872 |
-| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ✅ 1,002 |
-| PB | ✅ 5,191 | ✅ 2,724 | ✅ 1,002（从 book_value_per_share 计算） |
+| PE (TTM) | ✅ 5,191 | ✅ 2,724 | ✅ 自算：market cap / TTM net income |
+| PB | ✅ 5,191 | ✅ 2,724 | ✅ 自算：market cap / latest annual equity |
 | 市值 | ✅ 5,191 | ✅ 2,724 | ✅ 1,002 |
 | 毛利率 | ✅ 3,517 | ✅ 2,475 | ✅ 70.9% 股票级 |
 | 营业利润率 | ✅ | ✅ | ✅ |
@@ -48,7 +48,7 @@
 3. ~~**ROE 覆盖率低**~~ ✅ 覆盖率已修复：`mv_financial_indicator` 三层 fallback（parent_equity → total_equity → total_assets - total_liab），A/HK 共 6,280 只有 ROE。注意这只解决覆盖率；年度平均权益、归母口径配对和低权益质量治理仍按 [`FINANCIAL_METRICS_DATA_PREREQUISITES.md`](FINANCIAL_METRICS_DATA_PREREQUISITES.md) 实施。
 4. ~~**物化视图刷新滞后**~~ ✅ 已修复：`sync_financial`/`sync_dividend`/`daily_quote` 完成后自动 `REFRESH MATERIALIZED VIEW`。
 5. ~~**美股 TTM 时效性差**~~ ✅ 已修复：`mv_us_indicator_ttm` 已实现公式法 TTM（latest_cumulative + last_annual - prev_year_same_period），与 CN 链路一致。
-6. ~~**美股 PB 数据错误**~~ ✅ 已修复：腾讯 API 返回的 PB 值系统性错误（AAPL 显示 0.20 而非 ~55），改为从 `mv_us_financial_indicator.book_value_per_share` 计算 `close / bvps`。
+6. ~~**美股 PE/PB 数据错误**~~ ✅ 生产筛选已修复（`511aea1`）：停用腾讯 `daily_quote.pe_ttm/pb`；PE 使用 `market_cap / net_profit_ttm`，PB 使用 `market_cap / latest annual equity`。这属于生产安全修复；最新季度普通股权益、NCI/优先股拆分和 latest-restated/PIT 接入仍按财务指标前置治理方案实施。
 7. ~~**美股行业分类缺失**~~ ✅ 已修复：Russell 1000 新增 483 只股票无 CIK/industry，从 `us_income_statement` 回填 CIK 后同步 SIC 行业分类，1,002 只全覆盖。
 8. ~~**港股 CAPEX 缺失**~~ ✅ 已修复：东方财富 2024+ 年报不再包含 购建固定资产(005005)，从同年半年度/季度报告取值 fallback。修复 2,735 只港股、触发 206 次 fallback。
 9. ~~**A 股利润表大量缺失**~~ ✅ 已修复：1,873 只 A 股无收入数据，根因是增量逻辑只看 MAX(report_date) 不检查表完整性。修复后覆盖 3,545→5,193 只（94.5%）。
@@ -56,7 +56,7 @@
 
 ### 2.3 结论
 
-三个市场的基础查询链路均已可用。美股已完成 Russell 1000 扩展（1,002 只）、公式法 TTM、行业分类全覆盖、PB 修复，选股筛选器和个股分析器均支持 US；但跨财年正式比较、严格 filing PIT、年度平均权益与报告类型历史治理尚需按前置方案完成。
+三个市场的基础查询链路均已可用。美股已完成 Russell 1000 扩展（1,002 只）、公式法 TTM、行业分类全覆盖、筛选 PE/PB 自算和 ROE 年份连续性修复，选股筛选器和个股分析器均支持 US；但最新季度普通股权益、严格 filing PIT、年度平均权益与报告类型历史治理尚需按前置方案完成。
 
 ## 三、系统设计
 
