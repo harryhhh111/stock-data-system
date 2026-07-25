@@ -99,6 +99,36 @@ def _is_git_dirty() -> bool:
         return False
 
 
+def _parse_stock_codes(raw: str) -> list[str]:
+    """解析并校验 --stocks 输入。
+
+    规则：
+    - 按逗号拆分，去除每个代码首尾空白；
+    - 不允许空代码（如尾部逗号、连续逗号或纯空白项）；
+    - 不允许重复代码；
+    - 返回大写后的唯一有效代码列表，保证“声明数量 == 唯一有效数量”。
+    """
+    parts = [part.strip().upper() for part in raw.split(",")]
+
+    empties = [i + 1 for i, p in enumerate(parts) if p == ""]
+    if empties:
+        raise ValueError(f"--stocks 包含空股票代码，位置: {empties}")
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for code in parts:
+        if code in seen:
+            duplicates.append(code)
+        seen.add(code)
+    if duplicates:
+        raise ValueError(f"--stocks 包含重复股票代码: {sorted(set(duplicates))}")
+
+    if not parts:
+        raise ValueError("--stocks 未提供任何股票代码")
+
+    return parts
+
+
 # ═══════════════════════════════════════════════════════════
 # Batch / Item CRUD
 # ═══════════════════════════════════════════════════════════
@@ -483,7 +513,11 @@ def _save_manifest(manifest: dict[str, Any]) -> Path:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     _require_us_market()
-    stock_codes = [s.strip().upper() for s in args.stocks.split(",")]
+    try:
+        stock_codes = _parse_stock_codes(args.stocks)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
 
     sources = _discover_sources(stock_codes)
     found_stocks = {s["stock_code"] for s in sources}
@@ -515,7 +549,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_stage(args: argparse.Namespace) -> int:
     _require_us_market()
-    stock_codes = [s.strip().upper() for s in args.stocks.split(",")]
+    try:
+        stock_codes = _parse_stock_codes(args.stocks)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
     batch_id = str(args.batch_id)
     dry_run = args.dry_run
 

@@ -23,7 +23,9 @@
 
 ## 2. 执行过程修正
 
-第一次 stage 因命令行参数尾部多余逗号导致 `stock_count=101`（含空字符串），verify 失败。已废弃该批次（`66466017-2086-4577-907c-e7f1c469a861`），并用无尾部逗号的股票列表重新 stage/verify/approve/apply。本报告仅记录最终通过的批次。
+第一次 stage 因命令行参数尾部多余逗号导致 `stock_count=101`（含空字符串），verify 失败。该批次（`66466017-2086-4577-907c-e7f1c469a861`）已正式 rollback 为 `rejected`，错误信息 `EMPTY_STOCK_CODE_IN_CLI_INPUT`。随后用无尾部逗号的股票列表重新 stage/verify/approve/apply。本报告仅记录最终通过的批次。
+
+作为收尾，CLI 已增加 `_parse_stock_codes`：去除首尾空白、拒绝空代码、拒绝重复代码，并在创建 batch 前保证声明数量等于唯一有效股票数量。
 
 ## 3. 备份与恢复点
 
