@@ -24,13 +24,10 @@ from core.transformers.us_gaap import (
     BALANCE_TAG_PRIORITY,
     INCOME_TAG_PRIORITY,
 )
-from core.us_financial_exclusion import (
-    BUSINESS_REASON_CODES,
-    TECHNICAL_REASON_CODES,
-)
-from db import execute
+from core.selectors.us_financial import SelectedFact, USFactSelector
 from quant.metrics.roic import (
     CURRENCY_MISMATCH,
+    DEBT_ZERO_CONFIRMED,
     EQUITY_NCI_COMPOSED,
     EQUITY_TOTAL_FALLBACK,
     INVALID_NO_CASH,
@@ -171,122 +168,53 @@ def _empty_dimensions(dims: Any) -> bool:
     return False
 
 
+def _selected_fact_to_dict(fact: SelectedFact) -> dict[str, Any]:
+    return {
+        "fact_version_id": fact.fact_version_id,
+        "stock_code": fact.stock_code,
+        "statement": fact.statement,
+        "standard_field": fact.standard_field,
+        "period_kind": fact.period_kind,
+        "period_start": fact.period_start,
+        "report_date": fact.report_date,
+        "unit": fact.unit,
+        "value_numeric": fact.value_numeric,
+        "value_text": fact.value_text,
+        "accession_no": fact.accession_no,
+        "form": fact.form,
+        "filed_date": fact.filed_date,
+        "dimensions": fact.dimensions,
+        "sec_tag": fact.sec_tag,
+        "context_hash": fact.context_hash,
+        "fiscal_period_raw": fact.fiscal_period_raw,
+    }
+
+
 def load_facts(
     stock_codes: list[str] | None = None,
     fields: list[str] | None = None,
     as_of_date: date | None = None,
 ) -> list[dict[str, Any]]:
-    """加载可用于 ROIC 计算的事实，排除 active exclusion 与 as-of 未来数据。"""
-    reference_date = as_of_date or datetime.now().date()
+    """加载可用于 ROIC 计算的事实。
 
-    sql = """
-        SELECT
-            f.fact_version_id,
-            f.stock_code,
-            f.statement,
-            f.standard_field,
-            f.period_kind,
-            f.period_start,
-            f.report_date,
-            f.unit,
-            f.value_numeric,
-            f.value_text,
-            f.accession_no,
-            f.form,
-            f.filed_date,
-            f.dimensions,
-            f.sec_tag,
-            f.context_hash,
-            f.fiscal_period_raw,
-            f.fiscal_year
-        FROM us_financial_fact_version f
-        LEFT JOIN us_financial_fact_exclusion e
-          ON e.fact_version_id = f.fact_version_id
-         AND e.status = 'active'
-         AND (
-             e.reason_code = ANY(%s)
-             OR (
-                 e.reason_code = ANY(%s)
-                 AND e.effective_from::date <= %s
-             )
-         )
-        WHERE e.fact_version_id IS NULL
+    通过 USFactSelector 完成 latest-restated / as-of 选择，装配层不再自行模拟。
     """
-    params: list[Any] = [
-        list(TECHNICAL_REASON_CODES),
-        list(BUSINESS_REASON_CODES),
-        reference_date,
-    ]
-
-    if stock_codes:
-        placeholders = ", ".join(["%s"] * len(stock_codes))
-        sql += f" AND f.stock_code IN ({placeholders})"
-        params.extend(stock_codes)
-
-    if fields:
-        placeholders = ", ".join(["%s"] * len(fields))
-        sql += f" AND f.standard_field IN ({placeholders})"
-        params.extend(fields)
-
-    if as_of_date:
-        sql += " AND f.filed_date <= %s"
-        params.append(as_of_date)
-
-    sql += """
-        ORDER BY f.stock_code, f.standard_field, f.period_kind, f.report_date,
-                 f.filed_date, f.fact_version_id
-    """
-
-    rows = execute(sql, tuple(params), fetch=True)
-    if not rows:
-        return []
-
-    col_names = [
-        "fact_version_id",
-        "stock_code",
-        "statement",
-        "standard_field",
-        "period_kind",
-        "period_start",
-        "report_date",
-        "unit",
-        "value_numeric",
-        "value_text",
-        "accession_no",
-        "form",
-        "filed_date",
-        "dimensions",
-        "sec_tag",
-        "context_hash",
-        "fiscal_period_raw",
-        "fiscal_year",
-    ]
-    result = []
-    for row in rows:
-        d = dict(zip(col_names, row))
-        dims = d.get("dimensions")
-        if hasattr(dims, "adapted"):
-            dims = dims.adapted
-        if isinstance(dims, str):
-            dims = json.loads(dims)
-        d["dimensions"] = dims or {}
-        result.append(d)
-    return result
+    selector = USFactSelector()
+    basis = "as-of" if as_of_date else "latest-restated"
+    selected = selector.select(
+        stock_codes=stock_codes,
+        fields=fields,
+        basis=basis,
+        as_of_date=as_of_date,
+    )
+    return [_selected_fact_to_dict(f) for f in selected]
 
 
 # ── 事实选择辅助 ────────────────────────────────────────────
-def _tag_rank(sec_tag: str | None, primary_tags: list[str]) -> int:
-    try:
-        return primary_tags.index(sec_tag) if sec_tag else len(primary_tags)
-    except ValueError:
-        return len(primary_tags)
-
-
-def _choose_fact_for_period(
+def _pick_fact(
     facts: list[dict[str, Any]],
     stock_code: str,
     standard_field: str,
-    primary_tags: list[str],
     *,
     period_kind: str | None = None,
     form_prefixes: tuple[str, ...] | None = None,
@@ -296,21 +224,18 @@ def _choose_fact_for_period(
     report_date_max: date | None = None,
     prefer_empty_dimensions: bool = True,
 ) -> dict[str, Any] | None:
-    """在给定约束下选择最匹配的事实。
+    """在已由 USFactSelector 选择过的事实中，按约束过滤出一条。
 
-    优先级：
-    1. 维度为空（consolidated）；
-    2. sec_tag 在 primary_tags 中更靠前；
-    3. report_date 最新；
-    4. filed_date 最新。
+    选择器已经负责 latest-restated / as-of / exclusion 语义；本函数只做过滤，
+    不再自行按 filed_date 或 tag priority 重新排序。
     """
     candidates = [f for f in facts if f["stock_code"] == stock_code and f["standard_field"] == standard_field]
     if period_kind:
         candidates = [f for f in candidates if f["period_kind"] == period_kind]
     if form_prefixes:
-        candidates = [f for f in candidates if f["form"] and f["form"].startswith(form_prefixes)]
+        candidates = [f for f in candidates if f.get("form") and f["form"].startswith(form_prefixes)]
     if fiscal_period_raw:
-        candidates = [f for f in candidates if f["fiscal_period_raw"] == fiscal_period_raw]
+        candidates = [f for f in candidates if f.get("fiscal_period_raw") == fiscal_period_raw]
     if report_date:
         candidates = [f for f in candidates if f["report_date"] == report_date]
     if report_date_min:
@@ -325,13 +250,12 @@ def _choose_fact_for_period(
         empty = [f for f in candidates if _empty_dimensions(f.get("dimensions"))]
         if empty:
             candidates = empty
-        else:
-            # 没有 consolidated 事实时仍然选一条，但打上标记由调用方处理
-            pass
 
+    if not candidates:
+        return None
+    # 同字段不同报告期：取最新报告期；同报告期多版本在 selector 阶段已解决
     candidates.sort(
         key=lambda f: (
-            _tag_rank(f.get("sec_tag"), primary_tags),
             -(f["report_date"] or date.min).toordinal(),
             -(f["filed_date"] or date.min).toordinal(),
         ),
@@ -371,11 +295,10 @@ def run_field_audit(
         for standard_field, primary_tags in REQUIRED_FIELDS.items():
             is_flow = standard_field in REQUIRED_FLOW_FIELDS
             # 年度/财年口径：流量取 FY duration，余额取 FY instant
-            fact = _choose_fact_for_period(
+            fact = _pick_fact(
                 facts,
                 stock,
                 standard_field,
-                primary_tags,
                 period_kind="duration" if is_flow else "instant",
                 form_prefixes=("10-K", "10-K/A"),
                 fiscal_period_raw="FY",
@@ -402,6 +325,7 @@ def run_field_audit(
 
             primary_tag = primary_tags[0] if primary_tags else None
             is_primary = fact.get("sec_tag") == primary_tag
+            # 由于 USFactSelector 已完成 latest-restated 选择，is_fallback 仅表示 sec_tag 不是首选 tag
             entries.append(
                 FieldAuditEntry(
                     stock_code=stock,
@@ -460,11 +384,10 @@ def _select_equity(
 ) -> tuple[Decimal | None, list[str], list[SelectedFactRef]]:
     """按优先级选择权益并记录 fallback。"""
     refs: list[SelectedFactRef] = []
-    fact = _choose_fact_for_period(
+    fact = _pick_fact(
         facts,
         stock_code,
         "total_equity_including_nci",
-        REQUIRED_BALANCE_FIELDS["total_equity_including_nci"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
@@ -475,21 +398,19 @@ def _select_equity(
         return _to_decimal(fact["value_numeric"]) or Decimal(0), [], refs
 
     # 次选：total_equity + noncontrolling_interest
-    te_fact = _choose_fact_for_period(
+    te_fact = _pick_fact(
         facts,
         stock_code,
         "total_equity",
-        REQUIRED_BALANCE_FIELDS["total_equity"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
         report_date=report_date,
     )
-    nci_fact = _choose_fact_for_period(
+    nci_fact = _pick_fact(
         facts,
         stock_code,
         "noncontrolling_interest",
-        REQUIRED_BALANCE_FIELDS["noncontrolling_interest"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
@@ -517,21 +438,19 @@ def _select_debt(
     fiscal_period_raw: str | None = "FY",
 ) -> tuple[Decimal | None, list[str], list[SelectedFactRef]]:
     refs: list[SelectedFactRef] = []
-    st_fact = _choose_fact_for_period(
+    st_fact = _pick_fact(
         facts,
         stock_code,
         "short_term_debt",
-        REQUIRED_BALANCE_FIELDS["short_term_debt"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
         report_date=report_date,
     )
-    lt_fact = _choose_fact_for_period(
+    lt_fact = _pick_fact(
         facts,
         stock_code,
         "long_term_debt",
-        REQUIRED_BALANCE_FIELDS["long_term_debt"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
@@ -555,6 +474,9 @@ def _select_debt(
         # 仅短期债务缺失：很多公司确实没有短期借款，按 0 处理并标记
         flags.append(MISSING_SHORT_TERM_DEBT)
         st = Decimal(0)
+    # 仅当长短期债务事实均存在且均为 0 时，才确认总债务为零
+    if st_fact is not None and lt_fact is not None and st == 0 and lt == 0:
+        flags.append(DEBT_ZERO_CONFIRMED)
     return st + lt, flags, refs
 
 
@@ -567,21 +489,19 @@ def _select_lease(
     fiscal_period_raw: str | None = "FY",
 ) -> tuple[Decimal, list[str], list[SelectedFactRef]]:
     refs: list[SelectedFactRef] = []
-    cur_fact = _choose_fact_for_period(
+    cur_fact = _pick_fact(
         facts,
         stock_code,
         "current_operating_lease",
-        REQUIRED_BALANCE_FIELDS["current_operating_lease"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
         report_date=report_date,
     )
-    nc_fact = _choose_fact_for_period(
+    nc_fact = _pick_fact(
         facts,
         stock_code,
         "non_current_operating_lease",
-        REQUIRED_BALANCE_FIELDS["non_current_operating_lease"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
@@ -607,21 +527,19 @@ def _select_cash_and_investments(
     fiscal_period_raw: str | None = "FY",
 ) -> tuple[Decimal | None, Decimal, list[str], list[SelectedFactRef]]:
     refs: list[SelectedFactRef] = []
-    cash_fact = _choose_fact_for_period(
+    cash_fact = _pick_fact(
         facts,
         stock_code,
         "cash_and_equivalents",
-        REQUIRED_BALANCE_FIELDS["cash_and_equivalents"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
         report_date=report_date,
     )
-    inv_fact = _choose_fact_for_period(
+    inv_fact = _pick_fact(
         facts,
         stock_code,
         "short_term_investments",
-        REQUIRED_BALANCE_FIELDS["short_term_investments"],
         period_kind="instant",
         form_prefixes=form_prefixes,
         fiscal_period_raw=fiscal_period_raw,
@@ -809,11 +727,10 @@ def build_annual_roic(
     # 1. 确定最新完整财年：在所有相关流量字段的 FY 事实中取最大 report_date
     fy_flow_facts: list[dict[str, Any]] = []
     for sf in REQUIRED_FLOW_FIELDS:
-        f = _choose_fact_for_period(
+        f = _pick_fact(
             facts,
             stock_code,
             sf,
-            REQUIRED_FLOW_FIELDS[sf],
             period_kind="duration",
             form_prefixes=("10-K", "10-K/A"),
             fiscal_period_raw="FY",
@@ -831,41 +748,37 @@ def build_annual_roic(
     tax_fact = None
     interest_fact = None
     if end_date:
-        op_fact = _choose_fact_for_period(
+        op_fact = _pick_fact(
             facts,
             stock_code,
             "operating_income",
-            REQUIRED_FLOW_FIELDS["operating_income"],
             period_kind="duration",
             form_prefixes=("10-K", "10-K/A"),
             fiscal_period_raw="FY",
             report_date=end_date,
         )
-        ibt_fact = _choose_fact_for_period(
+        ibt_fact = _pick_fact(
             facts,
             stock_code,
             "income_before_tax",
-            REQUIRED_FLOW_FIELDS["income_before_tax"],
             period_kind="duration",
             form_prefixes=("10-K", "10-K/A"),
             fiscal_period_raw="FY",
             report_date=end_date,
         )
-        tax_fact = _choose_fact_for_period(
+        tax_fact = _pick_fact(
             facts,
             stock_code,
             "income_tax_expense",
-            REQUIRED_FLOW_FIELDS["income_tax_expense"],
             period_kind="duration",
             form_prefixes=("10-K", "10-K/A"),
             fiscal_period_raw="FY",
             report_date=end_date,
         )
-        interest_fact = _choose_fact_for_period(
+        interest_fact = _pick_fact(
             facts,
             stock_code,
             "interest_expense",
-            REQUIRED_FLOW_FIELDS["interest_expense"],
             period_kind="duration",
             form_prefixes=("10-K", "10-K/A"),
             fiscal_period_raw="FY",
@@ -1041,9 +954,12 @@ def _flow_facts_by_period(
     facts: list[dict[str, Any]],
     stock_code: str,
     standard_field: str,
-    primary_tags: list[str],
 ) -> dict[tuple[date, str], dict[str, Any]]:
-    """把某流量字段按 (report_date, fp) 去重，优先 primary tag、累计口径、空维度。"""
+    """把某流量字段按 (report_date, fp) 分组。
+
+    输入应已由 USFactSelector 完成 latest-restated / as-of 选择，因此每个
+    (report_date, fp) 最多只有一条 consolidated 事实，无需再次排序或选优。
+    """
     result: dict[tuple[date, str], dict[str, Any]] = {}
     for f in facts:
         if f["stock_code"] != stock_code or f["standard_field"] != standard_field:
@@ -1056,20 +972,8 @@ def _flow_facts_by_period(
         if not _empty_dimensions(f.get("dimensions")):
             continue
         key = (f["report_date"], fp)
-        existing = result.get(key)
-        if existing is None:
-            result[key] = f
-            continue
-        # 同 (report_date, fp) 保留更优 tag、最早 period_start（累计口径）、更晚 filed_date
-        rank_new = _tag_rank(f.get("sec_tag"), primary_tags)
-        rank_old = _tag_rank(existing.get("sec_tag"), primary_tags)
-        ps_new = f.get("period_start") or date.max
-        ps_old = existing.get("period_start") or date.max
-        if (rank_new, ps_new, -(f["filed_date"] or date.min).toordinal()) < (
-            rank_old,
-            ps_old,
-            -(existing["filed_date"] or date.min).toordinal(),
-        ):
+        # 选择器已保证同 key 只有一条；如有重复，保留第一条
+        if key not in result:
             result[key] = f
     return result
 
@@ -1119,8 +1023,8 @@ def build_ttm_roic(
 
     # 1. 为每个流量字段建立累计口径索引：key = (report_date, fp)
     by_field: dict[str, dict[tuple[date, str], dict[str, Any]]] = {}
-    for sf, tags in REQUIRED_FLOW_FIELDS.items():
-        by_field[sf] = _flow_facts_by_period(facts, stock_code, sf, tags)
+    for sf in REQUIRED_FLOW_FIELDS:
+        by_field[sf] = _flow_facts_by_period(facts, stock_code, sf)
 
     # 2. 选择最新可构造 EBIT 的报告期
     primary_candidates = set(by_field["operating_income"].keys())

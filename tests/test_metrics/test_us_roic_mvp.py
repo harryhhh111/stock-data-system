@@ -114,7 +114,7 @@ def test_flow_facts_by_period_prefers_empty_dimensions() -> None:
         _fact(stock, "income", "operating_income", "duration", "2024-03-31", "2024-01-01", 100, fp="Q1", fy=2024, fact_id=1),
         _fact(stock, "income", "operating_income", "duration", "2024-03-31", "2024-01-01", 999, fp="Q1", fy=2024, dimensions={"segment": "intl"}, fact_id=2),
     ]
-    bp = _flow_facts_by_period(facts, stock, "operating_income", ["OperatingIncomeLoss"])
+    bp = _flow_facts_by_period(facts, stock, "operating_income")
     selected = bp[(date(2024, 3, 31), "Q1")]
     assert selected["value_numeric"] == Decimal(100)
 

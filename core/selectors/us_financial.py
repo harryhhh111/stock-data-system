@@ -51,6 +51,8 @@ class SelectedFact:
     selection_reason: str
     quality_flags: list[str] = field(default_factory=list)
     candidate_count: int = 0
+    form: str = ""
+    fiscal_period_raw: str | None = None
 
 
 class USFactSelector:
@@ -242,6 +244,8 @@ class USFactSelector:
             selection_reason=reason,
             quality_flags=flags,
             candidate_count=candidate_count,
+            form=fact.get("form") or "",
+            fiscal_period_raw=fact.get("fiscal_period_raw"),
         )
 
     def _load_facts(
@@ -268,7 +272,8 @@ class USFactSelector:
                 f.filed_date,
                 f.dimensions,
                 f.sec_tag,
-                f.context_hash
+                f.context_hash,
+                f.fiscal_period_raw
             FROM us_financial_fact_version f
             LEFT JOIN us_financial_fact_exclusion e
               ON e.fact_version_id = f.fact_version_id
@@ -323,6 +328,7 @@ class USFactSelector:
             "dimensions",
             "sec_tag",
             "context_hash",
+            "fiscal_period_raw",
         ]
         return [dict(zip(cols, row)) for row in rows]
 
