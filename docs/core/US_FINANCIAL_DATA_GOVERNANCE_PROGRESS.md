@@ -1,7 +1,8 @@
 # 美股财务数据治理进度总览
 
 > 最后更新：2026-07-24
-> 当前状态：P0 已关闭；版本层 Phase 1A 已关闭；Phase 1B v1 已关闭；Phase 2 Gate A 第一批已完成；生产消费者尚未切换。
+> 当前状态：P0 已关闭；版本层 Phase 1A 已关闭；Phase 1B v1 已关闭；Phase 2 Gate B 准入证据包已形成（待批准/推送）；ROIC MVP shadow 部分完成但受债务数据阻塞；生产消费者尚未切换。
+> 仓库状态：本地 `main` 领先 `origin/main`；Gate B 证据、ROIC MVP 与文档同步提交待推送，生产 apply 仍需负责人明确批准。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
 
@@ -22,10 +23,10 @@
 | 生产筛选 PE/PB | ✅ 快速修复完成 | 停用腾讯 PE/PB，按市值/TTM 利润和市值/权益自算 | 接入 latest-restated selector；完善普通股口径与最新季度权益 |
 | ROE 年份连续性 | ✅ 已修复 | 不再过滤 NULL 后排序；缺年/缺值不再由旧年份顶替 | 年度 ROE 改为平均权益并增加异常 flags |
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
-| Phase 2 历史事实版本回填 | 🟡 Gate A 第一批完成 | DDL、共享 writer、fact-source/exclusion、manifest、完整 CLI 状态机及安全回滚已落地 | Gate A 剩余测试库演练与 Gate B 准入验收 |
+| Phase 2 历史事实版本回填 | 🟡 Gate B 准入证据已形成（待批准） | Gate A 第一批、Round 2/3 同源幂等、checksum 稳定、旧宽表不变、角色权限与 SAVEPOINT 验证已落地 | 负责人批准 Gate B；批准后执行 5 只 canary 生产版本层 apply/post-verify，再进入 Gate C |
 | 当前分析 latest-restated | ⬜ 未切换 | 数据底座已具备 | 影子选择、差异报告、切换消费者 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
-| ROIC | 🟡 方案完成 | 前置与本体方案已形成 | 权益/债务/税率治理完成后落地 |
+| ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
 
 ## 2. 已完成提交
 
@@ -44,8 +45,11 @@
 | `f0fb03c` | Phase 1B v1 收尾：经济事实键跨进程稳定哈希 |
 | `0958d7c` | Phase 1B v1 收尾：checksum schema v2、DDL 移除硬编码 public schema |
 | `afd08e3` | Phase 1B v1 收尾：checksum manifest 排序字段补全 |
+| `21f133a`, `beb3c5e`, `07687dc`, `fd16c8d` | Phase 2 Gate B 准入证据包、角色权限收紧、SAVEPOINT 验证、Round 2/3 同源幂等证据 |
+| `c5c610e`, `c003ff0`, `87f0f88`, `eee84e1`, `518109a` | ROIC MVP shadow：`quant/metrics` 包、5 只 canary 产物、债务缺失策略收紧 |
+| `cf1a69b` | QUANT_SYSTEM_PLAN 同步 PR1：美股筛选 PE/PB 自算、ROE 年份连续性修复 |
 
-以上实现提交均已进入 `main` 和 `origin/main`。
+`511aea1` 及之前、Phase 1B 实现提交已进入 `main` 和 `origin/main`。截至本次更新，Gate B 证据、ROIC MVP 与 `cf1a69b` 仍在本地 `main`，尚未推送 `origin/main`；生产 apply 仍需负责人明确批准。
 
 ## 3. Phase 1A Canary 基线
 
@@ -101,12 +105,12 @@ PB = latest market_cap / latest annual equity （仅权益 > 0）
 
 ## 5. 下一步执行顺序
 
-1. Phase 2：从 snapshot/cache 以 staging-first 方式分批回填全市场历史 fact version；
-2. 每批保存独立 run/batch、行数、checksum 和错误清单；
+1. Gate B：负责人审核准入证据包；批准后才执行 5 只 canary 生产版本层 apply/post-verify；
+2. Gate C：20–50 只异常覆盖样本生产 shadow，每批保存独立 run/batch、行数、checksum 和错误清单；
 3. 对比旧宽表与新 selector，完成当前分析切换（生产消费者切换）；
 4. 切换严格 PIT 回测；
-5. 完成平均权益 ROE、common equity、CapEx 等指标前置治理；
-6. 落地 ROIC 并接入筛选、分析和 PIT 回测。
+5. 完成平均权益 ROE、common equity、CapEx、债务/租赁输入等指标前置治理；
+6. ROIC 在债务/租赁输入可信后重新验收，通过后再考虑接入筛选、分析和 PIT 回测。
 
 ## 6. 阶段门槛
 
