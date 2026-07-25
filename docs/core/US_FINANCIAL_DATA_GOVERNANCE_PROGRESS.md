@@ -1,7 +1,7 @@
 # 美股财务数据治理进度总览
 
 > 最后更新：2026-07-25
-> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate C 30 只生产 shadow 已通过，下一步为 Gate C 100 只分层样本；ROIC MVP 因债务数据暂停；生产消费者尚未切换。
+> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate C 100 只分层 shadow 已通过，下一步为全市场分批回填（≤250 只/批）；ROIC MVP 因债务数据暂停；生产消费者尚未切换。
 > 项目组织：个人所有者 + 多个 agent，不按企业多人团队执行 DBA 分工或职责分离；数据库专用角色为可选加固。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
@@ -23,7 +23,7 @@
 | 生产筛选 PE/PB | ✅ 快速修复完成 | 停用腾讯 PE/PB，按市值/TTM 利润和市值/权益自算 | 接入 latest-restated selector；完善普通股口径与最新季度权益 |
 | ROE 年份连续性 | ✅ 已修复 | 不再过滤 NULL 后排序；缺年/缺值不再由旧年份顶替 | 年度 ROE 改为平均权益并增加异常 flags |
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
-| Phase 2 历史事实版本回填 | 🟡 Gate C 30 只已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、30 只分层 shadow、备份/manifest/post-verify、旧宽表 checksum 保护均通过 | Gate C：100 只分层样本 |
+| Phase 2 历史事实版本回填 | 🟢 Gate C 100 只已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、备份/manifest/post-verify、旧宽表 checksum 保护均通过 | 全市场分批回填（≤250 只/批） |
 | 当前分析 latest-restated | ⬜ 未切换 | 数据底座已具备 | 影子选择、差异报告、切换消费者 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |

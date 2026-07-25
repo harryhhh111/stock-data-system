@@ -1,6 +1,6 @@
 # 美股财报版本化 Phase 2 全市场历史回填 Runbook
 
-> 状态：Gate A、Gate B 已完成；Gate C 30 只生产 shadow 已通过，下一步为 Gate C 100 只分层样本
+> 状态：Gate A、Gate B 已完成；Gate C 100 只分层 shadow 已通过，下一步为全市场分批回填（≤250 只/批）
 > 日期：2026-07-25
 > 适用环境：`STOCK_MARKETS=US` 海外服务器  
 > 前置状态：Phase 1A、Phase 1B v1 已关闭；生产消费者尚未切换  
