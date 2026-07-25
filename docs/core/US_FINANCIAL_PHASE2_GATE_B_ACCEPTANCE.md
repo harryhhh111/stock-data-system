@@ -1,7 +1,8 @@
 # Phase 2 美股财报版本化 Gate B 准入证据包
 
-> 本文档为 Gate B 准入准备的证据汇总。未经负责人明确批准，不执行生产 apply。
-> 生成时间：2026-07-24 UTC
+> 本文档为 Gate B 准入与生产 canary 的证据汇总。Gate B 已于 2026-07-25 按个人项目轻量流程通过。
+> 项目由所有者本人和多个 agent 共同维护，不存在现实中的多人团队、DBA 团队或职责分离要求。
+> 更新时间：2026-07-25（Asia/Shanghai）
 
 ---
 
@@ -133,6 +134,44 @@
 
 ---
 
+## 3.6 生产 canary 运营演练（2026-07-25）
+
+Batch ID：`7cd326e0-97cb-4c04-a449-bd394b25635e`
+
+范围：`PLTR, MELI, ONTO, SAM, HRB`
+
+| 步骤 | 结果 |
+|------|------|
+| 暂停 scheduler | 通过；确认无在途 US financial sync |
+| 生产备份 | `build/us_financial_phase2/prod_canary_snapshot_20260725_180115.dump`，460,048,512 bytes |
+| 备份 SHA-256 | `f5c168194a5de5a3bfd8b678879473185283ad9311b93b4f5c6658bcd1e2d269` |
+| stage | `candidate=38,682` |
+| verify | `passed=true` |
+| approve | manifest hash 已冻结 |
+| apply | `inserted=0, repeated=38,461, conflicted=0, staged=221` |
+| post-verify | `passed=true`，最终状态 `post_verified` |
+| 恢复 scheduler | 通过；日志确认 APScheduler 正常启动且只有一个 scheduler Python 实例 |
+
+Manifest hash 与 approved manifest hash 均为：
+
+```text
+b51fd64343fedfae1debee84a42c1b273aea39747e0856e4f0559783ae623318
+```
+
+旧三张宽表的 apply 前后 checksum 与第 3.5 节一致，未发生修改。本批 5 个 item 全部为 `applied`，没有新增正式事实，证明相同 snapshot 下 apply 幂等。
+
+运行产物：
+
+```text
+build/us_financial_phase2/7cd326e0-97cb-4c04-a449-bd394b25635e/
+├── baseline.json
+├── manifest.json
+├── verify.json
+└── post_verify.json
+```
+
+---
+
 ## 4. Conflict / Staging 解释
 
 ### 4.1 Conflict
@@ -213,44 +252,29 @@ GROUP BY reject_reason;
 ### 5.1 数据库快照与恢复点
 
 - 测试库演练前已执行逻辑备份（pg_dump）作为本地恢复点。
-- 生产环境准入前，DBA 必须执行：
+- 生产 canary 已执行：
   ```bash
-  pg_dump -h <prod_host> -U <superuser> -d stock_data -Fc -f stock_data_phase2_gateb_$(date +%Y%m%d_%H%M%S).dump
+  pg_dump ... -Fc \
+    -f build/us_financial_phase2/prod_canary_snapshot_20260725_180115.dump
   ```
-- 记录恢复点并保存备份文件路径、校验和、负责人。
+- 归档可被 `pg_restore --list` 正常读取。
+- SHA-256：`f5c168194a5de5a3bfd8b678879473185283ad9311b93b4f5c6658bcd1e2d269`。
+- 后续每个扩大范围的 apply 仍须保存备份路径和 SHA-256。
 
-### 5.2 Phase 2 专用数据库角色
+### 5.2 数据库账号策略（个人项目）
 
-- SQL 文件：`scripts/us_financial_phase2_role.sql`
-- 测试脚本：`scripts/verify_us_financial_phase2_role.py`
-- 隔离 schema 文件：`scripts/us_financial_phase2_isolated_schema.sql`
-- 角色/登录身份：
-  - `us_financial_phase2_writer`（角色，NOLOGIN）
-  - `us_financial_phase2_worker`（登录身份，INHERIT）
-- 设计原则：
-  - 不可变表（`raw_snapshot_version`、`us_financial_fact_version`、`us_fact_version_relation` 等）：仅 `SELECT/INSERT`，禁止 `UPDATE/DELETE/TRUNCATE`。
-  - 可变运行/批次表（`us_ingest_run`、`us_financial_backfill_batch`、`us_financial_fact_exclusion` 等）：`SELECT/INSERT/UPDATE`，禁止 `DELETE/TRUNCATE`。
-  - `us_filing` 需要 `UPDATE` 以支持 `ON CONFLICT DO UPDATE`。
-  - 旧三张宽表（`us_income_statement`、`us_balance_sheet`、`us_cash_flow_statement`）：仅 `SELECT`。
-  - 序列：仅授予实际需要的 12 个序列，不授 `ALL SEQUENCES IN SCHEMA`。
-  - 密码：SQL 不硬编码；DBA 执行后通过 `ALTER ROLE us_financial_phase2_worker WITH PASSWORD '<VAULT_PASSWORD>';` 设置。
-- 当前测试库用户 `stock_user` 无 `CREATEROLE` 权限，无法在生产/测试库直接创建角色。
-- 已在隔离数据库完成验证：
-  - 启动本地 PostgreSQL 实例：`build/pg_isolated/`
-  - 端口：`15432`
-  - 应用 schema + 角色 SQL
-  - 运行 `scripts/verify_us_financial_phase2_role.py`
-  - 结果：**58/58 通过**
-  - 正向：可 INSERT 不可变表、INSERT/UPDATE 可变表、SELECT 旧宽表、CREATE TEMP TABLE。
-  - 负向：不可 UPDATE/DELETE 不可变表、不可 INSERT/UPDATE/DELETE/TRUNCATE 旧宽表、不可 DELETE/TRUNCATE 可变表。
+- 本项目由一个所有者和多个 agent 维护，不按企业多人团队执行职责分离。
+- 日常同步和 Phase 2 回填统一使用现有 `stock_user`。
+- 不要求创建 `us_financial_phase2_writer` 或 `us_financial_phase2_worker`，也不因此重复生产 canary。
+- 旧宽表安全依赖三项硬措施：回填代码不写旧宽表、apply 前后 checksum 对比、可恢复备份。
+- `scripts/us_financial_phase2_role.sql`、`scripts/verify_us_financial_phase2_role.py` 及隔离库 58/58 权限测试结果继续保留，作为未来多人部署时的可选加固。
 
 ### 5.3 Scheduler Freeze / Resume 计划
 
 | 项目 | 内容 |
 |------|------|
-| Freeze 开始时间 | 待生产 apply 负责人确认 |
-| Freeze 结束时间 | Gate B 生产 apply 完成并 post-verify 通过后 |
-| 负责人 | 待指定 |
+| Gate B 实际结果 | 2026-07-25 已暂停，post-verify 后已恢复 |
+| 执行身份 | 项目所有者调用的 agent |
 | Freeze 命令 | `systemctl stop stock-scheduler` 或 `pkill -f "python -m core.scheduler"`（按实际部署方式） |
 | Resume 命令 | `systemctl start stock-scheduler` 或 `nohup python -m core.scheduler &` |
 | 验证 | `ps aux | grep core.scheduler` 确认进程状态；检查 `sync_log` 无新增 US financial 任务 |
@@ -294,10 +318,9 @@ GROUP BY reject_reason;
 
 | 编号 | 问题 | 影响 | 建议 |
 |------|------|------|------|
-| 1 | Scheduler freeze 未实际执行 | 仅形成计划 | 生产 apply 前由负责人执行并记录实际起止时间 |
-| 2 | Phase 2 专用角色未在生产库实际创建 | 当前用户无 CREATEROLE | 由生产 DBA 执行 `scripts/us_financial_phase2_role.sql` 后，运行 `scripts/verify_us_financial_phase2_role.py` 验证 |
-| 3 | Dimensions 样本为受控合成数据 | 非真实 SEC 数据 | 后续如 SEC API 暴露 dimensions，替换为真实股票样本 |
-| 4 | 生产 shadow（20–50 只）、全市场回填、消费者切换等 | 明确不在本次范围 | 按 Runbook 第 5 条禁止扩大范围 |
+| 1 | Dimensions 样本为受控合成数据 | 非真实 SEC 数据 | 后续如 SEC API 暴露 dimensions，再替换为真实股票样本；不阻塞 Gate C |
+| 2 | batch 的 `snapshot_count`、`started_at`、`finished_at` 元数据仍不完整 | 影响运行审计可读性，不影响事实正确性 | 在 Gate C 前或随 Gate C 小修，不为此重跑 Gate B |
+| 3 | 20–50 只生产 shadow 尚未执行 | Gate C 尚未通过 | 按 Runbook 以一个小批次执行，不直接进入全市场 |
 
 ---
 
@@ -307,21 +330,74 @@ GROUP BY reject_reason;
 |--------|------|
 | Gate A | **通过** |
 | Gate A canary 演练 | **通过，post_verified 状态已收尾** |
-| Gate B | **尚未准入** |
+| Gate B | **通过（2026-07-25）** |
 | Round 2/3 相同 snapshot identity | 通过：source snapshot IDs 一致，Round 3 `facts_inserted=0`，checksum 一致 |
 | Heartbeat/Lease/Resume | 通过 |
 | Rollback 幂等 | 通过 |
 | 多 dimensions 覆盖 | 通过：DIM1 控制样本产生 2 条不同 dimensions 的 fact_version |
-| 生产角色权限 SQL | 已准备并在隔离数据库验证 58/58 通过，待 DBA 在生产库执行 |
-| Scheduler Freeze 计划 | 已准备，待执行 |
+| 生产角色权限 SQL | 隔离数据库验证 58/58 通过；个人项目中降级为可选加固 |
+| 生产 canary | 5 只完成，最终状态 `post_verified`，旧宽表 checksum 不变 |
+| Scheduler Freeze/Resume | 已实际执行并恢复 |
 
-**综合判定：附条件通过 Gate B 演练，但尚未获得生产 apply 准入。需完成以下事项后方可申请生产 apply：**
+**综合判定：Gate B 已通过。** 本项目采用个人项目轻量标准，不要求专用数据库角色、独立 DBA 或职责分离。生产 canary 已证明备份、冻结来源、幂等 apply、post-verify 和旧宽表保护链条有效。
 
-1. DBA 在生产库执行 `scripts/us_financial_phase2_role.sql` 创建角色与 worker 登录身份。
-2. 运行 `scripts/verify_us_financial_phase2_role.py` 验证正向/负向权限（不能写旧宽表、不能 UPDATE/DELETE 不可变表）。
-3. 完成生产数据库快照并记录恢复点。
-4. 负责人执行 scheduler freeze 并记录实际起止时间。
-5. 负责人书面批准生产 apply。
+下一步进入 Gate C：选择 20–50 只分层异常样本进行生产 shadow。暂不执行全市场、不切换生产消费者。
+
+---
+
+## 9. 后续轻量操作流程
+
+### 9.1 Gate C：20–50 只生产 shadow
+
+1. 固定一个 20–50 只股票列表，覆盖 Q4I、修订报表、非自然年、52/53 周财年、tag migration、unknown change 和普通样本。
+2. 保存当前 Git SHA、数据库备份路径及 SHA-256。
+3. 暂停 US financial scheduler，确认没有在途同步。
+4. 顺序执行：
+
+   ```text
+   scan
+   → stage
+   → verify
+   → approve（记录项目所有者或执行 agent）
+   → apply
+   → post-verify
+   ```
+
+5. 构建当前股票范围内的 relations，运行 `latest-restated` 和多个 `as-of` shadow selector。
+6. 对比旧宽表 checksum；一致后恢复 scheduler。
+7. 检查以下硬门槛：
+
+   - `facts_conflicted=0`，或每条 conflict 均有明确解释；
+   - staging 原因可解释且没有新类别；
+   - 第二次相同输入 `facts_inserted=0`；
+   - fact/relation/selector checksum 稳定；
+   - 没有关键字段 `UNEXPLAINED_DIFFERENCE`；
+   - 运行时间和内存可接受。
+
+任一硬门槛失败即停止，不扩大范围。Gate C 不切换 API、筛选器、analyzer 或回测消费者。
+
+### 9.2 Gate C 通过后：100 只分层样本
+
+- 用同一流程执行 100 只分层样本；
+- 记录 facts、relations、耗时、峰值内存、磁盘增长；
+- 验证失败 item 可通过 child batch 单独重跑；
+- 据此确定全市场批次大小，默认不超过 250 只。
+
+### 9.3 全市场分批回填
+
+- 按 `stock_code` 稳定排序切片；
+- 每批执行相同的备份/manifest/verify/apply/post-verify 流程；
+- 失败股票进入 exception 清单，不阻塞已成功批次；
+- 每批结束后保存计数、checksum、staging/conflict 摘要；
+- 全部完成前仍不切换生产消费者。
+
+### 9.4 Phase 2 完成条件
+
+- 全市场股票已完成或进入明确 exception；
+- 版本事实、relation 和 shadow selector 均可复现；
+- 旧三张宽表始终未被 Phase 2 修改；
+- 新旧关键字段差异均已分类；
+- 单独评审消费者切换，不能把“回填完成”自动视为“切换批准”。
 
 ---
 

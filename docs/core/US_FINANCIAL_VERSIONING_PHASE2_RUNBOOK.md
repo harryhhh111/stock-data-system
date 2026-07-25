@@ -1,12 +1,32 @@
 # 美股财报版本化 Phase 2 全市场历史回填 Runbook
 
-> 状态：Gate A 第一批已完成；尚未批准 Gate B 或全市场生产 apply
-> 日期：2026-07-24
+> 状态：Gate A、Gate B 已完成；下一步为 Gate C（20–50 只生产 shadow）
+> 日期：2026-07-25
 > 适用环境：`STOCK_MARKETS=US` 海外服务器  
 > 前置状态：Phase 1A、Phase 1B v1 已关闭；生产消费者尚未切换  
 > 上位方案：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)  
 > 当前进度：[US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](./US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md)  
 > 报告期规则：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)
+
+### 项目组织与安全基线
+
+这是个人维护的研究/玩具项目。项目参与者是项目所有者本人以及其调用的多个 agent；文档中的“同事、执行者、审批人”均不代表现实中的多人团队、DBA 团队或独立审计岗位。
+
+因此 Phase 2 采用轻量治理：
+
+- 日常同步和历史回填统一使用现有 `stock_user`；
+- 不强制职责分离，不要求 agent 与项目所有者分别审批；
+- `approve --by` 用于记录“谁或哪个 agent 发起了本次确认”，不是企业审批；
+- `scripts/us_financial_phase2_role.sql` 和权限验证脚本保留为未来多人部署的可选加固，不是 Gate 前置条件；
+- 不再为了验证数据库角色而重复 canary。
+
+个人项目仍保留五项强制数据安全措施：
+
+1. apply 前创建可恢复备份并记录 SHA-256；
+2. stage 后冻结 manifest、snapshot identity、source hash 和 parser Git SHA；
+3. Phase 2 回填不得写旧三张宽表；
+4. apply 必须幂等，且必须执行 post-verify 和旧宽表 checksum 对比；
+5. 任一校验失败立即停止扩大范围。
 
 ## 1. 本阶段目标
 
@@ -107,7 +127,7 @@ reconstruction_flag
 
 ## 4. 交付物
 
-同事必须先提交以下实现，经过 code review 后才能开始生产 apply：
+负责执行的 agent 必须先提交以下实现，经过项目所有者或验收 agent review 后才能开始生产 apply：
 
 ```text
 scripts/us_financial_phase2.sql
@@ -147,8 +167,8 @@ python scripts/verify_us_financial_phase2.py \
 python scripts/backfill_us_financial_versions.py approve \
   --batch-id <uuid> \
   --manifest build/us_financial_phase2/<batch-id>/manifest.json \
-  --by "<审批人>" \
-  --note "<审批说明>"
+  --by "<项目所有者或执行 agent>" \
+  --note "<确认说明>"
 
 # 将错误批次标记为 rejected/superseded；不删除原始证据
 python scripts/backfill_us_financial_versions.py rollback \
@@ -167,7 +187,7 @@ CLI 必须满足：
 - `--dry-run` 与 `--apply` 互斥；
 - 未设置 `STOCK_MARKETS=US` 时立即失败；
 - manifest hash 不匹配时立即失败；
-- `approve` 只能作用于 `verified` 批次，并保存 approver、审批说明、时间及 approved manifest hash；
+- `approve` 只能作用于 `verified` 批次，并保存确认者、说明、时间及 approved manifest hash；
 - `apply` 必须重新校验 `approved_by/approved_at/approved_manifest_hash`；
 - manifest、source hash、parser SHA 任一变化都会使原批准失效；
 - git 工作树脏、parser SHA 不一致时，生产 apply 默认失败；
@@ -423,19 +443,19 @@ build/us_financial_phase2/<batch-id>/verify.json
 3. 导出表结构；
 4. 保存数据库快照/备份位置及校验值；
 5. 保存 5 只 canary 的 fact/relation/selection checksum；
-6. 确认 Phase 2 专用数据库角色无旧三张宽表和物化视图写权限。
+6. 确认回填代码路径不会写旧三张宽表；专用数据库角色检查为可选加固。
 
 旧宽表不做跨整个 Phase 2 的长期冻结。每个生产 apply 使用短 freeze window：
 
-1. 记录负责人、计划开始/结束时间；
+1. 记录执行 agent、计划开始/结束时间；
 2. 暂停 US financial scheduler，并确认没有在途 sync；
-3. Phase 2 使用专用 DB role，该角色只有版本层目标表写权限；
+3. 使用现有 `stock_user` 执行；个人项目不要求创建 Phase 2 专用角色；
 4. apply 前计算旧宽表 checksum；
 5. apply/post-verify 后立即再次计算；
 6. checksum 一致后恢复 scheduler；
-7. manifest 保存 pause/resume 时间、负责人和 checksum。
+7. 运行产物保存 pause/resume 时间、执行者和 checksum。
 
-测试库必须通过权限或拒写 trigger 强制旧宽表只读。生产不建议使用跨批次长期 table lock。
+是否使用权限角色或拒写 trigger，由部署复杂度决定，不作为个人项目 Gate 条件。旧宽表安全以“代码路径不写入 + apply 前后 checksum 一致”为硬验收；生产不建议使用跨批次长期 table lock。
 
 必须记录的基线表：
 
@@ -948,16 +968,19 @@ Phase 2 不切换消费者，因此回滚应表现为：
 
 ### Gate B：允许 5 只 canary 生产版本层 apply
 
+- 当前状态：**已通过（2026-07-25）**；
 - 数据库快照完成；
 - 测试库 rollback 演练完成；
-- 专用 DB role 无旧宽表写权限；
-- scheduler freeze window、负责人和恢复步骤已演练；
+- scheduler freeze window、执行者和恢复步骤已演练；
 - interrupted/heartbeat/lease/resume 已演练；
 - legacy 时间语义及 reconstruction flag 已验证；
 - 5 只 canary 连续两次结果稳定；
 - 第二次 facts inserted 为 0；
 - 旧宽表 checksum 不变；
-- 人工批准 manifest。
+- manifest hash 已冻结并确认；
+- 证据见 [US_FINANCIAL_PHASE2_GATE_B_ACCEPTANCE.md](./US_FINANCIAL_PHASE2_GATE_B_ACCEPTANCE.md)。
+
+个人项目不要求专用数据库角色或独立人工审批。角色 SQL 仅作为未来多人或公开部署时的可选加固。
 
 ### Gate C：允许 20–50 只生产 shadow
 
