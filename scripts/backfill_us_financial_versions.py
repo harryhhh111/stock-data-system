@@ -166,8 +166,25 @@ def _update_batch_status(
     sets = ["status = %s"]
     params: list[Any] = [status]
 
+    # 任意状态迁移都记录首次开始时间；终态记录完成时间
+    sets.append("started_at = COALESCE(started_at, NOW())")
+    if status in {"staged", "verified", "approved", "applied", "post_verified", "rejected", "failed", "rolled_back", "superseded"}:
+        sets.append("finished_at = NOW()")
+
+    # 从 item 汇总 snapshot_count；调用方也可通过 counts 覆盖
+    if counts and "snapshot_count" in counts:
+        sets.append("snapshot_count = %s")
+        params.append(counts["snapshot_count"])
+    else:
+        sets.append(
+            "snapshot_count = (SELECT COUNT(DISTINCT source_snapshot_id) FROM us_financial_backfill_item WHERE batch_id = %s)"
+        )
+        params.append(batch_id)
+
     if counts:
         for k, v in counts.items():
+            if k == "snapshot_count":
+                continue
             sets.append(f"{k} = %s")
             params.append(v)
 
@@ -598,6 +615,7 @@ def cmd_stage(args: argparse.Namespace) -> int:
     manifest_path = _save_manifest(manifest)
 
     if not dry_run:
+        snapshot_count = len({s.get("source_snapshot_id") for s in sources if s.get("source_snapshot_id")})
         execute(
             """
             UPDATE us_financial_backfill_batch
@@ -606,16 +624,19 @@ def cmd_stage(args: argparse.Namespace) -> int:
                 success_count = %s,
                 failed_count = %s,
                 source_count = %s,
+                snapshot_count = %s,
                 facts_inserted = 0,
                 facts_repeated = 0,
                 facts_conflicted = 0,
                 facts_staged = %s,
                 manifest = %s,
-                manifest_hash = %s
+                manifest_hash = %s,
+                started_at = COALESCE(started_at, NOW()),
+                finished_at = NOW()
             WHERE batch_id = %s
             """,
             (
-                len(stock_codes), success_count, failed_count, len(sources),
+                len(stock_codes), success_count, failed_count, len(sources), snapshot_count,
                 expected_counts["facts_staged"],
                 psycopg2.extras.Json(manifest),
                 manifest["manifest_hash"],
