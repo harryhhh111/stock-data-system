@@ -1,7 +1,8 @@
 # ROIC MVP 开发 Runbook（美股 Shadow）
 
-> 状态：部分完成 / 债务数据阻塞，待补充可信输入后重新验收
-> 日期：2026-07-24
+> 状态：PAUSED / BLOCKED_BY_DEBT_DATA
+> 决策：当前 ROIC 产物仅作诊断用途，不进入筛选器、个股页面或回测
+> 日期：2026-07-25
 > 负责人：Kimi Code
 > 范围：仅美股、固定 canary、`latest-restated` 当前分析口径
 > 完整方案：[ROIC_IMPLEMENTATION_PLAN.md](./ROIC_IMPLEMENTATION_PLAN.md)
@@ -474,28 +475,34 @@ MVP 完成后只做一次决策评审：
 
 ## 12. 完成摘要
 
-- Git SHA：`eee84e1a21526f5364ffe422345e74b390f7615e`
-- 代码：
+- Git SHA：`5f20f63`
+- 代码（保留）：
   - `quant/metrics/roic.py`：税率、NOPAT、投入资本、平均资本、ROIC、质量等级纯函数。
-  - `quant/metrics/us_roic_mvp.py`：`latest-restated` 事实装配、年度/TTM 期间配对、PIT as-of 支持。
+  - `quant/metrics/us_roic_mvp.py`：已通过 `USFactSelector` 完成 latest-restated / as-of 装配、年度/TTM 期间配对。
   - `scripts/run_us_roic_mvp.py`：固定 canary shadow CLI。
   - `tests/test_metrics/test_roic.py`、`tests/test_metrics/test_us_roic_mvp.py`。
-- 产物（位于 `build/roic_mvp/`）：
+- 产物（位于 `build/roic_mvp/`，仅诊断用途）：
   - `field_audit.json`
   - `us_roic_mvp.json`
   - `us_roic_mvp.csv`
   - `us_roic_mvp_reconciliation.md`
   - `us_roic_mvp_as_of_2024-12-31.json`
-- 验收：
+  - `us_roic_mvp_manual_reconciliation.md`（五只 canary 程序输出与来源事实对齐表）
+- 当前结论：
   - 5 只 canary 年度 ROIC：仅 HRB、MELI 有效，等级均为 `C`。
   - 5 只 canary 最新 TTM ROIC：仅 HRB、MELI 有效，等级均为 `C`。
   - PLTR、VZ、ONTO 因核心债务输入缺失被评为 `INVALID`，未按 0 强制估算。
-  - 有效 TTM 仅 2 / 5，未达 Runbook“至少 3 只”门槛，当前不能视为完成。
+  - 有效 TTM 仅 2 / 5，未达 Runbook“至少 3 只”门槛。
+  - **现有 ROIC 产物仅用于数据诊断，不作为有效投资指标，不进入筛选器、个股页面或回测。**
   - 固定 as-of 2024-12-31 测试未使用未来 filing；reconciliation 标题已改为直接使用 `--as-of` 参数。
-  - 纯函数与装配测试通过；全量 410 条测试通过。
+  - 纯函数与装配测试通过；全量 414 条测试通过。
 - 已知限制 / 数据阻塞项：
   - `current_operating_lease` / `non_current_operating_lease` 在 canary 中缺失，按 0 处理并标记 `MISSING_LEASE`。
   - PLTR、VZ、ONTO 长短债均缺失或仅长期债缺失，无法形成可信总债务，按 `INVALID_NO_DEBT` 处理。
   - HRB、MELI 短期债缺失，仅按 0 估算并标记 `MISSING_SHORT_TERM_DEBT`。
   - HRB 近年 10-K 未映射 `operating_income`，使用 `income_before_tax + interest_expense` fallback。
   - TTM 完全基于 `report_date` 与 `period_start` 匹配，以规避当前 `fiscal_year` 字段错位。
+- 后续任务（PAUSED 期间）：
+  - 数据层补全 VZ、PLTR、ONTO 的债务标签/事实；
+  - 人工完成五只 canary 对账表验证；
+  - 不在本轮扩展 SEC parser 或启动全市场债务治理。
