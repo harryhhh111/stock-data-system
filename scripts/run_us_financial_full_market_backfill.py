@@ -132,7 +132,7 @@ def _load_existing_results() -> list[dict[str, Any]]:
         results.append({
             "batch_no": batch_no,
             "batch_id": batch_id,
-            "stock_count": len(post["checks"]["batch_status"].get("stock_codes", [])),
+            "stock_count": post["checks"]["batch_status"].get("stock_count", 0),
             "elapsed_seconds": 0.0,
             "timing": {},
             "post_verify": post,
@@ -145,7 +145,7 @@ def _load_existing_results() -> list[dict[str, Any]]:
     return results
 
 
-SELECTOR_CHUNK_SIZE = 100
+SELECTOR_CHUNK_SIZE = 50
 
 
 def _run_selector(basis: str, as_of: str | None = None) -> dict[str, Any]:
@@ -175,8 +175,13 @@ def _run_selector(basis: str, as_of: str | None = None) -> dict[str, Any]:
             logger.error("selector %s 第 %d 块失败:\n%s", basis, i, result.stderr)
             raise RuntimeError(f"selector {basis} chunk {i} failed")
         parsed = json.loads(result.stdout)
-        run_ids.append(parsed["run_id"])
-        checksums.append(_run_id_to_checksum(parsed["run_id"]))
+        run_id = parsed["run_id"]
+        status, error_message = _check_run_status(run_id)
+        if status != "success":
+            logger.error("selector %s 第 %d 块数据库状态异常: status=%s, error=%s", basis, i, status, error_message)
+            raise RuntimeError(f"selector {basis} chunk {i} status={status}: {error_message}")
+        run_ids.append(run_id)
+        checksums.append(_run_id_to_checksum(run_id))
         total_selected += parsed["selected_count"]
     return {
         "basis": basis,
@@ -416,6 +421,20 @@ def _run_id_to_checksum(run_id: str) -> str:
             cur.execute("SELECT result_checksum FROM us_fact_selection_run WHERE run_id = %s", (run_id,))
             row = cur.fetchone()
             return row[0] if row else "N/A"
+
+
+def _check_run_status(run_id: str) -> tuple[str, str | None]:
+    """查询 selector run 的状态和错误信息。"""
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, error_message FROM us_fact_selection_run WHERE run_id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return ("missing", None)
+            return row[0], row[1]
 
 
 if __name__ == "__main__":
