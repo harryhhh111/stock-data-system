@@ -40,9 +40,6 @@ from quant.metrics.roic import (
     MISSING_LEASE,
     MISSING_SHORT_TERM_INVESTMENTS,
     MISSING_SHORT_TERM_DEBT,
-    MISSING_LONG_TERM_DEBT,
-    MISSING_DEBT,
-    DEBT_ZERO_CONFIRMED,
     US_EBIT_PRETAX_PLUS_INTEREST,
     US_STATUTORY_TAX_RATE,
     average_invested_capital,
@@ -549,21 +546,15 @@ def _select_debt(
 
     flags: list[str] = []
     if st is None and lt is None:
-        # 是否全历史都没有债务事实？若是则视为已确认的 0（如 PLTR/ONTO）
-        any_debt = any(
-            f["stock_code"] == stock_code
-            and f["standard_field"] in ("short_term_debt", "long_term_debt")
-            for f in facts
-        )
-        if any_debt:
-            return Decimal(0), [MISSING_DEBT], refs
-        return Decimal(0), [DEBT_ZERO_CONFIRMED], refs
+        # 完全缺失长短期债务：无法形成可信总债务，结果为 INVALID
+        return None, [INVALID_NO_DEBT], refs
+    if lt is None:
+        # 长期债务缺失是核心输入缺口，不能仅用短期借款代替
+        return None, [INVALID_NO_DEBT], refs
     if st is None:
+        # 仅短期债务缺失：很多公司确实没有短期借款，按 0 处理并标记
         flags.append(MISSING_SHORT_TERM_DEBT)
         st = Decimal(0)
-    if lt is None:
-        flags.append(MISSING_LONG_TERM_DEBT)
-        lt = Decimal(0)
     return st + lt, flags, refs
 
 

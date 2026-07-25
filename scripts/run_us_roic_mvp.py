@@ -141,6 +141,7 @@ def _build_reconciliation(
     as_of_results: list[ROICResult] | None,
     audit: dict[str, Any],
     git_sha: str | None,
+    as_of: date | None,
 ) -> str:
     lines: list[str] = []
     lines.append("# US ROIC MVP Shadow 对账说明\n")
@@ -177,7 +178,8 @@ def _build_reconciliation(
     lines.append("")
 
     if as_of_results:
-        lines.append(f"## 3. 固定 as-of 测试 ({as_of_results[0].available_date})\n")
+        as_of_title = as_of.isoformat() if as_of else as_of_results[0].available_date
+        lines.append(f"## 3. 固定 as-of 测试 ({as_of_title})\n")
         lines.append("| 股票 | 类型 | 报告期 | ROIC | 等级 | input_fact_ids |")
         lines.append("|---|---|---|---|---|---|")
         for r in as_of_results:
@@ -287,6 +289,7 @@ def main() -> int:
         as_of_annual + as_of_ttm if as_of else None,
         audit,
         _git_sha(),
+        as_of,
     )
     (output_dir / "us_roic_mvp_reconciliation.md").write_text(
         reconciliation, encoding="utf-8"

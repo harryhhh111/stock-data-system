@@ -1,6 +1,6 @@
 # ROIC MVP 开发 Runbook（美股 Shadow）
 
-> 状态：已完成
+> 状态：部分完成 / 债务数据阻塞，待补充可信输入后重新验收
 > 日期：2026-07-24
 > 负责人：Kimi Code
 > 范围：仅美股、固定 canary、`latest-restated` 当前分析口径
@@ -474,7 +474,7 @@ MVP 完成后只做一次决策评审：
 
 ## 12. 完成摘要
 
-- Git SHA：`c5c610e52725b7c68c360043174ddd699bdab1a3`（以实际提交为准）
+- Git SHA：`c006e58611be972637e285fd4dc88d54644dfc5d`
 - 代码：
   - `quant/metrics/roic.py`：税率、NOPAT、投入资本、平均资本、ROIC、质量等级纯函数。
   - `quant/metrics/us_roic_mvp.py`：`latest-restated` 事实装配、年度/TTM 期间配对、PIT as-of 支持。
@@ -487,13 +487,15 @@ MVP 完成后只做一次决策评审：
   - `us_roic_mvp_reconciliation.md`
   - `us_roic_mvp_as_of_2024-12-31.json`
 - 验收：
-  - 5 只 canary 年度 ROIC 全部有效（PLTR/VZ 为 B；HRB/MELI/ONTO 为 C，主因 debt/lease/equity fallback）。
-  - 5 只 canary 最新 TTM ROIC 全部有效。
-  - 固定 as-of 2024-12-31 测试未使用未来 filing。
+  - 5 只 canary 年度 ROIC：仅 HRB、MELI 有效，等级均为 `C`。
+  - 5 只 canary 最新 TTM ROIC：仅 HRB、MELI 有效，等级均为 `C`。
+  - PLTR、VZ、ONTO 因核心债务输入缺失被评为 `INVALID`，未按 0 强制估算。
+  - 有效 TTM 仅 2 / 5，未达 Runbook“至少 3 只”门槛，当前不能视为完成。
+  - 固定 as-of 2024-12-31 测试未使用未来 filing；reconciliation 标题已改为直接使用 `--as-of` 参数。
   - 纯函数与装配测试通过；全量 410 条测试通过。
-- 已知限制：
+- 已知限制 / 数据阻塞项：
   - `current_operating_lease` / `non_current_operating_lease` 在 canary 中缺失，按 0 处理并标记 `MISSING_LEASE`。
-  - PLTR/ONTO 无 debt 事实，按 0 处理并标记 `DEBT_ZERO_CONFIRMED`。
-  - VZ `long_term_debt` 在版本层缺失，标记 `MISSING_LONG_TERM_DEBT`，投入资本显著低估。
+  - PLTR、VZ、ONTO 长短债均缺失或仅长期债缺失，无法形成可信总债务，按 `INVALID_NO_DEBT` 处理。
+  - HRB、MELI 短期债缺失，仅按 0 估算并标记 `MISSING_SHORT_TERM_DEBT`。
   - HRB 近年 10-K 未映射 `operating_income`，使用 `income_before_tax + interest_expense` fallback。
   - TTM 完全基于 `report_date` 与 `period_start` 匹配，以规避当前 `fiscal_year` 字段错位。
