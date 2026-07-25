@@ -145,7 +145,7 @@ def _load_existing_results() -> list[dict[str, Any]]:
     return results
 
 
-SELECTOR_CHUNK_SIZE = 50
+SELECTOR_CHUNK_SIZE = 100
 
 
 def _run_selector(basis: str, as_of: str | None = None) -> dict[str, Any]:
