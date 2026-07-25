@@ -1,7 +1,7 @@
 # 美股财报版本化 Phase 2 全市场历史回填 Runbook
 
-> 状态：Gate A、Gate B 已完成；Gate C 100 只分层 shadow 已通过，下一步为全市场分批回填（≤250 只/批）
-> 日期：2026-07-25
+> 状态：Gate A、Gate B、Gate C、Gate D 已完成；777 只股票全市场历史回填已通过，scheduler 已恢复；下一步为消费者切换验收（Gate E）
+> 日期：2026-07-26
 > 适用环境：`STOCK_MARKETS=US` 海外服务器  
 > 前置状态：Phase 1A、Phase 1B v1 已关闭；生产消费者尚未切换  
 > 上位方案：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)  
@@ -993,13 +993,15 @@ Phase 2 不切换消费者，因此回滚应表现为：
 
 ### Gate D：允许全市场分批 apply
 
+- **已通过（2026-07-26）**；
 - 100 只分层样本通过；
 - 5/50/100 只 relation 复杂度基准已完成；
-- resume/失败 child batch 已演练；
+- 全市场 777 只股票分批 apply 完成，conflicted = 0，旧宽表 checksum 未变；
+- 全市场 `latest-restated` 和 PIT `as-of` shadow selector 已构建；
 - 备份恢复演练通过；
 - 批次大小和并发参数冻结；
 - 监控和告警可用；
-- 用户明确批准全市场生产 apply。
+- 验收报告：[US_FINANCIAL_PHASE2_GATE_D_FULL_MARKET_ACCEPTANCE.md](./US_FINANCIAL_PHASE2_GATE_D_FULL_MARKET_ACCEPTANCE.md)。
 
 ### Gate E：Phase 2 完成
 
