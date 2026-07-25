@@ -55,7 +55,8 @@ def _env() -> dict[str, str]:
 
 def _run(cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
     logger.info("执行: %s", " ".join(cmd))
-    return subprocess.run(cmd, env=_env(), capture_output=True, text=True, timeout=timeout)
+    project_root = Path(__file__).resolve().parent.parent
+    return subprocess.run(cmd, env=_env(), cwd=project_root, capture_output=True, text=True, timeout=timeout)
 
 
 def _create_backup(batch_no: int) -> dict[str, str]:
@@ -166,15 +167,15 @@ def run_batch(stocks: list[str], batch_no: int, is_first: bool) -> dict[str, Any
     manifest_path = batch_dir / "manifest.json"
 
     pre_steps: list[tuple[str, list[str]]] = [
-        ("scan", ["scripts/backfill_us_financial_versions.py", "scan", "--stocks", stocks_csv, "--output", str(batch_dir / "scan.json")]),
-        ("stage", ["scripts/backfill_us_financial_versions.py", "stage", "--batch-id", batch_id, "--stocks", stocks_csv]),
-        ("verify", ["scripts/backfill_us_financial_versions.py", "verify", "--batch-id", batch_id]),
-        ("approve", ["scripts/backfill_us_financial_versions.py", "approve", "--batch-id", batch_id, "--manifest", str(manifest_path), "--by", "Kimi Code", "--note", f"full market batch {batch_no}"]),
+        ("scan", [sys.executable, "scripts/backfill_us_financial_versions.py", "scan", "--stocks", stocks_csv, "--output", str(batch_dir / "scan.json")]),
+        ("stage", [sys.executable, "scripts/backfill_us_financial_versions.py", "stage", "--batch-id", batch_id, "--stocks", stocks_csv]),
+        ("verify", [sys.executable, "scripts/backfill_us_financial_versions.py", "verify", "--batch-id", batch_id]),
+        ("approve", [sys.executable, "scripts/backfill_us_financial_versions.py", "approve", "--batch-id", batch_id, "--manifest", str(manifest_path), "--by", "Kimi Code", "--note", f"full market batch {batch_no}"]),
     ]
     post_steps: list[tuple[str, list[str]]] = [
-        ("apply", ["scripts/backfill_us_financial_versions.py", "apply", "--manifest", str(manifest_path), "--require-status", "approved"]),
-        ("post-verify", ["scripts/backfill_us_financial_versions.py", "post-verify", "--batch-id", batch_id]),
-        ("relations", ["scripts/build_us_fact_relations.py", "--stocks", stocks_csv, "--apply"]),
+        ("apply", [sys.executable, "scripts/backfill_us_financial_versions.py", "apply", "--manifest", str(manifest_path), "--require-status", "approved"]),
+        ("post-verify", [sys.executable, "scripts/backfill_us_financial_versions.py", "post-verify", "--batch-id", batch_id]),
+        ("relations", [sys.executable, "scripts/build_us_fact_relations.py", "--stocks", stocks_csv, "--apply"]),
     ]
 
     reasons_before = _get_staging_reasons()
