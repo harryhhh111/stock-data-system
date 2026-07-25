@@ -474,7 +474,7 @@ MVP 完成后只做一次决策评审：
 
 ## 12. 完成摘要
 
-- Git SHA：`c006e58611be972637e285fd4dc88d54644dfc5d`
+- Git SHA：`eee84e1a21526f5364ffe422345e74b390f7615e`
 - 代码：
   - `quant/metrics/roic.py`：税率、NOPAT、投入资本、平均资本、ROIC、质量等级纯函数。
   - `quant/metrics/us_roic_mvp.py`：`latest-restated` 事实装配、年度/TTM 期间配对、PIT as-of 支持。
