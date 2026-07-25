@@ -156,6 +156,30 @@ SELECT count(*) FROM us_financial_fact_conflict;
 - 无 blocker。
 - 下一步：按 ≤250 只/批执行全市场回填。
 
-## 12. 结论
+## 12. 幂等性再确认（修复后 CLI 重跑同一 100 只）
 
-Gate C 100 只分层生产 shadow 验收 **通过**。可以进入全市场分批回填阶段。
+使用修复后的 CLI 对相同 100 只股票再执行完整 `scan → stage → verify → approve → apply → post-verify`。
+
+| 项目 | 结果 |
+|---|---|
+| 批次 ID | `3074c71b-fc6f-455d-aad4-ba326f27decd` |
+| 状态 | `post_verified` |
+| `facts_inserted` | **0** |
+| `facts_repeated` | 815,156 |
+| `facts_conflicted` | **0** |
+| 旧宽表 checksum | 与第一次 100 只批次一致 |
+
+### Selector checksum 对比
+
+| basis | as-of-date | 第一次 checksum | 幂等重跑 checksum | 是否一致 |
+|---|---|---|---|---|
+| `latest-restated` | — | `a3daac19d950b4e24d98d48be35d3b6ff82ed9bf6b074f91708901d9ec61bee3` | `a3daac19d950b4e24d98d48be35d3b6ff82ed9bf6b074f91708901d9ec61bee3` | ✅ |
+| `as-of` | 2024-09-30 | `1cf34e94440300382f726393bd42fbcec4e522c7180b0b613f00ebe55f69f10d` | `1cf34e94440300382f726393bd42fbcec4e522c7180b0b613f00ebe55f69f10d` | ✅ |
+| `as-of` | 2024-12-31 | `3ac54b9fed852879e2bd93f3e6c18e2dbb1614abc1a593b87fc8f676bc47a934` | `3ac54b9fed852879e2bd93f3e6c18e2dbb1614abc1a593b87fc8f676bc47a934` | ✅ |
+
+备份：`build/us_financial_phase2/gate_c_100_idempotency_snapshot_20260725_210241.dump`
+SHA-256：`d2d414937ba3785bf48b3570df2ef3d55238193c8185ee0d0117371971a033c1`
+
+## 13. 结论
+
+Gate C 100 只分层生产 shadow 验收 **通过**，幂等性再确认 **通过**。可以进入全市场分批回填阶段。
