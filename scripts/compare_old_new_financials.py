@@ -282,9 +282,9 @@ def fetch_old_computed_fields(stock_codes: list[str]) -> pd.DataFrame:
 
 
 def fetch_old_fcf_yield(stock_codes: list[str]) -> pd.DataFrame:
-    """从 mv_us_fcf_yield 取 PE, PB, FCF_Yield。"""
+    """从 mv_us_fcf_yield 取 FCF_Yield 和 TTM 组件。"""
     sql = """
-        SELECT stock_code, pe_ttm, pb, fcf_yield, ttm_report_date
+        SELECT stock_code, fcf_yield, net_profit_ttm, ttm_report_date
         FROM mv_us_fcf_yield
         WHERE stock_code = ANY(%s)
     """
@@ -292,8 +292,8 @@ def fetch_old_fcf_yield(stock_codes: list[str]) -> pd.DataFrame:
         with conn.cursor() as cur:
             cur.execute(sql, (stock_codes,))
             rows = cur.fetchall()
-    df = pd.DataFrame(rows, columns=["stock_code", "PE", "PB", "FCF_Yield", "ttm_report_date"])
-    for col in ["PE", "PB", "FCF_Yield"]:
+    df = pd.DataFrame(rows, columns=["stock_code", "FCF_Yield", "net_profit_ttm", "ttm_report_date"])
+    for col in ["FCF_Yield", "net_profit_ttm"]:
         df[col] = df[col].apply(_to_decimal)
     return df
 
@@ -513,28 +513,24 @@ def compute_new_ttm_fcf_yield(
     quarterly_df: pd.DataFrame,
     quotes_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """用新 facts 的 TTM 公式计算 FCF_Yield，并返回 PE/PB 对比数据。"""
+    """用新 facts 的 TTM 公式计算 FCF_Yield 和 net_income_ttm。"""
     results = []
     for stock_code, group in quarterly_df.groupby("stock_code"):
         group = group.sort_values("report_date")
-        # 找到最新 report
         latest = group.iloc[-1]
         latest_date = latest["report_date"]
         is_annual = latest.get("is_annual", False)
 
-        ttm_cfo = None
-        ttm_capex = None
+        ttm_values: dict[str, Decimal | None] = {}
 
         if is_annual:
-            ttm_cfo = latest.get("net_cash_from_operations")
-            ttm_capex = latest.get("capital_expenditures")
+            for field in ["net_cash_from_operations", "capital_expenditures", "net_income"]:
+                ttm_values[field] = _to_decimal(latest.get(field))
         else:
-            # 找 last_annual
             annual_rows = group[group["is_annual"] == True]
             last_annual = annual_rows[annual_rows["report_date"] < latest_date]
             la_row = last_annual.iloc[-1] if len(last_annual) > 0 else None
 
-            # 找 prior year same period（±7 天）
             target = latest_date - timedelta(days=365)
             group_copy = group.copy()
             group_copy["date_diff"] = group_copy["report_date"].apply(
@@ -543,8 +539,7 @@ def compute_new_ttm_fcf_yield(
             prior = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
             py_row = prior.iloc[0] if len(prior) > 0 else None
 
-            for field, ttm_var in [("net_cash_from_operations", "ttm_cfo"),
-                                    ("capital_expenditures", "ttm_capex")]:
+            for field in ["net_cash_from_operations", "capital_expenditures", "net_income"]:
                 latest_val = _to_decimal(latest.get(field))
                 la_val = _to_decimal(la_row[field]) if la_row is not None and field in la_row.index else None
                 py_val = _to_decimal(py_row[field]) if py_row is not None and field in py_row.index else None
@@ -555,10 +550,11 @@ def compute_new_ttm_fcf_yield(
                     val = la_val
                 else:
                     val = latest_val
-                if ttm_var == "ttm_cfo":
-                    ttm_cfo = val
-                else:
-                    ttm_capex = val
+                ttm_values[field] = val
+
+        ttm_cfo = ttm_values.get("net_cash_from_operations")
+        ttm_capex = ttm_values.get("capital_expenditures")
+        ttm_ni = ttm_values.get("net_income")
 
         ttm_fcf = None
         ttm_cfo_d = _to_decimal(ttm_cfo)
@@ -566,7 +562,6 @@ def compute_new_ttm_fcf_yield(
         if ttm_cfo_d is not None and ttm_capex_d is not None:
             ttm_fcf = ttm_cfo_d - ttm_capex_d
 
-        # 从 quotes 取 market_cap
         q = quotes_df[quotes_df["stock_code"] == stock_code]
         market_cap = q.iloc[0]["market_cap"] if len(q) > 0 else None
 
@@ -577,6 +572,7 @@ def compute_new_ttm_fcf_yield(
         results.append({
             "stock_code": stock_code,
             "FCF_Yield_new": fcf_yield,
+            "net_income_ttm": _to_decimal(ttm_ni),
             "ttm_report_date": latest_date,
         })
 
@@ -710,26 +706,104 @@ def run_comparison(stock_codes: list[str]) -> ComparisonResult:
     # 5c. PE / PB / FCF_Yield（TTM 字段）
     new_ttm = compute_new_ttm_fcf_yield(new_quarterly, quotes) if not new_quarterly.empty else pd.DataFrame()
 
-    # PE / PB 从 daily_quote 直接对比 mv_us_fcf_yield
-    for field, old_col, new_col in [("PE", "PE", "pe_ttm"), ("PB", "PB", "pb")]:
-        if not old_fy.empty and not quotes.empty:
-            merged = old_fy[["stock_code", field]].merge(
-                quotes[["stock_code", new_col]], on="stock_code", how="outer", suffixes=("_old", "_new")
+    # PE = market_cap / TTM net_income（两边自算，禁止 daily_quote.pe_ttm）
+    # 旧口径：market_cap / old_ttm_net_income
+    # 新口径：market_cap / new_ttm_net_income（同一 market_cap）
+    if not old_fy.empty and not quotes.empty:
+        # 旧口径 TTM net_income 从 mv_us_fcf_yield 取 net_profit_ttm
+        old_pe = old_fy[["stock_code", "net_profit_ttm"]].copy()
+        # 新口径 TTM net_income 从 TTM 计算
+        new_ttm_ni = pd.DataFrame()
+        if not new_ttm.empty and "net_income_ttm" in new_ttm.columns:
+            new_ttm_ni = new_ttm[["stock_code", "net_income_ttm"]].copy()
+            new_ttm_ni.columns = ["stock_code", "net_profit_ttm_new"]
+
+        merged = old_pe.merge(quotes[["stock_code", "market_cap"]], on="stock_code", how="inner")
+        if not new_ttm_ni.empty:
+            merged = merged.merge(new_ttm_ni, on="stock_code", how="outer")
+
+        # 计算两边的 PE
+        for col in ["market_cap", "net_profit_ttm", "net_profit_ttm_new"]:
+            if col in merged.columns:
+                merged[col] = merged[col].apply(_to_decimal)
+
+        merged["PE_old"] = merged.apply(
+            lambda r: (r["market_cap"] / r["net_profit_ttm"])
+            if (r["market_cap"] is not None and r["market_cap"] > 0
+                and r["net_profit_ttm"] is not None and r["net_profit_ttm"] > 0)
+            else None, axis=1,
+        )
+        if "net_profit_ttm_new" in merged.columns:
+            merged["PE_new"] = merged.apply(
+                lambda r: (r["market_cap"] / r["net_profit_ttm_new"])
+                if (r["market_cap"] is not None and r["market_cap"] > 0
+                    and r["net_profit_ttm_new"] is not None and r["net_profit_ttm_new"] > 0)
+                else None, axis=1,
             )
-            for _, r in merged.iterrows():
-                old_v = _to_decimal(r.get(field))
-                new_v = _to_decimal(r.get(new_col))
-                reason = classify_diff(old_v, new_v, is_computed=True)
-                rows.append(ComparisonRow(
-                    stock_code=r["stock_code"],
-                    report_date="TTM",
-                    field=field,
-                    old_value=old_v,
-                    new_value=new_v,
-                    abs_diff=abs(old_v - new_v) if old_v is not None and new_v is not None else None,
-                    rel_diff_pct=_rel_diff(old_v, new_v),
-                    reason=reason,
-                ))
+        else:
+            merged["PE_new"] = None
+
+        for _, r in merged.iterrows():
+            old_v = _to_decimal(r.get("PE_old"))
+            new_v = _to_decimal(r.get("PE_new"))
+            reason = classify_diff(old_v, new_v, is_computed=True)
+            rows.append(ComparisonRow(
+                stock_code=r["stock_code"], report_date="TTM", field="PE",
+                old_value=old_v, new_value=new_v,
+                abs_diff=abs(old_v - new_v) if old_v is not None and new_v is not None else None,
+                rel_diff_pct=_rel_diff(old_v, new_v), reason=reason,
+            ))
+
+    # PB = market_cap / latest annual total_equity（两边自算，禁止 daily_quote.pb）
+    # 取最新 annual report 的 total_equity
+    if not old_fy.empty and not quotes.empty:
+        # 旧口径：从 new_raw (old annual) 取 total_equity...
+        # 实际上 old_raw 已有 total_equity，取每只股票最新的 annual
+        old_te = old_raw[["stock_code", "report_date", "total_equity"]].copy()
+        old_te = old_te.sort_values("report_date").groupby("stock_code").last().reset_index()
+        old_te = old_te[["stock_code", "total_equity"]].copy()
+        old_te.columns = ["stock_code", "total_equity_old"]
+
+        # 新口径：从 new_raw 取最新 annual total_equity
+        new_te_cols = [c for c in ["stock_code", "report_date", "total_equity"] if c in new_raw.columns]
+        new_te = new_raw[new_te_cols].copy()
+        if "report_date" in new_te.columns and "total_equity" in new_te.columns:
+            new_te = new_te.sort_values("report_date").groupby("stock_code").last().reset_index()
+            new_te = new_te[["stock_code", "total_equity"]].copy()
+            new_te.columns = ["stock_code", "total_equity_new"]
+            merged = old_te.merge(new_te, on="stock_code", how="outer")
+        else:
+            merged = old_te.copy()
+            merged["total_equity_new"] = None
+
+        merged = merged.merge(quotes[["stock_code", "market_cap"]], on="stock_code", how="inner")
+        for col in ["market_cap", "total_equity_old", "total_equity_new"]:
+            if col in merged.columns:
+                merged[col] = merged[col].apply(_to_decimal)
+
+        merged["PB_old"] = merged.apply(
+            lambda r: (r["market_cap"] / r["total_equity_old"])
+            if (r["market_cap"] is not None and r["market_cap"] > 0
+                and r["total_equity_old"] is not None and r["total_equity_old"] > 0)
+            else None, axis=1,
+        )
+        merged["PB_new"] = merged.apply(
+            lambda r: (r["market_cap"] / r["total_equity_new"])
+            if (r["market_cap"] is not None and r["market_cap"] > 0
+                and r["total_equity_new"] is not None and r["total_equity_new"] > 0)
+            else None, axis=1,
+        )
+
+        for _, r in merged.iterrows():
+            old_v = _to_decimal(r.get("PB_old"))
+            new_v = _to_decimal(r.get("PB_new"))
+            reason = classify_diff(old_v, new_v, is_computed=True)
+            rows.append(ComparisonRow(
+                stock_code=r["stock_code"], report_date="TTM", field="PB",
+                old_value=old_v, new_value=new_v,
+                abs_diff=abs(old_v - new_v) if old_v is not None and new_v is not None else None,
+                rel_diff_pct=_rel_diff(old_v, new_v), reason=reason,
+            ))
 
     # FCF_Yield
     if not old_fy.empty and not new_ttm.empty:
