@@ -41,6 +41,15 @@ def _ensure_snapshot(raw_data: dict) -> tuple[int, str]:
 
 def _cleanup_test_stock():
     """删除测试股票在版本层留下的数据。"""
+    # 先删依赖 fact_version 的子表
+    execute(
+        """
+        DELETE FROM us_financial_fact_source s
+        USING us_financial_fact_version f
+        WHERE s.fact_version_id = f.fact_version_id AND f.stock_code = %s
+        """,
+        (TEST_STOCK,), commit=True,
+    )
     tables = [
         "us_financial_fact_staging",
         "us_financial_fact_conflict",
@@ -481,6 +490,125 @@ def test_facts_inserted_count_matches_new_rows():
         (TEST_STOCK,), fetch=True,
     )[0][0]
     assert fact_count2 == 2
+
+
+def test_repeated_does_not_write_fact_source():
+    """相同事实再次出现时 repeated 计数正常但不新增 fact_source 行。"""
+    fetcher = USFinancialFetcher()
+    snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
+    ctx = FetchContext(
+        stock_code=TEST_STOCK, cik=TEST_CIK,
+        snapshot_id=snapshot_id, content_hash=content_hash,
+    )
+
+    rec = _fact_record("accn-repeated", "Assets", "2025-12-31", 100, period_kind="instant")
+
+    # 首次写入
+    fetcher._write_version_layer([rec], [], "balance", ctx)
+    source_before = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id,), fetch=True,
+    )[0][0]
+    assert source_before == 1
+
+    fact_count_before = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count_before == 1
+
+    # 相同事实再次写入：repeated 计数但不新增 fact_source
+    fetcher._write_version_layer([rec], [], "balance", ctx)
+
+    source_after = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id,), fetch=True,
+    )[0][0]
+    assert source_after == 1  # 不增加
+
+    # fact_version 行数不变
+    fact_count_after = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count_after == 1
+
+    # ingest_run 正确记录了repeated（两次 run，取最新的）
+    inserted, repeated = execute(
+        "SELECT facts_inserted, facts_repeated FROM us_ingest_run "
+        "WHERE snapshot_id = %s ORDER BY run_id DESC LIMIT 1",
+        (snapshot_id,), fetch=True,
+    )[0]
+    assert inserted == 0
+    assert repeated == 1
+
+
+def test_new_snapshot_repeat_does_not_write_fact_source():
+    """新 snapshot 观察到相同事实时 repeated 计数但不产生 fact_source 行。"""
+    fetcher = USFinancialFetcher()
+
+    # 第一个 snapshot：首次写入
+    raw1 = {"cik": TEST_CIK, "extra": "first"}
+    snapshot_id1, content_hash1 = _ensure_snapshot(raw1)
+    ctx1 = FetchContext(
+        stock_code=TEST_STOCK, cik=TEST_CIK,
+        snapshot_id=snapshot_id1, content_hash=content_hash1,
+    )
+
+    rec = _fact_record("accn-cross", "Assets", "2025-12-31", 100, period_kind="instant")
+    fetcher._write_version_layer([rec], [], "balance", ctx1)
+
+    # 第一个 snapshot 应产生 1 条 inserted fact_source
+    source_snap1 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id1,), fetch=True,
+    )[0][0]
+    assert source_snap1 == 1
+    fact_count1 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count1 == 1
+
+    # 第二个 snapshot：不同 snapshot_id，观察到相同事实
+    raw2 = {"cik": TEST_CIK, "extra": "second"}
+    snapshot_id2, content_hash2 = _ensure_snapshot(raw2)
+    assert snapshot_id2 != snapshot_id1
+    ctx2 = FetchContext(
+        stock_code=TEST_STOCK, cik=TEST_CIK,
+        snapshot_id=snapshot_id2, content_hash=content_hash2,
+    )
+    fetcher._write_version_layer([rec], [], "balance", ctx2)
+
+    # fact_version 不翻倍
+    fact_count2 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_version WHERE stock_code = %s",
+        (TEST_STOCK,), fetch=True,
+    )[0][0]
+    assert fact_count2 == 1
+
+    # 第二个 snapshot 的 fact_source 行数应为 0（repeated 不写）
+    source_snap2 = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id2,), fetch=True,
+    )[0][0]
+    assert source_snap2 == 0
+
+    # 第一个 snapshot 的 fact_source 仍只有 1 条
+    source_snap1_after = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id1,), fetch=True,
+    )[0][0]
+    assert source_snap1_after == 1
+
+    # 第二个 ingest_run 正确记录 repeated
+    inserted, repeated = execute(
+        "SELECT facts_inserted, facts_repeated FROM us_ingest_run "
+        "WHERE snapshot_id = %s ORDER BY run_id DESC LIMIT 1",
+        (snapshot_id2,), fetch=True,
+    )[0]
+    assert inserted == 0
+    assert repeated == 1
 
 
 # 8a82e78 旧 P1 DDL：只有 4 张基础表，无 ingest_run/conflict/staging，

@@ -330,20 +330,20 @@ created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 (fact_version_id, snapshot_id, observation_kind)
 ```
 
-`observation_kind` 至少包括：
+`observation_kind` 包括：
 
 ```text
 inserted
-repeated
 reconstructed
 ```
+
+`repeated` 只在 `us_ingest_run.facts_repeated` / `us_financial_backfill_item.facts_repeated` 中计数，**不再逐条写入 `us_financial_fact_source`**。追溯途径不变：`raw_snapshot_version` + `raw_snapshot_observation` + `ingest_run` 仍可确定某 snapshot 是否观察到了已知事实。
 
 禁止直接给不可变 fact 行覆盖新的 batch/snapshot id。首次来源继续保留在 fact 表，所有后续观察写关联表。conflict 和 staging 继续使用各自的 source snapshot/run 字段。
 
 Phase 2 上线时必须同时修改在线 SEC ingest：
 
 - 新 fact 写 `observation_kind=inserted`；
-- 已存在的相同 fact 写 `observation_kind=repeated`；
 - 重建来源写 `observation_kind=reconstructed`；
 - 在线与 Phase 2 路径调用同一个 fact-source 写入函数；
 - 对现有 P1A/P1B fact 按其 `source_snapshot_id/ingest_run_id` 回填首条 source relation；
@@ -911,7 +911,7 @@ Phase 2 不切换消费者，因此回滚应表现为：
 - scan 零写入；
 - dry-run 零正式写入；
 - apply 幂等；
-- 相同事实从后续 snapshot 再次出现时，fact 不翻倍且 `us_financial_fact_source` 新增证据关系；
+- 相同事实从后续 snapshot 再次出现时，fact 不翻倍且 `facts_repeated` 正确计数；
 - 在线 ingest 与 Phase 2 都写 fact-source，存量首条来源回填幂等；
 - conflict/staging 分流；
 - conflict/staging 在 resume 和 child batch 中不重复；

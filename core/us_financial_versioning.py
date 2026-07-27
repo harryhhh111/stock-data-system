@@ -351,8 +351,6 @@ class USFactVersionWriter:
         new_rows: list[dict] = []
         conflict_rows: list[dict] = batch_conflicts
         repeated = batch_repeats
-        repeated_rows: list[dict] = []  # 用于后续写 fact_source
-
         for row in unique_rows:
             key = fact_key(row)
             existing_info = existing.get(key)
@@ -360,8 +358,6 @@ class USFactVersionWriter:
                 new_rows.append(row)
             elif existing_info["value_hash"] == row["value_hash"]:
                 repeated += 1
-                row["_existing_fact_version_id"] = existing_info["fact_version_id"]
-                repeated_rows.append(row)
             else:
                 conflict_rows.append(
                     self._build_conflict_row(
@@ -434,14 +430,13 @@ class USFactVersionWriter:
                 )
             self._flush_staging(cur, staging_rows)
 
-        # 8. 写入 fact_source 证据关系
+        # 8. 写入 fact_source 证据关系（仅 inserted/reconstructed，repeated 只计数不写 source）
         self._write_fact_sources(
             conn,
             snapshot_id=snapshot_id,
             ingest_run_id=run_id,
             batch_item_id=batch_item_id,
             inserted_rows=new_rows,
-            repeated_rows=repeated_rows,
             reconstruction_flag=reconstruction_flag,
         )
 
@@ -718,10 +713,14 @@ class USFactVersionWriter:
         ingest_run_id: int | None,
         batch_item_id: int | None,
         inserted_rows: list[dict],
-        repeated_rows: list[dict],
         reconstruction_flag: str | None,
     ) -> None:
-        """为 insert/repeat 写 fact_source 证据关系。"""
+        """为新事实/reconstruction 写 fact_source 证据关系。
+
+        repeated 事实仍会被计数（facts_repeated），但不再逐条持久化 fact_source。
+        追溯途径不变：raw_snapshot_version + raw_snapshot_observation + ingest_run
+        仍可确定某 snapshot 是否观察到了已知事实。
+        """
         observation_kind = "reconstructed" if reconstruction_flag else "inserted"
         source_rows: list[dict] = []
 
@@ -735,20 +734,6 @@ class USFactVersionWriter:
                 "ingest_run_id": ingest_run_id,
                 "batch_item_id": batch_item_id,
                 "observation_kind": observation_kind,
-                "observed_value_hash": row["value_hash"],
-                "reconstruction_flag": reconstruction_flag,
-            })
-
-        for row in repeated_rows:
-            fact_version_id = row.get("_existing_fact_version_id")
-            if fact_version_id is None:
-                continue
-            source_rows.append({
-                "fact_version_id": fact_version_id,
-                "snapshot_id": snapshot_id,
-                "ingest_run_id": ingest_run_id,
-                "batch_item_id": batch_item_id,
-                "observation_kind": "repeated",
                 "observed_value_hash": row["value_hash"],
                 "reconstruction_flag": reconstruction_flag,
             })

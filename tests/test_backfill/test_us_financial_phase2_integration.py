@@ -313,7 +313,7 @@ def test_exclusion_rejects_unknown_reason_code():
         )
 
 
-def test_fact_source_dual_write_on_insert_and_repeat():
+def test_fact_source_inserted_only_when_repeat_observed():
     fetcher = USFinancialFetcher()
     snapshot_id, content_hash = _ensure_snapshot({"cik": TEST_CIK})
     ctx = FetchContext(stock_code=TEST_STOCK, cik=TEST_CIK, snapshot_id=snapshot_id, content_hash=content_hash)
@@ -335,7 +335,7 @@ def test_fact_source_dual_write_on_insert_and_repeat():
     )
     assert [r[0] for r in source_rows] == ["inserted"]
 
-    # 同一 fact 再次写入应变为 repeated，source 表新增 repeated
+    # 同一 fact 再次写入应变为 repeated，但不新增 fact_source
     with Connection() as conn:
         result2 = writer.write_facts(conn, ctx, run_id=None, fact_records=[rec], invalid_records=[], statement="balance")
         conn.commit()
@@ -343,12 +343,21 @@ def test_fact_source_dual_write_on_insert_and_repeat():
     assert result2["facts_inserted"] == 0
     assert result2["facts_repeated"] == 1
 
-    source_rows = execute(
+    # fact_source 不增加（repeated 只计数，不逐条持久化）
+    source_rows_after = execute(
         "SELECT observation_kind FROM us_financial_fact_source WHERE snapshot_id = %s ORDER BY fact_source_id",
         (snapshot_id,),
         fetch=True,
     )
-    assert [r[0] for r in source_rows] == ["inserted", "repeated"]
+    assert [r[0] for r in source_rows_after] == ["inserted"]
+
+    # 总 fact_source 行数未变
+    source_count = execute(
+        "SELECT COUNT(*) FROM us_financial_fact_source WHERE snapshot_id = %s",
+        (snapshot_id,),
+        fetch=True,
+    )[0][0]
+    assert source_count == 1
 
 
 def test_conflict_and_staging_idempotent():
@@ -726,17 +735,19 @@ def test_cli_rollback_does_not_exclude_fact_only_repeated_by_batch():
         )
     ) == 0
 
+    # 验证第二个batch只有repeated、没有inserted（via backfill_item统计）
     repeated_count = execute(
-        """
-        SELECT COUNT(*)
-        FROM us_financial_fact_source s
-        JOIN us_financial_backfill_item i ON i.item_id = s.batch_item_id
-        WHERE i.batch_id = %s AND s.observation_kind = 'repeated'
-        """,
-        (second_batch_id,),
+        "SELECT facts_repeated FROM us_financial_backfill_item WHERE batch_id = %s AND stock_code = %s",
+        (second_batch_id, TEST_STOCK),
         fetch=True,
     )[0][0]
     assert repeated_count > 0
+    inserted_count = execute(
+        "SELECT facts_inserted FROM us_financial_backfill_item WHERE batch_id = %s AND stock_code = %s",
+        (second_batch_id, TEST_STOCK),
+        fetch=True,
+    )[0][0]
+    assert inserted_count == 0
 
     assert cli.cmd_rollback(
         SimpleNamespace(
