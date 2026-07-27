@@ -270,6 +270,10 @@ class USFactSelector:
                     # 值未变时仍记录已被后续 filing 证实的更权威 tag，
                     # 让再下一份年报对此 tag 的异值可以按重述处理。
                     trusted_tag = str(fact.get("sec_tag") or trusted_tag)
+                if str(fact.get("form") or "").upper() in _OFFICIAL_ANNUAL_FORMS:
+                    # 后续正式年报重新确认当前可信值时，中间季度或
+                    # 非年度文件产生的异值已经失去 current 口径意义。
+                    pending_review = []
                 continue
 
             # 检查是否已被人工审核通过

@@ -338,6 +338,34 @@ def test_later_trusted_annual_version_clears_superseded_pending_candidate():
     assert "LATEST_RESTATED_APPROVED_ONLY" not in selected[0].quality_flags
 
 
+def test_later_annual_repeat_clears_interim_quarterly_candidate():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, value_hash="annual", value_numeric=5_375_600_000),
+        _fact(
+            2,
+            value_hash="quarterly-anomaly",
+            value_numeric=179_000_000,
+            accession_no="accn-2",
+            form="10-Q",
+            filed_date="2025-04-01",
+        ),
+        _fact(
+            3,
+            value_hash="annual",
+            value_numeric=5_375_600_000,
+            accession_no="accn-3",
+            filed_date="2026-02-01",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+
+    assert selected[0].fact_version_id == 1
+    assert "LATEST_RESTATED_APPROVED_ONLY" not in selected[0].quality_flags
+
+
 def test_unpaid_capex_tag_is_not_selectable():
     selector = USFactSelector()
     facts = [
