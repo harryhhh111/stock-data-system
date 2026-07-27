@@ -72,6 +72,7 @@ SELECTOR_CHUNK_SIZE = 200
 class Reason:
     SAME = "SAME"
     EXPECTED_RESTATEMENT = "EXPECTED_RESTATEMENT"
+    EXPECTED_8K_RECAST = "EXPECTED_8K_RECAST"
     OLD_VERSION_SELECTION = "OLD_VERSION_SELECTION"
     MISSING_MAPPING = "MISSING_MAPPING"
     FORMULA_DIFFERENCE = "FORMULA_DIFFERENCE"
@@ -210,6 +211,7 @@ def _all_reasons() -> list[str]:
     return [
         Reason.SAME,
         Reason.EXPECTED_RESTATEMENT,
+        Reason.EXPECTED_8K_RECAST,
         Reason.OLD_VERSION_SELECTION,
         Reason.MISSING_MAPPING,
         Reason.FORMULA_DIFFERENCE,
@@ -314,6 +316,41 @@ def fetch_latest_quotes(stock_codes: list[str]) -> pd.DataFrame:
     for col in ["close", "market_cap", "pe_ttm", "pb"]:
         df[col] = df[col].apply(_to_decimal)
     return df
+
+
+def fetch_8k_recast_values(
+    stock_codes: list[str],
+) -> dict[tuple[str, date, str], list[Decimal]]:
+    """读取被隔离的年度 8-K/8-K/A 重算事实，仅用于解释差异。"""
+    sql = """
+        SELECT
+            stock_code,
+            report_date,
+            raw_fact ->> 'field' AS standard_field,
+            value_numeric
+        FROM us_financial_fact_staging
+        WHERE stock_code = ANY(%s)
+          AND UPPER(form) IN ('8-K', '8-K/A')
+          AND value_numeric IS NOT NULL
+          AND (
+              period_kind = 'instant'
+              OR (
+                  period_kind = 'duration'
+                  AND period_start IS NOT NULL
+                  AND report_date - period_start >= 330
+              )
+          )
+    """
+    values: dict[tuple[str, date, str], list[Decimal]] = {}
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (stock_codes,))
+            for stock_code, report_date, standard_field, value_numeric in cur.fetchall():
+                if not standard_field:
+                    continue
+                key = (stock_code, report_date, standard_field)
+                values.setdefault(key, []).append(Decimal(value_numeric))
+    return values
 
 
 # ── 新口径数据获取 ─────────────────────────────────────────────
@@ -636,6 +673,9 @@ def run_comparison(stock_codes: list[str]) -> ComparisonResult:
     logger.info("Fetching latest daily quotes...")
     quotes = fetch_latest_quotes(stock_codes)
 
+    logger.info("Fetching staged annual 8-K recast facts...")
+    recast_8k_values = fetch_8k_recast_values(stock_codes)
+
     # ── 2. 采集新口径数据 ──
     logger.info("Fetching new version facts via selector...")
     all_facts = fetch_new_version_facts(stock_codes)
@@ -658,7 +698,7 @@ def run_comparison(stock_codes: list[str]) -> ComparisonResult:
     # 5a. 5 个原始字段
     for std_field, display_name in RAW_FIELDS_OLD_COLS.items():
         rows.extend(_compare_raw_field(
-            old_raw, new_raw, std_field, display_name,
+            old_raw, new_raw, std_field, display_name, recast_8k_values,
         ))
 
     # 5b. ROE / FCF（annual 计算字段）
@@ -725,6 +765,7 @@ def _compare_raw_field(
     new_raw: pd.DataFrame,
     std_field: str,
     display_name: str,
+    recast_8k_values: dict[tuple[str, date, str], list[Decimal]] | None = None,
 ) -> list[ComparisonRow]:
     """对比单个原始字段。"""
     rows: list[ComparisonRow] = []
@@ -771,9 +812,23 @@ def _compare_raw_field(
             new_filed=r.get("new_filed"),
             new_form=str(r.get("new_form", "")) if pd.notna(r.get("new_form")) else None,
         )
+        report_date = r["report_date"] if pd.notna(r["report_date"]) else "N/A"
+        if (
+            reason == Reason.UNEXPLAINED
+            and old_v is not None
+            and isinstance(report_date, (date, datetime))
+            and _matches_8k_recast(
+                old_v,
+                (recast_8k_values or {}).get(
+                    (str(r["stock_code"]), _to_date(report_date), std_field),
+                    [],
+                ),
+            )
+        ):
+            reason = Reason.EXPECTED_8K_RECAST
         rows.append(ComparisonRow(
             stock_code=str(r["stock_code"]),
-            report_date=r["report_date"] if pd.notna(r["report_date"]) else "N/A",
+            report_date=report_date,
             field=display_name,
             old_value=old_v,
             new_value=new_v,
@@ -783,6 +838,21 @@ def _compare_raw_field(
         ))
 
     return rows
+
+
+def _matches_8k_recast(
+    old_value: Decimal,
+    candidates: list[Decimal],
+) -> bool:
+    """按原始字段使用的 0.1% 容差匹配 8-K 重算值。"""
+    for candidate in candidates:
+        difference = abs(old_value - candidate)
+        if old_value != 0:
+            if difference / abs(old_value) < REL_TOL:
+                return True
+        elif difference == 0:
+            return True
+    return False
 
 
 def _compare_computed_field(

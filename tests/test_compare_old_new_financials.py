@@ -119,6 +119,17 @@ class TestClassifyDiff:
         assert C.classify_diff(val, val * Decimal("1.5")) == C.Reason.UNEXPLAINED
 
 
+def test_matches_8k_recast_with_standard_tolerance():
+    assert C._matches_8k_recast(
+        Decimal("1000000"),
+        [Decimal("1000500")],
+    )
+    assert not C._matches_8k_recast(
+        Decimal("1000000"),
+        [Decimal("1010000")],
+    )
+
+
 # ── 工具函数 ──────────────────────────────────────────────────
 
 class TestToDecimal:
