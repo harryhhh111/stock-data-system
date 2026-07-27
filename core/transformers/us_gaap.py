@@ -113,8 +113,8 @@ def _infer_report_type_from_form(form: str, fp: str) -> str | None:
 
 # 利润表
 INCOME_TAG_PRIORITY: dict[str, list[str]] = {
-    "revenues": ["Revenues", "SalesRevenueNet",
-                 "RevenueFromContractWithCustomerExcludingAssessedTax"],
+    "revenues": ["RevenueFromContractWithCustomerExcludingAssessedTax",
+                 "SalesRevenueNet", "Revenues"],
     "cost_of_goods_sold": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
     "gross_profit": ["GrossProfit"],
     "operating_expenses": ["OperatingExpenses"],
@@ -216,9 +216,8 @@ CASHFLOW_TAG_PRIORITY: dict[str, list[str]] = {
     "capital_expenditures": [
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization",
-        "CapitalExpenditures",
-        "CapitalExpendituresIncurredButNotYetPaid",
         "PaymentsToAcquireProductiveAssets",
+        "CapitalExpenditures",
     ],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired"],
     "investment_purchases": [

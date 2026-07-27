@@ -26,6 +26,32 @@ logger = logging.getLogger(__name__)
 
 _CHECKSUM_SCHEMA_VERSION = "v2"
 
+# 同一 accession 可能同时披露多个被映射到同一 standard_field 的 SEC tag。
+# 它们并不一定是事实版本关系，必须先选 canonical tag，再做跨 filing 版本选择。
+_CANONICAL_TAG_PRIORITY: dict[str, tuple[str, ...]] = {
+    "revenues": (
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "SalesRevenueNet",
+        "Revenues",
+    ),
+    "net_cash_from_operations": (
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+        "CashFlowFromContinuingOperatingActivities",
+        "OperatingCashFlow",
+    ),
+    "capital_expenditures": (
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization",
+        "PaymentsToAcquireProductiveAssets",
+        "CapitalExpenditures",
+    ),
+}
+
+_DISALLOWED_STANDARD_FIELD_TAGS = {
+    ("capital_expenditures", "CapitalExpendituresIncurredButNotYetPaid"),
+}
+
 
 @dataclass(frozen=True)
 class SelectedFact:
@@ -97,6 +123,9 @@ class USFactSelector:
 
         selected: list[SelectedFact] = []
         for key, group in by_key.items():
+            group = self._filter_canonical_tag_candidates(group)
+            if not group:
+                continue
             group.sort(key=lambda f: (f["filed_date"] or "", f["accession_no"] or "", f["fact_version_id"]))
             candidate_count = len(group)
 
@@ -117,6 +146,59 @@ class USFactSelector:
             selected.append(self._to_selected_fact(fact, basis, reason, flags, candidate_count))
 
         return selected
+
+    @staticmethod
+    def _filter_canonical_tag_candidates(
+        group: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """同一 accession 内只保留最高优先级的同义 tag。
+
+        不跨 accession 丢弃 tag，避免把真实的年度 tag migration 当成冲突。
+        明确不属于标准字段口径的 tag（例如“已发生但尚未支付”的
+        CapEx）始终排除。
+        """
+        usable = [
+            fact for fact in group
+            if (
+                str(fact.get("standard_field") or ""),
+                str(fact.get("sec_tag") or ""),
+            ) not in _DISALLOWED_STANDARD_FIELD_TAGS
+        ]
+        if not usable:
+            return []
+
+        by_accession: dict[str, list[dict[str, Any]]] = {}
+        for fact in usable:
+            accession_key = str(
+                fact.get("accession_no") or f"fact:{fact.get('fact_version_id')}"
+            )
+            by_accession.setdefault(accession_key, []).append(fact)
+
+        filtered: list[dict[str, Any]] = []
+        for accession_group in by_accession.values():
+            standard_field = str(accession_group[0].get("standard_field") or "")
+            priority = _CANONICAL_TAG_PRIORITY.get(standard_field)
+            if not priority:
+                filtered.extend(accession_group)
+                continue
+
+            rank = {tag: index for index, tag in enumerate(priority)}
+            known_ranks = [
+                rank[str(fact.get("sec_tag") or "")]
+                for fact in accession_group
+                if str(fact.get("sec_tag") or "") in rank
+            ]
+            if not known_ranks:
+                filtered.extend(accession_group)
+                continue
+
+            best_rank = min(known_ranks)
+            filtered.extend(
+                fact for fact in accession_group
+                if rank.get(str(fact.get("sec_tag") or "")) == best_rank
+            )
+
+        return filtered
 
     def _select_latest_restated(
         self,

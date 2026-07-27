@@ -25,6 +25,7 @@ def _fact(
     form: str = "10-K",
     filed_date: date | str = date(2025, 2, 20),
     statement: str = "income",
+    sec_tag: str = "RevenueFromContractWithCustomerExcludingAssessedTax",
 ) -> dict:
     return {
         "fact_version_id": fact_version_id,
@@ -41,6 +42,7 @@ def _fact(
         "accession_no": accession_no,
         "form": form,
         "filed_date": filed_date if isinstance(filed_date, date) else date.fromisoformat(filed_date),
+        "sec_tag": sec_tag,
     }
 
 
@@ -131,6 +133,82 @@ def test_latest_restated_rejects_unknown_change():
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
     assert selected[0].fact_version_id == 1
     assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
+
+
+def test_same_accession_uses_canonical_revenue_tag():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            value_hash="generic",
+            value_numeric=800_000,
+            sec_tag="Revenues",
+        ),
+        _fact(
+            2,
+            value_hash="sales",
+            value_numeric=3_539_800_000,
+            sec_tag="SalesRevenueNet",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].fact_version_id == 2
+
+
+def test_unpaid_capex_tag_is_not_selectable():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="capital_expenditures",
+            value_hash="unpaid",
+            value_numeric=116_194,
+            sec_tag="CapitalExpendituresIncurredButNotYetPaid",
+        ),
+        _fact(
+            2,
+            standard_field="capital_expenditures",
+            value_hash="cash",
+            value_numeric=1_137_089_000,
+            sec_tag="PaymentsToAcquireProductiveAssets",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].fact_version_id == 2
+
+
+def test_tag_priority_does_not_discard_cross_accession_migration():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            accession_no="old",
+            filed_date="2025-02-20",
+            value_hash="same",
+            sec_tag="SalesRevenueNet",
+        ),
+        _fact(
+            2,
+            accession_no="new",
+            filed_date="2026-02-20",
+            value_hash="same",
+            sec_tag="RevenueFromContractWithCustomerExcludingAssessedTax",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].candidate_count == 2
 
 
 def test_checksum_is_stable():
