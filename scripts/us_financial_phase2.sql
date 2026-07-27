@@ -255,3 +255,16 @@ CREATE TABLE IF NOT EXISTS us_financial_backfill_batch_audit (
 
 CREATE INDEX IF NOT EXISTS idx_us_financial_backfill_batch_audit_batch
     ON us_financial_backfill_batch_audit(batch_id, created_at DESC);
+
+-- ── 重述审核表 ───────────────────────────────────────────────
+-- 用于人工审核 latest-restated 拒绝的 restatement。
+-- approved: selector 将该 fact 提升为最新可信版本。
+-- rejected: 保持原版本，记录拒绝原因。
+
+CREATE TABLE IF NOT EXISTS us_financial_restatement_review (
+    fact_version_id   BIGINT PRIMARY KEY REFERENCES us_financial_fact_version(fact_version_id),
+    decision          VARCHAR(10) NOT NULL CHECK (decision IN ('approved', 'rejected')),
+    notes             TEXT,
+    reviewed_by       VARCHAR(50),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

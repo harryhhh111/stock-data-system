@@ -1,7 +1,7 @@
 # 美股财务数据治理进度总览
 
-> 最后更新：2026-07-26
-> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate D 全市场历史回填已通过（777 只股票），scheduler 已恢复；ROIC MVP 因债务数据暂停；生产消费者尚未切换。
+> 最后更新：2026-07-27
+> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate D 已对 777 只待历史重建股票完成回填；当前 US 股票池 1,003 只，其中 1,000 只已有版本事实；重复事实不再新增 fact_source；ROIC MVP 暂停；生产消费者尚未切换。
 > 项目组织：个人所有者 + 多个 agent，不按企业多人团队执行 DBA 分工或职责分离；数据库专用角色为可选加固。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
@@ -10,6 +10,7 @@
 - [财报版本化方案](./US_FINANCIAL_VERSIONING_PLAN.md)
 - [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
 - [Phase 2 全市场回填 Runbook](./US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
+- [后续最小任务单](./US_FINANCIAL_NEXT_STEPS_MINIMAL.md)
 - [跨财年比较框架](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
 - [财务指标前置治理](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)
 - [ROIC 实施方案](../quant/ROIC_IMPLEMENTATION_PLAN.md)
@@ -23,7 +24,7 @@
 | 生产筛选 PE/PB | ✅ 快速修复完成 | 停用腾讯 PE/PB，按市值/TTM 利润和市值/权益自算 | 接入 latest-restated selector；完善普通股口径与最新季度权益 |
 | ROE 年份连续性 | ✅ 已修复 | 不再过滤 NULL 后排序；缺年/缺值不再由旧年份顶替 | 年度 ROE 改为平均权益并增加异常 flags |
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
-| Phase 2 历史事实版本回填 | ✅ Gate D 全市场已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、777 只全市场回填、备份/manifest/post-verify、旧宽表 checksum 保护均通过 | 消费者切换单独验收 |
+| Phase 2 历史事实版本回填 | ✅ Gate D 已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、777 只待重建股票专项回填、备份/manifest/post-verify、旧宽表 checksum 保护均通过；当前股票池 1,003 只中 1,000 只已有版本事实 | 消费者切换单独验收 |
 | 当前分析 latest-restated | ⬜ 未切换 | 数据底座已具备 | 影子选择、差异报告、切换消费者 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
@@ -106,13 +107,10 @@ PB = latest market_cap / latest annual equity （仅权益 > 0）
 
 ## 5. 下一步执行顺序
 
-1. ✅ Gate C：20–50 只异常覆盖样本生产 shadow；
-2. ✅ Gate C 通过后执行 100 只分层样本；
-3. ✅ 全市场分批回填（已完成 777 只，期间未切换消费者）；
-4. 对比旧宽表与新 selector，单独评审当前分析切换；
-5. 切换严格 PIT 回测；
-6. 完成平均权益 ROE、common equity、CapEx、债务/租赁输入等指标前置治理；
-7. ROIC 在债务/租赁输入可信后重新验收，通过后再考虑接入筛选、分析和 PIT 回测。
+1. ✅ Gate D 分批回填（已完成 777 只待历史重建股票，期间未切换消费者）；
+2. 按[后续最小任务单](./US_FINANCIAL_NEXT_STEPS_MINIMAL.md)完成 10 只样本及全市场汇总对比；
+3. 对比通过后，仅对 10 只样本执行个股分析 canary；
+4. 是否切换全部当前分析、PIT 回测和恢复 ROIC，分别另行决定，不自动展开。
 
 ## 6. 阶段门槛
 

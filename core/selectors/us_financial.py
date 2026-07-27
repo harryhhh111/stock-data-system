@@ -127,12 +127,16 @@ class USFactSelector:
         安全策略：
         - 同值 repeat 保留最早 filed_date 的事实来源；
         - amendment_candidate / unknown_change 未经审核不得替代旧版；
-        - 因此 effective latest-restated 退化为最后一个可信版本。
+        - 已通过 us_financial_restatement_review 审核的 restatement 直接采纳。
         """
         sorted_group = sorted(
             group,
             key=lambda f: (f["filed_date"] or "", f["accession_no"] or "", f["fact_version_id"]),
         )
+
+        # 加载本组内已审核通过的 restatement
+        fact_ids = [f["fact_version_id"] for f in sorted_group]
+        approved_restatements = self._load_approved_restatements(fact_ids)
 
         # 至少保留最早披露
         approved = sorted_group[0]
@@ -141,6 +145,12 @@ class USFactSelector:
         for fact in sorted_group[1:]:
             if fact["value_hash"] == approved["value_hash"]:
                 # 同值 repeat：不改变 approved（保留首次披露）
+                continue
+
+            # 检查是否已被人工审核通过
+            if fact["fact_version_id"] in approved_restatements:
+                approved = fact
+                pending_review = []
                 continue
 
             later_form = str(fact.get("form") or "").upper()
@@ -165,6 +175,22 @@ class USFactSelector:
             flags = []
 
         return approved, reason, flags
+
+    @staticmethod
+    def _load_approved_restatements(fact_version_ids: list[int]) -> set[int]:
+        """查询 us_financial_restatement_review，返回已审核通过的 fact_version_id 集合。"""
+        if not fact_version_ids:
+            return set()
+        with Connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT fact_version_id FROM us_financial_restatement_review
+                    WHERE fact_version_id = ANY(%s) AND decision = 'approved'
+                    """,
+                    (fact_version_ids,),
+                )
+                return {r[0] for r in cur.fetchall()}
 
     def _select_latest_observed(
         self,
