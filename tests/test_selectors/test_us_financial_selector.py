@@ -71,7 +71,7 @@ def test_latest_restated_preserves_first_filed_date_on_repeat():
     assert "first filed date preserved" in selected[0].selection_reason
 
 
-def test_latest_restated_rejects_unapproved_amendment():
+def test_latest_restated_accepts_same_tag_official_annual_amendment():
     selector = USFactSelector()
     facts = [
         _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100, form="10-K"),
@@ -79,9 +79,8 @@ def test_latest_restated_rejects_unapproved_amendment():
     ]
     selector._load_facts = lambda *args, **kwargs: facts
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
-    # unapproved amendment candidate must not replace old version
-    assert selected[0].fact_version_id == 1
-    assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
+    assert selected[0].fact_version_id == 2
+    assert "AUTO_RESTATED_SAME_TAG_ANNUAL" in selected[0].quality_flags
 
 
 def test_latest_observed_selects_amendment():
@@ -123,7 +122,7 @@ def test_as_of_ignores_group_with_no_candidate():
     assert len(selected) == 0
 
 
-def test_latest_restated_rejects_unknown_change():
+def test_latest_restated_accepts_same_tag_later_annual_value():
     selector = USFactSelector()
     facts = [
         _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100, form="10-K"),
@@ -131,8 +130,64 @@ def test_latest_restated_rejects_unknown_change():
     ]
     selector._load_facts = lambda *args, **kwargs: facts
     selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+    assert selected[0].fact_version_id == 2
+    assert "AUTO_RESTATED_SAME_TAG_ANNUAL" in selected[0].quality_flags
+
+
+def test_latest_restated_requires_review_for_cross_tag_change():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100),
+        _fact(
+            2,
+            filed_date="2026-02-20",
+            value_hash="new",
+            value_numeric=88,
+            accession_no="accn-2",
+            sec_tag="Revenues",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
     assert selected[0].fact_version_id == 1
     assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
+
+
+def test_latest_restated_requires_review_for_non_annual_change():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100),
+        _fact(
+            2,
+            filed_date="2025-05-10",
+            value_hash="new",
+            value_numeric=88,
+            form="10-Q",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+    assert selected[0].fact_version_id == 1
+    assert "LATEST_RESTATED_APPROVED_ONLY" in selected[0].quality_flags
+
+
+def test_as_of_switches_to_same_tag_restatement_only_after_filed_date():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, filed_date="2017-03-06", value_hash="old", value_numeric=179_632_000),
+        _fact(2, filed_date="2019-03-08", value_hash="new", value_numeric=323_000_000),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    before = selector.select(
+        stock_codes=["TEST"], basis="as-of", as_of_date="2019-03-07"
+    )
+    after = selector.select(
+        stock_codes=["TEST"], basis="as-of", as_of_date="2019-03-08"
+    )
+
+    assert before[0].fact_version_id == 1
+    assert after[0].fact_version_id == 2
 
 
 def test_same_accession_uses_canonical_revenue_tag():
@@ -157,6 +212,102 @@ def test_same_accession_uses_canonical_revenue_tag():
 
     assert len(selected) == 1
     assert selected[0].fact_version_id == 2
+
+
+def test_same_accession_revenue_uses_consolidated_value_not_static_tag_order():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            value_hash="total",
+            value_numeric=936_407_000,
+            sec_tag="Revenues",
+        ),
+        _fact(
+            2,
+            value_hash="subline",
+            value_numeric=611_000,
+            sec_tag="RevenueFromContractWithCustomerExcludingAssessedTax",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+
+    assert len(selected) == 1
+    assert selected[0].fact_version_id == 1
+
+
+def test_latest_restated_accepts_preferred_total_ocf_tag_migration():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="net_cash_from_operations",
+            value_hash="continuing",
+            value_numeric=-100,
+            sec_tag="NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+            filed_date="2017-01-13",
+        ),
+        _fact(
+            2,
+            standard_field="net_cash_from_operations",
+            value_hash="total",
+            value_numeric=493_800_000,
+            sec_tag="NetCashProvidedByUsedInOperatingActivities",
+            accession_no="accn-2",
+            filed_date="2018-04-02",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+
+    assert selected[0].fact_version_id == 2
+    assert "AUTO_RESTATED_SAME_TAG_ANNUAL" in selected[0].quality_flags
+
+
+def test_ocf_same_value_tag_migration_allows_later_official_restatement():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="net_cash_from_operations",
+            value_hash="old",
+            value_numeric=65_824_000_000,
+            sec_tag="NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+            filed_date="2016-10-26",
+        ),
+        _fact(
+            2,
+            standard_field="net_cash_from_operations",
+            value_hash="old",
+            value_numeric=65_824_000_000,
+            sec_tag="NetCashProvidedByUsedInOperatingActivities",
+            accession_no="accn-2",
+            filed_date="2017-11-03",
+        ),
+        _fact(
+            3,
+            standard_field="net_cash_from_operations",
+            value_hash="restated",
+            value_numeric=66_231_000_000,
+            sec_tag="NetCashProvidedByUsedInOperatingActivities",
+            accession_no="accn-3",
+            filed_date="2018-11-05",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    before = selector.select(
+        stock_codes=["TEST"], basis="as-of", as_of_date="2018-11-04"
+    )
+    after = selector.select(
+        stock_codes=["TEST"], basis="as-of", as_of_date="2018-11-05"
+    )
+
+    assert before[0].fact_version_id == 1
+    assert after[0].fact_version_id == 3
 
 
 def test_unpaid_capex_tag_is_not_selectable():

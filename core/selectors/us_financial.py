@@ -52,6 +52,15 @@ _DISALLOWED_STANDARD_FIELD_TAGS = {
     ("capital_expenditures", "CapitalExpendituresIncurredButNotYetPaid"),
 }
 
+_OFFICIAL_ANNUAL_FORMS = {
+    "10-K",
+    "10-K/A",
+    "20-F",
+    "20-F/A",
+    "40-F",
+    "40-F/A",
+}
+
 
 @dataclass(frozen=True)
 class SelectedFact:
@@ -84,7 +93,7 @@ class SelectedFact:
 class USFactSelector:
     """从 us_financial_fact_version 中选择事实版本。"""
 
-    VERSION = "us_fact_selector_v1"
+    VERSION = "us_fact_selector_v2"
 
     def __init__(self) -> None:
         pass
@@ -182,6 +191,33 @@ class USFactSelector:
                 filtered.extend(accession_group)
                 continue
 
+            # Revenue tags are not reliably ordered by name: some issuers use the
+            # modern contract-revenue tag for a small sub-line while `Revenues`
+            # contains the consolidated total (REXR), and others do the reverse
+            # (PRGO).  For otherwise identical contexts in one filing, the
+            # consolidated revenue candidate is the largest absolute value.
+            accession_filed_dates = {
+                fact.get("filed_date") for fact in accession_group
+            }
+            if (
+                standard_field == "revenues"
+                and len(accession_group) > 1
+                and len(accession_filed_dates) == 1
+            ):
+                numeric_candidates = [
+                    fact for fact in accession_group
+                    if fact.get("value_numeric") is not None
+                ]
+                if numeric_candidates:
+                    max_abs_value = max(abs(fact["value_numeric"]) for fact in numeric_candidates)
+                    largest = [
+                        fact for fact in numeric_candidates
+                        if abs(fact["value_numeric"]) == max_abs_value
+                    ]
+                    if len(largest) == 1:
+                        filtered.extend(largest)
+                        continue
+
             rank = {tag: index for index, tag in enumerate(priority)}
             known_ranks = [
                 rank[str(fact.get("sec_tag") or "")]
@@ -208,7 +244,8 @@ class USFactSelector:
 
         安全策略：
         - 同值 repeat 保留最早 filed_date 的事实来源；
-        - amendment_candidate / unknown_change 未经审核不得替代旧版；
+        - 同一 SEC tag 在后续正式年度申报中的异值自动视为官方重述/重列；
+        - 跨 tag 或非年度申报中的异值未经审核不得替代可信版本；
         - 已通过 us_financial_restatement_review 审核的 restatement 直接采纳。
         """
         sorted_group = sorted(
@@ -222,11 +259,17 @@ class USFactSelector:
 
         # 至少保留最早披露
         approved = sorted_group[0]
+        trusted_tag = str(approved.get("sec_tag") or "")
         pending_review: list[dict[str, Any]] = []
+        auto_restated_count = 0
 
         for fact in sorted_group[1:]:
             if fact["value_hash"] == approved["value_hash"]:
                 # 同值 repeat：不改变 approved（保留首次披露）
+                if self._is_preferred_tag_migration(approved, fact):
+                    # 值未变时仍记录已被后续 filing 证实的更权威 tag，
+                    # 让再下一份年报对此 tag 的异值可以按重述处理。
+                    trusted_tag = str(fact.get("sec_tag") or trusted_tag)
                 continue
 
             # 检查是否已被人工审核通过
@@ -236,27 +279,69 @@ class USFactSelector:
                 continue
 
             later_form = str(fact.get("form") or "").upper()
-            if "/A" in later_form:
-                # amendment candidate：未审核，不替代
-                pending_review.append(fact)
+            later_tag = str(fact.get("sec_tag") or "")
+            if (
+                trusted_tag
+                and (
+                    later_tag == trusted_tag
+                    or self._is_preferred_tag_migration(approved, fact)
+                )
+                and later_form in _OFFICIAL_ANNUAL_FORMS
+            ):
+                approved = fact
+                trusted_tag = later_tag
+                auto_restated_count += 1
                 continue
 
-            # 普通后续 filing 的异值：未审核，不替代
+            # 跨 tag 或非年度 filing 的异值：未审核，不替代
             pending_review.append(fact)
+
+        flags: list[str] = []
+        if auto_restated_count:
+            flags.append("AUTO_RESTATED_SAME_TAG_ANNUAL")
 
         if pending_review:
             latest_pending = pending_review[-1]
             reason = (
-                f"preserving last approved version {approved['accession_no']} "
-                f"({approved['filed_date']}); {len(pending_review)} pending review "
+                f"selected last trusted version {approved['accession_no']} "
+                f"({approved['filed_date']}); {len(pending_review)} candidate(s) pending review "
                 f"up to {latest_pending['accession_no']} ({latest_pending['filed_date']})"
             )
-            flags = ["LATEST_RESTATED_APPROVED_ONLY", f"PENDING_REVIEW_COUNT_{len(pending_review)}"]
+            flags.extend(
+                ["LATEST_RESTATED_APPROVED_ONLY", f"PENDING_REVIEW_COUNT_{len(pending_review)}"]
+            )
+        elif auto_restated_count:
+            reason = (
+                f"latest same-tag official annual restatement selected "
+                f"({auto_restated_count} revision(s))"
+            )
         else:
             reason = "no subsequent revision; first filed date preserved"
-            flags = []
 
         return approved, reason, flags
+
+    @staticmethod
+    def _is_preferred_tag_migration(
+        approved: dict[str, Any],
+        later: dict[str, Any],
+    ) -> bool:
+        """判断跨 filing 的 tag 变化是否是已确认的更权威口径。
+
+        当前只自动处理经营现金流“持续经营口径 → 企业总额口径”。
+        Revenue、CapEx 等 tag migration 仍需 canonical 规则或人工复核。
+        """
+        if str(approved.get("standard_field") or "") != "net_cash_from_operations":
+            return False
+
+        priority = _CANONICAL_TAG_PRIORITY["net_cash_from_operations"]
+        rank = {tag: index for index, tag in enumerate(priority)}
+        approved_tag = str(approved.get("sec_tag") or "")
+        later_tag = str(later.get("sec_tag") or "")
+        return (
+            approved_tag in rank
+            and later_tag in rank
+            and rank[later_tag] < rank[approved_tag]
+        )
 
     @staticmethod
     def _load_approved_restatements(fact_version_ids: list[int]) -> set[int]:

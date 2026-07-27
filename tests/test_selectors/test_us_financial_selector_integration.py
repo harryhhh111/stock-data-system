@@ -156,12 +156,11 @@ def test_three_node_pit_timeline():
     assert len(sel_before) == 1
     assert sel_before[0].value_numeric == 100
 
-    # as-of 在 amendment 公开后可看到 90
+    # as-of 在同 tag 的正式 amendment 公开后切换到 90
     sel_amend = selector.select(stock_codes=[TEST_STOCK], basis="as-of", as_of_date="2025-08-10")
     assert len(sel_amend) == 1
-    # latest-restated 保守策略保留旧版；latest-observed 才选新版
-    assert sel_amend[0].value_numeric == 100
-    assert "LATEST_RESTATED_APPROVED_ONLY" in sel_amend[0].quality_flags
+    assert sel_amend[0].value_numeric == 90
+    assert "AUTO_RESTATED_SAME_TAG_ANNUAL" in sel_amend[0].quality_flags
 
     # latest-observed 选择最新值 88
     sel_observed = selector.select(stock_codes=[TEST_STOCK], basis="latest-observed")
