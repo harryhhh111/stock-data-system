@@ -310,6 +310,34 @@ def test_ocf_same_value_tag_migration_allows_later_official_restatement():
     assert after[0].fact_version_id == 3
 
 
+def test_later_trusted_annual_version_clears_superseded_pending_candidate():
+    selector = USFactSelector()
+    facts = [
+        _fact(1, value_hash="old", value_numeric=100),
+        _fact(
+            2,
+            value_hash="ambiguous",
+            value_numeric=90,
+            accession_no="accn-2",
+            sec_tag="Revenues",
+            filed_date="2026-02-01",
+        ),
+        _fact(
+            3,
+            value_hash="trusted",
+            value_numeric=110,
+            accession_no="accn-3",
+            filed_date="2027-02-01",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+
+    assert selected[0].fact_version_id == 3
+    assert "LATEST_RESTATED_APPROVED_ONLY" not in selected[0].quality_flags
+
+
 def test_unpaid_capex_tag_is_not_selectable():
     selector = USFactSelector()
     facts = [

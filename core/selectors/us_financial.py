@@ -291,6 +291,9 @@ class USFactSelector:
                 approved = fact
                 trusted_tag = later_tag
                 auto_restated_count += 1
+                # 更晚的可信正式年报已经覆盖此前未决候选；旧候选不再
+                # 可能改变 current/latest-restated 结果，无需继续报警。
+                pending_review = []
                 continue
 
             # 跨 tag 或非年度 filing 的异值：未审核，不替代
