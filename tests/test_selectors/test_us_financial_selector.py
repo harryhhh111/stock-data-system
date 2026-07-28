@@ -71,6 +71,31 @@ def test_latest_restated_preserves_first_filed_date_on_repeat():
     assert "first filed date preserved" in selected[0].selection_reason
 
 
+def test_latest_restated_does_not_reopen_reviewed_rejection(monkeypatch):
+    selector = USFactSelector()
+    facts = [
+        _fact(1, filed_date="2025-02-20", value_hash="old", value_numeric=100),
+        _fact(
+            2,
+            filed_date="2026-02-20",
+            value_hash="new",
+            value_numeric=90,
+            accession_no="accn-2",
+            sec_tag="Revenues",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    monkeypatch.setattr(
+        selector, "_load_restatement_reviews", lambda fact_ids: {2: "rejected"}
+    )
+
+    selected = selector.select(stock_codes=["TEST"], basis="latest-restated")
+
+    assert selected[0].fact_version_id == 1
+    assert "REVIEW_REJECTED_COUNT_1" in selected[0].quality_flags
+    assert "PENDING_REVIEW" not in " ".join(selected[0].quality_flags)
+
+
 def test_latest_restated_accepts_same_tag_official_annual_amendment():
     selector = USFactSelector()
     facts = [

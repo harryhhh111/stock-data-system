@@ -255,13 +255,22 @@ class USFactSelector:
 
         # 加载本组内已审核通过的 restatement
         fact_ids = [f["fact_version_id"] for f in sorted_group]
-        approved_restatements = self._load_approved_restatements(fact_ids)
+        review_decisions = self._load_restatement_reviews(fact_ids)
+        approved_restatements = {
+            fact_id for fact_id, decision in review_decisions.items()
+            if decision == "approved"
+        }
+        rejected_restatements = {
+            fact_id for fact_id, decision in review_decisions.items()
+            if decision == "rejected"
+        }
 
         # 至少保留最早披露
         approved = sorted_group[0]
         trusted_tag = str(approved.get("sec_tag") or "")
         pending_review: list[dict[str, Any]] = []
         auto_restated_count = 0
+        rejected_count = 0
 
         for fact in sorted_group[1:]:
             if fact["value_hash"] == approved["value_hash"]:
@@ -274,6 +283,13 @@ class USFactSelector:
                     # 后续正式年报重新确认当前可信值时，中间季度或
                     # 非年度文件产生的异值已经失去 current 口径意义。
                     pending_review = []
+                continue
+
+            # A reviewed rejection means “keep the prior trusted value”.  The
+            # later fact remains immutable in the version layer, but must not
+            # repeatedly return as an unresolved selector candidate.
+            if fact["fact_version_id"] in rejected_restatements:
+                rejected_count += 1
                 continue
 
             # 检查是否已被人工审核通过
@@ -306,6 +322,8 @@ class USFactSelector:
         flags: list[str] = []
         if auto_restated_count:
             flags.append("AUTO_RESTATED_SAME_TAG_ANNUAL")
+        if rejected_count:
+            flags.append(f"REVIEW_REJECTED_COUNT_{rejected_count}")
 
         if pending_review:
             latest_pending = pending_review[-1]
@@ -321,6 +339,11 @@ class USFactSelector:
             reason = (
                 f"latest same-tag official annual restatement selected "
                 f"({auto_restated_count} revision(s))"
+            )
+        elif rejected_count:
+            reason = (
+                f"selected last trusted version; {rejected_count} later "
+                "candidate(s) rejected by review"
             )
         else:
             reason = "no subsequent revision; first filed date preserved"
@@ -351,20 +374,22 @@ class USFactSelector:
         )
 
     @staticmethod
-    def _load_approved_restatements(fact_version_ids: list[int]) -> set[int]:
-        """查询 us_financial_restatement_review，返回已审核通过的 fact_version_id 集合。"""
+    def _load_restatement_reviews(fact_version_ids: list[int]) -> dict[int, str]:
+        """返回已审核 fact 的决定；approved 与 rejected 都是终态。"""
         if not fact_version_ids:
-            return set()
+            return {}
         with Connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT fact_version_id FROM us_financial_restatement_review
-                    WHERE fact_version_id = ANY(%s) AND decision = 'approved'
+                    SELECT fact_version_id, decision
+                    FROM us_financial_restatement_review
+                    WHERE fact_version_id = ANY(%s)
+                      AND decision IN ('approved', 'rejected')
                     """,
                     (fact_version_ids,),
                 )
-                return {r[0] for r in cur.fetchall()}
+                return {fact_id: decision for fact_id, decision in cur.fetchall()}
 
     def _select_latest_observed(
         self,
