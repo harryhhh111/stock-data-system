@@ -19,8 +19,8 @@
 ## 工作流
 
 ```bash
-# 最多调查 10 个案例；可用 --stocks CRM,MSFT 限定股票
-python3 scripts/financial_review_agent.py investigate --limit 10
+# 最多调查 30 个案例；可用 --stocks CRM,MSFT 限定股票
+python3 scripts/financial_review_agent.py investigate --limit 30
 
 # 默认跳过已有本地提案；需要重新调查时显式指定
 python3 scripts/financial_review_agent.py investigate --stocks MKTX --limit 2 --rerun
@@ -42,7 +42,7 @@ python3 scripts/financial_review_agent.py reject  --case-id <id> --by vinci
 
 ## 安全边界
 
-- MVP 只处理年度 `revenues`，每次最多 10 个案例。
+- MVP 只处理年度 `revenues`，每次最多 30 个案例。
 - `investigate` 只生成“AI 分析 + 规则决策”，不写审核表或 exclusion。
 - 只有显式 `approve` 才执行提案中的审核动作。
 - 证据不足时必须返回 `INSUFFICIENT_EVIDENCE/manual_review`。

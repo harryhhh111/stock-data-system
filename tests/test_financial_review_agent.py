@@ -66,15 +66,15 @@ def test_annual_fact_requires_real_annual_duration():
     assert not _annual_fact({**fact, "period_start": date(2023, 11, 1)})
 
 
-def test_candidate_batch_limit_is_ten():
+def test_candidate_batch_limit_is_thirty():
     class EmptySelector:
         def _load_facts(self, *args):
             return []
 
     finder = ReviewCandidateFinder(EmptySelector())
-    assert finder.find(limit=10) == []
-    with pytest.raises(ValueError, match="between 1 and 10"):
-        finder.find(limit=11)
+    assert finder.find(limit=30) == []
+    with pytest.raises(ValueError, match="between 1 and 30"):
+        finder.find(limit=31)
 
 
 def test_extract_json_accepts_fenced_or_wrapped_text():
