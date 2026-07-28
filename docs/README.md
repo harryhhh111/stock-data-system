@@ -28,6 +28,7 @@
 | [core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md) | 历史市值 PIT 分批回算、审计、回滚与上线方案 |
 | [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案 |
 | [core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md](core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md) | 301 个年度 revenue 历史差异审核结果与关闭边界 |
+| [core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md](core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md) | 当前年报/TTM 新旧口径全市场对比与 canary 准入结论 |
 | [core/US_VERSIONING_PHASE0_EVIDENCE.md](core/US_VERSIONING_PHASE0_EVIDENCE.md) | Phase 0 冻结盘点证据：数据库快照、覆盖率、关键样本基线 |
 
 ---
@@ -105,6 +106,7 @@ deployment/     ←→   部署相关文档
 | 日期 | 更新内容 |
 |------|---------|
 | 2026-07-29 | 年度 revenue 历史未决审核关闭：301 个案例完成，selector 未决归零 |
+| 2026-07-29 | current-only 全市场对比通过：UNEXPLAINED 归零，准入 10 只个股分析 canary |
 | 2026-07-25 | Phase 2 Gate B 生产 canary 通过；明确个人所有者 + 多 agent 的轻量治理，下一步为 Gate C 20–50 只生产 shadow |
 | 2026-07-23 | 更新美股财报版本化 Phase 1B v1 为已关闭；Phase 2 全市场历史版本回填为下一步 |
 | 2026-07-20 | 新增 US 复合策略选型与验证方案 |

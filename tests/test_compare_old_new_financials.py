@@ -100,14 +100,14 @@ class TestClassifyDiff:
             == C.Reason.FORMULA_DIFFERENCE
         )
 
-    def test_unexplained_same_accession(self):
+    def test_old_version_selection_same_accession(self):
         val = 10 * _B
         assert (
             C.classify_diff(
                 val, val * Decimal("1.5"),
                 old_accession="accn-1", new_accession="accn-1",
             )
-            == C.Reason.UNEXPLAINED
+            == C.Reason.OLD_VERSION_SELECTION
         )
 
     def test_unexplained_no_metadata(self):
@@ -359,6 +359,29 @@ class TestComparisonResult:
     def test_total_size(self):
         result = C.ComparisonResult(rows=self._make_rows())
         assert result.total_size_bytes() > 0
+
+    def test_current_snapshot_keeps_latest_annual_and_ttm(self):
+        rows = [
+            C.ComparisonRow("AAA", date(2023, 12, 31), "revenue",
+                            Decimal("90"), Decimal("90"), Decimal("0"), Decimal("0"), C.Reason.SAME),
+            C.ComparisonRow("AAA", date(2024, 12, 31), "revenue",
+                            Decimal("100"), Decimal("101"), Decimal("1"), Decimal("1"), C.Reason.UNEXPLAINED),
+            C.ComparisonRow("AAA", "TTM", "PE",
+                            Decimal("10"), Decimal("10"), Decimal("0"), Decimal("0"), C.Reason.SAME),
+        ]
+        result = C.ComparisonResult(
+            rows=rows,
+            stocks_without_version_facts=["BBB"],
+            stock_pool_total=2,
+            stock_pool_with_facts=1,
+        ).current_snapshot()
+
+        assert [(r.field, r.report_date) for r in result.rows] == [
+            ("PE", "TTM"),
+            ("revenue", date(2024, 12, 31)),
+        ]
+        assert result.stocks_without_version_facts == ["BBB"]
+        assert result.stock_pool_total == 2
 
 
 # ── _build_new_annual_df ──────────────────────────────────────

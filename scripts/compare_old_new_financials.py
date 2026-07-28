@@ -117,6 +117,31 @@ class ComparisonResult:
     def total_size_bytes(self) -> int:
         return sum(len(str(r.__dict__).encode()) for r in self.rows)
 
+    def current_snapshot(self) -> "ComparisonResult":
+        """仅保留每只股票、每个字段当前消费者会使用的最新一行。
+
+        年度字段按 report_date 取最新；PE/PB/FCF Yield 等 TTM 行直接保留。
+        该视图用于消费者切换准入，不把早期历史重列差异当成当前阻断。
+        """
+        latest: dict[tuple[str, str], ComparisonRow] = {}
+        for row in self.rows:
+            key = (row.stock_code, row.field)
+            previous = latest.get(key)
+            if previous is None or _report_date_sort_key(row.report_date) > _report_date_sort_key(
+                previous.report_date
+            ):
+                latest[key] = row
+        return ComparisonResult(
+            rows=sorted(
+                latest.values(),
+                key=lambda row: (row.stock_code, row.field),
+            ),
+            stocks_without_version_facts=list(self.stocks_without_version_facts),
+            stock_pool_total=self.stock_pool_total,
+            stock_pool_with_facts=self.stock_pool_with_facts,
+            phase_label=self.phase_label,
+        )
+
     def to_csv(self, path: Path, differences_only: bool = False) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         rows_to_write = [r for r in self.rows if not differences_only or r.reason != Reason.SAME]
@@ -634,6 +659,11 @@ def classify_diff(
         return Reason.FORMULA_DIFFERENCE
 
     # 检查 filing 级别差异
+    if old_accession and new_accession and old_accession == new_accession:
+        # 同一份 filing、同一标准字段出现异值，说明两条管线选择了不同
+        # XBRL tag/context；这属于旧/新 canonical 选择差异，不是重述。
+        return Reason.OLD_VERSION_SELECTION
+
     if old_accession and new_accession and old_accession != new_accession:
         if new_form and "/A" in str(new_form).upper():
             return Reason.EXPECTED_RESTATEMENT
@@ -1003,6 +1033,14 @@ def _to_date(val: Any) -> date | None:
         return None
 
 
+def _report_date_sort_key(val: date | datetime | str) -> tuple[int, date]:
+    """让 TTM 排在年度日期之后，同时安全处理异常日期字符串。"""
+    if str(val).upper() == "TTM":
+        return (1, date.max)
+    parsed = _to_date(val)
+    return (0, parsed or date.min)
+
+
 def _is_annual_period(fact) -> bool:
     """检查 SelectedFact 的期间是否 ≥ 330 天（排除年报里的 Q4 单季数据）。
 
@@ -1066,6 +1104,11 @@ def parse_args() -> argparse.Namespace:
                    help=f"Output directory (default: {OUTPUT_BASE})")
     p.add_argument("--stocks", default=None,
                    help="Comma-separated custom stock codes (overrides sample list)")
+    p.add_argument(
+        "--current-only",
+        action="store_true",
+        help="Keep only the latest row per stock/field for consumer cutover validation",
+    )
     return p.parse_args()
 
 
@@ -1081,9 +1124,16 @@ def main() -> int:
         logger.info("Stocks: %s", ", ".join(stocks))
 
         result = run_comparison(stocks)
-        result.phase_label = "Phase 1 (Sample)"
+        if args.current_only:
+            result = result.current_snapshot()
+        result.phase_label = (
+            "Phase 1 (Sample, Current Snapshot)"
+            if args.current_only else "Phase 1 (Sample)"
+        )
 
-        phase1_dir = output_dir / "phase1_sample"
+        phase1_dir = output_dir / (
+            "phase1_sample_current" if args.current_only else "phase1_sample"
+        )
         result.to_csv(phase1_dir / "comparison.csv", differences_only=False)
         (phase1_dir / "summary.md").write_text(result.to_markdown_summary())
 
@@ -1111,12 +1161,19 @@ def main() -> int:
 
         # 只对比有版本事实的股票（另列无事实的）
         result = run_comparison(version_stocks)
-        result.phase_label = "Phase 2 (Full Market)"
         # 补全股票池信息
         result.stock_pool_total = len(all_stocks)
         result.stocks_without_version_facts = sorted(set(all_stocks) - set(version_stocks))
+        if args.current_only:
+            result = result.current_snapshot()
+        result.phase_label = (
+            "Phase 2 (Full Market, Current Snapshot)"
+            if args.current_only else "Phase 2 (Full Market)"
+        )
 
-        phase2_dir = output_dir / "phase2_full_market"
+        phase2_dir = output_dir / (
+            "phase2_current_snapshot" if args.current_only else "phase2_full_market"
+        )
         result.to_csv(phase2_dir / "comparison_diffs.csv", differences_only=True)
         (phase2_dir / "summary.md").write_text(result.to_markdown_summary())
 
