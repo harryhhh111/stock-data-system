@@ -211,6 +211,21 @@ def test_full_retrospective_prior_periods_adjusted_wording():
     assert decision["decision"] == "approve"
 
 
+def test_full_retrospective_as_previously_reported_as_adjusted_table():
+    decision = FinancialReviewRuleEngine().decide(
+        _case(),
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "We adopted Topic 606 under the full retrospective method. "
+                "As Previously Reported Adoption of Topic 606 As Adjusted."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
 def test_discontinued_operations_recast_can_adopt_one_official_annual_value():
     case = _case()
     case.timeline = case.timeline[:2]
@@ -344,6 +359,24 @@ def test_discontinued_operations_recast_wording_variant():
                 "The financial information is reflected as discontinued operations. "
                 "All prior periods presented have been recast to reflect the "
                 "discontinued operations."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_discontinued_operations_classified_all_periods_wording():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("DISCONTINUED_OPERATIONS", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "Results of operations related to the disposed businesses "
+                "have been classified as discontinued operations in all "
+                "periods presented in this Form 10-K."
             ),
         }],
     )

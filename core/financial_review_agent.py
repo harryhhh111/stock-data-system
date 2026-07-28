@@ -435,6 +435,10 @@ class FinancialReviewRuleEngine:
                 or "amounts adjusted to reflect" in source
                 or "have been adjusted to reflect" in source
                 or "prior period amounts have been adjusted" in source
+                or (
+                    "as previously reported" in source
+                    and "as adjusted" in source
+                )
             )
         )
         explicit_discontinued_recast = (
@@ -446,6 +450,10 @@ class FinancialReviewRuleEngine:
             or (
                 "reflected as discontinued operations" in source
                 and "all prior periods presented have been recast" in source
+            )
+            or (
+                "classified as discontinued operations" in source
+                and "all periods presented" in source
             )
         )
         new_value = self._value_key(case.timeline[-1])[0]
