@@ -196,6 +196,21 @@ def test_retrospective_application_adjusted_amounts_wording():
     assert decision["decision"] == "approve"
 
 
+def test_full_retrospective_prior_periods_adjusted_wording():
+    decision = FinancialReviewRuleEngine().decide(
+        _case(),
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "We adopted Topic 606 utilizing the full retrospective method. "
+                "Prior period amounts have been adjusted accordingly."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
 def test_discontinued_operations_recast_can_adopt_one_official_annual_value():
     case = _case()
     case.timeline = case.timeline[:2]
@@ -244,6 +259,23 @@ def test_material_misstatement_revision_table_is_error_correction():
             "snippets": (
                 "The statements contained material misstatements. "
                 "As Previously Reported Adjustments As Revised "
+                "Net sales 397,471 4,049 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_as_reported_as_restated_table_is_error_correction():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("ERROR_CORRECTION_RESTATEMENT", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "As Reported Restatement Adjustments As Restated "
                 "Net sales 397,471 4,049 393,422."
             ),
         }],

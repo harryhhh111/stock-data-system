@@ -433,6 +433,8 @@ class FinancialReviewRuleEngine:
                 or "to restate" in source
                 or "required restating" in source
                 or "amounts adjusted to reflect" in source
+                or "have been adjusted to reflect" in source
+                or "prior period amounts have been adjusted" in source
             )
         )
         explicit_discontinued_recast = (
@@ -480,6 +482,10 @@ class FinancialReviewRuleEngine:
                 )
                 or (
                     "as previously reported" in source
+                    and "as restated" in source
+                )
+                or (
+                    "as reported" in source
                     and "as restated" in source
                 )
             )
