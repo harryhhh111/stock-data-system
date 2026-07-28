@@ -83,6 +83,21 @@ def test_extract_json_accepts_fenced_or_wrapped_text():
     assert _extract_json('{"content": "{\\"a\\": 2}"}') == {"a": 2}
 
 
+def test_minimax_invalid_json_becomes_manual_review(monkeypatch):
+    case = _case()
+    monkeypatch.setattr(
+        "core.financial_review_agent.subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": '{"classification": broken}'}
+        )(),
+    )
+    analysis = MiniMaxReviewer().review(
+        case, [{"url": "u", "snippets": "Topic 606 evidence"}]
+    )
+    assert analysis["classification"] == "INSUFFICIENT_EVIDENCE"
+    assert analysis["_model_response_invalid"] is True
+
+
 def test_inline_xbrl_viewer_url_is_unwrapped():
     assert _direct_sec_document_url(
         "https://www.sec.gov/ix?doc=/Archives/edgar/data/1/report.htm"

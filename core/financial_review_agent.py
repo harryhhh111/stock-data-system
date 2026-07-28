@@ -296,13 +296,25 @@ summary 只写一条不超过 120 个汉字的原因，不复述时间线或金�
             ],
             capture_output=True, text=True, check=True,
         )
-        raw_envelope = _extract_json(result.stdout)
-        usage = raw_envelope.get("usage", {}) or {
+        estimated_usage = {
             "estimated": True,
             "input_tokens": round((len(self.SYSTEM) + len(payload_text)) / 4),
             "output_tokens": round(len(result.stdout) / 4),
             "note": "mmx --quiet omits exact API usage; character/4 estimate",
         }
+        try:
+            raw_envelope = _extract_json(result.stdout)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return {
+                "classification": "INSUFFICIENT_EVIDENCE",
+                "transition_method": "UNKNOWN",
+                "confidence": 0.0,
+                "summary": f"MiniMax 返回的 JSON 无法解析：{type(exc).__name__}",
+                "evidence_passage_ids": [],
+                "_minimax_usage": estimated_usage,
+                "_model_response_invalid": True,
+            }
+        usage = raw_envelope.get("usage", {}) or estimated_usage
         envelope = raw_envelope
         content = envelope.get("content")
         if isinstance(content, list):
