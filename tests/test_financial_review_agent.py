@@ -5,6 +5,7 @@ import pytest
 from core.financial_review_agent import (
     FinancialReviewRuleEngine,
     MiniMaxReviewer,
+    ReviewCandidateFinder,
     ReviewCase,
     _annual_fact,
     _extract_json,
@@ -63,6 +64,17 @@ def test_annual_fact_requires_real_annual_duration():
     }
     assert _annual_fact(fact)
     assert not _annual_fact({**fact, "period_start": date(2023, 11, 1)})
+
+
+def test_candidate_batch_limit_is_ten():
+    class EmptySelector:
+        def _load_facts(self, *args):
+            return []
+
+    finder = ReviewCandidateFinder(EmptySelector())
+    assert finder.find(limit=10) == []
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        finder.find(limit=11)
 
 
 def test_extract_json_accepts_fenced_or_wrapped_text():
@@ -137,6 +149,21 @@ def test_full_retrospective_can_adopt_confirmed_later_value():
     )
     assert decision["decision"] == "approve"
     assert decision["actions"][0]["fact_version_id"] == 2
+
+
+def test_full_retrospective_recast_reporting_period_wording():
+    decision = FinancialReviewRuleEngine().decide(
+        _case(),
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "We adopted using the full retrospective method, which resulted "
+                "in the recast of each prior reporting period presented."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
 
 
 def test_discontinued_operations_recast_can_adopt_one_official_annual_value():

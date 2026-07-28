@@ -98,8 +98,8 @@ class ReviewCandidateFinder:
         limit: int = 3,
         skip_case_ids: set[str] | None = None,
     ) -> list[ReviewCase]:
-        if not 1 <= limit <= 5:
-            raise ValueError("MVP limit must be between 1 and 5")
+        if not 1 <= limit <= 10:
+            raise ValueError("MVP limit must be between 1 and 10")
         facts = self.selector._load_facts(stock_codes, ["revenues"], date.today())
         groups: dict[tuple, list[dict[str, Any]]] = {}
         for fact in facts:
@@ -423,6 +423,9 @@ class FinancialReviewRuleEngine:
                 "each prior year presented" in source
                 or "all periods presented" in source
                 or "each period presented" in source
+                or "recast of each prior reporting period presented" in source
+                or "recast of prior reporting periods" in source
+                or "have been restated" in source
             )
         )
         explicit_discontinued_recast = (
