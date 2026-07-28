@@ -244,14 +244,15 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 class MiniMaxReviewer:
-    SYSTEM = """你是美股 SEC 财报附注的语义阅读器。只依据输入的 SEC 证据判断变化原因。
+    SYSTEM = """你是美股 SEC 财报附注的语义分类器。只依据输入的 SEC 证据判断变化原因。
 你不负责选择 fact、不负责批准或排除数据，也不要输出数据库动作或 fact ID。
 输出 JSON 对象，字段必须为 classification、transition_method、confidence、summary、
 evidence_passage_ids。evidence_passage_ids 只能引用输入中已有的 passage_id。
 classification 与 transition_method 只能取输入枚举。
 必须区分 full retrospective、modified retrospective 和 presentation reclassification。
 modified retrospective 通常不追溯改写采用日前比较期；如果同时提到新准则和重分类，
-以直接解释数值变化的原因为主。证据不足时返回 INSUFFICIENT_EVIDENCE/UNKNOWN。"""
+以直接解释数值变化的原因为主。证据不足时返回 INSUFFICIENT_EVIDENCE/UNKNOWN。
+summary 只写一条不超过 120 个汉字的原因，不复述时间线或金额。"""
 
     def review(self, case: ReviewCase, evidence: list[dict[str, str]]) -> dict[str, Any]:
         if not any(item.get("snippets", "").strip() for item in evidence):
@@ -284,13 +285,13 @@ modified retrospective 通常不追溯改写采用日前比较期；如果同时
                     for row in case.timeline
                 ],
             },
-            "sec_evidence_passages": _evidence_passages(evidence),
+            "sec_evidence_passages": _compact_evidence_passages(case, evidence),
         }
         payload_text = json.dumps(payload, ensure_ascii=False)
         result = subprocess.run(
             [
                 "mmx", "text", "chat", "--output", "json", "--temperature", "0.1",
-                "--quiet", "--non-interactive", "--max-tokens", "1400",
+                "--quiet", "--non-interactive", "--max-tokens", "500",
                 "--system", self.SYSTEM, "--message", payload_text,
             ],
             capture_output=True, text=True, check=True,
@@ -358,6 +359,46 @@ def _evidence_passages(evidence: list[dict[str, str]]) -> list[dict[str, str]]:
     return passages
 
 
+def _compact_evidence_passages(
+    case: ReviewCase,
+    evidence: list[dict[str, str]],
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    """只把最相关的 SEC 段落交给模型，减少廉价模型自身的 token 消耗。"""
+    passages = _evidence_passages(evidence)
+    if len(passages) <= limit:
+        return [{**item, "text": item["text"][:800]} for item in passages]
+
+    explanation_terms = (
+        "as previously reported", "as adjusted", "as restated",
+        "discontinued operations", "all periods presented", "reclassified",
+        "recast", "retrospective", "topic 606", "asc 606", "asu 2014-09",
+        "separation", "spin-off", "divestiture", "business combination",
+        "correction", "misstatement",
+    )
+    amount_terms: set[str] = set()
+    for row in case.timeline:
+        value = row.get("value_numeric")
+        if value in (None, ""):
+            continue
+        number = Decimal(str(value))
+        amount_terms.update({
+            f"{int(number):,}",
+            f"{int(number / 1000):,}",
+            f"{number / Decimal('1000000'):,.1f}",
+        })
+
+    def score(item: dict[str, str]) -> tuple[int, str]:
+        text = item["text"].lower()
+        points = sum(3 for term in explanation_terms if term in text)
+        points += sum(2 for term in amount_terms if term in item["text"])
+        return points, item["passage_id"]
+
+    ranked = sorted(passages, key=score, reverse=True)[:limit]
+    ranked.sort(key=lambda item: item["passage_id"])
+    return [{**item, "text": item["text"][:800]} for item in ranked]
+
+
 def _normalize_evidence_text(value: str) -> str:
     """只消除 HTML/模型常见的排版差异，不改变词义。"""
     return re.sub(
@@ -396,6 +437,28 @@ def normalize_analysis(
             "SEC explicitly says prior-period revenue items were reclassified "
             "to Other income (expense)"
         )
+    explicit_discontinued_history = (
+        "discontinued operations" in source
+        and any(term in source for term in (
+            "all periods presented", "prior period amounts",
+            "historical financial results", "have been reclassified",
+            "have been adjusted", "recast",
+        ))
+    )
+    if (
+        explicit_discontinued_history
+        and normalized.get("classification") not in {
+            "CORPORATE_REORGANIZATION", "ERROR_CORRECTION_RESTATEMENT",
+        }
+    ):
+        original = normalized.get("classification")
+        normalized["classification"] = "DISCONTINUED_OPERATIONS"
+        normalized["transition_method"] = "NOT_APPLICABLE"
+        normalized.setdefault("rule_adjustments", []).append(
+            f"{original} -> DISCONTINUED_OPERATIONS: "
+            "SEC evidence explicitly links historical-period changes to "
+            "discontinued operations"
+        )
     return normalized
 
 
@@ -417,6 +480,12 @@ class FinancialReviewRuleEngine:
         source = _normalize_evidence_text(
             " ".join(item.get("snippets", "") for item in (evidence or []))
         ).lower()
+        cited_ids = set(analysis.get("evidence_passage_ids") or [])
+        cited_source = _normalize_evidence_text(" ".join(
+            item["text"]
+            for item in _evidence_passages(evidence or [])
+            if item["passage_id"] in cited_ids
+        )).lower()
         explicit_full_retrospective = (
             (
                 "full retrospective" in source
@@ -454,6 +523,14 @@ class FinancialReviewRuleEngine:
             or (
                 "classified as discontinued operations" in source
                 and "all periods presented" in source
+            )
+            or (
+                "reported as discontinued operations" in source
+                and "all periods presented" in source
+            )
+            or (
+                "discontinued operations" in source
+                and "prior period amounts have been adjusted to conform" in source
             )
         )
         new_value = self._value_key(case.timeline[-1])[0]
@@ -505,17 +582,100 @@ class FinancialReviewRuleEngine:
             )
             and any(marker in source for marker in new_markers)
         )
-        auto_adopt = classification == "PRESENTATION_RECLASSIFICATION" or (
+        values_are_cited = (
+            any(
+                any(marker in source for marker in group)
+                for group in prior_marker_groups
+            )
+            and any(marker in source for marker in new_markers)
+        )
+        explicit_standard_adjustment_table = (
+            "as previously reported" in source
+            and "as adjusted" in source
+            and (
+                "adoption of topic 606" in source
+                or "adoption of the revenue standard" in source
+                or "revenue from contracts with customers" in source
+            )
+            and values_are_cited
+        )
+        explicit_presentation_recast = (
+            (
+                "reclassified as a reduction of net sales" in source
+                or "previously reported amounts have been reclassified" in source
+                or "prior period amounts have been adjusted to conform" in source
+                or "recast to reflect" in source
+            )
+            and values_are_cited
+        )
+        broad_discontinued_evidence = (
+            classification == "DISCONTINUED_OPERATIONS"
+            and "discontinued operations" in source
+            and values_are_cited
+            and any(term in source for term in (
+                "reclassified", "restated", "adjusted", "recast",
+                "all periods presented", "prior periods",
+            ))
+        )
+        broad_full_retrospective_evidence = (
             classification == "ACCOUNTING_STANDARD_CHANGE"
             and transition == "FULL_RETROSPECTIVE"
-            and explicit_full_retrospective
+            and values_are_cited
+            and (
+                "full retrospective" in source
+                or "retrospective application" in source
+            )
+        )
+        cited_discontinued_evidence = (
+            classification == "DISCONTINUED_OPERATIONS"
+            and float(analysis.get("confidence") or 0) >= 0.9
+            and "discontinued operations" in cited_source
+            and any(term in cited_source for term in (
+                "reclassified", "restated", "adjusted", "recast",
+                "all periods presented", "prior periods",
+            ))
+        )
+        cited_full_retrospective_evidence = (
+            classification == "ACCOUNTING_STANDARD_CHANGE"
+            and transition == "FULL_RETROSPECTIVE"
+            and float(analysis.get("confidence") or 0) >= 0.9
+            and (
+                "full retrospective" in cited_source
+                or "retrospective application" in cited_source
+            )
+        )
+        deterministic_auto_adopt = classification == "PRESENTATION_RECLASSIFICATION" or (
+            classification == "ACCOUNTING_STANDARD_CHANGE"
+            and (
+                (transition == "FULL_RETROSPECTIVE" and explicit_full_retrospective)
+                or explicit_standard_adjustment_table
+            )
         ) or (
             classification == "DISCONTINUED_OPERATIONS"
             and explicit_discontinued_recast
         ) or (
             classification == "ERROR_CORRECTION_RESTATEMENT"
             and explicit_error_correction
+        ) or (
+            broad_discontinued_evidence
+            or broad_full_retrospective_evidence
+            or cited_discontinued_evidence
+            or cited_full_retrospective_evidence
         )
+        high_confidence_two_filing_candidate = (
+            float(analysis.get("confidence") or 0) >= 0.9
+            and (
+                classification in {
+                    "DISCONTINUED_OPERATIONS",
+                    "PRESENTATION_RECLASSIFICATION",
+                }
+                or (
+                    classification == "ACCOUNTING_STANDARD_CHANGE"
+                    and transition == "FULL_RETROSPECTIVE"
+                )
+            )
+        )
+        auto_adopt = deterministic_auto_adopt or high_confidence_two_filing_candidate
         if not auto_adopt:
             return {
                 "decision": "manual_review",
@@ -540,8 +700,10 @@ class FinancialReviewRuleEngine:
             1 if classification in {
                 "ACCOUNTING_STANDARD_CHANGE", "DISCONTINUED_OPERATIONS",
                 "ERROR_CORRECTION_RESTATEMENT",
-            } else 2
+            } or explicit_presentation_recast else 2
         )
+        if high_confidence_two_filing_candidate and not deterministic_auto_adopt:
+            minimum_confirmations = max(2, minimum_confirmations)
         confirmation_count = len({row["accession_no"] for row in confirmations})
         if confirmation_count < minimum_confirmations:
             return {

@@ -8,6 +8,7 @@ from core.financial_review_agent import (
     ReviewCandidateFinder,
     ReviewCase,
     _annual_fact,
+    _compact_evidence_passages,
     _extract_json,
     _direct_sec_document_url,
     build_proposal,
@@ -224,6 +225,58 @@ def test_full_retrospective_as_previously_reported_as_adjusted_table():
         }],
     )
     assert decision["decision"] == "approve"
+
+
+def test_modified_retrospective_explicit_adjustment_table_can_adopt():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "MODIFIED_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "Revenue from Contracts with Customers. As Previously Reported "
+                "Adoption of Topic 606 As Adjusted 397,471 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_explicit_presentation_recast_needs_only_one_annual_confirmation():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("PRESENTATION_RECLASSIFICATION", "NOT_APPLICABLE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "Prior period amounts have been adjusted to conform to the "
+                "current presentation and recast to reflect the change. "
+                "Revenue 397,471 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_compact_evidence_keeps_high_signal_passages():
+    case = _case()
+    evidence = [{
+        "url": "u",
+        "snippets": "\n---\n".join(
+            [f"generic passage {index}" for index in range(12)]
+            + [
+                "As Previously Reported Adoption of Topic 606 As Adjusted "
+                "397,471 393,422."
+            ]
+        ),
+    }]
+    passages = _compact_evidence_passages(case, evidence, limit=3)
+    assert len(passages) == 3
+    assert any("Topic 606" in item["text"] for item in passages)
 
 
 def test_discontinued_operations_recast_can_adopt_one_official_annual_value():

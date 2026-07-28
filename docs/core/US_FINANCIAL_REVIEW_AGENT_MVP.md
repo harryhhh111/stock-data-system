@@ -4,17 +4,23 @@
 
 ## 职责边界
 
-- MiniMax 只输出：事件分类、过渡方法、SEC 原句和置信度。
+- MiniMax 只输出：事件分类、过渡方法、证据段 ID、短原因和置信度。
+- 发送给 MiniMax 前，Python 按金额与会计关键词筛选最多 6 个 SEC
+  证据段，每段最多 800 字符；不再发送整份提取结果。
 - MiniMax 不接收或输出 fact ID，也不能生成 approve/exclude 动作。
 - Python 校验证据原句必须来自已下载的 SEC filing。
 - Python 规则引擎决定是否采用后值，并只生成一个必要动作。
 - 写入数据库的审核备注由规则引擎生成，不复用模型摘要，避免把模型推测写入正式数据。
 - 当前自动规则：
-  - `PRESENTATION_RECLASSIFICATION`：后值被至少两份正式年报确认后，选择首次出现后值的 fact。
-  - `ACCOUNTING_STANDARD_CHANGE + FULL_RETROSPECTIVE`：使用同一确认规则。
+  - `PRESENTATION_RECLASSIFICATION`：后值被至少两份正式年报确认；若 SEC
+    原文明确给出重分类及前后金额，一份正式年报即可确认。
+  - `ACCOUNTING_STANDARD_CHANGE + FULL_RETROSPECTIVE`：验证明确追溯措辞；
+    或 MiniMax 置信度不低于 90% 且后值被两份正式年报确认。
   - `DISCONTINUED_OPERATIONS`：SEC 明确说明历史结果对所有列报期间重列时，采用正式年报中的持续经营后值。
   - `ERROR_CORRECTION_RESTATEMENT`：SEC 正式文件明确识别历史错误，并提供 As Reported / Revision / As Revised 金额表时，可采用表内后值。
-  - `MODIFIED_RETROSPECTIVE` 及其他分类：保持人工复核。
+  - `MODIFIED_RETROSPECTIVE`：默认人工复核；只有 SEC 明确提供
+    As Previously Reported / As Adjusted 金额表时才自动采用后值。
+  - 公司重组、主体变化、低置信度及证据冲突：保持人工复核。
 
 ## 工作流
 
@@ -39,6 +45,10 @@ python3 scripts/financial_review_agent.py reject  --case-id <id> --by vinci
 产物保存在 `build/financial_review/<case-id>.json`。Agent 先使用数据库中的事实时间线，再按 accession 读取 SEC 原始 filing；它不重新搜索已在数据库中的财务数字。
 每个提案的 `_minimax_usage` 保存模型 token 用量。`mmx --quiet` 不返回 API
 精确 usage 时，记录会明确标注 `estimated=true`，采用字符数/4 的粗略估算。
+
+使用最近一批 30 个历史产物离线回放：MiniMax 估算输入从 251,219 token
+降至约 51,016 token（下降约 79.7%）；自动决策从 5/30 提升到 18/30。
+这是回放结果，不等同于未来每批的固定命中率。
 
 ## 安全边界
 
