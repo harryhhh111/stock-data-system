@@ -1,6 +1,8 @@
 # 财务审核 Agent MVP
 
-目标：用 MiniMax 阅读 `latest-restated` 未决 revenue 的 SEC 附注；确定性事实选择和数据库动作由 Python 规则完成，任何变更仍必须由用户确认。
+> 状态：✅ Revenue 历史存量审核已于 2026-07-29 关闭；后续仅按需处理新 filing。
+
+目标：用 MiniMax 阅读 `latest-restated` 未决 revenue 的 SEC 附注；确定性事实选择和数据库动作由 Python 规则完成，数据库变更必须经过显式 `approve`、人工复核或用户授权的批量收尾。
 
 ## 职责边界
 
@@ -63,3 +65,10 @@ python3 scripts/financial_review_agent.py reject  --case-id <id> --by vinci
 - SEC HTML 只做关键词上下文提取，不做完整附注结构解析。
 - MVP 没有批量批准、定时任务、Web UI 或自动循环。
 - `reject` 只否决本地提案，不自动把某条 SEC fact 标成业务拒绝。
+
+## 存量审核结果
+
+2026-07-29 已完成 301 个年度 revenue 案例，最终 selector 未决为 0，详见
+[Revenue 历史差异审核验收](./US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md)。
+
+本项目是个人玩具项目，不继续为该流程开发 Web UI、常驻调度或多角色审批。
