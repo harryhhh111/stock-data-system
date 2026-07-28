@@ -3,7 +3,34 @@
 import pandas as pd
 from unittest.mock import patch
 
-from quant.screener.filters import apply_commodity_filter
+from quant.screener.filters import apply_commodity_filter, apply_hard_filters
+from quant.screener.presets import PRESETS
+
+
+class TestFcfRoeValueFinancialExclusion:
+    """FCF+ROE 深度价值策略必须在全部市场排除固定金融行业。"""
+
+    def test_excludes_us_financial_sic_industries(self):
+        df = pd.DataFrame({
+            "stock_code": ["ADBE", "PGR", "AMP", "OTHER"],
+            "stock_name": ["Adobe", "Progressive", "Ameriprise", "Other"],
+            "market": ["US", "US", "US", "US"],
+            "industry": [
+                "Services-Prepackaged Software",
+                "Fire, Marine & Casualty Insurance",
+                "Investment Advice",
+                "Unclassified",
+            ],
+            "market_cap": [100e9, 100e9, 100e9, 100e9],
+            "fcf_yield": [0.12, 0.12, 0.12, 0.12],
+            "roe": [0.20, 0.20, 0.20, 0.20],
+        })
+
+        result, _, _ = apply_hard_filters(
+            df, PRESETS["fcf_roe_value"]["filters"]
+        )
+
+        assert result["stock_code"].tolist() == ["ADBE", "OTHER"]
 
 
 class TestApplyCommodityFilter:

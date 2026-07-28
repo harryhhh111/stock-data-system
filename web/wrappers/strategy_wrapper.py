@@ -109,18 +109,22 @@ def run_fcf_roe_strategy(
     defaults = MARKET_DEFAULTS.get(market, MARKET_DEFAULTS["US"])
 
     # 构建 filters（预设 + 用户覆盖）
+    # 注意：hard filter 优先读取 _by_market 变体（dict），标量只在无 dict 时回退。
+    # 用户覆盖必须写入 _by_market 变体，否则会被预设的 by-market 值覆盖。
     filters = dict(cfg["filters"])
-    filters["market_cap_min"] = market_cap_min if market_cap_min is not None else defaults["market_cap_min"]
-    filters["fcf_yield_min"] = fcf_yield_min if fcf_yield_min is not None else defaults["fcf_yield_min"]
+    mc = market_cap_min if market_cap_min is not None else defaults["market_cap_min"]
+    fy = fcf_yield_min if fcf_yield_min is not None else defaults["fcf_yield_min"]
+    filters["market_cap_min_by_market"] = {market: mc}
+    filters["fcf_yield_min_by_market"] = {market: fy}
     filters["roe_min"] = roe_min if roe_min is not None else defaults["roe_min"]
     top_n = top_n if top_n is not None else defaults["top_n"]
 
     if top_n < 1 or top_n > 100:
         raise ValueError(f"top_n must be 1–100, got: {top_n}")
-    if filters["market_cap_min"] <= 0:
-        raise ValueError(f"market_cap_min must be > 0, got: {filters['market_cap_min']}")
-    if not (0 <= filters["fcf_yield_min"] <= 1):
-        raise ValueError(f"fcf_yield_min must be 0–1, got: {filters['fcf_yield_min']}")
+    if mc <= 0:
+        raise ValueError(f"market_cap_min must be > 0, got: {mc}")
+    if not (0 <= fy <= 1):
+        raise ValueError(f"fcf_yield_min must be 0–1, got: {fy}")
     if not (0 <= filters["roe_min"] <= 1):
         raise ValueError(f"roe_min must be 0–1, got: {filters['roe_min']}")
 
@@ -151,8 +155,8 @@ def run_fcf_roe_strategy(
             "fixed_rules": FIXED_RULES,
             "applied_filters": {
                 "market": market,
-                "market_cap_min": filters["market_cap_min"],
-                "fcf_yield_min": filters["fcf_yield_min"],
+                "market_cap_min": mc,
+                "fcf_yield_min": fy,
                 "roe_min": filters["roe_min"],
                 "roe_consecutive_years": roe_years,
                 "top_n": top_n,
@@ -193,8 +197,8 @@ def run_fcf_roe_strategy(
         "fixed_rules": FIXED_RULES,
         "applied_filters": {
             "market": market,
-            "market_cap_min": filters["market_cap_min"],
-            "fcf_yield_min": filters["fcf_yield_min"],
+            "market_cap_min": mc,
+            "fcf_yield_min": fy,
             "roe_min": filters["roe_min"],
             "roe_consecutive_years": roe_years,
             "top_n": top_n,

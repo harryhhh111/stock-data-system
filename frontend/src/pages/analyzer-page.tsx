@@ -1,4 +1,5 @@
-import { useState, useCallback, lazy, Suspense } from "react";
+import { useState, useCallback, lazy, Suspense, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { analyzerApi } from "@/lib/api/client";
 import { StockSearch } from "@/components/analyzer/stock-search";
@@ -26,6 +27,19 @@ function Star({ rating }: { rating: number | null }) {
 export function AnalyzerPage() {
   const [market, setMarket] = useState<Market | "all">("all");
   const { addHistory } = useAnalyzerStore();
+  const [searchParams] = useSearchParams();
+
+  // 支持 /analyzer?code=AAPL&market=US 直接打开
+  useEffect(() => {
+    const code = searchParams.get("code");
+    const mkt = searchParams.get("market") as Market | null;
+    if (code) {
+      if (mkt) setMarket(mkt);
+      analyzeMutation.mutate({ code, mkt: mkt ?? undefined });
+    }
+    // 只在首次加载时触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const analyzeMutation = useMutation({
     mutationFn: ({ code, mkt }: { code: string; mkt?: Market }) =>

@@ -5,6 +5,25 @@
 from typing import Literal, TypedDict
 
 
+US_FINANCIAL_INDUSTRIES = [
+    "National Commercial Banks",
+    "State Commercial Banks",
+    "Savings Institutions",
+    "Fire, Marine & Casualty Insurance",
+    "Life Insurance",
+    "Accident & Health Insurance",
+    "Insurance Agents, Brokers & Service",
+    "Insurance Carriers, NEC",
+    "Real Estate Investment Trusts",
+    "Finance Services",
+    "Investment Advice",
+    "Security Brokers, Dealers & Flotation Companies",
+    "Security & Commodity Brokers, Dealers, Exchanges & Services",
+    "Mortgage Bankers & Loan Correspondents",
+    "Personal Credit Institutions",
+]
+
+
 class FilterConfig(TypedDict, total=False):
     market_cap_min: float | None          # 最低市值（元）
     market_cap_min_by_market: dict[str, float] | None  # 按市场设定最低市值
@@ -69,7 +88,7 @@ PRESETS: dict[str, PresetConfig] = {
         "conditions": [
             "市值 ≥ 50亿 (A股/港股)，≥ 20亿美元 (美股)",
             "排除 ST/*ST",
-            "排除行业: 银行/非银金融/房地产 (A股)，银行/保险/其他金融/地产 (港股)",
+            "固定排除金融类：A股银行/非银金融/房地产，港股银行/保险/其他金融/地产，美股银行/保险/券商/REIT/投资顾问等",
             "FCF Yield ≥ 12% (A股/港股)，≥ 10% (美股)",
             "ROE ≥ 12%，连续 3 年年度 ROE 均达标",
         ],
@@ -84,6 +103,7 @@ PRESETS: dict[str, PresetConfig] = {
             "exclude_industries_by_market": {
                 "CN_A": ["银行", "非银金融", "房地产"],          # 申万行业
                 "CN_HK": ["银行", "保险", "其他金融", "地产"],    # 港交所行业
+                "US": US_FINANCIAL_INDUSTRIES,                       # SEC SIC 行业
             },
             "fcf_yield_min_by_market": {
                 "CN_A": 0.12,                  # A 股 FCF Yield > 12%
