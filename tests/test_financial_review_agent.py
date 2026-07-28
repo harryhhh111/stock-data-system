@@ -166,6 +166,36 @@ def test_full_retrospective_recast_reporting_period_wording():
     assert decision["decision"] == "approve"
 
 
+def test_full_retrospective_to_restate_wording():
+    decision = FinancialReviewRuleEngine().decide(
+        _case(),
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "We adopted Topic 606 using the full retrospective method "
+                "to restate 2017 and 2016."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_retrospective_application_adjusted_amounts_wording():
+    decision = FinancialReviewRuleEngine().decide(
+        _case(),
+        _analysis("ACCOUNTING_STANDARD_CHANGE", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "2017 and 2016 amounts adjusted to reflect the retrospective "
+                "application of ASU 2014-09, Revenue from Contracts with Customers."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
 def test_discontinued_operations_recast_can_adopt_one_official_annual_value():
     case = _case()
     case.timeline = case.timeline[:2]
@@ -236,6 +266,34 @@ def test_multistage_error_uses_any_prior_value_and_as_restated_wording():
             "snippets": (
                 "We are restating our previously issued statements. "
                 "As Reported Adjustments As Restated 410,000 16,578 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_error_correction_matches_values_presented_in_millions():
+    case = _case()
+    case.timeline = [
+        {
+            **case.timeline[0],
+            "value_numeric": "13327700000",
+        },
+        {
+            **case.timeline[1],
+            "value_numeric": "13274200000",
+        },
+    ]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("ERROR_CORRECTION_RESTATEMENT", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "The statements have been revised to correct the amounts "
+                "previously reported on a gross basis to a net basis. "
+                "As reported Revision As revised TOTAL REVENUES "
+                "13,327.7 (53.5) 13,274.2."
             ),
         }],
     )

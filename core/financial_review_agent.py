@@ -418,7 +418,11 @@ class FinancialReviewRuleEngine:
             " ".join(item.get("snippets", "") for item in (evidence or []))
         ).lower()
         explicit_full_retrospective = (
-            ("full retrospective" in source or "retrospectively adopted" in source)
+            (
+                "full retrospective" in source
+                or "retrospectively adopted" in source
+                or "retrospective application" in source
+            )
             and (
                 "each prior year presented" in source
                 or "all periods presented" in source
@@ -426,6 +430,9 @@ class FinancialReviewRuleEngine:
                 or "recast of each prior reporting period presented" in source
                 or "recast of prior reporting periods" in source
                 or "have been restated" in source
+                or "to restate" in source
+                or "required restating" in source
+                or "amounts adjusted to reflect" in source
             )
         )
         explicit_discontinued_recast = (
@@ -441,10 +448,18 @@ class FinancialReviewRuleEngine:
         )
         new_value = self._value_key(case.timeline[-1])[0]
         def _markers(value: str) -> set[str]:
-            return {
-                f"{int(Decimal(value)):,}",
-                f"{int(Decimal(value) / 1000):,}",
+            number = Decimal(value)
+            markers = {
+                f"{int(number):,}",
+                f"{int(number / 1000):,}",
             }
+            # SEC tables commonly state that figures are in millions and render
+            # values such as 13,274.2 rather than the raw 13,274,200,000.
+            for divisor in (Decimal("1000"), Decimal("1000000")):
+                scaled = number / divisor
+                markers.add(f"{scaled:,.1f}")
+                markers.add(f"{scaled:,.2f}")
+            return markers
 
         prior_marker_groups = [
             _markers(self._value_key(row)[0])
@@ -459,6 +474,10 @@ class FinancialReviewRuleEngine:
                 "identified errors in our previously issued financial statements" in source
                 or "material misstatements" in source
                 or "restating our previously issued" in source
+                or (
+                    "revised to correct" in source
+                    and "previously reported" in source
+                )
                 or (
                     "as previously reported" in source
                     and "as restated" in source
