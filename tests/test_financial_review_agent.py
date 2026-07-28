@@ -176,6 +176,63 @@ def test_explicit_error_correction_table_can_adopt_quarterly_revised_value():
     assert decision["actions"][0]["fact_version_id"] == 2
 
 
+def test_material_misstatement_revision_table_is_error_correction():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("ERROR_CORRECTION_RESTATEMENT", "NOT_APPLICABLE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "The statements contained material misstatements. "
+                "As Previously Reported Adjustments As Revised "
+                "Net sales 397,471 4,049 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_multistage_error_uses_any_prior_value_and_as_restated_wording():
+    case = _case()
+    case.timeline.insert(1, {
+        "fact_version_id": 4, "value_numeric": "410000000",
+        "value_text": None, "form": "10-K", "filed_date": "2018-06-01",
+        "accession_no": "middle",
+    })
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("ERROR_CORRECTION_RESTATEMENT", "FULL_RETROSPECTIVE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "We are restating our previously issued statements. "
+                "As Reported Adjustments As Restated 410,000 16,578 393,422."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
+def test_discontinued_operations_recast_wording_variant():
+    case = _case()
+    case.timeline = case.timeline[:2]
+    decision = FinancialReviewRuleEngine().decide(
+        case,
+        _analysis("DISCONTINUED_OPERATIONS", "NOT_APPLICABLE"),
+        [{
+            "url": "u",
+            "snippets": (
+                "The financial information is reflected as discontinued operations. "
+                "All prior periods presented have been recast to reflect the "
+                "discontinued operations."
+            ),
+        }],
+    )
+    assert decision["decision"] == "approve"
+
+
 def test_validate_proposal_rejects_fact_from_other_case():
     proposal = build_proposal(_case(), _analysis())
     proposal["decision"]["actions"][0]["fact_version_id"] = 999

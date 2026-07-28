@@ -98,8 +98,8 @@ class ReviewCandidateFinder:
         limit: int = 3,
         skip_case_ids: set[str] | None = None,
     ) -> list[ReviewCase]:
-        if not 1 <= limit <= 3:
-            raise ValueError("MVP limit must be between 1 and 3")
+        if not 1 <= limit <= 5:
+            raise ValueError("MVP limit must be between 1 and 5")
         facts = self.selector._load_facts(stock_codes, ["revenues"], date.today())
         groups: dict[tuple, list[dict[str, Any]]] = {}
         for fact in facts:
@@ -426,26 +426,48 @@ class FinancialReviewRuleEngine:
             )
         )
         explicit_discontinued_recast = (
-            "historical results" in source
-            and "reclassified to discontinued operations" in source
-            and "all periods presented" in source
+            (
+                "historical results" in source
+                and "reclassified to discontinued operations" in source
+                and "all periods presented" in source
+            )
+            or (
+                "reflected as discontinued operations" in source
+                and "all prior periods presented have been recast" in source
+            )
         )
-        old_value = self._value_key(case.timeline[0])[0]
         new_value = self._value_key(case.timeline[-1])[0]
-        value_markers = {
-            f"{int(Decimal(value)):,}" for value in (old_value, new_value)
-            if value not in {"None", ""}
-        }
-        # SEC tables commonly state USD in thousands.
-        value_markers.update({
-            f"{int(Decimal(value) / 1000):,}" for value in (old_value, new_value)
-            if value not in {"None", ""}
-        })
+        def _markers(value: str) -> set[str]:
+            return {
+                f"{int(Decimal(value)):,}",
+                f"{int(Decimal(value) / 1000):,}",
+            }
+
+        prior_marker_groups = [
+            _markers(self._value_key(row)[0])
+            for row in case.timeline[:-1]
+            if self._value_key(row)[0] not in {"None", ""}
+        ]
+        new_markers = (
+            _markers(new_value) if new_value not in {"None", ""} else set()
+        )
         explicit_error_correction = (
-            "identified errors in our previously issued financial statements" in source
-            and "as reported" in source
-            and "as revised" in source
-            and any(marker in source for marker in value_markers)
+            (
+                "identified errors in our previously issued financial statements" in source
+                or "material misstatements" in source
+                or "restating our previously issued" in source
+                or (
+                    "as previously reported" in source
+                    and "as restated" in source
+                )
+            )
+            and ("as reported" in source or "as previously reported" in source)
+            and ("as revised" in source or "as restated" in source)
+            and any(
+                any(marker in source for marker in group)
+                for group in prior_marker_groups
+            )
+            and any(marker in source for marker in new_markers)
         )
         auto_adopt = classification == "PRESENTATION_RECLASSIFICATION" or (
             classification == "ACCOUNTING_STANDARD_CHANGE"
