@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest, paper
+from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest, paper, strategy
 
 
 def create_app() -> FastAPI:
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(analyzer.router, prefix="/api/v1", tags=["analyzer"])
     app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
     app.include_router(paper.router, prefix="/api/v1", tags=["paper"])
+    app.include_router(strategy.router, prefix="/api/v1", tags=["strategy"])
 
     return app
 

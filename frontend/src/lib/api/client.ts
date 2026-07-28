@@ -263,3 +263,17 @@ export const paperApi = {
       `/paper/accounts/${accountId}/trades?limit=${limit}&offset=${offset}`,
     ),
 };
+
+// ── FCF+ROE Strategy ──
+export const strategyApi = {
+  runFcfRoe: (params: import("@/lib/types/strategy").FcfRoeParams) =>
+    apiFetch<import("@/lib/types/strategy").FcfRoeResult>(
+      "/strategies/fcf-roe/run",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        market: params.market,
+      },
+    ),
+};

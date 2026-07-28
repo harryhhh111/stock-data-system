@@ -8,6 +8,7 @@ import { AnalyzerPage } from "@/pages/analyzer-page";
 import { BacktestPage } from "@/pages/backtest-page";
 import { PaperPage } from "@/pages/paper-page";
 import { PaperDetailPage } from "@/pages/paper-detail-page";
+import { FcfRoeStrategyPage } from "@/pages/fcf-roe-strategy-page";
 import { Button } from "@/components/ui/button";
 import { FileQuestion } from "lucide-react";
 
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="backtest" element={<BacktestPage />} />
         <Route path="paper" element={<PaperPage />} />
         <Route path="paper/:id" element={<PaperDetailPage />} />
+        <Route path="strategy/fcf-roe" element={<FcfRoeStrategyPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
