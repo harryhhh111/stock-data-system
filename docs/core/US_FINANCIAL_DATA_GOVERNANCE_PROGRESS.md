@@ -29,6 +29,7 @@
 | Phase 2 历史事实版本回填 | ✅ Gate D 已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、777 只待重建股票专项回填、备份/manifest/post-verify、旧宽表 checksum 保护均通过；当前股票池 1,003 只中 1,000 只已有版本事实 | 消费者切换单独验收 |
 | Revenue 历史差异审核 | ✅ 已关闭 | 301 个年度 revenue 案例完成规则/人工复核；approved、rejected 与技术 exclusion 已落库；selector 未决为 0 | 新 filing 出现未决时按需运行 |
 | 当前分析 latest-restated | ✅ 已切换 | current-only 全市场对比 `UNEXPLAINED=0`；固定 canary、10 家官方 10-K 外部抽查、失败回退、实库及公网 API 验证完成；生产已启用 `US_FINANCIAL_VERSION_CURRENT=1` | 保留短期回退能力；筛选器另行切换 |
+| 旧财务宽表退役 | 🟡 已规划 | 完成依赖与空间盘点；旧六对象约 357 MB | 按[退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md)先实施 Phase A current snapshot |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
 
