@@ -149,23 +149,26 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 - **Use tmux** for long-running bulk operations, not nohup.
 - **Local VPS script**: `scripts/start-vps.sh` may exist on this machine as a local backend startup helper for VPS access. It is intentionally gitignored; do not commit, modify, or remove it unless the user explicitly asks.
 
-## Current Environment
+## Deployment Environments
 
-### Environment Identity
+This repository is shared by two independent production servers whose databases
+are not connected. Never infer the current server from this file. At the start
+of environment-specific work, read `STOCK_MARKETS` from the current process or
+the local `.env`; that local value is authoritative.
 
-- This repository is deployed on the **domestic production server** (`STOCK_MARKETS=CN_A,CN_HK`).
-- Public access: `http://134.175.237.24:5173/screener` (Vite dev server) proxied to backend `http://134.175.237.24:8000` (uvicorn).
-- Backend and frontend are currently running as manual background processes (not systemd on this machine). Restart commands:
-  ```bash
-  # backend
-  pkill -f "uvicorn web.app:app"
-  nohup venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8000 > logs/uvicorn.log 2>&1 &
+| `STOCK_MARKETS` | Environment | Persistent facts |
+|---|---|---|
+| `CN_A,CN_HK` | Domestic server | A-share/HK backend and frontend; public frontend `http://134.175.237.24:5173`; US versioning tables are not present |
+| `US` | Overseas server | US backend and SEC versioning database; no A-share/HK production data |
 
-  # frontend
-  pkill -f "vite --host 0.0.0.0 --port 5173"
-  cd frontend && nohup npx vite --host 0.0.0.0 --port 5173 > ../logs/vite.log 2>&1 &
-  ```
-- US market data is **not synced on this machine**; US financial versioning tables (`us_financial_fact_version`, etc.) are not present. Therefore US integration tests are marked with `@pytest.mark.us_integration` and should be skipped here.
+- Process managers and restart commands are machine-local operational details.
+  Inspect the running process/systemd/tmux state before restarting; do not copy
+  a command from the other environment.
+- Tests marked `@pytest.mark.us_integration` require the US versioning schema.
+  On the domestic server, use
+  `python -m pytest tests/ -m "not us_integration" -q`.
+- Do not run US DDL or SEC backfills on the domestic server, and do not run
+  A-share/HK sync or schema operations on the overseas server.
 
 ## Key Files
 
