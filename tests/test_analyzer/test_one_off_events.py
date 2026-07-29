@@ -17,6 +17,10 @@ def test_tdc_sap_settlement_returns_normalized_reference():
     assert len(events) == 1
     event = events[0]
     assert event["event_id"] == "TDC_2026Q1_SAP_SETTLEMENT"
+    assert event["original"]["net_profit_ttm"] == 421_000_000
+    assert event["original"]["fcf_ttm"] == 670_000_000
+    assert event["original"]["pe_ttm"] == pytest.approx(6.5244, rel=1e-4)
+    assert event["original"]["fcf_yield"] == pytest.approx(0.243923, rel=1e-4)
     assert event["normalized"]["net_profit_ttm"] == 141_000_000
     assert event["normalized"]["fcf_ttm"] == 311_000_000
     assert event["normalized"]["pe_ttm"] == pytest.approx(19.4807, rel=1e-4)

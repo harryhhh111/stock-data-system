@@ -112,6 +112,12 @@ export interface OneOffEvent {
     amount: number;
     label: string;
   }>;
+  original: {
+    net_profit_ttm: number | null;
+    pe_ttm: number | null;
+    fcf_ttm: number | null;
+    fcf_yield: number | null;
+  };
   normalized: {
     net_profit_ttm: number | null;
     pe_ttm: number | null;

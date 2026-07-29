@@ -16,6 +16,7 @@ import { LineChart } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
 import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
+import { OneOffEvents } from "@/components/analyzer/one-off-events";
 const FinancialChart = lazy(() => import("@/components/analyzer/financial-chart").then((m) => ({ default: m.FinancialChart })));
 
 function Star({ rating }: { rating: number | null }) {
@@ -135,44 +136,7 @@ export function AnalyzerPage() {
           ]} />
 
           {/* 一次性事项 */}
-          {report.one_off_events?.map((event) => (
-            <Card key={event.event_id} className="border-l-4 border-l-amber-500">
-              <CardHeader>
-                <CardTitle className="text-base text-amber-700">
-                  一次性事项：{event.title}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <p>{event.description}</p>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 rounded-md bg-amber-50 p-3">
-                  <div>
-                    <span className="text-muted-foreground">正常化 PE</span>
-                    <p className="font-medium">{event.normalized.pe_ttm?.toFixed(1) ?? "-"}</p>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">正常化 FCF Yield</span>
-                    <p className="font-medium">{fmtPct(event.normalized.fcf_yield)}</p>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">正常化净利润 TTM</span>
-                    <p className="font-medium">{fmtYi(event.normalized.net_profit_ttm)}</p>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">正常化 FCF TTM</span>
-                    <p className="font-medium">{fmtYi(event.normalized.fcf_ttm)}</p>
-                  </div>
-                </div>
-                <a
-                  href={event.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-amber-700 underline underline-offset-2"
-                >
-                  查看公司正式披露
-                </a>
-              </CardContent>
-            </Card>
-          ))}
+          <OneOffEvents events={report.one_off_events} />
 
           {/* 风险提示 */}
           {report.overall.risks.length > 0 && (

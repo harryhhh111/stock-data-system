@@ -112,6 +112,17 @@ def analyze_one_off_events(
             else None
         )
 
+        original_pe = (
+            market_cap_value / profit
+            if market_cap_value and profit and profit > 0
+            else None
+        )
+        original_fcf_yield = (
+            fcf / market_cap_value
+            if market_cap_value and market_cap_value > 0 and fcf is not None
+            else None
+        )
+
         results.append({
             "event_id": event.event_id,
             "severity": "warning",
@@ -128,6 +139,12 @@ def analyze_one_off_events(
                 }
                 for item in event.adjustments
             ],
+            "original": {
+                "net_profit_ttm": profit,
+                "pe_ttm": original_pe,
+                "fcf_ttm": fcf,
+                "fcf_yield": original_fcf_yield,
+            },
             "normalized": {
                 "net_profit_ttm": normalized_profit,
                 "pe_ttm": normalized_pe,
