@@ -27,6 +27,24 @@ def test_tdc_sap_settlement_returns_normalized_reference():
     assert event["normalized"]["fcf_yield"] == pytest.approx(0.113223, rel=1e-4)
 
 
+def test_hrb_tax_benefit_normalizes_profit_but_not_fcf():
+    events = analyze_one_off_events(
+        "HRB",
+        date(2026, 3, 31),
+        market_cap=5_696_604_000,
+        net_profit_ttm=739_355_000,
+        fcf_ttm=760_884_000,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["event_id"] == "HRB_2026Q3_IRS_EXAMINATION_TAX_BENEFIT"
+    assert event["normalized"]["net_profit_ttm"] == 655_242_000
+    assert event["normalized"]["pe_ttm"] == pytest.approx(8.6939, rel=1e-4)
+    assert event["normalized"]["fcf_ttm"] == 760_884_000
+    assert event["normalized"]["fcf_yield"] == event["original"]["fcf_yield"]
+
+
 def test_event_is_not_applied_before_or_after_its_ttm_window():
     assert analyze_one_off_events(
         "TDC",

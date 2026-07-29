@@ -51,6 +51,29 @@ _VERIFIED_EVENTS = (
             OneOffAdjustment("fcf_ttm", 359_000_000.0, "税前和解现金流净收益"),
         ),
     ),
+    OneOffEvent(
+        event_id="HRB_2026Q3_IRS_EXAMINATION_TAX_BENEFIT",
+        stock_code="HRB",
+        report_date=date(2026, 3, 31),
+        active_through=date(2026, 12, 31),
+        title="IRS 审查结案一次性税收收益",
+        description=(
+            "2026Q3 GAAP 数据包含 IRS 审查事项结案产生的 8,411.3 万美元"
+            "一次性非现金税收收益。当前 TTM 净利润和 PE 不完全代表持续经营水平；"
+            "该事项不影响经营现金流和 FCF。"
+        ),
+        source_url=(
+            "https://www.sec.gov/Archives/edgar/data/12659/"
+            "000001265926000017/hrb-20260331.htm"
+        ),
+        adjustments=(
+            OneOffAdjustment(
+                "net_profit_ttm",
+                84_113_000.0,
+                "IRS 审查结案一次性非现金税收收益",
+            ),
+        ),
+    ),
 )
 
 
