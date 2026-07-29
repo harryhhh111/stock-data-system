@@ -74,4 +74,5 @@ python scripts/compare_old_new_financials.py --phase 1 --sample-only
 
 CRM（Salesforce）FY2017 net_income 对比中发现旧管线使用了错误的 restated 值（323M），新版本层的 `latest-restated` 正确保留了原始 GAAP 值（179.6M）。此案例验证了 `latest-restated` 保守策略的价值。
 
-详见 `docs/core/US_FINANCIAL_NEXT_STEPS_MINIMAL.md` Phase 1 验收。
+详见 `docs/archive/us_financial_versioning/US_FINANCIAL_NEXT_STEPS_MINIMAL.md`
+Phase 1 验收。

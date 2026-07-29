@@ -139,9 +139,9 @@ curl https://your-project.pages.dev
 
 ## 相关文档
 
-- [WEB_FRONTEND_PLAN.md](../docs/quant/WEB_FRONTEND_PLAN.md) - 前端设计文档
-- [PHASE4_DEPLOYMENT.md](../docs/PHASE4_DEPLOYMENT.md) - 详细部署指南
-- [QUANT_SYSTEM_PLAN.md](../docs/quant/QUANT_SYSTEM_PLAN.md) - 量化系统规划
+- [WEB_FRONTEND_PLAN.md](../quant/WEB_FRONTEND_PLAN.md) - 前端设计文档
+- [PHASE4_DEPLOYMENT.md](./PHASE4_DEPLOYMENT.md) - 详细部署指南
+- [QUANT_SYSTEM_PLAN.md](../quant/QUANT_SYSTEM_PLAN.md) - 量化系统规划
 
 ---
 

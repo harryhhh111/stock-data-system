@@ -6,10 +6,10 @@
 > 适用范围：SEC Company Facts、10-K/10-Q/修订报告、当前分析、选股和历史 PIT 回测  
 > 统一进度：[US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](./US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md)
 > 前置治理：[../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)  
-> 报告期修复：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)  
+> 报告期修复：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](../archive/us_financial_versioning/US_REPORT_PERIOD_REPAIR_RUNBOOK.md)
 > 比较规范：[../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
-> Phase 1B 实施：[US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
-> Phase 2 实施：[US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md](./US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
+> Phase 1B 实施：[US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](../archive/us_financial_versioning/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
+> Phase 2 实施：[US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md](../archive/us_financial_versioning/US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
 
 ## 1. 目标
 
@@ -541,7 +541,7 @@ form 为 amendment 只是强信号，不代表所有事实都替代原 10-K。�
 - DDL 从 Phase 1A 和旧 P1B schema 原地升级、幂等执行已有集成测试；
 - selector checksum 包含 context（`unit`/`economic_key_hash`/`sec_tag`），schema 版本为 `v2`。
 
-具体交付、规则、测试矩阵和完成定义见 [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)。
+具体交付、规则、测试矩阵和完成定义见 [Phase 1B 开发 Runbook](../archive/us_financial_versioning/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)。
 
 ### Phase 2：全市场历史事实版本回填（⬜ 下一步）
 

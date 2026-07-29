@@ -6,13 +6,9 @@
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
 
-- [报告期修复 Runbook](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)
+- [历史归档索引](../archive/us_financial_versioning/README.md)
 - [财报版本化方案](./US_FINANCIAL_VERSIONING_PLAN.md)
-- [Phase 1B 开发 Runbook](./US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md)
-- [Phase 2 全市场回填 Runbook](./US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md)
-- [后续最小任务单](./US_FINANCIAL_NEXT_STEPS_MINIMAL.md)
-- [Revenue 历史差异审核验收](./US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md)
-- [当前财务口径切换前验收](./US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md)
+- [旧财务宽表退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md)
 - [跨财年比较框架](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
 - [财务指标前置治理](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)
 - [ROIC 实施方案](../quant/ROIC_IMPLEMENTATION_PLAN.md)

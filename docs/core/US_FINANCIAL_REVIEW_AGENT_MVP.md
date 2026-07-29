@@ -90,6 +90,6 @@ python3 scripts/financial_review_agent.py reject  --case-id <id> --by vinci
 ## 存量审核结果
 
 2026-07-29 已完成 301 个年度 revenue 案例，最终 selector 未决为 0，详见
-[Revenue 历史差异审核验收](./US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md)。
+[Revenue 历史差异审核验收](../archive/us_financial_versioning/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md)。
 
 本项目是个人玩具项目，不继续为该流程开发 Web UI、常驻调度或多角色审批。

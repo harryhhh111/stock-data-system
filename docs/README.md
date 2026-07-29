@@ -21,17 +21,15 @@
 | [core/DEV_GUIDELINES.md](core/DEV_GUIDELINES.md) | 开发规范、踩坑记录、最佳实践 |
 | [core/SCHEDULER_DESIGN.md](core/SCHEDULER_DESIGN.md) | 定时任务调度设计（三市场 cron） |
 | [core/[US] DEV_GUIDELINES.md](core/[US] DEV_GUIDELINES.md) | 美股特有开发规范、已知陷阱 |
-| [core/SEC_DATA_PITFALLS.md](core/SEC_DATA_PITFALLS.md) | SEC EDGAR 原始数据坑点清单 |
+| [core/[US] SEC_DATA_PITFALLS.md](<core/[US] SEC_DATA_PITFALLS.md>) | SEC EDGAR 原始数据坑点清单 |
 | [core/[US] DEPLOY_OVERSEAS.md](core/[US] DEPLOY_OVERSEAS.md) | 海外服务器部署指南 |
 | [core/DATA_STATUS_CN.md](core/DATA_STATUS_CN.md) | A 股/港股数据现状（行数、覆盖率） |
 | [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据现状（行数、覆盖率、修复记录） |
 | [core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md) | 历史市值 PIT 分批回算、审计、回滚与上线方案 |
 | [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案 |
-| [core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md](core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md) | 301 个年度 revenue 历史差异审核结果与关闭边界 |
-| [core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md](core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md) | 当前年报/TTM 新旧口径全市场对比与 canary 准入结论 |
 | [core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md](core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md) | WMT 扩展 XBRL `total_liabilities` 精确映射小任务 |
 | [core/US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md](core/US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) | 美股旧财务宽表与物化视图的轻量退役计划 |
-| [core/US_VERSIONING_PHASE0_EVIDENCE.md](core/US_VERSIONING_PHASE0_EVIDENCE.md) | Phase 0 冻结盘点证据：数据库快照、覆盖率、关键样本基线 |
+| [archive/us_financial_versioning/README.md](archive/us_financial_versioning/README.md) | 已关闭的 Phase 0–2、Gate B–D、Revenue 审核和 current snapshot 验收归档 |
 
 ---
 
@@ -42,8 +40,6 @@
 | 文档 | 内容 |
 |------|------|
 | [core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](core/US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md) | 美股报告期、版本化、PE/PB/ROE、PIT 与 ROIC 的统一进度总览 |
-| [core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md](core/US_FINANCIAL_VERSIONING_PHASE1B_RUNBOOK.md) | 美股财报版本关系、latest-restated/first-reported/as-of selector 与选择审计开发手册 |
-| [core/US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md](core/US_FINANCIAL_VERSIONING_PHASE2_RUNBOOK.md) | 美股全市场历史事实版本 staging-first 回填、批次审计、验证与回滚手册 |
 | [quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md](quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md) | 跨财年股票比较统一规范（TTM、Snapshot、年度历史、PIT 与新鲜度） |
 | [quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md) | ROE/ROIC 等财务指标的数据治理前置条件 |
 | [quant/ROIC_IMPLEMENTATION_PLAN.md](quant/ROIC_IMPLEMENTATION_PLAN.md) | 三市场 ROIC 计算与接入方案 |
