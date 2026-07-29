@@ -11,6 +11,8 @@ from decimal import Decimal
 import psycopg2
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 import config
 from core.fetchers.us_financial import FetchContext, USFinancialFetcher
 from db import (

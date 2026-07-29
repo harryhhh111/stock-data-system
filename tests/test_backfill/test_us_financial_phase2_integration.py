@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 import backfill_us_financial_versions as cli

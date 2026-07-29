@@ -4,6 +4,8 @@ from decimal import Decimal
 
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 from quant.metrics.us_roic_mvp import (
     CANARY_STOCKS,
     INVALID_NO_DEBT,

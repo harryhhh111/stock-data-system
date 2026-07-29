@@ -8,6 +8,8 @@ from datetime import date
 
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 from core.selectors.us_financial import USFactSelector
 
 

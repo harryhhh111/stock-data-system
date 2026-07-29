@@ -10,6 +10,8 @@ import json
 import psycopg2
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 import config
 from core.relations.us_financial import USFactRelationBuilder
 from core.fetchers.us_financial import USFinancialFetcher

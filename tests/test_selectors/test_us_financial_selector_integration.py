@@ -9,6 +9,8 @@ from datetime import date, datetime
 
 import pytest
 
+pytestmark = pytest.mark.us_integration
+
 from core.fetchers.us_financial import USFinancialFetcher
 from core.selectors.us_financial import USFactSelector
 from db import execute, get_or_create_raw_snapshot_version
