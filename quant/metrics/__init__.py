@@ -40,7 +40,7 @@ def _as_float(value: Any) -> float | None:
 
 
 def compute_pb(market_cap: Any, parent_equity: Any) -> float | None:
-    """PB = 市值 / 最新年度归母净资产。
+    """PB = 市值 / 估值日最新可得归母净资产。
 
     仅在市值和净资产都为正时返回；负净资产或零净资产不计算 PB。
     """

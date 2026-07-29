@@ -6,6 +6,7 @@
 import pandas as pd
 from db import Connection
 from quant.metrics import compute_pb, compute_pe
+from quant.metrics.us_pb import load_latest_parent_equity
 
 
 def get_universe(market: str | None = None) -> pd.DataFrame:
@@ -191,6 +192,7 @@ def get_us_universe() -> pd.DataFrame:
 
         q.close,
         q.market_cap,
+        q.trade_date,
         NULL::numeric AS float_market_cap,
         q.currency AS quote_currency,
 
@@ -249,6 +251,22 @@ def get_us_universe() -> pd.DataFrame:
 
     with Connection() as conn:
         df = pd.read_sql(sql, conn)
+
+    # PB 是时点指标：按每只股票行情日，使用当时已经披露的最新季度/年度归母权益。
+    # 若版本层尚无该股票权益，保留 annual 宽表作为兼容 fallback。
+    df["pb_equity_date"] = None
+    if not df.empty and "trade_date" in df:
+        for valuation_date, indexes in df.groupby("trade_date", dropna=True).groups.items():
+            as_of_date = pd.Timestamp(valuation_date).date()
+            points = load_latest_parent_equity(
+                df.loc[indexes, "stock_code"].tolist(),
+                as_of_date,
+            )
+            for index in indexes:
+                point = points.get(str(df.at[index, "stock_code"]).upper())
+                if point is not None:
+                    df.at[index, "parent_equity"] = float(point.value)
+                    df.at[index, "pb_equity_date"] = point.report_date
 
     # 美股 PE/PB 统一自算，停用腾讯 daily_quote.pe_ttm/pb。
     # 输入无效（市值<=0、TTM盈利<=0、净资产<=0）时返回 None，不使用 vendor 值兜底。

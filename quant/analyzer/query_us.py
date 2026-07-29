@@ -6,6 +6,8 @@ from functools import lru_cache
 
 import pandas as pd
 from db import Connection
+from quant.metrics import compute_pb
+from quant.metrics.us_pb import load_latest_parent_equity
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ def _legacy_stock_info(stock_code: str, market: str) -> pd.DataFrame:
     """
     sql_fy = """
         SELECT s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
-               fy.close, fy.market_cap, fy.pe_ttm, fy.pb, fy.fcf_yield,
+               fy.trade_date, fy.close, fy.market_cap, fy.pe_ttm, fy.pb, fy.fcf_yield,
                fy.fcf_ttm, fy.revenue_ttm, fy.net_profit_ttm, fy.cfo_ttm,
                fy.ttm_report_date
         FROM stock_info s
@@ -56,7 +58,7 @@ def _legacy_stock_info(stock_code: str, market: str) -> pd.DataFrame:
                NULL AS ttm_report_date
         FROM stock_info s
         LEFT JOIN LATERAL (
-            SELECT close, market_cap, pe_ttm, pb
+            SELECT trade_date, close, market_cap, pe_ttm, pb
             FROM daily_quote
             WHERE stock_code = s.stock_code AND market = 'US'
               AND market_cap IS NOT NULL AND market_cap > 0
@@ -229,12 +231,19 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         result.loc[result.index[0], "ttm_report_date"] = row.get("ttm_report_date")
         if market_cap is not None and net_income is not None and net_income > 0:
             result.loc[result.index[0], "pe_ttm"] = _pandas_scalar(market_cap / net_income)
-        if market_cap is not None and not annual.empty:
-            equity = _pandas_scalar(
-                annual.sort_values("report_date").iloc[-1].get("total_equity")
-            )
-            if equity is not None and equity > 0:
-                result.loc[result.index[0], "pb"] = _pandas_scalar(market_cap / equity)
+        valuation_date = result.iloc[0].get("trade_date")
+        if market_cap is not None and pd.notna(valuation_date):
+            valuation_date = pd.Timestamp(valuation_date).date()
+            equity_point = load_latest_parent_equity(
+                [stock_code],
+                valuation_date,
+            ).get(stock_code.upper())
+            if equity_point is not None:
+                result.loc[result.index[0], "pb"] = compute_pb(
+                    market_cap,
+                    equity_point.value,
+                )
+                result.loc[result.index[0], "pb_equity_date"] = equity_point.report_date
         if market_cap is not None and fcf is not None and market_cap > 0:
             result.loc[result.index[0], "fcf_yield"] = _pandas_scalar(fcf / market_cap)
         return result

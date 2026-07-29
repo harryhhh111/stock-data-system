@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pandas as pd
+import pytest
 
 from quant.analyzer import query_us
 
@@ -65,3 +66,42 @@ def test_history_canary_falls_back_on_version_failure(monkeypatch):
 
     result = query_us.get_financial_history("PLTR")
     assert result.equals(legacy)
+
+
+def test_stock_info_pb_uses_latest_available_quarterly_equity(monkeypatch):
+    legacy = pd.DataFrame([{
+        "stock_code": "PLTR",
+        "trade_date": date(2026, 7, 28),
+        "market_cap": Decimal("296139949000"),
+        "pb": Decimal("40.087885"),
+    }])
+    annual = pd.DataFrame([{
+        "report_date": date(2025, 12, 31),
+        "total_equity": Decimal("7387268000"),
+    }])
+    ttm = pd.DataFrame([{
+        "net_income_ttm": Decimal("2281529000"),
+        "FCF_new": Decimal("2688276000"),
+    }])
+    from quant.metrics.us_pb import ParentEquityPoint
+
+    monkeypatch.setenv("US_FINANCIAL_VERSION_CANARY", "1")
+    monkeypatch.setattr(query_us, "_legacy_stock_info", lambda *_: legacy.copy())
+    monkeypatch.setattr(query_us, "_version_frames", lambda *_: (annual, ttm))
+    monkeypatch.setattr(
+        query_us,
+        "load_latest_parent_equity",
+        lambda *_args, **_kwargs: {
+            "PLTR": ParentEquityPoint(
+                "PLTR",
+                Decimal("8449663000"),
+                date(2026, 3, 31),
+                date(2026, 5, 5),
+            )
+        },
+    )
+
+    result = query_us.get_stock_info("PLTR", "US").iloc[0]
+
+    assert result["pb"] == pytest.approx(35.04754, rel=1e-5)
+    assert result["pb_equity_date"] == date(2026, 3, 31)
