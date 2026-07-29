@@ -12,7 +12,9 @@ from core.fetchers.us_financial import FetchContext
 from db import upsert, execute, save_raw_snapshot
 from ._utils import MARKET_CONFIG, logger
 
-_US_REFETCH_INTERVAL = timedelta(days=7)
+_US_FRESH_FILING_COOLDOWN = timedelta(days=60)
+_US_MID_CYCLE_REFETCH_INTERVAL = timedelta(days=14)
+_US_FILING_WINDOW_REFETCH_INTERVAL = timedelta(days=7)
 
 
 def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list[str]:
@@ -47,15 +49,19 @@ def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list
 
 
 def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[str], int]:
-    """Filter US tickers, rechecking every company at least once per week.
+    """Filter US tickers using an adaptive filing-cycle network recheck.
 
     Returns (pending_tickers, skipped_count).
 
     SEC does not expose a future report date in our local database. Comparing
     ``MAX(report_date)`` with ``sync_progress.last_report_date`` therefore
     cannot discover a newly filed 10-Q/10-K and may skip a company forever.
-    Company Facts requests are content-addressed and idempotent, so a bounded
-    weekly network recheck is the simpler and safer incremental policy.
+    Use the latest known ``filed_date`` to reduce unnecessary checks:
+
+    - filing age <= 60 days: no network check;
+    - filing age 61-75 days: recheck every 14 days;
+    - filing age > 75 days: recheck every 7 days;
+    - missing filing metadata: conservatively recheck every 7 days.
     """
     if force:
         logger.info("US增量判断: force=True, 全量 %d 只", len(tickers))
@@ -83,9 +89,20 @@ def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[st
     db_rows = execute(wrapped, (tickers, tickers, tickers), fetch=True) or []
     db_max_dates: dict[str, object] = {r[0]: r[1] for r in db_rows}
 
+    # 3. Latest SEC filing date determines where the company is in its cycle.
+    filing_rows = execute(
+        "SELECT stock_code, MAX(filed_date) FROM us_filing "
+        "WHERE stock_code = ANY(%s) AND form IN ('10-K', '10-K/A', '10-Q', '10-Q/A') "
+        "GROUP BY stock_code",
+        (tickers,),
+        fetch=True,
+    ) or []
+    latest_filed_dates: dict[str, object] = {r[0]: r[1] for r in filing_rows}
+
     pending = []
     skipped = 0
     now = datetime.now(timezone.utc)
+    today = now.date()
     for ticker in tickers:
         db_max = db_max_dates.get(ticker)
         last_sync = last_sync_times.get(ticker)
@@ -96,13 +113,28 @@ def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[st
         else:
             if last_sync.tzinfo is None:
                 last_sync = last_sync.replace(tzinfo=timezone.utc)
-            if now - last_sync >= _US_REFETCH_INTERVAL:
+            latest_filed = latest_filed_dates.get(ticker)
+            filing_age = (
+                today - latest_filed
+                if latest_filed is not None
+                else None
+            )
+            if filing_age is not None and filing_age <= _US_FRESH_FILING_COOLDOWN:
+                skipped += 1
+                continue
+            interval = (
+                _US_MID_CYCLE_REFETCH_INTERVAL
+                if filing_age is not None
+                and filing_age <= timedelta(days=75)
+                else _US_FILING_WINDOW_REFETCH_INTERVAL
+            )
+            if now - last_sync >= interval:
                 pending.append(ticker)
             else:
                 skipped += 1
 
     logger.info(
-        "US增量判断(每7天重检): 总计=%d, 待同步=%d, 跳过=%d (%.1f%%)",
+        "US增量判断(自适应60/14/7天): 总计=%d, 待同步=%d, 跳过=%d (%.1f%%)",
         len(tickers), len(pending), skipped,
         skipped / len(tickers) * 100 if tickers else 0,
     )
@@ -171,7 +203,13 @@ def sync_us_market(args) -> dict:
             continue
 
         try:
-            raw_data, ctx = fetcher.fetch_company_facts_with_context(ticker)
+            # 进入待同步集合意味着本次承担“发现 SEC 新申报”的职责。
+            # 这里必须访问网络；普通 TTL 缓存只供手工分析/重复解析使用，
+            # 否则调度任务可能成功运行却继续解析旧 Company Facts。
+            raw_data, ctx = fetcher.fetch_company_facts_with_context(
+                ticker,
+                allow_cache=False,
+            )
             if not raw_data:
                 failed += 1
                 errors.append(f"{ticker}: 无 Company Facts 数据")

@@ -20,7 +20,13 @@ def _safe_val(val, default=None):
     return val
 
 
-def analyze_profitability(df_hist: pd.DataFrame) -> dict:
+def _is_insurance_industry(industry: str | None) -> bool:
+    """SEC/SIC 行业文本是否属于保险业。"""
+    text = str(industry or "").lower()
+    return "insurance" in text or "surety" in text
+
+
+def analyze_profitability(df_hist: pd.DataFrame, industry: str | None = None) -> dict:
     """盈利能力分析：营收/利润趋势、利润率、ROE。
 
     Args:
@@ -97,7 +103,7 @@ def analyze_profitability(df_hist: pd.DataFrame) -> dict:
     return {"rating": rating, "verdict": verdict, "details": details, "star": _star(rating)}
 
 
-def analyze_health(df_hist: pd.DataFrame) -> dict:
+def analyze_health(df_hist: pd.DataFrame, industry: str | None = None) -> dict:
     """财务健康度分析：资产负债率、流动比率趋势。
 
     Args:
@@ -169,6 +175,13 @@ def analyze_health(df_hist: pd.DataFrame) -> dict:
 
     verdict += cr_text
 
+    if _is_insurance_industry(industry):
+        rating = None
+        verdict = (
+            "保险公司的负债主要包含保单准备金，不能按普通企业资产负债率评分；"
+            "应结合偿付能力、准备金充足度和再保险质量判断"
+        )
+
     return {
         "rating": rating,
         "verdict": verdict,
@@ -185,8 +198,12 @@ def analyze_health(df_hist: pd.DataFrame) -> dict:
     }
 
 
-def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame,
-                     ttm_report_date=None) -> dict:
+def analyze_cashflow(
+    df_hist: pd.DataFrame,
+    df_ttm: pd.DataFrame,
+    ttm_report_date=None,
+    industry: str | None = None,
+) -> dict:
     """现金流质量分析：CFO/净利润、FCF 趋势、CAPEX 强度。
 
     Args:
@@ -288,6 +305,12 @@ def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame,
     verdict = "；".join(parts) if parts else "现金流数据不足"
     if stale_warning:
         verdict = stale_warning + "；" + verdict
+    if _is_insurance_industry(industry):
+        rating = None
+        verdict = (
+            "保险公司经营现金流受保费、赔付和准备金变动影响，"
+            "FCF/CFO 不参与评分；原始数据仅供参考"
+        )
 
     return {
         "rating": rating,
@@ -309,7 +332,11 @@ def analyze_cashflow(df_hist: pd.DataFrame, df_ttm: pd.DataFrame,
     }
 
 
-def analyze_valuation(stock_data: pd.DataFrame, industry_stats: pd.DataFrame) -> dict:
+def analyze_valuation(
+    stock_data: pd.DataFrame,
+    industry_stats: pd.DataFrame,
+    industry: str | None = None,
+) -> dict:
     """估值水平分析：PE/PB/FCF Yield vs 行业中位数。
 
     Args:
@@ -379,33 +406,69 @@ def analyze_valuation(stock_data: pd.DataFrame, industry_stats: pd.DataFrame) ->
             else:
                 fy_vs = "显著偏低"
 
-        # 综合评级
+        # 综合评级。保险公司以 PB 为主、PE 为辅，不使用 FCF Yield。
         signals = []
-        if pe_vs and "偏低" in pe_vs:
-            signals.append(1)
-        elif pe_vs and "偏高" in pe_vs:
-            signals.append(-1)
-        if fy_vs and "偏高" in fy_vs:
-            signals.append(1)
-        elif fy_vs and "偏低" in fy_vs:
-            signals.append(-1)
+        is_insurance = _is_insurance_industry(industry)
+        if is_insurance:
+            fy_vs = None
+            if pb_vs == "显著偏低":
+                signals.append(2)
+            elif pb_vs == "偏低":
+                signals.append(1)
+            elif pb_vs == "偏高":
+                signals.append(-1)
+            elif pb_vs == "显著偏高":
+                signals.append(-2)
+            if pe_vs and "偏低" in pe_vs:
+                signals.append(1)
+            elif pe_vs and "偏高" in pe_vs:
+                signals.append(-1)
+        else:
+            if pe_vs and "偏低" in pe_vs:
+                signals.append(1)
+            elif pe_vs and "偏高" in pe_vs:
+                signals.append(-1)
+            if fy_vs and "偏高" in fy_vs:
+                signals.append(1)
+            elif fy_vs and "偏低" in fy_vs:
+                signals.append(-1)
 
         net = sum(signals) if signals else 0
         if net >= 2:
             rating = 5
-            verdict = "估值显著低于行业，FCF Yield 高，可能有安全边际"
+            verdict = (
+                "PB/PE 显著低于保险同业，估值有吸引力"
+                if is_insurance
+                else "估值显著低于行业，FCF Yield 高，可能有安全边际"
+            )
         elif net >= 1:
             rating = 4
-            verdict = "估值略低于行业水平"
+            verdict = (
+                "PB/PE 略低于保险同业"
+                if is_insurance
+                else "估值略低于行业水平"
+            )
         elif net >= 0:
             rating = 3
-            verdict = "估值处于行业合理水平"
+            verdict = (
+                "PB/PE 处于保险同业合理水平"
+                if is_insurance
+                else "估值处于行业合理水平"
+            )
         elif net >= -1:
             rating = 2
-            verdict = "估值高于行业水平"
+            verdict = (
+                "PB/PE 高于保险同业"
+                if is_insurance
+                else "估值高于行业水平"
+            )
         else:
             rating = 1
-            verdict = "估值显著高于行业，需谨慎"
+            verdict = (
+                "PB/PE 显著高于保险同业，需谨慎"
+                if is_insurance
+                else "估值显著高于行业，需谨慎"
+            )
 
     else:
         peer_count = 0
@@ -434,6 +497,11 @@ def analyze_valuation(stock_data: pd.DataFrame, industry_stats: pd.DataFrame) ->
             "pe_vs": pe_vs,
             "pb_vs": pb_vs,
             "fy_vs": fy_vs,
+            "industry_adjustment": (
+                "保险业：PB 为主、PE 为辅，FCF Yield 不参与评分"
+                if _is_insurance_industry(industry)
+                else None
+            ),
         },
         "star": _star(rating),
     }

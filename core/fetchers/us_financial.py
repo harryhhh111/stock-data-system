@@ -468,7 +468,12 @@ class USFinancialFetcher(BaseFetcher):
 
     # ── Company Facts ─────────────────────────────────────
 
-    def fetch_company_facts_with_context(self, ticker: str) -> tuple[dict, FetchContext]:
+    def fetch_company_facts_with_context(
+        self,
+        ticker: str,
+        *,
+        allow_cache: bool = True,
+    ) -> tuple[dict, FetchContext]:
         """获取 Company Facts，并返回不可变的 fetch context。
 
         context 包含 snapshot_id、content_hash、stock_code、cik，
@@ -482,7 +487,7 @@ class USFinancialFetcher(BaseFetcher):
         source_last_modified: str | None = None
         fetch_source = "cache"
 
-        if self._load_cache(cache_file):
+        if allow_cache and self._load_cache(cache_file):
             data = json.loads(cache_file.read_text())
             logger.debug("Company Facts 缓存命中: %s", ticker)
         else:
