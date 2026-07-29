@@ -18,6 +18,12 @@ CANARY_STOCKS = {
 
 
 def _canary_enabled(stock_code: str) -> bool:
+    """兼容旧 canary 开关，并支持通过单一开关扩大到全部美股。"""
+    current_enabled = os.getenv("US_FINANCIAL_VERSION_CURRENT", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    if current_enabled:
+        return True
     enabled = os.getenv("US_FINANCIAL_VERSION_CANARY", "").lower() in {
         "1", "true", "yes", "on",
     }
@@ -130,6 +136,8 @@ def _load_version_frames(stock_code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     )
 
     facts = fetch_new_version_facts([stock_code])
+    if not facts:
+        return pd.DataFrame(), pd.DataFrame()
     annual = compute_annual_roe_fcf(build_new_annual_df(facts))
     quarterly = build_new_quarterly_facts_df(facts)
     quotes = fetch_latest_quotes([stock_code])
@@ -182,10 +190,12 @@ def get_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
         return legacy
     try:
         annual, _ = _version_frames(stock_code)
+        if annual.empty:
+            return legacy
         return _overlay_history(legacy, annual, years)
     except Exception:
-        # Canary 的首要安全边界：新装配失败时页面继续使用旧口径。
-        logger.exception("version canary history failed for %s; using legacy", stock_code)
+        # 当前分析切换的安全边界：新装配失败时页面继续使用旧口径。
+        logger.exception("version history failed for %s; using legacy", stock_code)
         return legacy
 
 
@@ -207,7 +217,7 @@ def get_ttm_data(stock_code: str) -> pd.DataFrame:
             "capex_ttm": row.get("capex_ttm"),
         }])
     except Exception:
-        logger.exception("version canary TTM failed for %s; using legacy", stock_code)
+        logger.exception("version TTM failed for %s; using legacy", stock_code)
         return legacy
 
 
@@ -248,7 +258,7 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
             result.loc[result.index[0], "fcf_yield"] = _pandas_scalar(fcf / market_cap)
         return result
     except Exception:
-        logger.exception("version canary stock info failed for %s; using legacy", stock_code)
+        logger.exception("version stock info failed for %s; using legacy", stock_code)
         return legacy
 
 

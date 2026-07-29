@@ -29,6 +29,7 @@
 | [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案 |
 | [core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md](core/US_FINANCIAL_REVENUE_REVIEW_ACCEPTANCE.md) | 301 个年度 revenue 历史差异审核结果与关闭边界 |
 | [core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md](core/US_FINANCIAL_CURRENT_SNAPSHOT_ACCEPTANCE.md) | 当前年报/TTM 新旧口径全市场对比与 canary 准入结论 |
+| [core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md](core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md) | WMT 扩展 XBRL `total_liabilities` 精确映射小任务 |
 | [core/US_VERSIONING_PHASE0_EVIDENCE.md](core/US_VERSIONING_PHASE0_EVIDENCE.md) | Phase 0 冻结盘点证据：数据库快照、覆盖率、关键样本基线 |
 
 ---

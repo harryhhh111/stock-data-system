@@ -9,14 +9,25 @@ from quant.analyzer import query_us
 
 def test_canary_disabled_by_default(monkeypatch):
     monkeypatch.delenv("US_FINANCIAL_VERSION_CANARY", raising=False)
+    monkeypatch.delenv("US_FINANCIAL_VERSION_CURRENT", raising=False)
     assert not query_us._canary_enabled("PLTR")
 
 
 def test_canary_requires_stock_in_scope(monkeypatch):
+    monkeypatch.delenv("US_FINANCIAL_VERSION_CURRENT", raising=False)
     monkeypatch.setenv("US_FINANCIAL_VERSION_CANARY", "true")
     monkeypatch.setenv("US_FINANCIAL_VERSION_CANARY_STOCKS", "PLTR, CRM")
     assert query_us._canary_enabled("PLTR")
     assert not query_us._canary_enabled("AAPL")
+
+
+def test_current_switch_enables_every_stock(monkeypatch):
+    monkeypatch.setenv("US_FINANCIAL_VERSION_CURRENT", "1")
+    monkeypatch.delenv("US_FINANCIAL_VERSION_CANARY", raising=False)
+
+    assert query_us._canary_enabled("PLTR")
+    assert query_us._canary_enabled("AAPL")
+    assert query_us._canary_enabled("WMT")
 
 
 def test_overlay_history_replaces_core_values_and_keeps_legacy_metrics():
@@ -65,6 +76,21 @@ def test_history_canary_falls_back_on_version_failure(monkeypatch):
     )
 
     result = query_us.get_financial_history("PLTR")
+    assert result.equals(legacy)
+
+
+def test_history_current_switch_quietly_falls_back_without_version_facts(monkeypatch):
+    legacy = pd.DataFrame([{"report_date": date(2024, 12, 31)}])
+    monkeypatch.setenv("US_FINANCIAL_VERSION_CURRENT", "1")
+    monkeypatch.setattr(query_us, "_legacy_financial_history", lambda *_: legacy)
+    monkeypatch.setattr(
+        query_us,
+        "_version_frames",
+        lambda *_: (pd.DataFrame(), pd.DataFrame()),
+    )
+
+    result = query_us.get_financial_history("CCEP")
+
     assert result.equals(legacy)
 
 
