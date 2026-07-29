@@ -835,6 +835,10 @@ class USFinancialFetcher(BaseFetcher):
         if statement is None:
             statement = self._infer_statement(tag_mapping)
 
+        # ── Filing XBRL fallback：补充 Company Facts 中缺失的字段 ──
+        if statement == "balance" and context is not None:
+            records = self._supplement_total_liabilities_records(records, context)
+
         usgaap = facts.get("facts", {}).get("us-gaap", {})
 
         if invalid_records:
@@ -1130,6 +1134,105 @@ class USFinancialFetcher(BaseFetcher):
         if tag_mapping is self.CASHFLOW_TAGS:
             return "cashflow"
         return "unknown"
+
+    @staticmethod
+    def _supplement_total_liabilities_records(
+        records: list[dict],
+        context: Any,
+    ) -> list[dict]:
+        """当 Company Facts 缺 Liabilities tag 时，从 filing XBRL instance 补入。
+
+        仅对年报（10-K/20-F/40-F）执行。保持 records 字段格式一致。
+        """
+        # 检查 records 中是否已有 total_liabilities
+        has_tl = any(r.get("field") == "total_liabilities" for r in records)
+        if has_tl:
+            return records
+
+        # 收集需要补充的 (accn, end, form) — 每个唯一的 end 可能值不同
+        annual_forms = {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}
+        annual_pairs: set[tuple] = set()  # (accn, end, form)
+        for r in records:
+            form = str(r.get("form", "")).upper()
+            if form in annual_forms and r.get("accn") and r.get("end"):
+                annual_pairs.add((str(r["accn"]), str(r["end"])[:10], form))
+
+        if not annual_pairs:
+            return records
+
+        from core.us_financial_xbrl_fallback import (
+            fetch_total_liabilities_from_instance,
+            _discover_instance_url,
+            _parse_instance,
+            _find_annual_contexts,
+            _derive_liabilities_from_identity,
+            _pick_best_liability_fact,
+        )
+
+        cik = context.cik if context else ""
+        cik_stripped = cik.lstrip("0") or "0"
+
+        # 缓存已解析的 instance（同一 accn 可服务多个 end date）
+        instance_cache: dict[str, tuple] = {}  # accn → (facts, contexts)
+
+        for accn, end_str, form in annual_pairs:
+            # 检查该 (accn, end) 是否已有 total_liabilities
+            already_has = any(
+                r.get("field") == "total_liabilities"
+                and str(r.get("accn", "")) == accn
+                and str(r.get("end", ""))[:10] == end_str
+                for r in records
+            )
+            if already_has:
+                continue
+
+            # 尝试从缓存或下载 instance
+            if accn not in instance_cache:
+                instance_url = _discover_instance_url(accn, cik_stripped)
+                if instance_url:
+                    facts, contexts = _parse_instance(instance_url)
+                    instance_cache[accn] = (facts, contexts)
+                else:
+                    instance_cache[accn] = ([], [])
+
+            facts, contexts = instance_cache[accn]
+            if not facts:
+                continue
+
+            # 在 instance 内按 end_date 查找
+            ctx_ids = _find_annual_contexts(contexts, end_str)
+            if not ctx_ids:
+                continue
+
+            direct = _pick_best_liability_fact(facts, ctx_ids)
+            if direct:
+                result = {
+                    "value_numeric": direct.value,
+                    "sec_tag": direct.tag,
+                }
+            else:
+                derived = _derive_liabilities_from_identity(facts, contexts, end_str)
+                result = derived
+
+            if result and result.get("value_numeric") is not None:
+                # 为该 (accn, end) 构造 record
+                matching = [r for r in records
+                            if str(r.get("accn", "")) == accn
+                            and str(r.get("end", ""))[:10] == end_str]
+                if matching:
+                    tl_rec = dict(matching[0])
+                    tl_rec["tag"] = result.get("sec_tag", "Liabilities")
+                    tl_rec["field"] = "total_liabilities"
+                    tl_rec["val"] = float(result["value_numeric"])
+                    tl_rec["_quality_flag"] = "FILING_XBRL_DERIVED"
+                    records.append(tl_rec)
+                    logger.info(
+                        "Filing XBRL fallback: %s total_liabilities=%s for %s accn=%s",
+                        context.stock_code if context else "?",
+                        result["value_numeric"], end_str, accn,
+                    )
+
+        return records
 
     def _classify_record(self, rec: dict) -> tuple[str, str | None]:
         """对有效 period 的事实做 form/fp/period_kind 允许矩阵分类。"""
