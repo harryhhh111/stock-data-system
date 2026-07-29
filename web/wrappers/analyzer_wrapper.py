@@ -16,6 +16,7 @@ from quant.analyzer.analysis import (
     compute_overall,
     _safe_val,
 )
+from quant.analyzer.one_off_events import analyze_one_off_events
 
 
 def search_stocks(q: str, market: str | None) -> list[dict]:
@@ -105,9 +106,16 @@ def get_report(stock_code: str, market: str | None) -> dict:
         "valuation": analyze_valuation(stock_df, df_ind),
     }
     overall = compute_overall(sections)
+    row = stock_df.iloc[0]
+    one_off_events = analyze_one_off_events(
+        stock_code,
+        ttm_report_date,
+        market_cap=row.get("market_cap"),
+        net_profit_ttm=row.get("net_profit_ttm"),
+        fcf_ttm=row.get("fcf_ttm"),
+    )
 
     # 4. 构建 StockInfo
-    row = stock_df.iloc[0]
     stock_info = {
         "stock_code": str(_safe_val(row.get("stock_code"), "")),
         "stock_name": str(_safe_val(row.get("stock_name"), "")),
@@ -132,4 +140,5 @@ def get_report(stock_code: str, market: str | None) -> dict:
         "stock": stock_info,
         "sections": sections,
         "overall": overall,
+        "one_off_events": one_off_events,
     }

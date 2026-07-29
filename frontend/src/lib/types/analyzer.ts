@@ -99,6 +99,27 @@ export interface OverallAssessment {
   risks: string[];
 }
 
+export interface OneOffEvent {
+  event_id: string;
+  severity: "warning";
+  title: string;
+  description: string;
+  report_date: string;
+  active_through: string;
+  source_url: string;
+  adjustments: Array<{
+    metric: string;
+    amount: number;
+    label: string;
+  }>;
+  normalized: {
+    net_profit_ttm: number | null;
+    pe_ttm: number | null;
+    fcf_ttm: number | null;
+    fcf_yield: number | null;
+  };
+}
+
 export interface AnalysisReport {
   stock: StockInfo;
   sections: {
@@ -108,4 +129,5 @@ export interface AnalysisReport {
     valuation: AnalysisSection<ValuationDetails>;
   };
   overall: OverallAssessment;
+  one_off_events: OneOffEvent[];
 }
