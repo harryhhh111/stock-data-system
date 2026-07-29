@@ -1,7 +1,7 @@
 # 美股财务数据治理进度总览
 
 > 最后更新：2026-07-29
-> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate D 已对 777 只待历史重建股票完成回填；年度 revenue 的 301 个历史未决案例已审核归零；当前 US 股票池 1,003 只，其中 1,000 只已有版本事实；10 家官方 10-K 外部抽查无无法解释金额差异；ROIC MVP 暂停；全部美股当前个股分析切换已具备开关，待部署启用。
+> 当前状态：P0、Phase 1A、Phase 1B v1 已关闭；Phase 2 Gate D 已对 777 只待历史重建股票完成回填；年度 revenue 的 301 个历史未决案例已审核归零；当前 US 股票池 1,003 只，其中 1,000 只已有版本事实；10 家官方 10-K 外部抽查无无法解释金额差异；ROIC MVP 暂停；全部美股当前个股分析已于 2026-07-29 启用 `latest-restated`，筛选器和回测尚未切换。
 > 项目组织：个人所有者 + 多个 agent，不按企业多人团队执行 DBA 分工或职责分离；数据库专用角色为可选加固。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
@@ -28,7 +28,7 @@
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
 | Phase 2 历史事实版本回填 | ✅ Gate D 已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、777 只待重建股票专项回填、备份/manifest/post-verify、旧宽表 checksum 保护均通过；当前股票池 1,003 只中 1,000 只已有版本事实 | 消费者切换单独验收 |
 | Revenue 历史差异审核 | ✅ 已关闭 | 301 个年度 revenue 案例完成规则/人工复核；approved、rejected 与技术 exclusion 已落库；selector 未决为 0 | 新 filing 出现未决时按需运行 |
-| 当前分析 latest-restated | 🟢 全量开关就绪 | current-only 全市场对比 `UNEXPLAINED=0`；固定 canary、10 家官方 10-K 外部抽查、失败回退与实库查询验证完成 | 部署 `US_FINANCIAL_VERSION_CURRENT=1`，观察后关闭旧 canary 开关 |
+| 当前分析 latest-restated | ✅ 已切换 | current-only 全市场对比 `UNEXPLAINED=0`；固定 canary、10 家官方 10-K 外部抽查、失败回退、实库及公网 API 验证完成；生产已启用 `US_FINANCIAL_VERSION_CURRENT=1` | 保留短期回退能力；筛选器另行切换 |
 | 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
 
@@ -114,10 +114,24 @@ PB = latest market_cap / latest annual equity （仅权益 > 0）
 2. ✅ 完成年度 revenue 历史未决审核（301 个案例，selector 未决归零）；
 3. ✅ 完成消费者切换前 current-only 全市场对比（`UNEXPLAINED=0`）；
 4. ✅ 固定 10 只个股分析 canary 与官方 10-K 外部抽查通过；
-5. 部署全部美股当前个股分析开关；
+5. ✅ 部署全部美股当前个股分析开关；
 6. 筛选器、PIT 回测和恢复 ROIC 分别另行决定，不自动展开。
 
-## 6. 阶段门槛
+## 6. 旧宽表保留边界
+
+`us_income_statement`、`us_balance_sheet`、`us_cash_flow_statement` 及其物化视图
+当前不能删除。它们仍被以下路径使用：
+
+- 当前个股分析的异常回退和部分尚未由版本层覆盖的派生指标；
+- 美股筛选器与同行业统计；
+- 历史回测、数据校验、dashboard 与同步完成度判断；
+- 在线同步和物化视图刷新。
+
+当前阶段只完成“个股分析核心字段由版本层覆盖”，不是旧数据退役。删除旧表必须
+作为独立迁移任务：先替换上述消费者、关闭回退、停止旧表在线写入，观察一个完整
+财报周期并完成备份后，才可以讨论归档或删除。
+
+## 7. 阶段门槛
 
 全市场回填前必须具备：
 

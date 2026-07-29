@@ -1,9 +1,9 @@
 # 美股财报版本化 Phase 2 全市场历史回填 Runbook
 
-> 状态：Gate A、Gate B、Gate C、Gate D 已完成；777 只股票全市场历史回填已通过，scheduler 已恢复；下一步为消费者切换验收（Gate E）
+> 状态：Gate A、Gate B、Gate C、Gate D 已完成；777 只股票历史回填已通过；Gate E 当前个股分析切换已完成，筛选器与 PIT 回测尚未切换
 > 日期：2026-07-26
 > 适用环境：`STOCK_MARKETS=US` 海外服务器  
-> 前置状态：Phase 1A、Phase 1B v1 已关闭；生产消费者尚未切换  
+> 前置状态（历史）：Phase 1A、Phase 1B v1 已关闭；执行 Phase 2 时生产消费者尚未切换
 > 上位方案：[US_FINANCIAL_VERSIONING_PLAN.md](./US_FINANCIAL_VERSIONING_PLAN.md)  
 > 当前进度：[US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md](./US_FINANCIAL_DATA_GOVERNANCE_PROGRESS.md)  
 > 报告期规则：[US_REPORT_PERIOD_REPAIR_RUNBOOK.md](./US_REPORT_PERIOD_REPAIR_RUNBOOK.md)
@@ -1011,7 +1011,7 @@ Phase 2 不切换消费者，因此回滚应表现为：
 - relation 和 shadow selector 已构建；
 - 旧宽表未被修改；
 - 新旧差异报告已生成；
-- 尚未切换任何生产消费者。
+- Phase 2 回填结束时尚未切换生产消费者；后续已单独完成当前个股分析切换。
 
 ## 14. 验收报告模板
 
