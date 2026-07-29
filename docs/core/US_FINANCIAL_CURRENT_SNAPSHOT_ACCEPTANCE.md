@@ -1,7 +1,7 @@
 # 美股当前财务口径切换前验收
 
 > 执行日期：2026-07-29  
-> 状态：✅ 通过 current-only 对比；准入 10 只个股分析 canary，未授权全市场切换
+> 状态：✅ 通过 current-only 对比；10 只个股分析 canary 代码与实库验证完成，未授权全市场切换
 
 ## 1. 验收口径
 
@@ -57,8 +57,16 @@ current-only 报告 `UNEXPLAINED=0`。
 
 ## 4. 准入结论
 
-- 数据层可进入固定 10 只股票的个股分析 canary；
-- canary 必须有配置开关并能即时回退旧查询；
+- 固定 10 只股票的个股分析 canary 已实现；
+- 默认关闭，设置 `US_FINANCIAL_VERSION_CANARY=1` 后启用；
+- 默认名单为 PLTR、MELI、ONTO、SAM、HRB、VZ、TDC、ACGL、GAP、CRM；
+- 可用 `US_FINANCIAL_VERSION_CANARY_STOCKS` 覆盖名单；
+- 非 canary 股票始终使用旧查询；
+- 版本装配发生异常时自动回退旧查询；
+- 关闭开关并重启 Web 进程即可即时回退；
 - 本验收不授权全市场消费者切换；
 - canary 通过后，再单独决定是否扩大；
 - 严格 PIT 回测与 ROIC 仍保持暂停。
+
+实库查询已验证 10/10 股票的历史、TTM 和估值查询均能返回结果，并确认最新
+年度 CapEx 来自版本层而非静默回退。相关测试 73 passed。

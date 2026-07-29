@@ -549,7 +549,10 @@ def compute_new_ttm_fcf_yield(
         ttm_values: dict[str, Decimal | None] = {}
 
         if is_annual:
-            for field in ["net_cash_from_operations", "capital_expenditures", "net_income"]:
+            for field in [
+                "revenues", "net_cash_from_operations",
+                "capital_expenditures", "net_income",
+            ]:
                 ttm_values[field] = _to_decimal(latest.get(field))
         else:
             annual_rows = group[group["is_annual"] == True]
@@ -564,7 +567,10 @@ def compute_new_ttm_fcf_yield(
             prior = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
             py_row = prior.iloc[0] if len(prior) > 0 else None
 
-            for field in ["net_cash_from_operations", "capital_expenditures", "net_income"]:
+            for field in [
+                "revenues", "net_cash_from_operations",
+                "capital_expenditures", "net_income",
+            ]:
                 latest_val = _to_decimal(latest.get(field))
                 la_val = _to_decimal(la_row[field]) if la_row is not None and field in la_row.index else None
                 py_val = _to_decimal(py_row[field]) if py_row is not None and field in py_row.index else None
@@ -597,7 +603,11 @@ def compute_new_ttm_fcf_yield(
         results.append({
             "stock_code": stock_code,
             "FCF_Yield_new": fcf_yield,
+            "FCF_new": ttm_fcf,
+            "revenue_ttm": _to_decimal(ttm_values.get("revenues")),
             "net_income_ttm": _to_decimal(ttm_ni),
+            "cfo_ttm": ttm_cfo_d,
+            "capex_ttm": ttm_capex_d,
             "ttm_report_date": latest_date,
         })
 

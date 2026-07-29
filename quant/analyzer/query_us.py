@@ -1,10 +1,40 @@
 """个股分析器 — 美股数据查询层。"""
 
+import os
+import logging
+from functools import lru_cache
+
 import pandas as pd
 from db import Connection
 
+logger = logging.getLogger(__name__)
 
-def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
+CANARY_STOCKS = {
+    "PLTR", "MELI", "ONTO", "SAM", "HRB",
+    "VZ", "TDC", "ACGL", "GAP", "CRM",
+}
+
+
+def _canary_enabled(stock_code: str) -> bool:
+    enabled = os.getenv("US_FINANCIAL_VERSION_CANARY", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    configured = os.getenv("US_FINANCIAL_VERSION_CANARY_STOCKS")
+    stocks = (
+        {code.strip().upper() for code in configured.split(",") if code.strip()}
+        if configured else CANARY_STOCKS
+    )
+    return enabled and stock_code.upper() in stocks
+
+
+def _pandas_scalar(value):
+    """将 Decimal 等数据库精确数值转换为 pandas 数值列可安全写入的标量。"""
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def _legacy_stock_info(stock_code: str, market: str) -> pd.DataFrame:
     """获取股票基本信息和最新行情数据。
 
     优先使用 mv_us_fcf_yield（含 FCF Yield），若不存在则 fallback 到 daily_quote。
@@ -41,7 +71,7 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         return df
 
 
-def get_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
+def _legacy_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
     """获取个股历史年度财务数据。
 
     列名通过 SQL 别名与 CN 视图保持一致，analysis.py 无需修改。
@@ -70,7 +100,7 @@ def get_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
         return pd.read_sql(sql, conn, params=(stock_code, years))
 
 
-def get_ttm_data(stock_code: str) -> pd.DataFrame:
+def _legacy_ttm_data(stock_code: str) -> pd.DataFrame:
     """获取 TTM 滚动指标。
 
     net_income_ttm 别名为 net_profit_ttm 以保持下游兼容。
@@ -83,6 +113,132 @@ def get_ttm_data(stock_code: str) -> pd.DataFrame:
     """
     with Connection() as conn:
         return pd.read_sql(sql, conn, params=(stock_code,))
+
+
+@lru_cache(maxsize=32)
+def _load_version_frames(stock_code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """装配 canary 所需的 latest-restated 年度与 TTM 核心字段。"""
+    from scripts.compare_old_new_financials import (
+        build_new_annual_df,
+        build_new_quarterly_facts_df,
+        compute_annual_roe_fcf,
+        compute_new_ttm_fcf_yield,
+        fetch_latest_quotes,
+        fetch_new_version_facts,
+    )
+
+    facts = fetch_new_version_facts([stock_code])
+    annual = compute_annual_roe_fcf(build_new_annual_df(facts))
+    quarterly = build_new_quarterly_facts_df(facts)
+    quotes = fetch_latest_quotes([stock_code])
+    ttm = compute_new_ttm_fcf_yield(quarterly, quotes)
+    return annual, ttm
+
+
+def _version_frames(stock_code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    annual, ttm = _load_version_frames(stock_code.upper())
+    return annual.copy(), ttm.copy()
+
+
+def _overlay_history(legacy: pd.DataFrame, annual: pd.DataFrame, years: int) -> pd.DataFrame:
+    if annual.empty:
+        raise ValueError("version layer returned no annual facts")
+    base = legacy.copy()
+    base["report_date"] = pd.to_datetime(base["report_date"]).dt.date
+    annual = annual.copy()
+    annual["report_date"] = pd.to_datetime(annual["report_date"]).dt.date
+    base = base.set_index("report_date")
+    for report_date in annual["report_date"]:
+        if report_date not in base.index:
+            base.loc[report_date] = None
+
+    mapping = {
+        "revenues": "operating_revenue",
+        "net_income": "parent_net_profit",
+        "net_cash_from_operations": "cfo_net",
+        "capital_expenditures": "capex",
+        "total_equity": "total_equity",
+        "ROE": "roe",
+        "FCF": "fcf",
+    }
+    for _, row in annual.iterrows():
+        report_date = row["report_date"]
+        for source, target in mapping.items():
+            if source in row and pd.notna(row[source]):
+                base.loc[report_date, target] = _pandas_scalar(row[source])
+        if "net_profit" in base.columns and pd.notna(row.get("net_income")):
+            base.loc[report_date, "net_profit"] = _pandas_scalar(row["net_income"])
+        revenue, profit = row.get("revenues"), row.get("net_income")
+        if "net_margin" in base.columns and pd.notna(revenue) and revenue != 0 and pd.notna(profit):
+            base.loc[report_date, "net_margin"] = _pandas_scalar(profit / revenue)
+    return base.reset_index().sort_values("report_date", ascending=False).head(years)
+
+
+def get_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
+    legacy = _legacy_financial_history(stock_code, years)
+    if not _canary_enabled(stock_code):
+        return legacy
+    try:
+        annual, _ = _version_frames(stock_code)
+        return _overlay_history(legacy, annual, years)
+    except Exception:
+        # Canary 的首要安全边界：新装配失败时页面继续使用旧口径。
+        logger.exception("version canary history failed for %s; using legacy", stock_code)
+        return legacy
+
+
+def get_ttm_data(stock_code: str) -> pd.DataFrame:
+    legacy = _legacy_ttm_data(stock_code)
+    if not _canary_enabled(stock_code):
+        return legacy
+    try:
+        _, ttm = _version_frames(stock_code)
+        if ttm.empty:
+            return legacy
+        row = ttm.iloc[0]
+        return pd.DataFrame([{
+            "report_date": row.get("ttm_report_date"),
+            "report_type": "ttm",
+            "revenue_ttm": row.get("revenue_ttm"),
+            "net_profit_ttm": row.get("net_income_ttm"),
+            "cfo_ttm": row.get("cfo_ttm"),
+            "capex_ttm": row.get("capex_ttm"),
+        }])
+    except Exception:
+        logger.exception("version canary TTM failed for %s; using legacy", stock_code)
+        return legacy
+
+
+def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
+    legacy = _legacy_stock_info(stock_code, market)
+    if not _canary_enabled(stock_code) or legacy.empty:
+        return legacy
+    try:
+        annual, ttm = _version_frames(stock_code)
+        if ttm.empty:
+            return legacy
+        result = legacy.copy()
+        row = ttm.iloc[0]
+        market_cap = result.iloc[0].get("market_cap")
+        net_income = row.get("net_income_ttm")
+        fcf = row.get("FCF_new")
+        result.loc[result.index[0], "revenue_ttm"] = _pandas_scalar(row.get("revenue_ttm"))
+        result.loc[result.index[0], "net_profit_ttm"] = _pandas_scalar(net_income)
+        result.loc[result.index[0], "cfo_ttm"] = _pandas_scalar(row.get("cfo_ttm"))
+        result.loc[result.index[0], "fcf_ttm"] = _pandas_scalar(fcf)
+        result.loc[result.index[0], "ttm_report_date"] = row.get("ttm_report_date")
+        if pd.notna(market_cap) and pd.notna(net_income) and net_income > 0:
+            result.loc[result.index[0], "pe_ttm"] = _pandas_scalar(market_cap / net_income)
+        if pd.notna(market_cap) and not annual.empty:
+            equity = annual.sort_values("report_date").iloc[-1].get("total_equity")
+            if pd.notna(equity) and equity > 0:
+                result.loc[result.index[0], "pb"] = _pandas_scalar(market_cap / equity)
+        if pd.notna(market_cap) and pd.notna(fcf) and market_cap > 0:
+            result.loc[result.index[0], "fcf_yield"] = _pandas_scalar(fcf / market_cap)
+        return result
+    except Exception:
+        logger.exception("version canary stock info failed for %s; using legacy", stock_code)
+        return legacy
 
 
 def get_industry_stats(industry: str, market: str, exclude_code: str = "") -> pd.DataFrame:
