@@ -28,9 +28,14 @@ function Star({ rating }: { rating: number | null }) {
 export function AnalyzerPage() {
   const [market, setMarket] = useState<Market | "all">("all");
   const { addHistory } = useAnalyzerStore();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  // 支持 /analyzer?code=AAPL&market=US 直接打开
+  const analyzeMutation = useMutation({
+    mutationFn: ({ code, mkt }: { code: string; mkt?: Market }) =>
+      analyzerApi.analyze(code, mkt),
+  });
+
+  // 支持 /analyzer?code=AAPL&market=US 直接打开，且选股票后同步 URL
   useEffect(() => {
     const code = searchParams.get("code");
     const mkt = searchParams.get("market") as Market | null;
@@ -38,19 +43,23 @@ export function AnalyzerPage() {
       if (mkt) setMarket(mkt);
       analyzeMutation.mutate({ code, mkt: mkt ?? undefined });
     }
-    // 只在首次加载时触发
+    // 只在首次加载或 URL 参数变化时触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const analyzeMutation = useMutation({
-    mutationFn: ({ code, mkt }: { code: string; mkt?: Market }) =>
-      analyzerApi.analyze(code, mkt),
-  });
+  }, [searchParams.get("code"), searchParams.get("market")]);
 
   const handleSelect = useCallback((stock: StockSearchResult) => {
     addHistory(stock);
+    setSearchParams({
+      code: stock.stock_code,
+      market: stock.market,
+    });
     analyzeMutation.mutate({ code: stock.stock_code, mkt: stock.market });
-  }, [analyzeMutation, addHistory]);
+  }, [addHistory, setSearchParams, analyzeMutation]);
+
+  const handleReset = useCallback(() => {
+    analyzeMutation.reset();
+    setSearchParams({});
+  }, [analyzeMutation, setSearchParams]);
 
   const report: AnalysisReport | undefined = analyzeMutation.data;
 
@@ -277,7 +286,7 @@ export function AnalyzerPage() {
           {/* 重新搜索按钮 */}
           <Button
             variant="outline"
-            onClick={() => analyzeMutation.reset()}
+            onClick={handleReset}
           >
             重新搜索
           </Button>
