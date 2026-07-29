@@ -1,7 +1,7 @@
 # 美股旧财务宽表退役计划
 
 > 状态：待执行  
-> 更新日期：2026-07-29  
+> 更新日期：2026-07-30<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -78,21 +78,62 @@ mv_us_fcf_yield
 
 每只股票一行，至少包含：
 
-- latest report/available date；
+- `stock_code`、`ttm_report_date`、`ttm_filed_date`、`ttm_accession_no`；
 - revenue TTM、net income TTM、CFO TTM、cash CapEx TTM、FCF TTM；
-- market cap、PE、PB、FCF Yield；
-- equity report/available date；
+- `equity_report_date`、`equity_filed_date`、`equity_accession_no`、parent equity；
 - `selector_run_id`、`generated_at`、`quality_flags`。
 
-### 3.3 生成方式
+`ttm_report_date` 是经济口径的财务截止日；`ttm_filed_date` 是该数值可被外部使用的
+SEC 申报日。两者不能互相替代，API 和筛选器必须同时返回它们，供 PIT 和数据时效判断。
 
-- 一个 Python projection job 调用现有 `latest-restated` selector；
+### 3.3 当前估值口径
+
+市值、PE、PB 和 FCF Yield 不写入 `us_financial_current_ttm`。它们由当前 TTM 快照与
+`daily_quote` 的每只股票最新行情行组合得到，并至少返回：
+
+- `quote_date`、close、market cap、currency；
+- PE = market cap / net income TTM（TTM 净利润不为正时为 NULL）；
+- PB = market cap / 最近可用 parent equity（净资产不为正时为 NULL）；
+- FCF Yield = FCF TTM / market cap（任一输入缺失或市值非正时为 NULL）；
+- `financial_as_of_date=ttm_report_date` 与 `valuation_as_of_date=quote_date`。
+
+每日行情同步后必须刷新或重算该轻量估值结果；SEC 财务 projection 只负责更新分子。
+界面不得把新的 `quote_date` 误标成新的财务数据。若 `financial_as_of_date` 超过策略设定
+的新鲜度阈值，必须返回显式 stale flag，不能静默用旧 FCF 充当最新经营数据。
+
+### 3.4 TTM 算法与质量标记
+
+TTM 只使用 `latest-restated` selector 选出的、在 `ttm_filed_date` 当日已可得的正式事实：
+
+1. 最新报告为 annual 时，TTM 直接等于该年 flow 值；
+2. 最新报告为累计季度时，TTM = 最新累计值 + 上一正式年度值 - 上年同期累计值；
+3. 上年同期必须匹配相同报告类型和可比累计期间；报告期错配、缺少任一组成部分或 cash
+   CapEx 不可得时，该指标为 NULL，不用单季值、供应商值或更旧年度值补齐；
+4. FCF TTM = CFO TTM - cash CapEx TTM，资本开支仅使用现金资本开支，不把收购或证券投资
+   购买混入；
+5. `quality_flags` 至少枚举 `missing_component`、`period_mismatch`、`missing_cash_capex`、
+   `stale_financial`、`out_of_sync_scope` 和 `selector_exception`。
+
+### 3.5 生成方式
+
+- 一个 Python financial projection job 调用现有 `latest-restated` selector，生成 annual/TTM
+  的 staging 表；
 - 在 staging 表完成后，于单个事务内替换正式快照；
-- 保存股票数、行数、关键字段覆盖率和 checksum；
-- 同一事实集重跑 checksum 必须一致；
+- 每日行情任务只更新当前估值口径，不重算或改写财务事实；
+- 保存股票数、行数、关键字段覆盖率、输入 selector run、事实 checksum 和产物 checksum；
+- 同一事实集重跑必须产生相同财务快照 checksum；行情日期变化只允许估值字段变化；
 - projection 失败时保留上一版快照，不清空生产数据。
 
 个人项目不需要新增审批角色、Web UI 或逐事实 audit。
+
+### 3.6 覆盖范围与新鲜度
+
+Phase A 的 universe manifest 固定记录 1,003 只股票及其来源指数。当前 scheduler 的 SEC
+同步范围若小于该 manifest，快照必须将未覆盖证券标为 `out_of_sync_scope`，而不是把旧
+财报伪装成最新结果。进入 Phase C 前，必须明确并实现以下二者之一：
+
+- 让 SEC 同步范围覆盖整个筛选 universe；或
+- 缩小筛选 universe 至同步范围，并在 API 中公开该范围。
 
 ## 4. 执行阶段
 
@@ -101,7 +142,7 @@ mv_us_fcf_yield
 1. 新增两张快照表 DDL 和必要索引；
 2. 编写 projection job；
 3. 对全部 1,003 只美股生成 current annual/TTM；
-4. 与现有 current-only 报告比较；
+4. 与现有 current-only 报告比较，并保存每次比较产物；
 5. `UNEXPLAINED=0`，无版本事实的 CCEP、GFS、SPY 保持明确 exception。
 
 验收：
@@ -110,6 +151,11 @@ mv_us_fcf_yield
 - API 查询不直接扫描全量 fact 表；
 - AAPL、PLTR、WMT、ONTO、HRB、ACGL 六只 smoke 通过；
 - 单次产物和数据库增长可控。
+
+比较产物必须记录输入 manifest、selector run、字段覆盖率、行数、差异明细和例外原因。
+收入、净利润、资产、负债、权益、CFO、cash CapEx、FCF 采用精确金额比较；比率允许
+`1e-6` 的绝对误差；报告期、申报日和 accession 必须精确一致。只有列入版本事实缺失
+清单、且带明确原因的证券才可计为 expected exception；其他差异全部计入 `UNEXPLAINED`。
 
 ### Phase B：切换读取者
 
@@ -128,9 +174,9 @@ mv_us_fcf_yield
 
 ### Phase C：停止旧写入
 
-1. 在线 US sync 仅写 snapshot/filing/fact/conflict/staging；
+1. 在线 US sync 仅写 filing/fact/conflict/staging，并在成功入库后触发财务 projection；
 2. incremental 完成度改用 `us_filing`、`us_ingest_run` 和版本事实；
-3. scheduler 停止刷新三个旧物化视图；
+3. scheduler 停止刷新三个旧物化视图，改为 SEC 后运行财务 projection、行情后更新当前估值；
 4. 运行代码扫描，生产目录不得再引用六个待退役对象；
 5. 给历史脚本增加显式 `legacy/retired` 提示或启动保护。
 
@@ -146,6 +192,8 @@ mv_us_fcf_yield
 - 运行全市场 chain audit；
 - 检查 API、筛选器和 dashboard；
 - 确认旧六对象在观察期内无写入、无读取。
+- 确认全体 universe 股票均具有可解释的新鲜度状态：fresh、stale、out_of_sync_scope 或
+  selector_exception；不允许缺失状态。
 
 任何无法解释差异或新 filing 未进入快照，立即恢复旧写入/读取并停止退役。
 
@@ -181,6 +229,8 @@ Phase E 后：
 - 两张版本层 current snapshot 稳定生成；
 - 个股分析、筛选器、dashboard、校验和回测均不再读取旧对象；
 - 在线同步不再写旧三表；
+- 财务时点与估值时点分别可追溯，且每日行情更新不会改写财务时点；
+- 每只 universe 股票都有可解释的新鲜度状态；
 - 14 天观察及最近 filing 重放通过；
 - 旧表 dump 已上传对象存储且恢复命令验证可用；
 - 六个旧对象已删除；

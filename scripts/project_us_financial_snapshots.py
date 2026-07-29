@@ -73,6 +73,15 @@ TTM_FIELDS = [
 
 # ── 辅助函数 ──────────────────────────────────────────────────
 
+def _is_annual_period(fact) -> bool:
+    """检查 SelectedFact 的期间是否 ≥ 330 天（排除 Q4 单季数据）。"""
+    if fact.period_kind == "instant":
+        return True
+    if fact.period_kind == "duration" and fact.period_start and fact.report_date:
+        return (fact.report_date - fact.period_start).days >= 330
+    return False
+
+
 def _to_decimal(val: Any) -> Decimal | None:
     if val is None:
         return None
@@ -121,19 +130,25 @@ def _fetch_facts(stock_codes: list[str], fields: list[str]) -> list:
 
 # ── 年度快照构建 ──────────────────────────────────────────────
 
-def build_annual_snapshot(all_facts: list, selector_run_id: str) -> pd.DataFrame:
-    """从 SelectedFact 构建年度快照 DataFrame。"""
+def build_annual_snapshot(all_facts: list, projection_run_id: str) -> pd.DataFrame:
+    """从 SelectedFact 构建年度快照 DataFrame。
+
+    过滤条件：form 在 ANNUAL_FORMS + unit=USD + duration 类型期间 ≥ 330 天。
+    """
     annual = [
         f for f in all_facts
         if f.form and f.form.upper() in ANNUAL_FORMS
         and f.unit.upper() == "USD"
+        and _is_annual_period(f)
     ]
-    logger.info("Annual USD facts: %d", len(annual))
+    logger.info("Annual USD facts (with period check): %d", len(annual))
 
     if not annual:
         return pd.DataFrame()
 
     # 按 (stock_code, report_date, standard_field) pivot
+    # 元数据（filed_date/accession_no/form）按每个 (stock_code, report_date)
+    # 取最新的 filed_date 对应的记录（最接近当前披露）
     records: dict[tuple, dict] = {}
     for f in annual:
         key = (f.stock_code, f.report_date)
@@ -145,6 +160,13 @@ def build_annual_snapshot(all_facts: list, selector_run_id: str) -> pd.DataFrame
                 "accession_no": f.accession_no,
                 "form": f.form,
             }
+        else:
+            # 保留最晚的 filed_date 对应的 accession（更可能是 latest-restated 选中的披露）
+            existing_fd = records[key].get("filed_date")
+            if f.filed_date and (existing_fd is None or f.filed_date > existing_fd):
+                records[key]["filed_date"] = f.filed_date
+                records[key]["accession_no"] = f.accession_no
+                records[key]["form"] = f.form
         val = _to_decimal(f.value_numeric)
         if val is not None:
             records[key][f.standard_field] = val
@@ -156,10 +178,10 @@ def build_annual_snapshot(all_facts: list, selector_run_id: str) -> pd.DataFrame
         if col not in df.columns:
             df[col] = None
 
-    return _compute_derived_fields(df, selector_run_id)
+    return _compute_derived_fields(df, projection_run_id)
 
 
-def _compute_derived_fields(df: pd.DataFrame, selector_run_id: str) -> pd.DataFrame:
+def _compute_derived_fields(df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
     """计算衍生字段：FCF、ROE、margins、YoY 等。"""
     # FCF
     if "net_cash_from_operations" in df.columns and "capital_expenditures" in df.columns:
@@ -219,7 +241,7 @@ def _compute_derived_fields(df: pd.DataFrame, selector_run_id: str) -> pd.DataFr
 
     # Metadata
     df["selector_basis"] = "latest-restated"
-    df["selector_run_id"] = selector_run_id
+    df["projection_run_id"] = projection_run_id
     df["generated_at"] = datetime.now()
 
     return df
@@ -234,7 +256,7 @@ def _keep_latest_5_annual(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── TTM 快照构建 ──────────────────────────────────────────────
 
-def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, selector_run_id: str) -> pd.DataFrame:
+def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
     """从事实和年度快照构建 TTM 快照。"""
     # 收集所有 annual + quarterly 事实（用于 TTM 公式）
     accepted_forms = ANNUAL_FORMS | {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
@@ -310,7 +332,7 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, selector_run_id
             "equity_filed_date": equity_info.get("filed_date"),
             "equity_accession_no": equity_info.get("accession_no"),
             "total_equity": equity_info.get("total_equity"),
-            "selector_run_id": selector_run_id,
+            "projection_run_id": projection_run_id,
             "quality_flags": quality_flags,
         })
 
@@ -327,7 +349,10 @@ def _get_field_value(group: pd.DataFrame, report_date, field: str) -> Decimal | 
 
 
 def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> Decimal | None:
-    """TTM = latest_cumulative + last_annual - prior_year_same_period。"""
+    """TTM = latest_cumulative + last_annual - prior_year_same_period。
+
+    任一组件缺失时返回 None，不伪造完整 TTM。
+    """
     latest_val = _get_field_value(group, latest_date, field)
     if latest_val is None:
         return None
@@ -336,12 +361,12 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> Deci
     annual = group[group["is_annual"] == True]
     la_rows = annual[annual["report_date"] < latest_date]
     if la_rows.empty:
-        return latest_val
+        return None  # 无上年度，无法构造 TTM
 
     la_row = la_rows.iloc[-1]
     la_val = _get_field_value(group, la_row["report_date"], field)
     if la_val is None:
-        return latest_val
+        return None  # 上年度缺该字段
 
     # Prior year same period (±7 days)
     target = latest_date - timedelta(days=365)
@@ -351,12 +376,12 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> Deci
     )
     prior = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
     if prior.empty:
-        return la_val
+        return None  # 无去年同期，无法构造 TTM
 
     py_row = prior.iloc[0]
     py_val = _get_field_value(group, py_row["report_date"], field)
     if py_val is None:
-        return la_val
+        return None  # 去年同期缺该字段
 
     return latest_val + la_val - py_val
 
@@ -386,19 +411,20 @@ ANNUAL_COLUMNS = [
     "debt_ratio", "current_ratio", "quick_ratio",
     "revenue_yoy", "net_profit_yoy",
     "eps_basic", "eps_diluted", "book_value_per_share",
-    "selector_basis", "selector_run_id", "quality_flags", "generated_at",
+    "selector_basis", "projection_run_id", "quality_flags", "generated_at",
 ]
 
 TTM_COLUMNS = [
     "stock_code", "ttm_report_date", "ttm_filed_date", "ttm_accession_no",
     "revenue_ttm", "net_income_ttm", "cfo_ttm", "capex_ttm", "fcf_ttm",
     "equity_report_date", "equity_filed_date", "equity_accession_no", "total_equity",
-    "selector_run_id", "quality_flags", "generated_at",
+    "projection_run_id", "quality_flags", "generated_at",
 ]
 
 
-def _write_snapshot(df: pd.DataFrame, table: str, columns: list[str], conn):
-    """使用 UPSERT 写入快照表。"""
+def _write_snapshot(df: pd.DataFrame, table: str, columns: list[str], conn,
+                     stock_codes: list[str]):
+    """在同一事务内先删除旧快照再写入新快照（避免过期记录残留）。"""
     if df.empty:
         logger.warning("Empty DataFrame for %s, skipping", table)
         return 0
@@ -420,30 +446,15 @@ def _write_snapshot(df: pd.DataFrame, table: str, columns: list[str], conn):
     rows = write_df.where(write_df.notna(), None).values.tolist()
     rows = [tuple(r) for r in rows]
 
-    placeholders = ", ".join(["%s"] * len(cols_available))
     col_names = ", ".join(cols_available)
 
-    if table == "us_financial_current_annual":
-        conflict_cols = [c for c in cols_available if c not in ("stock_code", "report_date")]
-        conflict_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in conflict_cols)
-        sql = f"""
-            INSERT INTO {table} ({col_names})
-            VALUES %s
-            ON CONFLICT (stock_code, report_date) DO UPDATE SET
-            {conflict_sql}
-        """
-    else:  # TTM
-        conflict_cols = [c for c in cols_available if c != "stock_code"]
-        conflict_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in conflict_cols)
-        sql = f"""
-            INSERT INTO {table} ({col_names})
-            VALUES %s
-            ON CONFLICT (stock_code) DO UPDATE SET
-            {conflict_sql}
-        """
-
     with conn.cursor() as cur:
-        psycopg2.extras.execute_values(cur, sql, rows, page_size=500)
+        # 先删除指定股票池的旧数据，再插入新数据
+        cur.execute(f"DELETE FROM {table} WHERE stock_code = ANY(%s)", (stock_codes,))
+        if rows:
+            sql = f"INSERT INTO {table} ({col_names}) VALUES %s"
+            psycopg2.extras.execute_values(cur, sql, rows, page_size=500)
+
     return len(rows)
 
 
@@ -464,8 +475,8 @@ def main():
         logger.error("STOCK_MARKETS must be 'US'")
         return 1
 
-    selector_run_id = str(uuid.uuid4())
-    logger.info("Selector run ID: %s", selector_run_id)
+    projection_run_id = str(uuid.uuid4())
+    logger.info("Selector run ID: %s", projection_run_id)
 
     stocks = args.stocks.split(",") if args.stocks else _get_all_us_stocks()
     logger.info("Processing %d stocks", len(stocks))
@@ -478,14 +489,14 @@ def main():
 
     # 2. 构建年度快照
     logger.info("Building annual snapshot...")
-    annual_df = build_annual_snapshot(all_facts, selector_run_id)
+    annual_df = build_annual_snapshot(all_facts, projection_run_id)
     annual_df = _keep_latest_5_annual(annual_df)
     logger.info("Annual rows: %d (%d stocks)", len(annual_df),
                  annual_df["stock_code"].nunique() if not annual_df.empty else 0)
 
     # 3. 构建 TTM 快照
     logger.info("Building TTM snapshot...")
-    ttm_df = build_ttm_snapshot(all_facts, annual_df, selector_run_id)
+    ttm_df = build_ttm_snapshot(all_facts, annual_df, projection_run_id)
     logger.info("TTM rows: %d", len(ttm_df))
 
     if args.dry_run:
@@ -498,12 +509,14 @@ def main():
 
     # 4. 写入数据库
     with Connection() as conn:
-        n_annual = _write_snapshot(annual_df, "us_financial_current_annual", ANNUAL_COLUMNS, conn)
-        n_ttm = _write_snapshot(ttm_df, "us_financial_current_ttm", TTM_COLUMNS, conn)
+        n_annual = _write_snapshot(annual_df, "us_financial_current_annual",
+                                    ANNUAL_COLUMNS, conn, stocks)
+        n_ttm = _write_snapshot(ttm_df, "us_financial_current_ttm",
+                                TTM_COLUMNS, conn, stocks)
         conn.commit()
         logger.info("Wrote %d annual rows, %d TTM rows", n_annual, n_ttm)
 
-    logger.info("Projection complete. Run ID: %s", selector_run_id)
+    logger.info("Projection complete. Run ID: %s", projection_run_id)
     return 0
 
 

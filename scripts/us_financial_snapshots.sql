@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
 
     -- 溯源
     selector_basis          VARCHAR(20) NOT NULL DEFAULT 'latest-restated',
-    selector_run_id         UUID,
+    projection_run_id         UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
     generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_us_fca_selector_run
-    ON us_financial_current_annual(selector_run_id);
+    ON us_financial_current_annual(projection_run_id);
 CREATE INDEX IF NOT EXISTS idx_us_fca_generated
     ON us_financial_current_annual(generated_at);
 CREATE INDEX IF NOT EXISTS idx_us_fca_stock
@@ -90,13 +90,13 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
     total_equity            NUMERIC,
 
     -- 溯源
-    selector_run_id         UUID,
+    projection_run_id         UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
     generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_us_fct_selector_run
-    ON us_financial_current_ttm(selector_run_id);
+    ON us_financial_current_ttm(projection_run_id);
 CREATE INDEX IF NOT EXISTS idx_us_fct_generated
     ON us_financial_current_ttm(generated_at);
 CREATE INDEX IF NOT EXISTS idx_us_fct_ttm_date
