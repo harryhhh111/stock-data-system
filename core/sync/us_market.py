@@ -6,10 +6,13 @@ import hashlib
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
 from core.fetchers.us_financial import FetchContext
 from db import upsert, execute, save_raw_snapshot
 from ._utils import MARKET_CONFIG, logger
+
+_US_REFETCH_INTERVAL = timedelta(days=7)
 
 
 def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list[str]:
@@ -44,23 +47,30 @@ def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list
 
 
 def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[str], int]:
-    """Filter US tickers, skipping those already synced with latest report date.
+    """Filter US tickers, rechecking every company at least once per week.
 
     Returns (pending_tickers, skipped_count).
+
+    SEC does not expose a future report date in our local database. Comparing
+    ``MAX(report_date)`` with ``sync_progress.last_report_date`` therefore
+    cannot discover a newly filed 10-Q/10-K and may skip a company forever.
+    Company Facts requests are content-addressed and idempotent, so a bounded
+    weekly network recheck is the simpler and safer incremental policy.
     """
     if force:
         logger.info("US增量判断: force=True, 全量 %d 只", len(tickers))
         return tickers, 0
 
-    # 1. Get sync_progress records for these tickers
+    # 1. Get the last successful network sync for these tickers.
     progress_rows = execute(
-        "SELECT stock_code, last_report_date FROM sync_progress "
-        "WHERE market = 'US' AND status = 'success' AND last_report_date IS NOT NULL",
+        "SELECT stock_code, last_sync_time FROM sync_progress "
+        "WHERE market = 'US' AND status = 'success' AND last_sync_time IS NOT NULL",
         fetch=True,
     ) or []
-    progress_dates: dict[str, object] = {r[0]: r[1] for r in progress_rows}
+    last_sync_times: dict[str, datetime] = {r[0]: r[1] for r in progress_rows}
 
-    # 2. Get max report_date from US financial tables
+    # 2. Companies without any stored financial statement must sync now,
+    # regardless of a stale progress row.
     tables = ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]
     union_parts = []
     for table in tables:
@@ -75,20 +85,24 @@ def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[st
 
     pending = []
     skipped = 0
+    now = datetime.now(timezone.utc)
     for ticker in tickers:
         db_max = db_max_dates.get(ticker)
-        progress_max = progress_dates.get(ticker)
+        last_sync = last_sync_times.get(ticker)
         if db_max is None:
             pending.append(ticker)
-        elif progress_max is None:
-            pending.append(ticker)
-        elif db_max > progress_max:
+        elif last_sync is None:
             pending.append(ticker)
         else:
-            skipped += 1
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=timezone.utc)
+            if now - last_sync >= _US_REFETCH_INTERVAL:
+                pending.append(ticker)
+            else:
+                skipped += 1
 
     logger.info(
-        "US增量判断: 总计=%d, 待同步=%d, 跳过=%d (%.1f%%)",
+        "US增量判断(每7天重检): 总计=%d, 待同步=%d, 跳过=%d (%.1f%%)",
         len(tickers), len(pending), skipped,
         skipped / len(tickers) * 100 if tickers else 0,
     )
@@ -178,6 +192,9 @@ def sync_us_market(args) -> dict:
                     (ticker, tables_synced, tables_synced),
                     commit=True,
                 )
+                # Keep the progress metadata useful for the sync status page.
+                from core.incremental import update_last_report_date
+                update_last_report_date(ticker, tables_synced)
             else:
                 logger.warning("%s: 无数据写入", ticker)
 
