@@ -5,9 +5,11 @@ Filing XBRL fallback 测试。
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+from core.fetchers.us_financial import USFinancialFetcher
 from core.us_financial_xbrl_fallback import (
     XbrlFact, XbrlContext,
     _find_annual_contexts,
@@ -96,8 +98,12 @@ class TestPickBestLiabilityFact:
         assert _pick_best_liability_fact([fact], {"c1"}) == fact
 
     def test_extension_tag(self):
-        fact = XbrlFact("wmt:TotalLiabilities", Decimal("100"), "-6", "usd", "c1")
+        fact = XbrlFact("TotalLiabilities", Decimal("100"), "-6", "usd", "c1")
         assert _pick_best_liability_fact([fact], {"c1"}) == fact
+
+    def test_other_liabilities_is_not_total(self):
+        fact = XbrlFact("OtherLiabilities", Decimal("100"), "-6", "usd", "c1")
+        assert _pick_best_liability_fact([fact], {"c1"}) is None
 
     def test_skips_current(self):
         fact = XbrlFact("LiabilitiesCurrent", Decimal("50"), "-6", "usd", "c1")
@@ -137,14 +143,7 @@ class TestDeriveLiabilitiesFromIdentity:
         ]
         contexts = [XbrlContext("c1", "104169", None, "2026-01-31", {})]
         result = _derive_liabilities_from_identity(facts, contexts, "2026-01-31")
-        # 只有 Assets - equity = 178781（包含可赎回NCI），但不可靠
-        # 没有 redeemable_nci 不满足完整恒等式
-        # 当前实现会减去 redeemable NCI（None → 不减），得到 178781
-        # 但这不等于精确的 178488
-        # 文档要求：缺少组成项时拒绝推导
-        # 暂时接受：如果只有 equity 没有 redeemable，结果不是精确值
-        # 我们验证至少 result 不为 None（当前行为），后续可收紧
-        assert result is not None  # 当前行为；未来可能需要 tighten
+        assert result is None
 
     def test_dimensions_conflict_rejected(self):
         """不同 context 的 fact 不参与推导。"""
@@ -161,3 +160,104 @@ class TestDeriveLiabilitiesFromIdentity:
         result = _derive_liabilities_from_identity(facts, contexts, "2026-01-31")
         # equity 不在 c1，只有 Assets → 得到 284668 = Assets 本身，derived == total_val → 被拒绝
         assert result is None
+
+    def test_unit_conflict_rejected(self):
+        facts = [
+            XbrlFact("Assets", Decimal("284668"), "0", "usd", "c1"),
+            XbrlFact("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                     Decimal("105887"), "0", "usd", "c1"),
+            XbrlFact("RedeemableNoncontrollingInterestEquityCarryingAmount",
+                     Decimal("293"), "0", "shares", "c1"),
+        ]
+        contexts = [XbrlContext("c1", "104169", None, "2026-01-31", {})]
+        assert _derive_liabilities_from_identity(
+            facts, contexts, "2026-01-31"
+        ) is None
+
+
+def test_supplement_enters_wide_and_version_records(monkeypatch):
+    records = [{
+        "tag": "Assets",
+        "field": "total_assets",
+        "val": 284668000000,
+        "fy": 2026,
+        "fp": "FY",
+        "end": "2026-01-31",
+        "start": None,
+        "filed": "2026-03-13",
+        "accn": "0000104169-26-000055",
+        "frame": "CY2025Q4I",
+        "form": "10-K",
+        "_period_kind": "instant",
+        "_quality_flag": None,
+    }]
+    fact_records = [{
+        **records[0],
+        "unit": "USD",
+        "dimensions": {},
+    }]
+
+    monkeypatch.setattr(
+        "core.us_financial_xbrl_fallback.fetch_total_liabilities_from_instance",
+        lambda **_: {
+            "value_numeric": Decimal("178488000000"),
+            "sec_tag": "Assets - Equity - RedeemableNCI",
+            "context_ref": "C_2026",
+            "unit_ref": "usd",
+            "reconstruction_flag": "RECONSTRUCTED_FROM_FILING_XBRL",
+        },
+    )
+
+    wide, version = USFinancialFetcher._supplement_total_liabilities_records(
+        records,
+        fact_records,
+        SimpleNamespace(cik="0000104169", stock_code="WMT"),
+    )
+
+    wide_fact = next(r for r in wide if r["field"] == "total_liabilities")
+    version_fact = next(r for r in version if r["field"] == "total_liabilities")
+    assert wide_fact["val"] == 178488000000
+    assert version_fact["val"] == Decimal("178488000000")
+    assert version_fact["unit"] == "USD"
+    assert version_fact["_period_kind"] == "instant"
+    assert "FILING_XBRL_CONTEXT=C_2026" in version_fact["_quality_flag"]
+
+
+def test_existing_other_period_does_not_block_supplement(monkeypatch):
+    records = [
+        {
+            "field": "total_liabilities",
+            "accn": "old",
+            "end": "2025-01-31",
+            "form": "10-K",
+        },
+        {
+            "field": "total_assets",
+            "accn": "new",
+            "end": "2026-01-31",
+            "form": "10-K",
+            "val": 10,
+        },
+    ]
+    fact_records = [{**records[1], "unit": "USD", "dimensions": {}}]
+    monkeypatch.setattr(
+        "core.us_financial_xbrl_fallback.fetch_total_liabilities_from_instance",
+        lambda **_: {
+            "value_numeric": Decimal("7"),
+            "sec_tag": "TotalLiabilities",
+            "context_ref": "C",
+            "unit_ref": "usd",
+        },
+    )
+
+    wide, version = USFinancialFetcher._supplement_total_liabilities_records(
+        records,
+        fact_records,
+        SimpleNamespace(cik="1", stock_code="TEST"),
+    )
+
+    assert any(
+        r.get("field") == "total_liabilities" and r.get("end") == "2026-01-31"
+        for r in wide
+    )
+    assert any(r.get("field") == "total_liabilities" for r in version)

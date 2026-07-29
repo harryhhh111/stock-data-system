@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-07-30T00:30:00+08:00",
+  "stock_code": "WMT",
+  "standard_field": "total_liabilities",
+  "method": "Assets - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest - RedeemableNoncontrollingInterestEquityCarryingAmount",
+  "quality_flag": "RECONSTRUCTED_FROM_FILING_XBRL",
+  "periods": [
+    {
+      "report_date": "2025-01-31",
+      "source_accession_no": "0000104169-25-000021",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416925000021/",
+      "total_assets": 260823000000,
+      "total_equity_including_nci": 97421000000,
+      "redeemable_noncontrolling_interest": 271000000,
+      "derived_total_liabilities": 163131000000,
+      "wide_table_value": 163131000000,
+      "latest_restated_value": 163131000000,
+      "difference": 0,
+      "passed": true
+    },
+    {
+      "report_date": "2026-01-31",
+      "source_accession_no": "0000104169-26-000055",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/",
+      "total_assets": 284668000000,
+      "total_equity_including_nci": 105887000000,
+      "redeemable_noncontrolling_interest": 293000000,
+      "derived_total_liabilities": 178488000000,
+      "wide_table_value": 178488000000,
+      "latest_restated_value": 178488000000,
+      "difference": 0,
+      "passed": true
+    }
+  ]
+}

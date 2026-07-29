@@ -7,7 +7,7 @@ tests/test_incremental.py — 增量同步逻辑测试
 - update_last_report_date: 更新同步进度
 """
 import pytest
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch, MagicMock, call
 
 
@@ -226,8 +226,9 @@ class TestDetermineStocksToSync:
         """美股 annual 报告超过 435 天（365+70）→ 触发重检。"""
         from core.incremental import determine_stocks_to_sync
 
-        old_annual = date(2024, 1, 31)    # 超过 435 天 → 应触发
-        recent_annual = date(2025, 9, 30)  # 未超过 → 不触发
+        today = date.today()
+        old_annual = today - timedelta(days=436)  # 超过 365 + 70 天
+        recent_annual = today - timedelta(days=434)  # 尚未达到重检日
 
         mock_db_max.return_value = {
             "AAPL": recent_annual,
@@ -257,8 +258,9 @@ class TestDetermineStocksToSync:
         """美股 quarterly 报告超过 180 天 → 触发重检。"""
         from core.incremental import determine_stocks_to_sync
 
-        old_quarterly = date(2025, 9, 30)     # 超过 180 天 → 应触发
-        recent_quarterly = date(2026, 1, 31)  # 未超过 → 不触发
+        today = date.today()
+        old_quarterly = today - timedelta(days=181)  # 超过 180 天
+        recent_quarterly = today - timedelta(days=179)  # 尚未达到重检日
 
         mock_db_max.return_value = {
             "AAPL": recent_quarterly,

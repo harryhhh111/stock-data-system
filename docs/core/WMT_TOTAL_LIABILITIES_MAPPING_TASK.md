@@ -1,6 +1,6 @@
 # WMT `total_liabilities` 精确映射小任务
 
-> 状态：待实现  
+> 状态：✅ 已实现并验收（`e480834` + follow-up fix）
 > 优先级：P2，不阻断美股当前分析切换  
 > 样本：WMT FY2026（截至 2026-01-31）
 
@@ -73,6 +73,16 @@ filing XBRL 数据仓库，也不保存整份逐事实审计。
 ## 5. 交付
 
 - 实现代码及测试；
-- 一份 WMT FY2025/FY2026 reconciliation JSON；
+- [WMT FY2025/FY2026 reconciliation JSON](../evidence/us_financial/wmt_total_liabilities_reconciliation.json)；
 - 更新本文件状态与提交 SHA；
 - 不修改消费者开关，不顺带扩展其他财务字段。
+
+## 6. 验收结果
+
+- FY2025 宽表与 `latest-restated`：`163,131,000,000`；
+- FY2026 宽表与 `latest-restated`：`178,488,000,000`；
+- 补充事实同时进入宽表记录和 `us_financial_fact_version`；
+- 缺少 equity 或 redeemable NCI、context/dimensions/unit 冲突时拒绝推导；
+- 扩展直接 tag 仅接受明确的 total/consolidated liabilities 名称；
+- SEC 请求复用项目 User-Agent，同一 instance 在进程内缓存；
+- 相关测试及全量测试通过后关闭本任务。

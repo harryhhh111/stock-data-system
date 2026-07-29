@@ -10,8 +10,11 @@ import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any
 from xml.etree import ElementTree as ET
+
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -20,25 +23,19 @@ logger = logging.getLogger(__name__)
 _SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 _SEC_REQUEST_DELAY = 0.5  # SEC 限速保护
 
-# total_liabilities 推导所需的组成项（按优先级）
-_LIAB_DERIVATION_SETS: list[dict[str, list[str]]] = [
-    {
-        # 方案 1：从合并资产负债表的恒等式反推
-        # total_liabilities = total_assets - redeemable_nci - total_equity_including_nci
-        "total": ["Assets", "LiabilitiesAndStockholdersEquity"],
-        "subtract": [
-            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-            "RedeemableNoncontrollingInterestEquityCarryingAmount",
-            "RedeemableNoncontrollingInterestEquityOtherCarryingAmount",
-        ],
-    },
-]
-
-# 必须存在且精确匹配（同一个 contextRef）
-_LIAB_DIRECT_TAGS = [
+_TOTAL_TAGS = ("Assets", "LiabilitiesAndStockholdersEquity")
+_EQUITY_TAGS = (
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+)
+_REDEEMABLE_NCI_TAGS = (
+    "RedeemableNoncontrollingInterestEquityCarryingAmount",
+    "RedeemableNoncontrollingInterestEquityOtherCarryingAmount",
+)
+_DIRECT_LIABILITY_TAGS = {
     "Liabilities",
-    "LiabilitiesAndStockholdersEquity",  # 包含在 total 中，这里避免重复
-]
+    "TotalLiabilities",
+    "ConsolidatedLiabilities",
+}
 
 # ── 数据结构 ──────────────────────────────────────────────────
 
@@ -85,7 +82,7 @@ def fetch_total_liabilities_from_instance(
         logger.debug("Could not discover XBRL instance for %s", accession_no)
         return None
 
-    facts, contexts = _parse_instance(instance_url)
+    facts, contexts = _load_instance(instance_url)
     if not facts:
         return None
 
@@ -104,6 +101,7 @@ def fetch_total_liabilities_from_instance(
 
 # ── Instance 发现与下载 ────────────────────────────────────────
 
+@lru_cache(maxsize=256)
 def _discover_instance_url(accession_no: str, cik_stripped: str) -> str | None:
     """从 SEC filing index 页面找到 extracted XBRL instance 文件的 URL。"""
     accn_dashes = accession_no.replace("-", "")
@@ -114,7 +112,7 @@ def _discover_instance_url(accession_no: str, cik_stripped: str) -> str | None:
     try:
         import urllib.request
         req = urllib.request.Request(
-            index_url, headers={"User-Agent": "StockData/1.0 (contact@example.com)"}
+            index_url, headers={"User-Agent": config.sec.user_agent}
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             html = resp.read().decode("utf-8", errors="replace")
@@ -148,7 +146,7 @@ def _parse_instance(url: str) -> tuple[list[XbrlFact], list[XbrlContext]]:
     try:
         import urllib.request
         req = urllib.request.Request(
-            url, headers={"User-Agent": "StockData/1.0 (contact@example.com)"}
+            url, headers={"User-Agent": config.sec.user_agent}
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read()
@@ -182,6 +180,12 @@ def _parse_instance(url: str) -> tuple[list[XbrlFact], list[XbrlContext]]:
                 facts.append(fact)
 
     return facts, contexts
+
+
+@lru_cache(maxsize=256)
+def _load_instance(url: str) -> tuple[list[XbrlFact], list[XbrlContext]]:
+    """进程内缓存同一 filing instance，避免一次同步重复下载。"""
+    return _parse_instance(url)
 
 
 def _parse_fact(el: ET.Element) -> XbrlFact | None:
@@ -277,6 +281,8 @@ def _find_direct_liabilities(
         return {
             "value_numeric": best.value,
             "sec_tag": best.tag,
+            "context_ref": best.context_ref,
+            "unit_ref": best.unit_ref,
             "reconstruction_flag": "RECONSTRUCTED_FROM_FILING_XBRL",
             "quality_flags": ["FILING_XBRL_DIRECT_TAG"],
         }
@@ -296,14 +302,12 @@ def _derive_liabilities_from_identity(
     if not ctx_ids:
         return None
 
-    for derivation_set in _LIAB_DERIVATION_SETS:
-        result = _try_derive(facts, ctx_ids, derivation_set)
-        if result:
-            result["reconstruction_flag"] = "RECONSTRUCTED_FROM_FILING_XBRL"
-            result["quality_flags"] = ["FILING_XBRL_DERIVED_IDENTITY"]
-            return result
-
-    return None
+    result = _try_derive(facts, ctx_ids)
+    if not result:
+        return None
+    result["reconstruction_flag"] = "RECONSTRUCTED_FROM_FILING_XBRL"
+    result["quality_flags"] = ["FILING_XBRL_DERIVED_IDENTITY"]
+    return result
 
 
 def _find_annual_contexts(contexts: list[XbrlContext], target_date: str) -> set[str]:
@@ -325,73 +329,55 @@ def _pick_best_liability_fact(
     1. us-gaap:Liabilities（标准 tag）
     2. 扩展 tag 名为 *Liabilities（不含 Current/Noncurrent 等限定词）
     """
-    best = None
     for f in facts:
         if f.context_ref not in ctx_ids:
             continue
-        tag_lower = f.tag.lower()
-        # 跳过子项
-        if any(kw in tag_lower for kw in ("current", "noncurrent", "accrued", "deferred",
-                                              "operatinglease", "financelease", "pension",
-                                              "incometax", "derivative", "assetretirement",
-                                              "increase", "decrease", "andstockholders",
-                                              "selfinsurance")):
-            continue
-        # 标准 tag
         if f.tag == "Liabilities":
             return f
-        # 扩展 tag 含 "liabilities" 但不是子项
-        if "liabilit" in tag_lower:
-            best = f
-    return best
+    for f in facts:
+        if f.context_ref in ctx_ids and f.tag in _DIRECT_LIABILITY_TAGS:
+            return f
+    return None
 
 
 def _try_derive(
     facts: list[XbrlFact],
     ctx_ids: set[str],
-    derivation_set: dict[str, list[str]],
 ) -> dict[str, Any] | None:
-    """按给定推导集尝试计算 total_liabilities。
-
-    derivation_set = {"total": [...], "subtract": [...]}
-    total 中的任何 tag 均可作为 total_asset。
-    subtract 中非 None 的项都会被减去。
-    """
-    # 找 total（Assets 或 LiabilitiesAndStockholdersEquity）
-    total_val = None
-    total_tag = None
-    total_ctx = None
+    """只在 total、含 NCI 权益、可赎回 NCI 全部同 context 时精确推导。"""
+    total_fact = None
     for f in facts:
-        if f.context_ref not in ctx_ids:
-            continue
-        if f.tag in derivation_set["total"]:
-            total_val = f.value
-            total_tag = f.tag
-            total_ctx = f.context_ref
+        if f.context_ref in ctx_ids and f.tag in _TOTAL_TAGS:
+            total_fact = f
             break
-    if total_val is None:
+    if total_fact is None:
         return None
 
-    # 找所有需要减去的项（必须同一 context）
-    derived = total_val
-    for subtag in derivation_set["subtract"]:
-        sub_val = None
+    def find_one(tags: tuple[str, ...]) -> XbrlFact | None:
         for f in facts:
-            if f.context_ref != total_ctx:
-                continue
-            if f.tag == subtag:
-                sub_val = f.value
-                break
-        if sub_val is not None:
-            derived -= sub_val
-
-    # 校验：必须有至少一项被减去了（否则就是 total_asset 本身，不合理）
-    if derived == total_val:
+            if f.context_ref == total_fact.context_ref and f.tag in tags:
+                return f
         return None
 
+    equity_fact = find_one(_EQUITY_TAGS)
+    redeemable_fact = find_one(_REDEEMABLE_NCI_TAGS)
+    if equity_fact is None or redeemable_fact is None:
+        return None
+    if not (
+        total_fact.unit_ref == equity_fact.unit_ref == redeemable_fact.unit_ref
+    ):
+        return None
+
+    derived = total_fact.value - equity_fact.value - redeemable_fact.value
+    if derived < 0:
+        return None
     return {
         "value_numeric": derived,
-        "sec_tag": f"{total_tag} - {' - '.join(derivation_set['subtract'])}",
+        "sec_tag": (
+            f"{total_fact.tag} - {equity_fact.tag} - {redeemable_fact.tag}"
+        ),
+        "context_ref": total_fact.context_ref,
+        "unit_ref": total_fact.unit_ref,
     }
 
 
