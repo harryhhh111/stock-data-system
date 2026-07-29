@@ -15,7 +15,8 @@ Multi-market stock fundamental data sync system (A-share / HK / US). Fetches fin
 python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
 # Tests
-python -m pytest tests/ -v                    # all tests
+python -m pytest tests/ -v                    # all tests (requires US versioning DDL on this machine)
+python -m pytest tests/ -m "not us_integration" -q  # skip US integration tests (recommended on domestic server)
 python -m pytest tests/test_transformers/ -v  # single directory
 python -m pytest tests/test_fetchers/test_base.py -v  # single file
 
@@ -147,6 +148,32 @@ All feature development must follow: **Discuss → Plan doc (in `docs/`) → Use
 - **All external API calls** must catch exceptions and log context (stock_code, params, response status).
 - **Use tmux** for long-running bulk operations, not nohup.
 - **Local VPS script**: `scripts/start-vps.sh` may exist on this machine as a local backend startup helper for VPS access. It is intentionally gitignored; do not commit, modify, or remove it unless the user explicitly asks.
+
+## Current Environment & Recent Changes
+
+### Environment Identity
+
+- This repository is deployed on the **domestic production server** (`STOCK_MARKETS=CN_A,CN_HK`).
+- Public access: `http://134.175.237.24:5173/screener` (Vite dev server) proxied to backend `http://134.175.237.24:8000` (uvicorn).
+- Backend and frontend are currently running as manual background processes (not systemd on this machine). Restart commands:
+  ```bash
+  # backend
+  pkill -f "uvicorn web.app:app"
+  nohup venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8000 > logs/uvicorn.log 2>&1 &
+
+  # frontend
+  pkill -f "vite --host 0.0.0.0 --port 5173"
+  cd frontend && nohup npx vite --host 0.0.0.0 --port 5173 > ../logs/vite.log 2>&1 &
+  ```
+- US market data is **not synced on this machine**; US financial versioning tables (`us_financial_fact_version`, etc.) are not present. Therefore US integration tests are marked with `@pytest.mark.us_integration` and should be skipped here.
+
+### Recent Fixes (2026-07)
+
+- **Screener ROE history display**: result table now shows exactly `ROE` + `ROE(上年)` + `ROE(前年)`; removed `roe_3y_ago` column.
+- **rank_factors scoring direction bug**: fixed inverted percentile ranking so `ascending=False` (higher-is-better) factors like FCF Yield / ROE actually score higher.
+- **screener_wrapper top_n ordering**: results are now sorted by `score_rank` before taking `top_n`.
+- **Frontend cache**: reduced screener presets `staleTime` to 0 and added `Cache-Control: no-cache` headers to `apiFetch`.
+- **Tests**: added `tests/test_screener/test_scorer.py` and `tests/test_web/test_screener_wrapper.py`; added `us_integration` pytest marker for US-only DDL-dependent tests.
 
 ## Key Files
 
