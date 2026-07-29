@@ -43,6 +43,7 @@ _CANONICAL_TAG_PRIORITY: dict[str, tuple[str, ...]] = {
     "capital_expenditures": (
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization",
+        "PaymentsToAcquireOtherProductiveAssets",
         "PaymentsToAcquireProductiveAssets",
         "CapitalExpenditures",
     ),

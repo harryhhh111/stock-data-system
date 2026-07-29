@@ -30,6 +30,59 @@ def _extract_table(facts: dict, tag_mapping: dict[str, str]) -> pd.DataFrame:
     return fetcher.extract_table(facts, tag_mapping)
 
 
+def test_other_productive_assets_is_cash_capex():
+    """VZ 使用的标准 tag 应进入现金 CapEx，而不是尚未支付 CapEx。"""
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
+
+    facts = {
+        "cik": "0000732712",
+        "facts": {
+            "us-gaap": {
+                "PaymentsToAcquireOtherProductiveAssets": {
+                    "units": {
+                        "USD": [{
+                            "val": 17_011_000_000,
+                            "start": "2025-01-01",
+                            "end": "2025-12-31",
+                            "fp": "FY",
+                            "fy": 2025,
+                            "form": "10-K",
+                            "filed": "2026-02-17",
+                            "accn": "0000732712-26-000007",
+                            "frame": "CY2025",
+                        }]
+                    }
+                },
+                "CapitalExpendituresIncurredButNotYetPaid": {
+                    "units": {
+                        "USD": [{
+                            "val": 3_800_000_000,
+                            "start": "2025-01-01",
+                            "end": "2025-12-31",
+                            "fp": "FY",
+                            "fy": 2025,
+                            "form": "10-K",
+                            "filed": "2026-02-17",
+                            "accn": "0000732712-26-000007",
+                            "frame": "CY2025",
+                        }]
+                    }
+                },
+            }
+        },
+    }
+    fetcher = USFinancialFetcher()
+    df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+    records = USGAAPTransformer().transform_cashflow(
+        df,
+        stock_code="VZ",
+        cik="0000732712",
+    )
+
+    assert records[0]["capital_expenditures"] == 17_011_000_000
+
+
 # ── Q4I Instant Frame (PLTR 10-K) ──────────────────────────
 
 

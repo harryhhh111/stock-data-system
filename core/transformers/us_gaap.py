@@ -216,6 +216,7 @@ CASHFLOW_TAG_PRIORITY: dict[str, list[str]] = {
     "capital_expenditures": [
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization",
+        "PaymentsToAcquireOtherProductiveAssets",
         "PaymentsToAcquireProductiveAssets",
         "CapitalExpenditures",
     ],

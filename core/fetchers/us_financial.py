@@ -649,6 +649,7 @@ class USFinancialFetcher(BaseFetcher):
         "CapitalExpenditures": "capital_expenditures",
         "PaymentsToAcquirePropertyPlantAndEquipment": "capital_expenditures",
         "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization": "capital_expenditures",
+        "PaymentsToAcquireOtherProductiveAssets": "capital_expenditures",
         "PaymentsToAcquireProductiveAssets": "capital_expenditures",
         # Acquisitions
         "PaymentsToAcquireBusinessesNetOfCashAcquired": "acquisitions",

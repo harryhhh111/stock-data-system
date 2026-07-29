@@ -419,6 +419,25 @@ def test_unpaid_capex_tag_is_not_selectable():
     assert selected[0].fact_version_id == 2
 
 
+def test_other_productive_assets_capex_tag_is_selectable():
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="capital_expenditures",
+            value_hash="cash",
+            value_numeric=17_011_000_000,
+            sec_tag="PaymentsToAcquireOtherProductiveAssets",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["VZ"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].value_numeric == 17_011_000_000
+
+
 def test_tag_priority_does_not_discard_cross_accession_migration():
     selector = USFactSelector()
     facts = [
