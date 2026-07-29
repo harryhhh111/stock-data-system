@@ -97,7 +97,7 @@ class USFactSelector:
     VERSION = "us_fact_selector_v2"
 
     def __init__(self) -> None:
-        pass
+        self._restatement_review_cache: dict[int, str] | None = None
 
     def select(
         self,
@@ -374,23 +374,28 @@ class USFactSelector:
             and rank[later_tag] < rank[approved_tag]
         )
 
-    @staticmethod
-    def _load_restatement_reviews(fact_version_ids: list[int]) -> dict[int, str]:
-        """返回已审核 fact 的决定；approved 与 rejected 都是终态。"""
+    def _load_restatement_reviews(self, fact_version_ids: list[int]) -> dict[int, str]:
+        """返回已审核 fact 的决定；单次 selector 生命周期只查库一次。"""
         if not fact_version_ids:
             return {}
-        with Connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT fact_version_id, decision
-                    FROM us_financial_restatement_review
-                    WHERE fact_version_id = ANY(%s)
-                      AND decision IN ('approved', 'rejected')
-                    """,
-                    (fact_version_ids,),
-                )
-                return {fact_id: decision for fact_id, decision in cur.fetchall()}
+        if self._restatement_review_cache is None:
+            with Connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT fact_version_id, decision
+                        FROM us_financial_restatement_review
+                        WHERE decision IN ('approved', 'rejected')
+                        """
+                    )
+                    self._restatement_review_cache = {
+                        fact_id: decision for fact_id, decision in cur.fetchall()
+                    }
+        return {
+            fact_id: self._restatement_review_cache[fact_id]
+            for fact_id in fact_version_ids
+            if fact_id in self._restatement_review_cache
+        }
 
     def _select_latest_observed(
         self,

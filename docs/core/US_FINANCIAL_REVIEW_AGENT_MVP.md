@@ -27,6 +27,14 @@
 ## 工作流
 
 ```bash
+# 全链路确定性审核；默认检查全部美股，不调用 MiniMax
+python3 scripts/financial_review_agent.py audit-chain
+
+# 小批量或指定股票
+python3 scripts/financial_review_agent.py audit-chain \
+  --stocks PLTR,TDC,VZ,HRB,ACGL \
+  --output-dir build/financial_review/chain_audit_canary
+
 # 最多调查 50 个案例；可用 --stocks CRM,MSFT 限定股票
 python3 scripts/financial_review_agent.py investigate --limit 50
 
@@ -43,6 +51,19 @@ python3 scripts/financial_review_agent.py show --case-id <id>
 python3 scripts/financial_review_agent.py approve --case-id <id> --by vinci
 python3 scripts/financial_review_agent.py reject  --case-id <id> --by vinci
 ```
+
+`audit-chain` 复用已验收的新旧口径比较器，并增加以下检查：
+
+- 最新 SEC Company Facts 快照是否完整进入 `us_filing` 和版本事实层；
+- 最新正式报告期是否进入旧三张宽表；
+- 年度字段、ROE、FCF、PE、PB、FCF Yield 是否与
+  `latest-restated` 口径一致；
+- `UNEXPLAINED_DIFFERENCE` 自动进入产物中的 `ai_review_queue`；
+- `MISSING_MAPPING`、staging 和历史回填缺少在线 run 审计记录保持显式
+  warning/info，不调用模型猜测。
+
+产物为 `chain_audit.json` 和 `summary.md`。存在 blocker 时 CLI 返回非零，
+方便定时任务或人工运行直接发现问题。
 
 产物保存在 `build/financial_review/<case-id>.json`。Agent 先使用数据库中的事实时间线，再按 accession 读取 SEC 原始 filing；它不重新搜索已在数据库中的财务数字。
 每个提案的 `_minimax_usage` 保存模型 token 用量。`mmx --quiet` 不返回 API

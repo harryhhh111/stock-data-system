@@ -48,8 +48,31 @@ def main() -> int:
     reject.add_argument("--case-id", required=True)
     reject.add_argument("--by", required=True)
 
+    audit_chain = sub.add_parser("audit-chain")
+    audit_chain.add_argument("--stocks", help="comma-separated stock codes; default all US")
+    audit_chain.add_argument(
+        "--output-dir",
+        default="build/financial_review/chain_audit",
+    )
+
     args = parser.parse_args()
     store = ReviewStore()
+    if args.command == "audit-chain":
+        from core.us_financial_chain_audit import (
+            USFinancialChainAuditor,
+            write_chain_audit,
+        )
+
+        stocks = (
+            [s.strip().upper() for s in args.stocks.split(",") if s.strip()]
+            if args.stocks else None
+        )
+        report = USFinancialChainAuditor().audit(stocks)
+        json_path, md_path = write_chain_audit(report, Path(args.output_dir))
+        print(json.dumps(report["summary"], ensure_ascii=False))
+        print(json_path)
+        print(md_path)
+        return 1 if report["summary"]["blocker"] else 0
     if args.command == "investigate":
         stocks = [s.strip().upper() for s in args.stocks.split(",")] if args.stocks else None
         existing = set()
