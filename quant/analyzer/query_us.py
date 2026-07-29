@@ -219,21 +219,23 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
             return legacy
         result = legacy.copy()
         row = ttm.iloc[0]
-        market_cap = result.iloc[0].get("market_cap")
-        net_income = row.get("net_income_ttm")
-        fcf = row.get("FCF_new")
+        market_cap = _pandas_scalar(result.iloc[0].get("market_cap"))
+        net_income = _pandas_scalar(row.get("net_income_ttm"))
+        fcf = _pandas_scalar(row.get("FCF_new"))
         result.loc[result.index[0], "revenue_ttm"] = _pandas_scalar(row.get("revenue_ttm"))
         result.loc[result.index[0], "net_profit_ttm"] = _pandas_scalar(net_income)
         result.loc[result.index[0], "cfo_ttm"] = _pandas_scalar(row.get("cfo_ttm"))
         result.loc[result.index[0], "fcf_ttm"] = _pandas_scalar(fcf)
         result.loc[result.index[0], "ttm_report_date"] = row.get("ttm_report_date")
-        if pd.notna(market_cap) and pd.notna(net_income) and net_income > 0:
+        if market_cap is not None and net_income is not None and net_income > 0:
             result.loc[result.index[0], "pe_ttm"] = _pandas_scalar(market_cap / net_income)
-        if pd.notna(market_cap) and not annual.empty:
-            equity = annual.sort_values("report_date").iloc[-1].get("total_equity")
-            if pd.notna(equity) and equity > 0:
+        if market_cap is not None and not annual.empty:
+            equity = _pandas_scalar(
+                annual.sort_values("report_date").iloc[-1].get("total_equity")
+            )
+            if equity is not None and equity > 0:
                 result.loc[result.index[0], "pb"] = _pandas_scalar(market_cap / equity)
-        if pd.notna(market_cap) and pd.notna(fcf) and market_cap > 0:
+        if market_cap is not None and fcf is not None and market_cap > 0:
             result.loc[result.index[0], "fcf_yield"] = _pandas_scalar(fcf / market_cap)
         return result
     except Exception:
