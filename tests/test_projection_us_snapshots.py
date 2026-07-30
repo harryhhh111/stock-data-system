@@ -103,6 +103,32 @@ class TestComputeTtmForField:
         assert val is None
         assert "period_mismatch" in flags
 
+    def test_period_match_only_uses_same_field(self):
+        """其他字段的可比期间不能掩盖当前字段的期间错配。"""
+        group = self._make_group([
+            {"stock_code": "X", "report_date": date(2025, 9, 30), "is_annual": False,
+             "standard_field": "revenues", "value_numeric": Decimal("900"),
+             "filed_date": date(2025, 11, 1), "accession_no": "accn-q3", "form": "10-Q",
+             "period_days": 273},
+            {"stock_code": "X", "report_date": date(2024, 12, 31), "is_annual": True,
+             "standard_field": "revenues", "value_numeric": Decimal("1000"),
+             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K",
+             "period_days": 365},
+            {"stock_code": "X", "report_date": date(2024, 9, 30), "is_annual": False,
+             "standard_field": "revenues", "value_numeric": Decimal("600"),
+             "filed_date": date(2024, 11, 1), "accession_no": "accn-py", "form": "10-Q",
+             "period_days": 182},
+            {"stock_code": "X", "report_date": date(2024, 9, 30), "is_annual": False,
+             "standard_field": "net_income", "value_numeric": Decimal("50"),
+             "filed_date": date(2024, 11, 1), "accession_no": "accn-py", "form": "10-Q",
+             "period_days": 273},
+        ])
+
+        val, flags = PJ._compute_ttm_for_field(group, "revenues", date(2025, 9, 30))
+
+        assert val is None
+        assert "period_mismatch" in flags
+
     def test_missing_last_annual_returns_none(self):
         """缺上一年度数据时返回 None + flag。"""
         group = self._make_group([

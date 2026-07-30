@@ -400,7 +400,10 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tupl
     group_copy["date_diff"] = group_copy["report_date"].apply(
         lambda d: abs((d - target).days) if hasattr(d, "days") or isinstance(d, date) else 9999
     )
-    candidates = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
+    candidates = group_copy[
+        (group_copy["standard_field"] == field)
+        & (group_copy["date_diff"] <= 7)
+    ].sort_values("date_diff")
     if candidates.empty:
         return None, ["missing_component_prior_year"]
 
