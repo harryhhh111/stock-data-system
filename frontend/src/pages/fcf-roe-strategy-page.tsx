@@ -9,10 +9,48 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
 import { DataTable } from "@/components/ui/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Target, AlertTriangle, RotateCcw } from "lucide-react";
+import { Target, AlertTriangle, RotateCcw, Download } from "lucide-react";
 import { fmtMcap, fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
 import type { StrategyStock, FcfRoeResult } from "@/lib/types/strategy";
+
+function escapeCsv(val: unknown): string {
+  const s = String(val ?? "");
+  if (/[,"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/^[=+\-@\t]/.test(s)) return `'${s}`;
+  return s;
+}
+
+function exportCsv(results: StrategyStock[]) {
+  const headers = [
+    "排名", "代码", "名称", "市场", "行业", "市值",
+    "FCF Yield", "ROE", "ROE 1Y", "ROE 2Y", "PB", "PE", "综合分", "数据时效"
+  ];
+  const rows = results.map((s) => [
+    s.score_rank,
+    s.stock_code,
+    s.stock_name,
+    s.market,
+    s.industry ?? "",
+    fmtMcap(s.market_cap),
+    s.fcf_yield != null ? (s.fcf_yield * 100).toFixed(2) + "%" : "",
+    s.roe != null ? (s.roe * 100).toFixed(2) + "%" : "",
+    s.roe_1y_ago != null ? (s.roe_1y_ago * 100).toFixed(2) + "%" : "",
+    s.roe_2y_ago != null ? (s.roe_2y_ago * 100).toFixed(2) + "%" : "",
+    s.pb?.toFixed(2) ?? "",
+    s.pe_ttm?.toFixed(1) ?? "",
+    s.score?.toFixed(2) ?? "",
+    s.stale_warning ? "数据过时" : (s.ttm_report_date ?? ""),
+  ]);
+  const csv = [headers, ...rows].map((r) => r.map(escapeCsv).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `fcf_roe_strategy_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ── defaults ────────────────────────────────────────────────
 
@@ -278,14 +316,24 @@ export function FcfRoeStrategyPage() {
 
       {/* 结果统计 */}
       {result && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm font-mono tabular-nums text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm font-mono tabular-nums text-muted-foreground">
           <span>市场: <strong className="text-foreground">{MARKET_LABELS[result.applied_filters.market] ?? result.applied_filters.market}</strong></span>
           <span>筛选前: <strong className="text-foreground">{result.total_before_filter.toLocaleString()}</strong></span>
           <span>筛选后: <strong className="text-foreground">{result.total_after_filter.toLocaleString()}</strong></span>
           <span>展示: <strong className="text-foreground">{result.total}</strong></span>
           <span>币种: <strong className="text-foreground">{result.currency}</strong></span>
-          <span className="ml-auto text-xs">
-            查询时间: {new Date().toLocaleString("zh-CN")}
+          <span className="ml-auto flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => exportCsv(result.results)}
+              className="h-7 text-xs"
+            >
+              <Download className="h-3.5 w-3.5 mr-1" /> 导出 CSV
+            </Button>
+            <span className="text-xs">
+              查询时间: {new Date().toLocaleString("zh-CN")}
+            </span>
           </span>
         </div>
       )}
