@@ -76,60 +76,72 @@ class TestComputeTtmForField:
         pass
 
     def test_missing_last_annual_returns_none(self):
-        """缺上一年度数据时返回 None。"""
+        """缺上一年度数据时返回 None + flag。"""
         group = self._make_group([
             {"stock_code": "X", "report_date": date(2025, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": Decimal("300"),
-             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q"},
+             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q",
+             "period_days": 90},
         ])
-        result = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
-        assert result is None
+        val, flags = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
+        assert val is None
+        assert "missing_component_last_annual" in flags
 
     def test_missing_prior_year_returns_none(self):
-        """缺去年同期数据时返回 None。"""
+        """缺去年同期数据时返回 None + flag。"""
         group = self._make_group([
             {"stock_code": "X", "report_date": date(2025, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": Decimal("300"),
-             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q"},
+             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q",
+             "period_days": 90},
             {"stock_code": "X", "report_date": date(2024, 12, 31), "is_annual": True,
              "standard_field": "revenues", "value_numeric": Decimal("1000"),
-             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K"},
+             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K",
+             "period_days": 365},
         ])
-        # No prior year same period → returns None
-        result = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
-        assert result is None  # 缺去年同期 → NULL
+        val, flags = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
+        assert val is None
+        assert "missing_component_prior_year" in flags
 
     def test_prior_year_field_missing_returns_none(self):
-        """去年同期字段缺失时返回 None。"""
+        """去年同期字段缺失时返回 None + flag。"""
         group = self._make_group([
             {"stock_code": "X", "report_date": date(2025, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": Decimal("300"),
-             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q"},
+             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q",
+             "period_days": 90},
             {"stock_code": "X", "report_date": date(2024, 12, 31), "is_annual": True,
              "standard_field": "revenues", "value_numeric": Decimal("1000"),
-             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K"},
+             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K",
+             "period_days": 365},
             {"stock_code": "X", "report_date": date(2024, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": None,  # 字段缺失
-             "filed_date": date(2024, 5, 1), "accession_no": "accn-pq", "form": "10-Q"},
+             "filed_date": date(2024, 5, 1), "accession_no": "accn-pq", "form": "10-Q",
+             "period_days": 90},
         ])
-        result = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
-        assert result is None  # 去年同期字段缺失 → NULL
+        val, flags = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
+        assert val is None
+        assert any("py_revenues" in f for f in flags)
 
     def test_full_ttm_computation(self):
         """完整 TTM 公式：latest(300) + annual(1000) - prior(200) = 1100。"""
         group = self._make_group([
             {"stock_code": "X", "report_date": date(2025, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": Decimal("300"),
-             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q"},
+             "filed_date": date(2025, 5, 1), "accession_no": "accn-q", "form": "10-Q",
+             "period_days": 90},
             {"stock_code": "X", "report_date": date(2024, 12, 31), "is_annual": True,
              "standard_field": "revenues", "value_numeric": Decimal("1000"),
-             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K"},
+             "filed_date": date(2025, 2, 20), "accession_no": "accn-k", "form": "10-K",
+             "period_days": 365},
             {"stock_code": "X", "report_date": date(2024, 3, 31), "is_annual": False,
              "standard_field": "revenues", "value_numeric": Decimal("200"),
-             "filed_date": date(2024, 5, 1), "accession_no": "accn-pq", "form": "10-Q"},
+             "filed_date": date(2024, 5, 1), "accession_no": "accn-pq", "form": "10-Q",
+             "period_days": 90},
         ])
-        result = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
-        assert result == Decimal("1100")
+        val, flags = PJ._compute_ttm_for_field(group, "revenues", date(2025, 3, 31))
+        assert val == Decimal("1100")
+        assert flags == []
 
 
 # ── _keep_latest_5_annual ─────────────────────────────────────

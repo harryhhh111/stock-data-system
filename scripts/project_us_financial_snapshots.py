@@ -259,12 +259,17 @@ def _keep_latest_5_annual(df: pd.DataFrame) -> pd.DataFrame:
 def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
     """从事实和年度快照构建 TTM 快照。"""
     # 收集所有 annual + quarterly 事实（用于 TTM 公式）
+    # duration 类型需 period ≥ 330 天（排除 Q4 standalone），instant 类型直接通过
     accepted_forms = ANNUAL_FORMS | {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
     usable = [
         f for f in all_facts
         if f.form and f.form.upper() in accepted_forms
         and f.unit.upper() == "USD"
         and f.standard_field in TTM_FIELDS
+        and (f.period_kind == "instant" or (
+            f.period_start and f.report_date
+            and (f.report_date - f.period_start).days >= 330
+        ))
     ]
 
     if not usable:
@@ -273,6 +278,9 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
     # 构建每只股票的时序 DataFrame
     records = []
     for f in usable:
+        period_days = None
+        if f.period_start and f.report_date:
+            period_days = (f.report_date - f.period_start).days
         records.append({
             "stock_code": f.stock_code,
             "report_date": f.report_date,
@@ -282,6 +290,8 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
             "value_numeric": _to_decimal(f.value_numeric),
             "form": f.form,
             "is_annual": f.form.upper() in ANNUAL_FORMS,
+            "period_start": f.period_start,
+            "period_days": period_days,
         })
 
     df = pd.DataFrame(records)
@@ -294,28 +304,30 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
         is_annual = latest_row["is_annual"]
 
         ttm_values: dict[str, Decimal | None] = {}
+        quality_flags = []
         for field in TTM_FIELDS:
             if is_annual:
                 ttm_values[field] = _get_field_value(group, latest_date, field)
+                if ttm_values[field] is None:
+                    quality_flags.append(f"missing_component_{field}")
             else:
-                ttm_values[field] = _compute_ttm_for_field(group, field, latest_date)
+                val, flags = _compute_ttm_for_field(group, field, latest_date)
+                ttm_values[field] = val
+                quality_flags.extend(flags)
 
         ttm_cfo = ttm_values.get("net_cash_from_operations")
         ttm_capex = ttm_values.get("capital_expenditures")
         ttm_fcf = None
         if ttm_cfo is not None and ttm_capex is not None:
             ttm_fcf = ttm_cfo - ttm_capex
+        else:
+            quality_flags.append("missing_component_fcf_ttm")
 
         ttm_ni_val = ttm_values.get("net_income")
         rev_ttm_val = ttm_values.get("revenues")
 
         # 最新年度权益
         equity_info = _latest_annual_equity(annual_df, stock_code)
-
-        quality_flags = []
-        for field in TTM_FIELDS:
-            if ttm_values.get(field) is None:
-                quality_flags.append(f"missing_component_{field}")
         ttm_date = latest_row["ttm_report_date"] if "ttm_report_date" in latest_row.index else latest_date
 
         results.append({
@@ -342,48 +354,75 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
 
 
 def _get_field_value(group: pd.DataFrame, report_date, field: str) -> Decimal | None:
+    """取指定 report_date 和 field 的事实值。
+
+    多行时优先取期间最长的（排除 Q4 standalone），避免累计值混入单季。
+    """
     rows = group[(group["report_date"] == report_date) & (group["standard_field"] == field)]
     if rows.empty:
         return None
+    if "period_days" in rows.columns:
+        rows = rows.sort_values("period_days", ascending=False)
     return _to_decimal(rows.iloc[0]["value_numeric"])
 
 
-def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> Decimal | None:
+def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tuple:
     """TTM = latest_cumulative + last_annual - prior_year_same_period。
 
-    任一组件缺失时返回 None，不伪造完整 TTM。
+    同时验证累计期间可比性：去年同期必须与本期期间长度一致（±3天）。
+    返回 (value, quality_flags)。任一组件缺失或期间不匹配时 value 为 None。
     """
     latest_val = _get_field_value(group, latest_date, field)
     if latest_val is None:
-        return None
+        return None, [f"missing_component_latest_{field}"]
+
+    # 本期的期间长度
+    latest_rows = group[(group["report_date"] == latest_date) & (group["standard_field"] == field)]
+    latest_days = latest_rows["period_days"].max() if "period_days" in latest_rows.columns else None
 
     # Last annual
     annual = group[group["is_annual"] == True]
     la_rows = annual[annual["report_date"] < latest_date]
     if la_rows.empty:
-        return None  # 无上年度，无法构造 TTM
+        return None, ["missing_component_last_annual"]
 
     la_row = la_rows.iloc[-1]
     la_val = _get_field_value(group, la_row["report_date"], field)
     if la_val is None:
-        return None  # 上年度缺该字段
+        return None, [f"missing_component_la_{field}"]
 
-    # Prior year same period (±7 days)
+    # Prior year same period：必须期间长度可比（±3天）
     target = latest_date - timedelta(days=365)
     group_copy = group.copy()
     group_copy["date_diff"] = group_copy["report_date"].apply(
         lambda d: abs((d - target).days) if hasattr(d, "days") or isinstance(d, date) else 9999
     )
-    prior = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
-    if prior.empty:
-        return None  # 无去年同期，无法构造 TTM
+    candidates = group_copy[group_copy["date_diff"] <= 7].sort_values("date_diff")
+    if candidates.empty:
+        return None, ["missing_component_prior_year"]
 
-    py_row = prior.iloc[0]
+    # 选期间长度最匹配的去年同期
+    if latest_days is not None and "period_days" in candidates.columns:
+        candidates = candidates.copy()
+        candidates["period_diff"] = candidates["period_days"].apply(
+            lambda d: abs(d - latest_days) if d is not None else 9999
+        )
+        candidates = candidates.sort_values(["period_diff", "date_diff"])
+        py_row = candidates.iloc[0]
+        period_mismatch = py_row["period_diff"] > 3
+    else:
+        py_row = candidates.iloc[0]
+        period_mismatch = False
+
     py_val = _get_field_value(group, py_row["report_date"], field)
     if py_val is None:
-        return None  # 去年同期缺该字段
+        return None, [f"missing_component_py_{field}"]
 
-    return latest_val + la_val - py_val
+    flags = []
+    if period_mismatch:
+        flags.append("period_mismatch")
+
+    return latest_val + la_val - py_val, flags
 
 
 def _latest_annual_equity(annual_df: pd.DataFrame, stock_code: str) -> dict:
@@ -433,18 +472,30 @@ def _write_snapshot(df: pd.DataFrame, table: str, columns: list[str], conn,
     cols_available = [c for c in columns if c in df.columns]
     write_df = df[cols_available].copy()
 
-    # 将 Decimal / Timestamp 转为合适的 Python 类型
-    for col in write_df.columns:
-        write_df[col] = write_df[col].apply(lambda v: float(v) if isinstance(v, Decimal) else v)
-
-    # quality_flags 需要转为 JSON 数组
-    if "quality_flags" in write_df.columns:
-        write_df["quality_flags"] = write_df["quality_flags"].apply(
-            lambda v: v if isinstance(v, list) else []
-        )
-
-    rows = write_df.where(write_df.notna(), None).values.tolist()
-    rows = [tuple(r) for r in rows]
+    # 转为合适的 Python 类型并确保 NaN → None
+    rows: list[tuple] = []
+    for _, row in write_df.iterrows():
+        clean = []
+        for col in cols_available:
+            v = row[col]
+            if v is None:
+                clean.append(None)
+            elif isinstance(v, list):
+                clean.append(v)
+            elif isinstance(v, Decimal):
+                clean.append(float(v))
+            elif isinstance(v, (date, datetime)):
+                clean.append(v)
+            else:
+                # scalar: check for NaN
+                try:
+                    if pd.isna(v):
+                        clean.append(None)
+                    else:
+                        clean.append(v)
+                except (ValueError, TypeError):
+                    clean.append(v)
+        rows.append(tuple(clean))
 
     col_names = ", ".join(cols_available)
 
