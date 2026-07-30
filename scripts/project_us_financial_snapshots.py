@@ -259,17 +259,20 @@ def _keep_latest_5_annual(df: pd.DataFrame) -> pd.DataFrame:
 def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
     """从事实和年度快照构建 TTM 快照。"""
     # 收集所有 annual + quarterly 事实（用于 TTM 公式）
-    # duration 类型需 period ≥ 330 天（排除 Q4 standalone），instant 类型直接通过
-    accepted_forms = ANNUAL_FORMS | {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
+    # instant 类型直接通过。
+    # Annual form: period ≥ 330 天（排除 10-K 里的 Q4 standalone）。
+    # Quarterly form: 接受任何 duration（正常累计 Q1/Q2/Q3）。
+    quarterly_forms = {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
+    accepted_forms = ANNUAL_FORMS | quarterly_forms
     usable = [
         f for f in all_facts
         if f.form and f.form.upper() in accepted_forms
         and f.unit.upper() == "USD"
         and f.standard_field in TTM_FIELDS
-        and (f.period_kind == "instant" or (
-            f.period_start and f.report_date
-            and (f.report_date - f.period_start).days >= 330
-        ))
+        and (f.period_kind == "instant"
+             or f.form.upper() in quarterly_forms
+             or (f.period_start and f.report_date
+                 and (f.report_date - f.period_start).days >= 330))
     ]
 
     if not usable:
@@ -418,11 +421,10 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tupl
     if py_val is None:
         return None, [f"missing_component_py_{field}"]
 
-    flags = []
     if period_mismatch:
-        flags.append("period_mismatch")
+        return None, ["period_mismatch"]
 
-    return latest_val + la_val - py_val, flags
+    return latest_val + la_val - py_val, []
 
 
 def _latest_annual_equity(annual_df: pd.DataFrame, stock_code: str) -> dict:
