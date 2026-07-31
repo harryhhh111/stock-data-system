@@ -340,3 +340,123 @@ class TestPropagateTtmReasonsToFcf:
         result = CMP.propagate_ttm_reasons_to_fcf(rows)
         fcf_row = [r for r in result if r.field == "fcf_ttm"][0]
         assert fcf_row.reason == CMP.Reason.INHERITED_FROM_CFO
+
+
+# ── enrich_ratio_with_numerator_evidence ──────────────────────
+
+class TestEnrichRatioWithNumeratorEvidence:
+    def test_old_accession_no_numerator_facts_becomes_direct(self):
+        # FIX 模式：旧 accession 不在事实版本表中
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="FIX", report_date="2025-12-31", field="operating_margin",
+                old_value=Decimal("0.112349"), new_value=Decimal("0.144434"),
+                abs_diff=Decimal("0.032085"), rel_diff_pct=Decimal("0.2856"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="0001308179-26-000245",
+                new_accession="0001104659-26-017530",
+                numerator_standard_field="operating_income",
+                old_numerator_value=Decimal("1022558000"),
+                new_numerator_value=Decimal("1314589000"),
+            )
+        ]
+        evidence = {
+            ("FIX", "0001104659-26-017530", "operating_income"): [
+                ("OperatingIncomeLoss", Decimal("1314589000")),
+            ],
+        }
+        original_fetch = CMP.fetch_fact_version_evidence
+        try:
+            CMP.fetch_fact_version_evidence = lambda *_args, **_kwargs: evidence
+            result = CMP.enrich_ratio_with_numerator_evidence(rows)
+        finally:
+            CMP.fetch_fact_version_evidence = original_fetch
+
+        assert result[0].reason == CMP.Reason.OLD_DATA_QUALITY_DIRECT
+        assert result[0].new_tag == "OperatingIncomeLoss"
+
+    def test_old_numerator_mismatch_new_match_becomes_direct(self):
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="X", report_date="2025-12-31", field="gross_margin",
+                old_value=Decimal("0.2"), new_value=Decimal("0.3"),
+                abs_diff=Decimal("0.1"), rel_diff_pct=Decimal("0.5"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="accn-old",
+                new_accession="accn-new",
+                numerator_standard_field="gross_profit",
+                old_numerator_value=Decimal("100"),
+                new_numerator_value=Decimal("300"),
+            )
+        ]
+        evidence = {
+            ("X", "accn-old", "gross_profit"): [("GrossProfit", Decimal("999"))],
+            ("X", "accn-new", "gross_profit"): [("GrossProfit", Decimal("300"))],
+        }
+        original_fetch = CMP.fetch_fact_version_evidence
+        try:
+            CMP.fetch_fact_version_evidence = lambda *_args, **_kwargs: evidence
+            result = CMP.enrich_ratio_with_numerator_evidence(rows)
+        finally:
+            CMP.fetch_fact_version_evidence = original_fetch
+
+        assert result[0].reason == CMP.Reason.OLD_DATA_QUALITY_DIRECT
+
+    def test_numerator_different_tag_becomes_version_selection(self):
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="X", report_date="2025-12-31", field="operating_margin",
+                old_value=Decimal("0.2"), new_value=Decimal("0.3"),
+                abs_diff=Decimal("0.1"), rel_diff_pct=Decimal("0.5"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="accn-1",
+                new_accession="accn-1",
+                numerator_standard_field="operating_income",
+                old_numerator_value=Decimal("100"),
+                new_numerator_value=Decimal("200"),
+            )
+        ]
+        evidence = {
+            ("X", "accn-1", "operating_income"): [
+                ("OperatingIncomeLoss", Decimal("100")),
+                ("ProfitLoss", Decimal("200")),
+            ],
+        }
+        original_fetch = CMP.fetch_fact_version_evidence
+        try:
+            CMP.fetch_fact_version_evidence = lambda *_args, **_kwargs: evidence
+            result = CMP.enrich_ratio_with_numerator_evidence(rows)
+        finally:
+            CMP.fetch_fact_version_evidence = original_fetch
+
+        assert result[0].reason == CMP.Reason.OLD_VERSION_SELECTION
+        assert result[0].old_tag == "OperatingIncomeLoss"
+        assert result[0].new_tag == "ProfitLoss"
+
+    def test_insufficient_evidence_stays_unexplained(self):
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="X", report_date="2025-12-31", field="operating_margin",
+                old_value=Decimal("0.2"), new_value=Decimal("0.3"),
+                abs_diff=Decimal("0.1"), rel_diff_pct=Decimal("0.5"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="accn-old",
+                new_accession="accn-new",
+                numerator_standard_field="operating_income",
+                old_numerator_value=Decimal("100"),
+                new_numerator_value=Decimal("300"),
+            )
+        ]
+        evidence = {
+            # 双方分子都匹配不上任何事实
+            ("X", "accn-old", "operating_income"): [("OperatingIncomeLoss", Decimal("999"))],
+            ("X", "accn-new", "operating_income"): [("OperatingIncomeLoss", Decimal("888"))],
+        }
+        original_fetch = CMP.fetch_fact_version_evidence
+        try:
+            CMP.fetch_fact_version_evidence = lambda *_args, **_kwargs: evidence
+            result = CMP.enrich_ratio_with_numerator_evidence(rows)
+        finally:
+            CMP.fetch_fact_version_evidence = original_fetch
+
+        assert result[0].reason == CMP.Reason.UNEXPLAINED

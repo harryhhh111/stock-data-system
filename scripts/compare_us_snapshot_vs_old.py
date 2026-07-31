@@ -118,6 +118,10 @@ class ComparisonRow:
     old_tag: str | None = None
     new_tag: str | None = None
     quality_flags: list[str] = field(default_factory=list)
+    # 比率字段的分子证据（用于 gross_margin/operating_margin 等）
+    numerator_standard_field: str | None = None
+    old_numerator_value: Decimal | None = None
+    new_numerator_value: Decimal | None = None
 
 
 @dataclass
@@ -380,8 +384,8 @@ def fetch_old_annual(stock_codes: list[str] | None = None) -> pd.DataFrame:
         (cf.net_cash_from_operations - cf.capital_expenditures) as old_fcf,
         m.roe as old_roe,
         m.roa as old_roa,
-        i.gross_profit,
-        i.operating_income
+        i.gross_profit as old_gross_profit,
+        i.operating_income as old_operating_income
     FROM latest l
     JOIN us_income_statement i
       ON i.stock_code = l.stock_code
@@ -408,7 +412,7 @@ def fetch_old_annual(stock_codes: list[str] | None = None) -> pd.DataFrame:
     numeric_cols = [
         "old_revenue", "old_net_profit", "old_total_equity", "old_total_assets",
         "old_total_liabilities", "old_operating_cash_flow", "old_capex", "old_fcf",
-        "old_roe", "old_roa", "gross_profit", "operating_income",
+        "old_roe", "old_roa", "old_gross_profit", "old_operating_income",
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -416,10 +420,10 @@ def fetch_old_annual(stock_codes: list[str] | None = None) -> pd.DataFrame:
 
     # 计算旧表比率（与新 snapshot 公式一致）
     df["old_gross_margin"] = df.apply(
-        lambda r: _safe_div(r.get("gross_profit"), r.get("old_revenue")), axis=1
+        lambda r: _safe_div(r.get("old_gross_profit"), r.get("old_revenue")), axis=1
     )
     df["old_operating_margin"] = df.apply(
-        lambda r: _safe_div(r.get("operating_income"), r.get("old_revenue")), axis=1
+        lambda r: _safe_div(r.get("old_operating_income"), r.get("old_revenue")), axis=1
     )
     df["old_net_margin"] = df.apply(
         lambda r: _safe_div(r.get("old_net_profit"), r.get("old_revenue")), axis=1
@@ -733,6 +737,101 @@ def enrich_with_evidence(rows: list[ComparisonRow]) -> list[ComparisonRow]:
     return rows
 
 
+def enrich_ratio_with_numerator_evidence(rows: list[ComparisonRow]) -> list[ComparisonRow]:
+    """对仍为 UNEXPLAINED 的 margin 比率，用分子（gross_profit/operating_income）事实证据重分类。
+
+    旧表比率常常来自非版本层 accession（如 8-K），而 snapshot 比率来自 latest-restated
+    的 10-K/20-F；通过分子证据可以把这类差异自动归到 OLD_DATA_QUALITY_DIRECT 或
+    OLD_VERSION_SELECTION，无需人工逐个排查。
+    """
+    ratio_fields = {"gross_margin", "operating_margin"}
+    stock_codes: set[str] = set()
+    accessions: set[str] = set()
+    standard_fields: set[str] = set()
+
+    for row in rows:
+        if row.field not in ratio_fields:
+            continue
+        if row.reason != Reason.UNEXPLAINED:
+            continue
+        if row.old_value is None or row.new_value is None:
+            continue
+        if not row.numerator_standard_field:
+            continue
+
+        stock_codes.add(row.stock_code)
+        standard_fields.add(row.numerator_standard_field)
+        if row.old_accession:
+            accessions.add(row.old_accession)
+        if row.new_accession:
+            accessions.add(row.new_accession)
+
+    if not stock_codes:
+        return rows
+
+    evidence = fetch_fact_version_evidence(
+        list(stock_codes), list(accessions), list(standard_fields)
+    )
+
+    for row in rows:
+        if row.field not in ratio_fields:
+            continue
+        if row.reason != Reason.UNEXPLAINED:
+            continue
+        if row.old_value is None or row.new_value is None:
+            continue
+        if not row.numerator_standard_field:
+            continue
+
+        old_facts = evidence.get((row.stock_code, row.old_accession, row.numerator_standard_field), [])
+        new_facts = evidence.get((row.stock_code, row.new_accession, row.numerator_standard_field), [])
+
+        old_matches = _find_matching_facts(row.old_numerator_value, old_facts)
+        new_matches = _find_matching_facts(row.new_numerator_value, new_facts)
+
+        # 旧 accession 在事实版本表中完全不存在 → 旧表数据质量问题（直接证据）
+        if row.old_accession and not old_facts:
+            row.reason = Reason.OLD_DATA_QUALITY_DIRECT
+            row.old_tag = None
+            row.new_tag = new_matches[0][0] if new_matches else (new_facts[0][0] if new_facts else None)
+            continue
+
+        # 同 accession：按分子值定位各自选了哪个 tag
+        if row.old_accession and row.new_accession and row.old_accession == row.new_accession:
+            row.old_tag = old_matches[0][0] if old_matches else None
+            row.new_tag = new_matches[0][0] if new_matches else None
+
+            # 分子 tag 不同 → tag/version 选择差异
+            if row.old_tag and row.new_tag and row.old_tag != row.new_tag:
+                row.reason = Reason.OLD_VERSION_SELECTION
+                continue
+
+            # 新分子匹配事实版本，旧分子不匹配任何事实 → 旧表数据质量问题（直接证据）
+            if new_matches and not old_matches:
+                row.reason = Reason.OLD_DATA_QUALITY_DIRECT
+                continue
+
+        # 不同 accession：各自都有匹配事实
+        if row.old_accession and row.new_accession and row.old_accession != row.new_accession:
+            row.old_tag = old_matches[0][0] if old_matches else (old_facts[0][0] if old_facts else None)
+            row.new_tag = new_matches[0][0] if new_matches else (new_facts[0][0] if new_facts else None)
+
+            # 分子 tag 不同 → 明确的 tag/version 选择差异
+            if row.old_tag and row.new_tag and row.old_tag != row.new_tag:
+                row.reason = Reason.OLD_VERSION_SELECTION
+                continue
+
+            # 新分子匹配事实版本，旧分子不匹配旧 accession 的任何事实 → 旧表数据质量问题（直接证据）
+            if new_matches and not old_matches:
+                row.reason = Reason.OLD_DATA_QUALITY_DIRECT
+                continue
+
+        # 其余情况保持 UNEXPLAINED
+        row.reason = Reason.UNEXPLAINED
+
+    return rows
+
+
 def propagate_reasons_to_ratios(rows: list[ComparisonRow]) -> list[ComparisonRow]:
     """将底层字段的已解决原因传播到派生比率，并标记为 INHERITED_FROM_*。
 
@@ -851,6 +950,12 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
         ("debt_ratio", "old_debt_ratio", "new_debt_ratio", True),
     ]
 
+    # 比率 → 分子 standard_field 与旧表分子列名（新分子由 margin * revenue 反推）
+    ratio_numerator_map = {
+        "gross_margin": ("gross_profit", "old_gross_profit"),
+        "operating_margin": ("operating_income", "old_operating_income"),
+    }
+
     merged = pd.merge(old_df, new_df, on="stock_code", how="outer")
 
     for _, r in merged.iterrows():
@@ -880,6 +985,17 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None
 
+            numerator_info = ratio_numerator_map.get(display_name)
+            numerator_standard_field = numerator_info[0] if numerator_info else None
+            old_numerator_col = numerator_info[1] if numerator_info else None
+            old_numerator = _to_decimal(r.get(old_numerator_col)) if old_numerator_col and old_numerator_col in r.index else None
+            # 新 snapshot 表不存储 gross_profit/operating_income，由 margin * revenue 反推
+            new_numerator = None
+            if numerator_standard_field and new_v is not None:
+                new_revenue = _to_decimal(r.get("new_revenue")) if "new_revenue" in r.index else None
+                if new_revenue is not None and new_revenue != 0:
+                    new_numerator = new_v * new_revenue
+
             rows.append(ComparisonRow(
                 stock_code=stock_code,
                 report_date=report_date,
@@ -894,6 +1010,9 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
                 old_filed=old_meta.get("filed_date"),
                 new_filed=new_meta.get("filed_date"),
                 quality_flags=quality_flags if reason in (Reason.MISSING_MAPPING, Reason.PERIOD_MISMATCH, Reason.MISSING_COMPONENT, Reason.OUT_OF_SYNC_SCOPE) else [],
+                numerator_standard_field=numerator_standard_field,
+                old_numerator_value=old_numerator,
+                new_numerator_value=new_numerator,
             ))
 
     return rows
@@ -987,6 +1106,9 @@ def run_comparison(stock_codes: list[str] | None = None) -> ComparisonResult:
 
     logger.info("Enriching differences with fact-version tag evidence...")
     all_rows = enrich_with_evidence(all_rows)
+
+    logger.info("Enriching unexplained margin ratios with numerator evidence...")
+    all_rows = enrich_ratio_with_numerator_evidence(all_rows)
 
     logger.info("Building TTM component index from projection selector...")
     ttm_component_index = _build_ttm_component_index(all_rows)

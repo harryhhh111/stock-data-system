@@ -371,9 +371,17 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
         # 最新年度权益
         equity_info = _latest_annual_equity(annual_df, stock_code)
 
-        # TTM 日期与元数据：取 revenues 组件（或 net_income）的 latest 行
-        ref_info = component_index.get((stock_code, "revenues")) or component_index.get((stock_code, "net_income"))
-        latest_component = (ref_info or {}).get("components", {}).get("latest", {})
+        # TTM 日期与元数据：取该股票任意字段 latest 组件中 report_date 最晚者
+        latest_component: dict | None = None
+        latest_date = None
+        for field in TTM_FIELDS:
+            info = component_index.get((stock_code, field), {})
+            comp = ((info.get("components") or {}).get("latest")) or {}
+            if comp.get("report_date") and (latest_date is None or comp["report_date"] > latest_date):
+                latest_component = comp
+                latest_date = comp["report_date"]
+
+        latest_component = latest_component or {}
         ttm_date = latest_component.get("report_date")
         ttm_filed = latest_component.get("filed_date")
         ttm_accession = latest_component.get("accession_no")
