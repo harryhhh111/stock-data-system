@@ -256,12 +256,22 @@ def _keep_latest_5_annual(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── TTM 快照构建 ──────────────────────────────────────────────
 
-def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
-    """从事实和年度快照构建 TTM 快照。"""
-    # 收集所有 annual + quarterly 事实（用于 TTM 公式）
-    # instant 类型直接通过。
-    # Annual form: period ≥ 330 天（排除 10-K 里的 Q4 standalone）。
-    # Quarterly form: 接受任何 duration（正常累计 Q1/Q2/Q3）。
+def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
+    """从 selector 输出构建可复现的 TTM 组件索引。
+
+    返回 dict: {(stock_code, standard_field): {
+        'value': Decimal | None,
+        'quality_flags': list[str],
+        'components': {
+            'latest': {...},
+            'last_annual': {...},
+            'prior_year': {...},
+        },
+    }}
+
+    本函数与 build_ttm_snapshot 使用同一套过滤、排序和计算逻辑，
+    因此组件重算值必须与 us_financial_current_ttm 中的 snapshot 一致。
+    """
     quarterly_forms = {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
     accepted_forms = ANNUAL_FORMS | quarterly_forms
     usable = [
@@ -276,9 +286,8 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
     ]
 
     if not usable:
-        return pd.DataFrame()
+        return {}
 
-    # 构建每只股票的时序 DataFrame
     records = []
     for f in usable:
         period_days = None
@@ -298,25 +307,55 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
         })
 
     df = pd.DataFrame(records)
-
-    results = []
+    index: dict[tuple[str, str], dict] = {}
     for stock_code, group in df.groupby("stock_code"):
         group = group.sort_values("report_date")
-        latest_row = group.iloc[-1]
-        latest_date = latest_row["report_date"]
-        is_annual = latest_row["is_annual"]
+        latest_date = group["report_date"].max()
+        is_annual = group[group["report_date"] == latest_date]["is_annual"].any()
+        for field in TTM_FIELDS:
+            sub = group[group["standard_field"] == field]
+            if is_annual:
+                val = _get_field_value(group, latest_date, field)
+                flags = []
+                if val is None:
+                    flags.append(f"missing_component_{field}")
+                components = {"latest": None, "last_annual": None, "prior_year": None}
+                if not sub.empty:
+                    lr = sub[sub["report_date"] == latest_date]
+                    if not lr.empty:
+                        lr = lr.sort_values("period_days", ascending=False).iloc[0]
+                        components["latest"] = {
+                            "report_date": lr["report_date"],
+                            "accession_no": lr["accession_no"],
+                            "filed_date": lr["filed_date"],
+                            "value": _to_decimal(lr["value_numeric"]),
+                            "period_days": lr["period_days"],
+                        }
+            else:
+                val, flags, components = _compute_ttm_for_field_with_components(sub, field, latest_date)
+            index[(stock_code, field)] = {
+                "value": val,
+                "quality_flags": flags,
+                "components": components,
+            }
+    return index
 
+
+def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
+    """从事实和年度快照构建 TTM 快照。"""
+    component_index = build_ttm_component_index(all_facts)
+    if not component_index:
+        return pd.DataFrame()
+
+    results = []
+    stocks = sorted({k[0] for k in component_index})
+    for stock_code in stocks:
         ttm_values: dict[str, Decimal | None] = {}
         quality_flags = []
         for field in TTM_FIELDS:
-            if is_annual:
-                ttm_values[field] = _get_field_value(group, latest_date, field)
-                if ttm_values[field] is None:
-                    quality_flags.append(f"missing_component_{field}")
-            else:
-                val, flags = _compute_ttm_for_field(group, field, latest_date)
-                ttm_values[field] = val
-                quality_flags.extend(flags)
+            info = component_index.get((stock_code, field), {})
+            ttm_values[field] = info.get("value")
+            quality_flags.extend(info.get("quality_flags", []))
 
         ttm_cfo = ttm_values.get("net_cash_from_operations")
         ttm_capex = ttm_values.get("capital_expenditures")
@@ -331,13 +370,22 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
 
         # 最新年度权益
         equity_info = _latest_annual_equity(annual_df, stock_code)
-        ttm_date = latest_row["ttm_report_date"] if "ttm_report_date" in latest_row.index else latest_date
+
+        # TTM 日期与元数据：取 revenues 组件（或 net_income）的 latest 行
+        ref_info = component_index.get((stock_code, "revenues")) or component_index.get((stock_code, "net_income"))
+        latest_component = (ref_info or {}).get("components", {}).get("latest", {})
+        ttm_date = latest_component.get("report_date")
+        ttm_filed = latest_component.get("filed_date")
+        ttm_accession = latest_component.get("accession_no")
+
+        # 去重并按字母排序，保证产物稳定
+        quality_flags = sorted(set(quality_flags))
 
         results.append({
             "stock_code": stock_code,
             "ttm_report_date": ttm_date,
-            "ttm_filed_date": latest_row.get("filed_date"),
-            "ttm_accession_no": latest_row.get("accession_no"),
+            "ttm_filed_date": ttm_filed,
+            "ttm_accession_no": ttm_accession,
             "revenue_ttm": _to_decimal(rev_ttm_val),
             "net_income_ttm": _to_decimal(ttm_ni_val),
             "cfo_ttm": _to_decimal(ttm_cfo),
@@ -369,30 +417,52 @@ def _get_field_value(group: pd.DataFrame, report_date, field: str) -> Decimal | 
     return _to_decimal(rows.iloc[0]["value_numeric"])
 
 
-def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tuple:
+def _compute_ttm_for_field_with_components(
+    group: pd.DataFrame, field: str, latest_date
+) -> tuple[Decimal | None, list[str], dict]:
     """TTM = latest_cumulative + last_annual - prior_year_same_period。
 
     同时验证累计期间可比性：去年同期必须与本期期间长度一致（±3天）。
-    返回 (value, quality_flags)。任一组件缺失或期间不匹配时 value 为 None。
+    返回 (value, quality_flags, components)。任一组件缺失或期间不匹配时 value 为 None。
+    components 包含 latest / last_annual / prior_year 的 value/accession/filed_date/period_days。
     """
-    latest_val = _get_field_value(group, latest_date, field)
-    if latest_val is None:
-        return None, [f"missing_component_latest_{field}"]
+    components: dict[str, dict | None] = {"latest": None, "last_annual": None, "prior_year": None}
 
-    # 本期的期间长度
+    latest_val = _get_field_value(group, latest_date, field)
     latest_rows = group[(group["report_date"] == latest_date) & (group["standard_field"] == field)]
     latest_days = latest_rows["period_days"].max() if "period_days" in latest_rows.columns else None
+
+    if latest_val is None:
+        return None, [f"missing_component_latest_{field}"], components
+
+    if not latest_rows.empty:
+        lr = latest_rows.sort_values("period_days", ascending=False).iloc[0]
+        components["latest"] = {
+            "report_date": lr["report_date"],
+            "accession_no": lr["accession_no"],
+            "filed_date": lr["filed_date"],
+            "value": _to_decimal(lr["value_numeric"]),
+            "period_days": latest_days,
+        }
 
     # Last annual
     annual = group[group["is_annual"] == True]
     la_rows = annual[annual["report_date"] < latest_date]
     if la_rows.empty:
-        return None, ["missing_component_last_annual"]
+        return None, ["missing_component_last_annual"], components
 
     la_row = la_rows.iloc[-1]
     la_val = _get_field_value(group, la_row["report_date"], field)
     if la_val is None:
-        return None, [f"missing_component_la_{field}"]
+        return None, [f"missing_component_la_{field}"], components
+
+    components["last_annual"] = {
+        "report_date": la_row["report_date"],
+        "accession_no": la_row["accession_no"],
+        "filed_date": la_row["filed_date"],
+        "value": la_val,
+        "period_days": _to_decimal(la_row["period_days"]) if "period_days" in la_row.index else None,
+    }
 
     # Prior year same period：必须期间长度可比（±3天）
     target = latest_date - timedelta(days=365)
@@ -405,7 +475,7 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tupl
         & (group_copy["date_diff"] <= 7)
     ].sort_values("date_diff")
     if candidates.empty:
-        return None, ["missing_component_prior_year"]
+        return None, ["missing_component_prior_year"], components
 
     # 选期间长度最匹配的去年同期
     if latest_days is not None and "period_days" in candidates.columns:
@@ -422,12 +492,26 @@ def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tupl
 
     py_val = _get_field_value(group, py_row["report_date"], field)
     if py_val is None:
-        return None, [f"missing_component_py_{field}"]
+        return None, [f"missing_component_py_{field}"], components
+
+    components["prior_year"] = {
+        "report_date": py_row["report_date"],
+        "accession_no": py_row["accession_no"],
+        "filed_date": py_row["filed_date"],
+        "value": py_val,
+        "period_days": _to_decimal(py_row["period_days"]) if "period_days" in py_row.index else None,
+    }
 
     if period_mismatch:
-        return None, ["period_mismatch"]
+        return None, ["period_mismatch"], components
 
-    return latest_val + la_val - py_val, []
+    return latest_val + la_val - py_val, [], components
+
+
+def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tuple:
+    """兼容旧接口：仅返回 (value, quality_flags)。"""
+    val, flags, _ = _compute_ttm_for_field_with_components(group, field, latest_date)
+    return val, flags
 
 
 def _latest_annual_equity(annual_df: pd.DataFrame, stock_code: str) -> dict:
