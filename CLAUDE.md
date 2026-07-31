@@ -117,6 +117,8 @@ External APIs → fetchers/ (rate-limit, circuit-breaker, retry)
 
 All feature development must follow: **Discuss → Plan doc (in `docs/`) → User confirms → Implement → Self-review → Validate → Commit (code + docs together).**
 
+- **讨论优先，方案靠后（硬规则）**: 调研/排查类任务先口头汇报发现和根因，与用户讨论；只有用户明确说"出方案"时才写计划文档。方案必须小步提交——一次只覆盖一个修复点，等用户审核通过后再出下一步；不要一次输出覆盖多个工作流的大方案。
+
 - Never skip the plan doc step. Each new feature needs a doc in `docs/` with: data source evaluation, field mapping, risk assessment, conflict analysis with existing features.
 - When modifying DB schema: update `scripts/*.sql` AND `docs/SCHEMA.md`. Changes must be backward-compatible.
 - When adding new data sources: evaluate field overlap with existing sources and document in `docs/ARCHITECTURE.md`.
