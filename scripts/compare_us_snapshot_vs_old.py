@@ -989,7 +989,10 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
             numerator_standard_field = numerator_info[0] if numerator_info else None
             old_numerator_col = numerator_info[1] if numerator_info else None
             old_numerator = _to_decimal(r.get(old_numerator_col)) if old_numerator_col and old_numerator_col in r.index else None
-            # 新 snapshot 表不存储 gross_profit/operating_income，由 margin * revenue 反推
+            # 新 snapshot 表不存储 gross_profit/operating_income，由 margin * revenue 反推。
+            # 精度边界：float 往返误差约为分子值的 4e-16 倍，分子超过 ~2e9 时可能超出
+            # _values_equal 的 1e-6 绝对容差，导致新侧事实假性不匹配。失败模式保守
+            # （该行保持 UNEXPLAINED，不会错误归类），可接受。
             new_numerator = None
             if numerator_standard_field and new_v is not None:
                 new_revenue = _to_decimal(r.get("new_revenue")) if "new_revenue" in r.index else None

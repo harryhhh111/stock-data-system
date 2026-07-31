@@ -298,6 +298,46 @@ class TestBuildTtmSnapshot:
         # ttm_report_date should be the latest quarterly date
         assert row["ttm_report_date"] == date(2025, 3, 31)
 
+    def test_ttm_metadata_none_latest_component_no_crash(self):
+        """某字段无事实时 components['latest']=None,元数据选取不得崩溃。
+
+        回归:旧实现取 revenues(或 net_income)组件的 latest,为 None 时
+        AttributeError;新实现跨字段取 report_date 最晚的非 None 组件。
+        """
+        facts = [
+            self._make_fact("X", date(2024, 12, 31), "net_income", 100, "10-K",
+                            ps=date(2024, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "filed_date": date(2025, 2, 20), "accession_no": "accn", "total_equity": Decimal("100"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        assert row["ttm_report_date"] == date(2024, 12, 31)
+        assert row["ttm_accession_no"] == "accn-2024-12-31"
+        assert row["revenue_ttm"] is None
+
+    def test_ttm_metadata_picks_max_report_date_across_fields(self):
+        """TTM 元数据取所有字段 latest 组件中 report_date 最晚者,而非固定 revenues 优先。"""
+        facts = [
+            # revenues 只有 Q1 2025 季度事实
+            self._make_fact("X", date(2025, 3, 31), "revenues", 90, "10-Q",
+                            ps=date(2025, 1, 1)),
+            # net_income 有更晚的 FY2025 年度事实
+            self._make_fact("X", date(2025, 12, 31), "net_income", 100, "10-K",
+                            ps=date(2025, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2025, 12, 31),
+            "filed_date": date(2026, 2, 20), "accession_no": "accn", "total_equity": Decimal("100"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        # 元数据应来自 net_income 的 2025-12-31 年度组件,而非 revenues 的 2025-03-31
+        assert row["ttm_report_date"] == date(2025, 12, 31)
+        assert row["ttm_accession_no"] == "accn-2025-12-31"
+
     def test_q4_standalone_in_10k_excluded(self):
         """10-K 里的 Q4 standalone (3-month, fp=FY) 不应混入 TTM。"""
         facts = [
