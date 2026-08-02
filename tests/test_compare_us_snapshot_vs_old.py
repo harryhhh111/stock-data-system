@@ -5,9 +5,11 @@ Phase A 对比脚本的单元测试。
 from __future__ import annotations
 
 import sys
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -460,3 +462,177 @@ class TestEnrichRatioWithNumeratorEvidence:
             CMP.fetch_fact_version_evidence = original_fetch
 
         assert result[0].reason == CMP.Reason.UNEXPLAINED
+
+
+# ── _classify_annual_old_logic_fallbacks / _classify_ttm_old_logic_fallbacks ──
+
+class TestAnnualOldLogicFallbackClassification:
+    def _make_merged_annual(self, **kwargs) -> pd.DataFrame:
+        defaults = {
+            "stock_code": "CAT",
+            "old_report_date": date(2024, 12, 31),
+            "new_report_date": date(2024, 12, 31),
+            "new_net_profit": None,
+            "new_net_profit_common": None,
+            "new_total_equity": None,
+            "new_total_equity_including_nci": None,
+            "new_roe": None,
+        }
+        defaults.update(kwargs)
+        return pd.DataFrame([defaults])
+
+    def test_net_profit_fallback_to_common(self):
+        """旧 net_profit 精确等于新的 net_income_common，且 new.net_income 为 NULL。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2024, 12, 31), field="net_profit",
+                old_value=Decimal("900"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = self._make_merged_annual(new_net_profit_common=Decimal("900"))
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        row = result[0]
+        assert row.reason == CMP.Reason.OLD_LOGIC_FALLBACK
+        assert row.fallback_field == "net_income_common"
+        assert row.fallback_value == Decimal("900")
+        assert row.basis == "net_income_common"
+
+    def test_total_equity_fallback_to_including_nci(self):
+        """旧 total_equity 精确等于新的 total_equity_including_nci，且 parent equity 为 NULL。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="AA", report_date=date(2024, 12, 31), field="total_equity",
+                old_value=Decimal("5000"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = self._make_merged_annual(stock_code="AA", new_total_equity_including_nci=Decimal("5000"))
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        row = result[0]
+        assert row.reason == CMP.Reason.OLD_LOGIC_FALLBACK
+        assert row.fallback_field == "total_equity_including_nci"
+        assert row.fallback_value == Decimal("5000")
+        assert row.basis == "total_equity_including_nci"
+
+    def test_roe_mixed_basis_rejected(self):
+        """新 ROE 为 NULL，旧 ROE 精确等于 common / including_nci 混合口径。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="X", report_date=date(2024, 12, 31), field="roe",
+                old_value=Decimal("0.18"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = self._make_merged_annual(
+            stock_code="X",
+            new_net_profit_common=Decimal("900"),
+            new_total_equity_including_nci=Decimal("5000"),
+        )
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        row = result[0]
+        assert row.reason == CMP.Reason.OLD_LOGIC_MIXED_BASIS
+        assert row.fallback_field == "net_income_common / total_equity_including_nci"
+        assert row.basis == "common_income / equity_including_nci"
+
+    def test_approximate_but_not_exact_rejected(self):
+        """值近似但不精确相等时，不得归为 OLD_LOGIC_*。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2024, 12, 31), field="net_profit",
+                old_value=Decimal("900"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = self._make_merged_annual(new_net_profit_common=Decimal("901"))
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        assert result[0].reason == CMP.Reason.MISSING_MAPPING
+
+    def test_canonical_present_rejected(self):
+        """new canonical 有值时，即使 fallback 也匹配，也不得归为 OLD_LOGIC_FALLBACK。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2024, 12, 31), field="net_profit",
+                old_value=Decimal("900"), new_value=Decimal("1000"),
+                abs_diff=Decimal("100"), rel_diff_pct=Decimal("0.1"),
+                reason=CMP.Reason.UNEXPLAINED,
+            ),
+        ]
+        merged = self._make_merged_annual(
+            new_net_profit=Decimal("1000"),
+            new_net_profit_common=Decimal("900"),
+        )
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        assert result[0].reason == CMP.Reason.UNEXPLAINED
+
+
+class TestTtmOldLogicFallbackClassification:
+    def test_net_income_ttm_fallback_to_common(self):
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2025, 3, 31), field="net_income_ttm",
+                old_value=Decimal("900"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = pd.DataFrame([{
+            "stock_code": "CAT",
+            "ttm_report_date": date(2025, 3, 31),
+            "new_report_date": date(2025, 3, 31),
+            "new_net_income_ttm": None,
+            "new_net_income_common_ttm": Decimal("900"),
+        }])
+        result = CMP._classify_ttm_old_logic_fallbacks(rows, merged)
+        row = result[0]
+        assert row.reason == CMP.Reason.OLD_LOGIC_FALLBACK
+        assert row.fallback_field == "net_income_common_ttm"
+        assert row.fallback_value == Decimal("900")
+        assert row.basis == "net_income_common_ttm"
+
+    def test_same_value_different_period_rejected(self):
+        """年度：值精确相等但报告期不同，不得归为 OLD_LOGIC_FALLBACK。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2024, 12, 31), field="net_profit",
+                old_value=Decimal("900"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = pd.DataFrame([{
+            "stock_code": "CAT",
+            "old_report_date": date(2023, 12, 31),
+            "new_report_date": date(2024, 12, 31),
+            "new_net_profit": None,
+            "new_net_profit_common": Decimal("900"),
+            "new_total_equity": None,
+            "new_total_equity_including_nci": None,
+            "new_roe": None,
+        }])
+        result = CMP._classify_annual_old_logic_fallbacks(rows, merged)
+        assert result[0].reason == CMP.Reason.MISSING_MAPPING
+
+    def test_ttm_same_value_different_period_rejected(self):
+        """TTM：值精确相等但截止期不同，不得归为 OLD_LOGIC_FALLBACK。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="CAT", report_date=date(2025, 3, 31), field="net_income_ttm",
+                old_value=Decimal("900"), new_value=None,
+                abs_diff=None, rel_diff_pct=None,
+                reason=CMP.Reason.MISSING_MAPPING,
+            ),
+        ]
+        merged = pd.DataFrame([{
+            "stock_code": "CAT",
+            "ttm_report_date": date(2024, 12, 31),
+            "new_report_date": date(2025, 3, 31),
+            "new_net_income_ttm": None,
+            "new_net_income_common_ttm": Decimal("900"),
+        }])
+        result = CMP._classify_ttm_old_logic_fallbacks(rows, merged)
+        assert result[0].reason == CMP.Reason.MISSING_MAPPING

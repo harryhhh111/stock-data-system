@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
 
     -- 利润表
     revenues                NUMERIC,
-    net_income              NUMERIC,
+    net_income              NUMERIC,   -- consolidated net income (native)
+    net_income_common       NUMERIC,   -- common/attributable net income (raw)
 
     -- 资产负债表
     total_assets            NUMERIC,
@@ -78,7 +79,8 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
     ttm_filed_date          DATE,
     ttm_accession_no        VARCHAR(30),
     revenue_ttm             NUMERIC,
-    net_income_ttm          NUMERIC,
+    net_income_ttm          NUMERIC,   -- consolidated net income TTM (native)
+    net_income_common_ttm   NUMERIC,   -- common net income TTM (raw)
     cfo_ttm                 NUMERIC,
     capex_ttm               NUMERIC,
     fcf_ttm                 NUMERIC,   -- = cfo_ttm - capex_ttm
@@ -101,3 +103,12 @@ CREATE INDEX IF NOT EXISTS idx_us_fct_generated
     ON us_financial_current_ttm(generated_at);
 CREATE INDEX IF NOT EXISTS idx_us_fct_ttm_date
     ON us_financial_current_ttm(ttm_report_date);
+
+
+-- ── 线上迁移（可重放）────────────────────────────────────────
+-- CREATE TABLE IF NOT EXISTS 不会为已存在的表补列；以下 ALTER 幂等，
+-- 对已存在的线上表可反复执行。
+ALTER TABLE us_financial_current_annual
+    ADD COLUMN IF NOT EXISTS net_income_common NUMERIC;
+ALTER TABLE us_financial_current_ttm
+    ADD COLUMN IF NOT EXISTS net_income_common_ttm NUMERIC;

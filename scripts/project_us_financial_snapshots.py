@@ -46,6 +46,7 @@ SELECTOR_CHUNK_SIZE = 200
 ANNUAL_STANDARD_FIELDS = [
     "revenues",
     "net_income",
+    "net_income_common",
     "total_assets",
     "total_liabilities",
     "total_equity",
@@ -63,12 +64,19 @@ ANNUAL_STANDARD_FIELDS = [
     "inventory_net",
 ]
 
+# TTM 主口径（net_income_common 单独处理，避免混用 consolidated/common 组件）
 TTM_FIELDS = [
     "revenues",
     "net_income",
     "net_cash_from_operations",
     "capital_expenditures",
 ]
+
+# TTM 利润双口径：native consolidated + common attributable
+TTM_NET_INCOME_FIELDS = ["net_income", "net_income_common"]
+
+# TTM 组件计算使用的全部字段（主口径 + 净利润双口径，保持顺序且去重）
+TTM_COMPONENT_FIELDS = list(dict.fromkeys(TTM_FIELDS + TTM_NET_INCOME_FIELDS))
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────
@@ -182,7 +190,20 @@ def build_annual_snapshot(all_facts: list, projection_run_id: str) -> pd.DataFra
 
 
 def _compute_derived_fields(df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
-    """计算衍生字段：FCF、ROE、margins、YoY 等。"""
+    """计算衍生字段：FCF、ROE、margins、YoY 等。
+
+    遵循同口径语义：
+    - total_equity / net_income 为原生 parent/consolidated 口径，不做 fallback 回填；
+    - 仅在明确允许的路径下使用 including_nci / common 作为 fallback，并打 quality flag。
+    """
+    # 确保原始列存在
+    for col in ANNUAL_STANDARD_FIELDS:
+        if col not in df.columns:
+            df[col] = None
+
+    # 逐行 quality_flags（list of str）
+    df["quality_flags"] = [[] for _ in range(len(df))]
+
     # FCF
     if "net_cash_from_operations" in df.columns and "capital_expenditures" in df.columns:
         df["fcf"] = df.apply(
@@ -193,16 +214,81 @@ def _compute_derived_fields(df: pd.DataFrame, projection_run_id: str) -> pd.Data
     else:
         df["fcf"] = None
 
-    # ROE = net_income / total_equity
-    df["roe"] = df.apply(lambda r: _safe_div(r.get("net_income"), r.get("total_equity")), axis=1)
+    # 毛利率：优先原生 gross_profit；缺失时可用 revenues - cost_of_goods_sold 推导
+    def _gross_margin(r):
+        gp = _to_decimal(r.get("gross_profit"))
+        rev = _to_decimal(r.get("revenues"))
+        cogs = _to_decimal(r.get("cost_of_goods_sold"))
+        if gp is not None and rev is not None and rev != 0:
+            return gp / rev
+        if rev is not None and cogs is not None and rev != 0:
+            idx = r.name if hasattr(r, "name") else None
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("gross_profit_derived_from_cogs")
+            return (rev - cogs) / rev
+        return None
 
-    # ROA = net_income / total_assets
-    df["roa"] = df.apply(lambda r: _safe_div(r.get("net_income"), r.get("total_assets")), axis=1)
-
-    # Margins
-    df["gross_margin"] = df.apply(lambda r: _safe_div(r.get("gross_profit"), r.get("revenues")), axis=1)
+    df["gross_margin"] = df.apply(_gross_margin, axis=1)
     df["operating_margin"] = df.apply(lambda r: _safe_div(r.get("operating_income"), r.get("revenues")), axis=1)
-    df["net_margin"] = df.apply(lambda r: _safe_div(r.get("net_income"), r.get("revenues")), axis=1)
+
+    # ROE 四象限
+    def _roe(r):
+        ni = _to_decimal(r.get("net_income"))
+        nic = _to_decimal(r.get("net_income_common"))
+        te = _to_decimal(r.get("total_equity"))
+        tei = _to_decimal(r.get("total_equity_including_nci"))
+        idx = r.name if hasattr(r, "name") else None
+
+        if ni is not None and te is not None and te != 0:
+            return ni / te
+        if ni is not None and tei is not None and tei != 0:
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("roe_equity_including_nci_fallback")
+            return ni / tei
+        if nic is not None and te is not None and te != 0:
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("net_income_common_fallback")
+            return nic / te
+        # 混合口径拒绝仅指：唯一可算路径是被禁止的 nic÷tei 双 fallback。
+        # 其他情况（缺分子、缺分母、零分母）是普通缺失，不打此 flag。
+        if ni is None and nic is not None and te is None and tei is not None and tei != 0:
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("roe_mixed_basis_rejected")
+        return None
+
+    df["roe"] = df.apply(_roe, axis=1)
+
+    # ROA：native net_income 优先，缺失时可用 net_income_common
+    def _roa(r):
+        ni = _to_decimal(r.get("net_income"))
+        nic = _to_decimal(r.get("net_income_common"))
+        ta = _to_decimal(r.get("total_assets"))
+        idx = r.name if hasattr(r, "name") else None
+        if ni is not None and ta is not None and ta != 0:
+            return ni / ta
+        if nic is not None and ta is not None and ta != 0:
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("net_income_common_fallback")
+            return nic / ta
+        return None
+
+    df["roa"] = df.apply(_roa, axis=1)
+
+    # net_margin：native net_income 优先，缺失时可用 net_income_common
+    def _net_margin(r):
+        ni = _to_decimal(r.get("net_income"))
+        nic = _to_decimal(r.get("net_income_common"))
+        rev = _to_decimal(r.get("revenues"))
+        idx = r.name if hasattr(r, "name") else None
+        if ni is not None and rev is not None and rev != 0:
+            return ni / rev
+        if nic is not None and rev is not None and rev != 0:
+            if idx is not None:
+                df.at[idx, "quality_flags"].append("net_income_common_fallback")
+            return nic / rev
+        return None
+
+    df["net_margin"] = df.apply(_net_margin, axis=1)
 
     # Debt ratio
     df["debt_ratio"] = df.apply(lambda r: _safe_div(r.get("total_liabilities"), r.get("total_assets")), axis=1)
@@ -217,7 +303,7 @@ def _compute_derived_fields(df: pd.DataFrame, projection_run_id: str) -> pd.Data
         ) if pd.notna(r.get("total_current_assets")) else None, axis=1,
     )
 
-    # Book value per share
+    # Book value per share：严格只使用 parent equity，不 fallback
     df["book_value_per_share"] = df.apply(
         lambda r: _safe_div(r.get("total_equity"), r.get("weighted_avg_shares_basic")), axis=1,
     )
@@ -238,6 +324,9 @@ def _compute_derived_fields(df: pd.DataFrame, projection_run_id: str) -> pd.Data
                     yoy.append(None)
             yoy_values.extend(yoy)
         df[yoy_col] = yoy_values
+
+    # 去重并排序 quality_flags
+    df["quality_flags"] = df["quality_flags"].apply(lambda flags: sorted(set(flags)))
 
     # Metadata
     df["selector_basis"] = "latest-restated"
@@ -278,7 +367,7 @@ def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
         f for f in all_facts
         if f.form and f.form.upper() in accepted_forms
         and f.unit.upper() == "USD"
-        and f.standard_field in TTM_FIELDS
+        and f.standard_field in TTM_COMPONENT_FIELDS
         and (f.period_kind == "instant"
              or f.form.upper() in quarterly_forms
              or (f.period_start and f.report_date
@@ -312,7 +401,7 @@ def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
         group = group.sort_values("report_date")
         latest_date = group["report_date"].max()
         is_annual = group[group["report_date"] == latest_date]["is_annual"].any()
-        for field in TTM_FIELDS:
+        for field in TTM_COMPONENT_FIELDS:
             sub = group[group["standard_field"] == field]
             if is_annual:
                 val = _get_field_value(group, latest_date, field)
@@ -357,6 +446,10 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
             ttm_values[field] = info.get("value")
             quality_flags.extend(info.get("quality_flags", []))
 
+        # 净利润 common 口径独立计算，不混入主口径 TTM_FIELDS 的缺件状态
+        nic_info = component_index.get((stock_code, "net_income_common"), {})
+        ttm_nic_val = nic_info.get("value")
+
         ttm_cfo = ttm_values.get("net_cash_from_operations")
         ttm_capex = ttm_values.get("capital_expenditures")
         ttm_fcf = None
@@ -368,13 +461,21 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
         ttm_ni_val = ttm_values.get("net_income")
         rev_ttm_val = ttm_values.get("revenues")
 
+        # 仅当 native 缺失时才记录 common 口径的可用/不可用状态；
+        # native 存在时不引入任何 common 缺件 flag，避免污染主口径
+        if ttm_ni_val is None:
+            if ttm_nic_val is not None:
+                quality_flags.append("ttm_net_income_native_missing_common_available")
+            else:
+                quality_flags.extend(nic_info.get("quality_flags", []))
+
         # 最新年度权益
         equity_info = _latest_annual_equity(annual_df, stock_code)
 
         # TTM 日期与元数据：取该股票任意字段 latest 组件中 report_date 最晚者
         latest_component: dict | None = None
         latest_date = None
-        for field in TTM_FIELDS:
+        for field in TTM_COMPONENT_FIELDS:
             info = component_index.get((stock_code, field), {})
             comp = ((info.get("components") or {}).get("latest")) or {}
             if comp.get("report_date") and (latest_date is None or comp["report_date"] > latest_date):
@@ -396,6 +497,7 @@ def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_
             "ttm_accession_no": ttm_accession,
             "revenue_ttm": _to_decimal(rev_ttm_val),
             "net_income_ttm": _to_decimal(ttm_ni_val),
+            "net_income_common_ttm": _to_decimal(ttm_nic_val),
             "cfo_ttm": _to_decimal(ttm_cfo),
             "capex_ttm": _to_decimal(ttm_capex),
             "fcf_ttm": _to_decimal(ttm_fcf),
@@ -540,7 +642,7 @@ def _latest_annual_equity(annual_df: pd.DataFrame, stock_code: str) -> dict:
 
 ANNUAL_COLUMNS = [
     "stock_code", "report_date", "filed_date", "accession_no", "form",
-    "revenues", "net_income",
+    "revenues", "net_income", "net_income_common",
     "total_assets", "total_liabilities", "total_equity", "total_equity_including_nci",
     "net_cash_from_operations", "capital_expenditures", "fcf",
     "roe", "roa", "gross_margin", "operating_margin", "net_margin",
@@ -552,7 +654,7 @@ ANNUAL_COLUMNS = [
 
 TTM_COLUMNS = [
     "stock_code", "ttm_report_date", "ttm_filed_date", "ttm_accession_no",
-    "revenue_ttm", "net_income_ttm", "cfo_ttm", "capex_ttm", "fcf_ttm",
+    "revenue_ttm", "net_income_ttm", "net_income_common_ttm", "cfo_ttm", "capex_ttm", "fcf_ttm",
     "equity_report_date", "equity_filed_date", "equity_accession_no", "total_equity",
     "projection_run_id", "quality_flags", "generated_at",
 ]

@@ -354,6 +354,245 @@ class TestBuildTtmSnapshot:
         # Only the 12-month fact should be used; Q4 standalone filtered
         assert result.iloc[0]["revenue_ttm"] == Decimal("100")
 
+    def test_dual_net_income_ttm_both_complete(self):
+        """native 与 common 各自完整时，两列分别写入对应口径 TTM。"""
+        facts = [
+            # FY2024 annual
+            self._make_fact("X", date(2024, 12, 31), "revenues", 1000, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_income", 100, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_income_common", 90, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_cash_from_operations", 120, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "capital_expenditures", 10, "10-K", ps=date(2024, 1, 1)),
+            # Q1 2024 cumulative
+            self._make_fact("X", date(2024, 3, 31), "revenues", 200, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_income", 20, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_income_common", 18, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_cash_from_operations", 25, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "capital_expenditures", 2, "10-Q", ps=date(2024, 1, 1)),
+            # Q1 2025 cumulative
+            self._make_fact("X", date(2025, 3, 31), "revenues", 250, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income", 25, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income_common", 22, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_cash_from_operations", 30, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "capital_expenditures", 3, "10-Q", ps=date(2025, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "filed_date": date(2025, 2, 20), "accession_no": "accn", "total_equity": Decimal("500"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        # native: 25 + 100 - 20 = 105
+        assert row["net_income_ttm"] == Decimal("105")
+        # common: 22 + 90 - 18 = 94
+        assert row["net_income_common_ttm"] == Decimal("94")
+        # 不应因 common 可用而打 fallback flag
+        assert "ttm_net_income_native_missing_common_available" not in row["quality_flags"]
+
+    def test_native_missing_common_complete(self):
+        """native 缺去年同期而 common 完整时，仅 common 列有值且不混用组件。"""
+        facts = [
+            # FY2024 annual
+            self._make_fact("X", date(2024, 12, 31), "revenues", 1000, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_income", 100, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_income_common", 90, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_cash_from_operations", 120, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "capital_expenditures", 10, "10-K", ps=date(2024, 1, 1)),
+            # Q1 2025 cumulative (native 去年同期缺失)
+            self._make_fact("X", date(2025, 3, 31), "revenues", 250, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income", 25, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income_common", 22, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_cash_from_operations", 30, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "capital_expenditures", 3, "10-Q", ps=date(2025, 1, 1)),
+            # common 有去年同期，native 没有
+            self._make_fact("X", date(2024, 3, 31), "net_income_common", 18, "10-Q", ps=date(2024, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "filed_date": date(2025, 2, 20), "accession_no": "accn", "total_equity": Decimal("500"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        assert row["net_income_ttm"] is None
+        assert row["net_income_common_ttm"] == Decimal("94")  # 22 + 90 - 18
+        assert "ttm_net_income_native_missing_common_available" in row["quality_flags"]
+
+    def test_common_missing_does_not_pollute_cfo_fcf(self):
+        """common net income 缺件不得污染 CFO/FCF 的正常计算。"""
+        facts = [
+            # FY2024 annual
+            self._make_fact("X", date(2024, 12, 31), "revenues", 1000, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_income", 100, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_cash_from_operations", 120, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "capital_expenditures", 10, "10-K", ps=date(2024, 1, 1)),
+            # Q1 2024 cumulative
+            self._make_fact("X", date(2024, 3, 31), "revenues", 200, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_income", 20, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_cash_from_operations", 25, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "capital_expenditures", 2, "10-Q", ps=date(2024, 1, 1)),
+            # Q1 2025 cumulative
+            self._make_fact("X", date(2025, 3, 31), "revenues", 250, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income", 25, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_cash_from_operations", 30, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "capital_expenditures", 3, "10-Q", ps=date(2025, 1, 1)),
+            # common 完全没有去年同期，导致 common TTM 缺失
+            self._make_fact("X", date(2024, 12, 31), "net_income_common", 90, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_income_common", 22, "10-Q", ps=date(2025, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "filed_date": date(2025, 2, 20), "accession_no": "accn", "total_equity": Decimal("500"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        # native 正常计算
+        assert row["net_income_ttm"] == Decimal("105")
+        # common 缺去年同期
+        assert row["net_income_common_ttm"] is None
+        # CFO/FCF 不受 common 缺件影响
+        assert row["cfo_ttm"] == Decimal("125")  # 30 + 120 - 25
+        assert row["fcf_ttm"] == Decimal("114")  # 125 - (3 + 10 - 2)
+        assert "missing_component_fcf_ttm" not in row["quality_flags"]
+        assert "missing_component_net_cash_from_operations" not in row["quality_flags"]
+        # native 完整时，common 的缺件 flag（含 generic 形式）不得进入主 flags
+        assert "missing_component_prior_year" not in row["quality_flags"]
+        assert not any("net_income_common" in f for f in row["quality_flags"])
+
+    def test_common_missing_flags_recorded_when_native_missing(self):
+        """native 缺失且 common 也缺件时，才记录 common 的不可用状态。"""
+        facts = [
+            # 主口径 CFO/revenue/capex 齐全，net_income 完全缺失
+            self._make_fact("X", date(2024, 12, 31), "revenues", 1000, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "net_cash_from_operations", 120, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 12, 31), "capital_expenditures", 10, "10-K", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "revenues", 200, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "net_cash_from_operations", 25, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2024, 3, 31), "capital_expenditures", 2, "10-Q", ps=date(2024, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "revenues", 250, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "net_cash_from_operations", 30, "10-Q", ps=date(2025, 1, 1)),
+            self._make_fact("X", date(2025, 3, 31), "capital_expenditures", 3, "10-Q", ps=date(2025, 1, 1)),
+            # common 只有最新季度，缺上年度组件
+            self._make_fact("X", date(2025, 3, 31), "net_income_common", 22, "10-Q", ps=date(2025, 1, 1)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "filed_date": date(2025, 2, 20), "accession_no": "accn", "total_equity": Decimal("500"),
+        }])
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1")
+        row = result.iloc[0]
+        assert row["net_income_ttm"] is None
+        assert row["net_income_common_ttm"] is None
+        # native 缺失 → 记录 common 的缺件状态（missing_component_last_annual 只能来自 common）
+        assert "missing_component_last_annual" in row["quality_flags"]
+
+
+# ── _compute_derived_fields ───────────────────────────────────
+
+class TestComputeDerivedFields:
+    def _make_annual_df(self, records: list[dict]) -> pd.DataFrame:
+        df = pd.DataFrame(records)
+        for col in PJ.ANNUAL_STANDARD_FIELDS:
+            if col not in df.columns:
+                df[col] = None
+        return PJ._compute_derived_fields(df, "run-1")
+
+    def test_roe_native_parent_equity(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": Decimal("100"), "total_equity": Decimal("500"),
+        }])
+        assert df.iloc[0]["roe"] == Decimal("0.2")
+        assert df.iloc[0]["quality_flags"] == []
+
+    def test_roe_equity_including_nci_fallback(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": Decimal("100"), "total_equity": None,
+            "total_equity_including_nci": Decimal("500"),
+        }])
+        assert df.iloc[0]["roe"] == Decimal("0.2")
+        assert "roe_equity_including_nci_fallback" in df.iloc[0]["quality_flags"]
+
+    def test_roe_net_income_common_fallback(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "total_equity": Decimal("500"),
+        }])
+        assert df.iloc[0]["roe"] == Decimal("0.2")
+        assert "net_income_common_fallback" in df.iloc[0]["quality_flags"]
+
+    def test_roe_mixed_basis_rejected(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "total_equity": None, "total_equity_including_nci": Decimal("500"),
+        }])
+        assert df.iloc[0]["roe"] is None
+        assert "roe_mixed_basis_rejected" in df.iloc[0]["quality_flags"]
+
+    def test_roe_zero_parent_equity_is_not_mixed_basis(self):
+        """parent equity 为零是普通零分母，不是混合口径拒绝。"""
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "total_equity": Decimal("0"), "total_equity_including_nci": Decimal("500"),
+        }])
+        assert df.iloc[0]["roe"] is None
+        assert "roe_mixed_basis_rejected" not in df.iloc[0]["quality_flags"]
+
+    def test_roe_no_equity_at_all_is_not_mixed_basis(self):
+        """两种权益都缺是普通缺分母，不是混合口径拒绝。"""
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "total_equity": None, "total_equity_including_nci": None,
+        }])
+        assert df.iloc[0]["roe"] is None
+        assert "roe_mixed_basis_rejected" not in df.iloc[0]["quality_flags"]
+
+    def test_gross_margin_native(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "revenues": Decimal("1000"), "gross_profit": Decimal("300"),
+        }])
+        assert df.iloc[0]["gross_margin"] == Decimal("0.3")
+        assert "gross_profit_derived_from_cogs" not in df.iloc[0]["quality_flags"]
+
+    def test_gross_margin_derived_from_cogs(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "revenues": Decimal("1000"), "cost_of_goods_sold": Decimal("700"),
+        }])
+        assert df.iloc[0]["gross_margin"] == Decimal("0.3")
+        assert "gross_profit_derived_from_cogs" in df.iloc[0]["quality_flags"]
+
+    def test_roa_common_fallback(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "total_assets": Decimal("1000"),
+        }])
+        assert df.iloc[0]["roa"] == Decimal("0.1")
+        assert "net_income_common_fallback" in df.iloc[0]["quality_flags"]
+
+    def test_net_margin_common_fallback(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "net_income": None, "net_income_common": Decimal("100"),
+            "revenues": Decimal("1000"),
+        }])
+        assert df.iloc[0]["net_margin"] == Decimal("0.1")
+        assert "net_income_common_fallback" in df.iloc[0]["quality_flags"]
+
+    def test_book_value_per_share_parent_equity_required(self):
+        df = self._make_annual_df([{
+            "stock_code": "X", "report_date": date(2024, 12, 31),
+            "total_equity": None, "total_equity_including_nci": Decimal("500"),
+            "weighted_avg_shares_basic": Decimal("100"),
+        }])
+        assert df.iloc[0]["book_value_per_share"] is None
+
 
 # ── _safe_div ─────────────────────────────────────────────────
 

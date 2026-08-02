@@ -65,12 +65,25 @@ mv_us_fcf_yield
 每只股票保留最近五个正式年度，至少包含：
 
 - `stock_code`、`report_date`、`filed_date`、`accession_no`；
-- revenue、net income；
-- assets、liabilities、parent equity、equity including NCI；
+- revenue、net income（consolidated native）、`net_income_common`（common/attributable raw）；
+- assets、liabilities、parent equity、`total_equity_including_nci`（including NCI raw）；
 - CFO、cash CapEx、FCF；
-- ROE、ROA、毛利率、净利率、负债率；
+- ROE、ROA、毛利率、运营利润率、净利率、负债率；
 - `selector_basis='latest-restated'`；
-- `selector_run_id`、`generated_at`、`quality_flags`。
+- `projection_run_id`、`generated_at`、`quality_flags`。
+
+语义约束：
+
+- `total_equity` 始终是 parent equity，不得由 `total_equity_including_nci` 回填；
+- `net_income` 始终是 consolidated native，不得由 `net_income_common` 回填；
+- ROE 只计算经济口径一致的组合：
+  - `net_income / total_equity`（无 flag）
+  - `net_income / total_equity_including_nci` → `roe_equity_including_nci_fallback`
+  - `net_income_common / total_equity` → `net_income_common_fallback`
+  - `net_income_common / total_equity_including_nci` 明确拒绝，打 `roe_mixed_basis_rejected`；
+- `roa`、`net_margin` 在 `net_income` 缺失时允许 fallback 到 `net_income_common`，打 `net_income_common_fallback`；
+- `gross_margin` 优先原生 `gross_profit`；缺失时可用 `revenues - cost_of_goods_sold` 推导，打 `gross_profit_derived_from_cogs`；
+- `book_value_per_share`、PB 严格只使用 parent equity，不 fallback。
 
 缺字段保持 NULL，不使用供应商值或旧宽表回填。
 
@@ -79,12 +92,26 @@ mv_us_fcf_yield
 每只股票一行，至少包含：
 
 - `stock_code`、`ttm_report_date`、`ttm_filed_date`、`ttm_accession_no`；
-- revenue TTM、net income TTM、CFO TTM、cash CapEx TTM、FCF TTM；
+- revenue TTM、net income TTM、`net_income_common_ttm`、CFO TTM、cash CapEx TTM、FCF TTM；
 - `equity_report_date`、`equity_filed_date`、`equity_accession_no`、parent equity；
-- `selector_run_id`、`generated_at`、`quality_flags`。
+- `projection_run_id`、`generated_at`、`quality_flags`。
 
 `ttm_report_date` 是经济口径的财务截止日；`ttm_filed_date` 是该数值可被外部使用的
 SEC 申报日。两者不能互相替代，API 和筛选器必须同时返回它们，供 PIT 和数据时效判断。
+
+净利润 TTM 双口径：
+
+- `net_income_ttm`：完整三组件计算出的 consolidated net income TTM；
+- `net_income_common_ttm`：完整三组件计算出的 common/attributable net income TTM；
+- 两列独立运行 TTM 算法，禁止按组件混用 consolidated 与 common facts；
+- native 缺失、common 完整时，添加 `ttm_net_income_native_missing_common_available`，
+  但不得将 common 值写入 `net_income_ttm`；
+- 未来读取者的 effective 利润分子：
+  ```text
+  effective_net_income_ttm = COALESCE(net_income_ttm, net_income_common_ttm)
+  basis = consolidated（net_income_ttm 非 NULL）
+       | common（前者为 NULL 且 net_income_common_ttm 非 NULL）
+  ```
 
 ### 3.3 当前估值口径
 
@@ -92,7 +119,7 @@ SEC 申报日。两者不能互相替代，API 和筛选器必须同时返回它
 `daily_quote` 的每只股票最新行情行组合得到，并至少返回：
 
 - `quote_date`、close、market cap、currency；
-- PE = market cap / net income TTM（TTM 净利润不为正时为 NULL）；
+- PE = market cap / effective_net_income_ttm（TTM 净利润不为正时为 NULL），并返回 basis；
 - PB = market cap / 最近可用 parent equity（净资产不为正时为 NULL）；
 - FCF Yield = FCF TTM / market cap（任一输入缺失或市值非正时为 NULL）；
 - `financial_as_of_date=ttm_report_date` 与 `valuation_as_of_date=quote_date`。
@@ -154,8 +181,26 @@ Phase A 的 universe manifest 固定记录 1,003 只股票及其来源指数。�
 
 比较产物必须记录输入 manifest、selector run、字段覆盖率、行数、差异明细和例外原因。
 收入、净利润、资产、负债、权益、CFO、cash CapEx、FCF 采用精确金额比较；比率允许
-`1e-6` 的绝对误差；报告期、申报日和 accession 必须精确一致。只有列入版本事实缺失
+`1e-15` 的绝对误差；报告期、申报日和 accession 必须精确一致。只有列入版本事实缺失
 清单、且带明确原因的证券才可计为 expected exception；其他差异全部计入 `UNEXPLAINED`。
+
+Phase A 可计入 explained 的 expected reason：
+
+- `SAME`：金额精确相等或比率尾差在 `1e-15` 以内；
+- `NEW_ONLY`：旧表无值，新快照新增能力；
+- `EXPECTED_RESTATEMENT` / `EXPECTED_8K_RECAST`：新值来自更晚申报或 amendment；
+- `OLD_VERSION_SELECTION`：有 tag/accession 证据的旧版选择差异；
+- `OLD_DATA_QUALITY_DIRECT`：旧表 value/accession 与 `us_financial_fact_version` 直接证据不一致；
+- `OLD_LOGIC_FALLBACK`：旧值精确等于新侧允许的 fallback 原始值，且新 canonical 字段为 NULL
+  （如 old net_profit = new.net_income_common 且 new.net_income IS NULL；或 old total_equity =
+  new.total_equity_including_nci 且 new.total_equity IS NULL；或 old net_income_ttm =
+  new.net_income_common_ttm 且 new.net_income_ttm IS NULL）；
+- `OLD_LOGIC_MIXED_BASIS`：新 ROE 因混合口径禁令而为 NULL，旧 ROE 精确等于
+  `net_income_common / total_equity_including_nci`；
+- `INHERITED_FROM_*`：从已解释的底层字段传播到派生比率/FCF，证据强度弱于 DIRECT，
+  报告需单独列示。
+
+`MISSING_MAPPING` 必须补映射或登记为明确 selector exception，不能直接视为验收通过。
 
 ### Phase B：切换读取者
 

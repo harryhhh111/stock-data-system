@@ -554,17 +554,115 @@ CREATE TABLE sync_log (
 
 ## 美股表（独立 schema）
 
-美股使用独立的表结构，DDL 见 `scripts/us_tables.sql`：
+美股使用独立的表结构，DDL 见 `scripts/us_tables.sql` 与 `scripts/us_financial_snapshots.sql`：
 
 | 表名 | 说明 |
 |------|------|
 | `us_income_statement` | 美股利润表（US-GAAP 标签） |
 | `us_balance_sheet` | 美股资产负债表 |
 | `us_cash_flow_statement` | 美股现金流量表 |
+| `us_financial_current_annual` | 版本层 current annual 快照（latest-restated） |
+| `us_financial_current_ttm` | 版本层 current TTM 快照（latest-restated） |
 
 美股物化视图：`mv_us_financial_indicator`、`mv_us_indicator_ttm`（见 `scripts/materialized_views.sql`）。
 
 > A 股/港股与美股字段差异较大（US-GAAP vs 中国会计准则），因此保持独立表结构。
+
+### `us_financial_current_annual`
+
+每只股票最近 5 个正式年度，由 `scripts/project_us_financial_snapshots.py` 从
+`latest-restated` selector 生成。
+
+```sql
+CREATE TABLE IF NOT EXISTS us_financial_current_annual (
+    stock_code              VARCHAR(20) NOT NULL,
+    report_date             DATE NOT NULL,
+    filed_date              DATE,
+    accession_no            VARCHAR(30),
+    form                    VARCHAR(20),
+
+    revenues                NUMERIC,
+    net_income              NUMERIC,   -- consolidated net income (native)
+    net_income_common       NUMERIC,   -- common/attributable net income (raw)
+
+    total_assets            NUMERIC,
+    total_liabilities       NUMERIC,
+    total_equity            NUMERIC,   -- parent equity (native)
+    total_equity_including_nci NUMERIC, -- equity including NCI (raw)
+
+    net_cash_from_operations NUMERIC,
+    capital_expenditures    NUMERIC,
+    fcf                     NUMERIC,   -- = net_cash_from_operations - capital_expenditures
+
+    roe                     NUMERIC,   -- 同口径：net_income / total_equity
+    roa                     NUMERIC,
+    gross_margin            NUMERIC,   -- 优先 gross_profit；可推导自 revenues - COGS
+    operating_margin        NUMERIC,
+    net_margin              NUMERIC,
+    debt_ratio              NUMERIC,
+    current_ratio           NUMERIC,
+    quick_ratio             NUMERIC,
+
+    revenue_yoy             NUMERIC,
+    net_profit_yoy          NUMERIC,
+
+    eps_basic               NUMERIC,
+    eps_diluted             NUMERIC,
+    book_value_per_share    NUMERIC,   -- = total_equity / weighted_avg_shares_basic
+
+    selector_basis          VARCHAR(20) NOT NULL DEFAULT 'latest-restated',
+    projection_run_id       UUID,
+    quality_flags           TEXT[] NOT NULL DEFAULT '{}',
+    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_us_financial_current_annual
+        PRIMARY KEY (stock_code, report_date)
+);
+```
+
+关键语义：
+
+- `total_equity` / `net_income` 为原生口径，不互相回填；
+- 允许的同口径 fallback 会写入 `quality_flags`（如 `roe_equity_including_nci_fallback`、
+  `net_income_common_fallback`、`gross_profit_derived_from_cogs`）；
+- `net_income_common / total_equity_including_nci` 组合被明确拒绝，并打
+  `roe_mixed_basis_rejected`。
+
+### `us_financial_current_ttm`
+
+每只股票一行最新 TTM。
+
+```sql
+CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
+    stock_code              VARCHAR(20) PRIMARY KEY,
+
+    ttm_report_date         DATE NOT NULL,
+    ttm_filed_date          DATE,
+    ttm_accession_no        VARCHAR(30),
+    revenue_ttm             NUMERIC,
+    net_income_ttm          NUMERIC,   -- consolidated net income TTM (native)
+    net_income_common_ttm   NUMERIC,   -- common net income TTM (raw)
+    cfo_ttm                 NUMERIC,
+    capex_ttm               NUMERIC,
+    fcf_ttm                 NUMERIC,   -- = cfo_ttm - capex_ttm
+
+    equity_report_date      DATE,
+    equity_filed_date       DATE,
+    equity_accession_no     VARCHAR(30),
+    total_equity            NUMERIC,   -- parent equity
+
+    projection_run_id       UUID,
+    quality_flags           TEXT[] NOT NULL DEFAULT '{}',
+    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+关键语义：
+
+- `net_income_ttm` 与 `net_income_common_ttm` 分别独立计算，组件不混用；
+- native 缺失、common 完整时，打 `ttm_net_income_native_missing_common_available`；
+- 未来读取者 effective 利润分子：`COALESCE(net_income_ttm, net_income_common_ttm)`，
+  并返回 `basis = consolidated | common`。
 
 ## 校验结果表
 

@@ -84,6 +84,10 @@ class Reason:
     OLD_VERSION_SELECTION = "OLD_VERSION_SELECTION"
     # 旧表数据质量问题（直接证据：旧 accession/tag/value 与事实版本不一致）
     OLD_DATA_QUALITY_DIRECT = "OLD_DATA_QUALITY_DIRECT"
+    # 旧宽表使用新层允许 fallback 口径导致的可解释差异
+    OLD_LOGIC_FALLBACK = "OLD_LOGIC_FALLBACK"
+    # 旧宽表使用新层明确拒绝的混合口径（如 net_income_common / total_equity_including_nci）
+    OLD_LOGIC_MIXED_BASIS = "OLD_LOGIC_MIXED_BASIS"
     # 以下为由底层字段传播得到的推断类原因，证据强度弱于 DIRECT
     INHERITED_FROM_NET_PROFIT = "INHERITED_FROM_NET_PROFIT"
     INHERITED_FROM_REVENUE = "INHERITED_FROM_REVENUE"
@@ -122,6 +126,10 @@ class ComparisonRow:
     numerator_standard_field: str | None = None
     old_numerator_value: Decimal | None = None
     new_numerator_value: Decimal | None = None
+    # fallback 证据（OLD_LOGIC_* 使用）
+    fallback_field: str | None = None
+    fallback_value: Decimal | None = None
+    basis: str | None = None
 
 
 @dataclass
@@ -156,6 +164,7 @@ class ComparisonResult:
                 "old_value", "new_value", "abs_diff", "rel_diff_pct", "reason",
                 "old_accession", "new_accession", "old_filed", "new_filed",
                 "old_tag", "new_tag", "quality_flags",
+                "fallback_field", "fallback_value", "basis",
             ])
             for r in rows_to_write:
                 writer.writerow([
@@ -174,6 +183,9 @@ class ComparisonResult:
                     r.old_tag or "",
                     r.new_tag or "",
                     ",".join(r.quality_flags),
+                    r.fallback_field or "",
+                    str(r.fallback_value) if r.fallback_value is not None else "",
+                    r.basis or "",
                 ])
 
     def to_markdown_summary(self) -> str:
@@ -211,6 +223,8 @@ class ComparisonResult:
             reason_stats.get(Reason.SAME, 0)
             + reason_stats.get(Reason.OLD_VERSION_SELECTION, 0)
             + reason_stats.get(Reason.OLD_DATA_QUALITY_DIRECT, 0)
+            + reason_stats.get(Reason.OLD_LOGIC_FALLBACK, 0)
+            + reason_stats.get(Reason.OLD_LOGIC_MIXED_BASIS, 0)
             + reason_stats.get(Reason.EXPECTED_RESTATEMENT, 0)
             + reason_stats.get(Reason.EXPECTED_8K_RECAST, 0)
             + reason_stats.get(Reason.NEW_ONLY, 0)
@@ -236,6 +250,8 @@ class ComparisonResult:
         lines.append("")
         lines.append("**Note:** `OLD_VERSION_SELECTION` requires tag/accession evidence from `us_financial_fact_version`. ")
         lines.append("`OLD_DATA_QUALITY_DIRECT` means the old table's value/accession is inconsistent with `us_financial_fact_version` based on direct tag/value evidence. ")
+        lines.append("`OLD_LOGIC_FALLBACK` means the old value exactly matches an allowed fallback field in the new snapshot while the canonical new field is NULL (e.g., old net_profit = new.net_income_common when new.net_income IS NULL). ")
+        lines.append("`OLD_LOGIC_MIXED_BASIS` means the old value exactly matches a combination that the new snapshot explicitly rejects (e.g., net_income_common / total_equity_including_nci for ROE). ")
         lines.append("`INHERITED_FROM_*` reasons are inferred by propagating a resolved reason from an underlying field to a derived ratio/FCF; they are weaker evidence than DIRECT and are listed separately. ")
         lines.append("`MISSING_MAPPING` means old table has a value but the new snapshot is NULL without a specific selector flag; ")
         lines.append("per the retirement plan these must be resolved with mapping or registered as explicit selector exceptions, not treated as automatically acceptable.")
@@ -296,6 +312,8 @@ def _all_reasons() -> list[str]:
         Reason.EXPECTED_8K_RECAST,
         Reason.OLD_VERSION_SELECTION,
         Reason.OLD_DATA_QUALITY_DIRECT,
+        Reason.OLD_LOGIC_FALLBACK,
+        Reason.OLD_LOGIC_MIXED_BASIS,
         Reason.INHERITED_FROM_NET_PROFIT,
         Reason.INHERITED_FROM_REVENUE,
         Reason.INHERITED_FROM_CFO,
@@ -500,7 +518,9 @@ def fetch_new_annual(stock_codes: list[str] | None = None) -> pd.DataFrame:
         form as new_form,
         revenues as new_revenue,
         net_income as new_net_profit,
+        net_income_common as new_net_profit_common,
         total_equity as new_total_equity,
+        total_equity_including_nci as new_total_equity_including_nci,
         total_assets as new_total_assets,
         total_liabilities as new_total_liabilities,
         net_cash_from_operations as new_operating_cash_flow,
@@ -521,10 +541,10 @@ def fetch_new_annual(stock_codes: list[str] | None = None) -> pd.DataFrame:
         df = pd.read_sql(sql, conn, params=params)
 
     numeric_cols = [
-        "new_revenue", "new_net_profit", "new_total_equity", "new_total_assets",
-        "new_total_liabilities", "new_operating_cash_flow", "new_capex", "new_fcf",
-        "new_roe", "new_roa", "new_gross_margin", "new_operating_margin",
-        "new_net_margin", "new_debt_ratio",
+        "new_revenue", "new_net_profit", "new_net_profit_common", "new_total_equity",
+        "new_total_equity_including_nci", "new_total_assets", "new_total_liabilities",
+        "new_operating_cash_flow", "new_capex", "new_fcf", "new_roe", "new_roa",
+        "new_gross_margin", "new_operating_margin", "new_net_margin", "new_debt_ratio",
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -550,6 +570,7 @@ def fetch_new_ttm(stock_codes: list[str] | None = None) -> pd.DataFrame:
         ttm_accession_no as new_accession,
         revenue_ttm as new_revenue_ttm,
         net_income_ttm as new_net_income_ttm,
+        net_income_common_ttm as new_net_income_common_ttm,
         cfo_ttm as new_cfo_ttm,
         capex_ttm as new_capex_ttm,
         fcf_ttm as new_fcf_ttm,
@@ -560,7 +581,8 @@ def fetch_new_ttm(stock_codes: list[str] | None = None) -> pd.DataFrame:
     with Connection() as conn:
         df = pd.read_sql(sql, conn, params=params)
 
-    for col in ["new_revenue_ttm", "new_net_income_ttm", "new_cfo_ttm", "new_capex_ttm", "new_fcf_ttm"]:
+    for col in ["new_revenue_ttm", "new_net_income_ttm", "new_net_income_common_ttm",
+                "new_cfo_ttm", "new_capex_ttm", "new_fcf_ttm"]:
         if col in df.columns:
             df[col] = df[col].apply(_to_decimal)
 
@@ -879,6 +901,119 @@ def propagate_reasons_to_ratios(rows: list[ComparisonRow]) -> list[ComparisonRow
     return rows
 
 
+def _classify_annual_old_logic_fallbacks(
+    rows: list[ComparisonRow],
+    merged_df: pd.DataFrame,
+) -> list[ComparisonRow]:
+    """对年度差异应用旧逻辑 fallback / mixed-basis 分类。
+
+    仅处理仍未被解释的 MISSING_MAPPING / UNEXPLAINED 行，要求旧值精确等于新侧
+    允许的 fallback 值（金额严格相等，比率允许 RATIO_ABS_TOL 尾差）。
+    """
+    for row in rows:
+        if row.reason not in (Reason.MISSING_MAPPING, Reason.UNEXPLAINED):
+            continue
+
+        sub = merged_df[merged_df["stock_code"] == row.stock_code]
+        if sub.empty:
+            continue
+        r = sub.iloc[0]
+
+        # 同报告期校验：期间不同的“值相同”只是巧合，不认定为旧逻辑 fallback
+        old_rd = _to_date(r.get("old_report_date"))
+        new_rd = _to_date(r.get("new_report_date"))
+        if old_rd is None or new_rd is None or old_rd != new_rd:
+            continue
+
+        if row.field == "net_profit":
+            old_v = row.old_value
+            new_canonical = _to_decimal(r.get("new_net_profit"))
+            new_fallback = _to_decimal(r.get("new_net_profit_common"))
+            if (
+                new_canonical is None
+                and new_fallback is not None
+                and old_v is not None
+                and _is_same(old_v, new_fallback)
+            ):
+                row.reason = Reason.OLD_LOGIC_FALLBACK
+                row.fallback_field = "net_income_common"
+                row.fallback_value = new_fallback
+                row.basis = "net_income_common"
+                row.quality_flags = []
+
+        elif row.field == "total_equity":
+            old_v = row.old_value
+            new_canonical = _to_decimal(r.get("new_total_equity"))
+            new_fallback = _to_decimal(r.get("new_total_equity_including_nci"))
+            if (
+                new_canonical is None
+                and new_fallback is not None
+                and old_v is not None
+                and _is_same(old_v, new_fallback)
+            ):
+                row.reason = Reason.OLD_LOGIC_FALLBACK
+                row.fallback_field = "total_equity_including_nci"
+                row.fallback_value = new_fallback
+                row.basis = "total_equity_including_nci"
+                row.quality_flags = []
+
+        elif row.field == "roe":
+            old_v = row.old_value
+            new_canonical = _to_decimal(r.get("new_roe"))
+            nic = _to_decimal(r.get("new_net_profit_common"))
+            tei = _to_decimal(r.get("new_total_equity_including_nci"))
+            if new_canonical is None and nic is not None and tei is not None and tei != 0:
+                mixed = nic / tei
+                if old_v is not None and _is_same(old_v, mixed, is_ratio=True):
+                    row.reason = Reason.OLD_LOGIC_MIXED_BASIS
+                    row.fallback_field = "net_income_common / total_equity_including_nci"
+                    row.fallback_value = mixed
+                    row.basis = "common_income / equity_including_nci"
+                    row.quality_flags = []
+
+    return rows
+
+
+def _classify_ttm_old_logic_fallbacks(
+    rows: list[ComparisonRow],
+    merged_df: pd.DataFrame,
+) -> list[ComparisonRow]:
+    """对 TTM 净利润差异应用旧逻辑 fallback 分类。"""
+    for row in rows:
+        if row.reason not in (Reason.MISSING_MAPPING, Reason.UNEXPLAINED):
+            continue
+        if row.field != "net_income_ttm":
+            continue
+
+        sub = merged_df[merged_df["stock_code"] == row.stock_code]
+        if sub.empty:
+            continue
+        r = sub.iloc[0]
+
+        # 同 TTM 截止期校验：期间不同的“值相同”只是巧合，不认定为旧逻辑 fallback
+        old_rd = _to_date(r.get("ttm_report_date"))
+        new_rd = _to_date(r.get("new_report_date"))
+        if old_rd is None or new_rd is None or old_rd != new_rd:
+            continue
+
+        old_v = row.old_value
+        new_canonical = _to_decimal(r.get("new_net_income_ttm"))
+        new_fallback = _to_decimal(r.get("new_net_income_common_ttm"))
+        if (
+            new_canonical is None
+            and new_fallback is not None
+            and old_v is not None
+            and _is_same(old_v, new_fallback)
+        ):
+            row.reason = Reason.OLD_LOGIC_FALLBACK
+            row.fallback_field = "net_income_common_ttm"
+            row.fallback_value = new_fallback
+            row.basis = "net_income_common_ttm"
+            row.quality_flags = []
+
+    return rows
+
+
 def classify_diff(
     old_val: Decimal | None,
     new_val: Decimal | None,
@@ -1104,6 +1239,15 @@ def run_comparison(stock_codes: list[str] | None = None) -> ComparisonResult:
 
     annual_rows = _compare_annual(old_annual, new_annual)
     ttm_rows = _compare_ttm(old_ttm, new_ttm)
+
+    # 旧逻辑 fallback / mixed-basis 分类（必须在 enrich 之前，优先判断精确证据）
+    logger.info("Classifying old-logic fallback / mixed-basis differences...")
+    annual_rows = _classify_annual_old_logic_fallbacks(
+        annual_rows, pd.merge(old_annual, new_annual, on="stock_code", how="outer")
+    )
+    ttm_rows = _classify_ttm_old_logic_fallbacks(
+        ttm_rows, pd.merge(old_ttm, new_ttm, on="stock_code", how="outer")
+    )
 
     all_rows = annual_rows + ttm_rows
 
