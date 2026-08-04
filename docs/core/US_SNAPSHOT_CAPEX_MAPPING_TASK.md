@@ -261,3 +261,19 @@ ARE、DTE、FR、LYFT、NEE、REG。
    受影响股票清单，确认不会因新映射改变已有正确值；
 4. 映射变更会改变全市场事实层，不只这 25 只——重跑后对比报告的 `SAME` 数不得下降，
    若下降必须逐条解释。
+
+## 11. 已知小瑕疵（不阻塞 #5 验收，留待后续收口）
+
+1. **GLW 类修复股票的 capex 差异归类语义偏差**。本轮 rerun 中 AMH/EOG/GLW/UDR/WEC 等
+   漏 ingest 型 capex 行被归因为 `OLD_VERSION_SELECTION`，而按 §4.1 本意应为
+   `OLD_DATA_QUALITY_DIRECT`（旧表使用了非现金 `CapitalExpendituresIncurredButNotYetPaid`，
+   不是“旧版本选择”）。证据 tag 已在台账中，仅需调整分类通道，不影响数值结论。
+
+2. **台账文字对 D/RYN 的证据描述过满**。D 在 companyfacts 中并非“全命名空间无现金 tag”，
+   而是存在 `PaymentsToAcquireProjects`（FY2025 仅 1,200 万），金额上不能作为年度主 capex，
+   结论成立但措辞应改为“无足够年度现金 capex”；RYN 是 FY2025 无值而 FY2024 有
+   `PaymentsToAcquireProductiveAssets`，按期间结论成立，但应明确“近期年度无可用值”。
+
+3. **真无披露项的 10-K 原文复核未全部完成**。§10.3 已要求登记 exception 前核对近年 10-K
+   现金流量表原文，当前台账主要引用 companyfacts；对 NEE 等存在带维度披露可能的公司
+   属于高风险案例，需在 #6 或 exception 最终收口前补做原文核对。
