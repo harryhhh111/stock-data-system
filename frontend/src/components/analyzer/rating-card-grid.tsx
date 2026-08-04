@@ -32,7 +32,7 @@ function ratingBg(rating: number | null): string {
 
 export function RatingCardGrid({ items }: Props) {
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {items.map((item) => (
         <Card key={item.label} className={cn("border-l-4", ratingBg(item.rating))}>
           <CardContent className="p-3 space-y-1">
