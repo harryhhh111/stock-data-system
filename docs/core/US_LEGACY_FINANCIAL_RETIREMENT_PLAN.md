@@ -199,6 +199,12 @@ Phase A 可计入 explained 的 expected reason：
   `net_income_common / total_equity_including_nci`；
 - `INHERITED_FROM_*`：从已解释的底层字段传播到派生比率/FCF，证据强度弱于 DIRECT，
   报告需单独列示。
+- `REGISTERED_EXCEPTION`：已登记 selector exception，必须同时满足：
+  - `stock_code` / `report_date` / `field` 精确匹配清单；
+  - 旧值非 NULL 且新值为 NULL；
+  - 正常 base reason 属于该条目允许的 reason（如 `MISSING_MAPPING`、`MISSING_COMPONENT`、
+    `PERIOD_MISMATCH`）；
+  - CSV 中保存了具体原因、原文或版本层证据引用。
 
 `MISSING_MAPPING` 必须补映射或登记为明确 selector exception，不能直接视为验收通过。
 

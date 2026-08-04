@@ -147,7 +147,7 @@ class TestClassifyDiff:
         assert CMP.classify_diff(Decimal("10000000"), Decimal("20000000"), old_meta, new_meta, []) == CMP.Reason.UNEXPLAINED
 
     def test_registered_exception_exact_match(self):
-        exceptions = {("X", "2025-12-31", "capex")}
+        exceptions = {("X", "2025-12-31", "capex"): {"MISSING_MAPPING"}}
         assert (
             CMP.classify_diff(
                 Decimal("100"),
@@ -162,7 +162,7 @@ class TestClassifyDiff:
         )
 
     def test_registered_exception_no_match_stays_missing_mapping(self):
-        exceptions = {("X", "2025-12-31", "capex")}
+        exceptions = {("X", "2025-12-31", "capex"): {"MISSING_MAPPING"}}
         assert (
             CMP.classify_diff(
                 Decimal("100"),
@@ -183,23 +183,93 @@ class TestLoadRegisteredExceptions:
     def test_loads_csv(self, tmp_path):
         csv_path = tmp_path / "exceptions.csv"
         csv_path.write_text(
-            "stock_code,report_date,field,reason,evidence_ref,registered_at\n"
-            "ARE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,ledger,2026-08-04\n"
-            "PSKY,2025-12-31,revenue,FISCAL_YEAR_CHANGE_STUB,ledger,2026-08-04\n"
+            "stock_code,report_date,field,reason,allowed_base_reason,evidence_ref,registered_at\n"
+            "ARE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,MISSING_MAPPING,ledger,2026-08-04\n"
+            "PSKY,2025-12-31,revenue,FISCAL_YEAR_CHANGE_STUB,MISSING_MAPPING,ledger,2026-08-04\n"
         )
         result = CMP.load_registered_exceptions(csv_path)
         assert result == {
-            ("ARE", "2025-12-31", "capex"),
-            ("PSKY", "2025-12-31", "revenue"),
+            ("ARE", "2025-12-31", "capex"): {"MISSING_MAPPING"},
+            ("PSKY", "2025-12-31", "revenue"): {"MISSING_MAPPING"},
         }
 
     def test_empty_for_missing_file(self, tmp_path, caplog):
         result = CMP.load_registered_exceptions(tmp_path / "missing.csv")
-        assert result == set()
+        assert result == {}
         assert "not found" in caplog.text.lower()
 
     def test_empty_for_none(self):
-        assert CMP.load_registered_exceptions(None) == set()
+        assert CMP.load_registered_exceptions(None) == {}
+
+
+# ── registered exception contract ───────────────────────────────
+
+class TestRegisteredExceptionContract:
+    def _registry(self):
+        return {
+            ("X", "2025-12-31", "capex"): {"MISSING_MAPPING"},
+            ("Y", "2025-12-31", "revenue_ttm"): {"PERIOD_MISMATCH"},
+        }
+
+    def test_old_null_new_value_rejected(self):
+        """exception 命中但 old 为 NULL、new 有值：不得豁免，应返回 NEW_ONLY。"""
+        assert (
+            CMP.classify_diff(
+                None,
+                Decimal("100"),
+                {},
+                {},
+                [],
+                exception_key=("X", "2025-12-31", "capex"),
+                exceptions=self._registry(),
+            )
+            == CMP.Reason.NEW_ONLY
+        )
+
+    def test_both_values_differ_rejected(self):
+        """exception 命中但双方都有值且不一致：不得豁免，应保持 UNEXPLAINED。"""
+        assert (
+            CMP.classify_diff(
+                Decimal("100"),
+                Decimal("200"),
+                {},
+                {},
+                [],
+                exception_key=("X", "2025-12-31", "capex"),
+                exceptions=self._registry(),
+            )
+            == CMP.Reason.UNEXPLAINED
+        )
+
+    def test_base_reason_mismatch_rejected(self):
+        """exception 命中但 base reason 不在允许集合：不得豁免。"""
+        assert (
+            CMP.classify_diff(
+                Decimal("100"),
+                None,
+                {},
+                {},
+                ["missing_component_capex"],
+                exception_key=("X", "2025-12-31", "capex"),
+                exceptions=self._registry(),
+            )
+            == CMP.Reason.MISSING_COMPONENT
+        )
+
+    def test_period_mismatch_reason_allowed(self):
+        """允许 base reason 与白名单一致时改判为 REGISTERED_EXCEPTION。"""
+        assert (
+            CMP.classify_diff(
+                Decimal("100"),
+                None,
+                {},
+                {},
+                ["period_mismatch"],
+                exception_key=("Y", "2025-12-31", "revenue_ttm"),
+                exceptions=self._registry(),
+            )
+            == CMP.Reason.REGISTERED_EXCEPTION
+        )
 
 
 # ── enrich_with_evidence ──────────────────────────────────────

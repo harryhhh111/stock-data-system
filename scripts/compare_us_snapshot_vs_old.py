@@ -619,13 +619,18 @@ def _flags_to_list(flags: Any) -> list[str]:
     return []
 
 
-def load_registered_exceptions(path: Path | str | None) -> set[tuple[str, str, str]]:
+def load_registered_exceptions(
+    path: Path | str | None,
+) -> dict[tuple[str, str, str], set[str]]:
     """加载 Phase A selector exception 清单。
 
-    CSV 列：stock_code, report_date, field, reason, evidence_ref, registered_at
-    返回精确匹配键集合：(stock_code, report_date, field)
+    CSV 列：stock_code, report_date, field, reason, allowed_base_reason,
+            evidence_ref, registered_at
+    返回 key -> 允许的 base reason 集合。只有同时满足以下条件时才生效：
+      - old_val 非 NULL，new_val 为 NULL；
+      - 正常分类后的 base reason 属于该 key 允许的 reason 集合。
     """
-    exceptions: set[tuple[str, str, str]] = set()
+    exceptions: dict[tuple[str, str, str], set[str]] = {}
     if not path:
         return exceptions
     p = Path(path)
@@ -638,8 +643,14 @@ def load_registered_exceptions(path: Path | str | None) -> set[tuple[str, str, s
             stock = (row.get("stock_code") or "").strip().upper()
             report_date = (row.get("report_date") or "").strip()
             field = (row.get("field") or "").strip()
-            if stock and report_date and field:
-                exceptions.add((stock, report_date, field))
+            allowed = {
+                r.strip().upper()
+                for r in (row.get("allowed_base_reason") or "").split(",")
+                if r.strip()
+            }
+            if stock and report_date and field and allowed:
+                key = (stock, report_date, field)
+                exceptions.setdefault(key, set()).update(allowed)
     logger.info("Loaded %d registered exceptions from %s", len(exceptions), p)
     return exceptions
 
@@ -1050,13 +1061,34 @@ def classify_diff(
     new_meta: dict,
     quality_flags: list[str],
     is_ratio: bool = False,
-    exceptions: set[tuple[str, str, str]] | None = None,
+    exceptions: dict[tuple[str, str, str], set[str]] | None = None,
     exception_key: tuple[str, str, str] | None = None,
 ) -> str:
     """判断单条差异原因。"""
-    if exceptions and exception_key in exceptions:
+    # 先计算正常 base reason，再判断 exception 是否适用
+    base_reason = _classify_diff_base(
+        old_val, new_val, old_meta, new_meta, quality_flags, is_ratio=is_ratio
+    )
+    if (
+        exceptions
+        and exception_key in exceptions
+        and old_val is not None
+        and new_val is None
+        and base_reason.upper() in exceptions[exception_key]
+    ):
         return Reason.REGISTERED_EXCEPTION
+    return base_reason
 
+
+def _classify_diff_base(
+    old_val: Decimal | None,
+    new_val: Decimal | None,
+    old_meta: dict,
+    new_meta: dict,
+    quality_flags: list[str],
+    is_ratio: bool = False,
+) -> str:
+    """不含 exception 的正常差异分类。"""
     if old_val is None and new_val is None:
         return Reason.SAME
 
@@ -1104,7 +1136,7 @@ def classify_diff(
 def _compare_annual(
     old_df: pd.DataFrame,
     new_df: pd.DataFrame,
-    exceptions: set[tuple[str, str, str]] | None = None,
+    exceptions: dict[tuple[str, str, str], set[str]] | None = None,
 ) -> list[ComparisonRow]:
     rows: list[ComparisonRow] = []
 
@@ -1198,7 +1230,7 @@ def _compare_annual(
 def _compare_ttm(
     old_df: pd.DataFrame,
     new_df: pd.DataFrame,
-    exceptions: set[tuple[str, str, str]] | None = None,
+    exceptions: dict[tuple[str, str, str], set[str]] | None = None,
 ) -> list[ComparisonRow]:
     rows: list[ComparisonRow] = []
 
@@ -1263,7 +1295,7 @@ def _get_stock_universe() -> list[str]:
 
 def run_comparison(
     stock_codes: list[str] | None = None,
-    exceptions: set[tuple[str, str, str]] | None = None,
+    exceptions: dict[tuple[str, str, str], set[str]] | None = None,
 ) -> ComparisonResult:
     if stock_codes is None:
         stock_codes = _get_stock_universe()
