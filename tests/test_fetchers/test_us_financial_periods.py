@@ -83,6 +83,106 @@ def test_other_productive_assets_is_cash_capex():
     assert records[0]["capital_expenditures"] == 17_011_000_000
 
 
+@pytest.mark.parametrize("tag", [
+    "PaymentsForCapitalImprovements",
+    "PaymentsToAcquireBuildings",
+    "PaymentsToAcquireWasteWaterSystems",
+    "PaymentsToAcquireOilAndGasPropertyAndEquipment",
+    "PaymentsToAcquireOilAndGasProperty",
+    "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+])
+def test_industry_specific_cash_capex_tags_are_extracted(tag):
+    """Phase A CapEx 映射修复：行业特定现金 CapEx tag 应被正常提取为 capital_expenditures。"""
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
+
+    facts = {
+        "cik": "0000000001",
+        "facts": {
+            "us-gaap": {
+                tag: {
+                    "units": {
+                        "USD": [{
+                            "val": 123_456_000,
+                            "start": "2025-01-01",
+                            "end": "2025-12-31",
+                            "fp": "FY",
+                            "fy": 2025,
+                            "form": "10-K",
+                            "filed": "2026-02-20",
+                            "accn": "0000000001-26-000001",
+                            "frame": "CY2025",
+                        }]
+                    }
+                },
+            }
+        },
+    }
+    fetcher = USFinancialFetcher()
+    df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+    records = USGAAPTransformer().transform_cashflow(
+        df,
+        stock_code="TEST",
+        cik="0000000001",
+    )
+
+    assert len(records) == 1
+    assert records[0]["capital_expenditures"] == 123_456_000
+
+
+def test_payments_for_capital_improvements_wins_over_unpaid_capex():
+    """GLW 型：同一 filing 内同时存在现金 CapEx 与应计 CapEx 时，selector 应选现金 tag。"""
+    from core.fetchers.us_financial import USFinancialFetcher
+    from core.transformers.us_gaap import USGAAPTransformer
+
+    facts = {
+        "cik": "0000024741",
+        "facts": {
+            "us-gaap": {
+                "PaymentsForCapitalImprovements": {
+                    "units": {
+                        "USD": [{
+                            "val": 1_282_000_000,
+                            "start": "2025-01-01",
+                            "end": "2025-12-31",
+                            "fp": "FY",
+                            "fy": 2025,
+                            "form": "10-K",
+                            "filed": "2026-02-12",
+                            "accn": "0000024741-26-000124",
+                            "frame": "CY2025",
+                        }]
+                    }
+                },
+                "CapitalExpendituresIncurredButNotYetPaid": {
+                    "units": {
+                        "USD": [{
+                            "val": 241_000_000,
+                            "start": "2025-01-01",
+                            "end": "2025-12-31",
+                            "fp": "FY",
+                            "fy": 2025,
+                            "form": "10-K",
+                            "filed": "2026-02-12",
+                            "accn": "0000024741-26-000124",
+                            "frame": "CY2025",
+                        }]
+                    }
+                },
+            }
+        },
+    }
+    fetcher = USFinancialFetcher()
+    df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS)
+    records = USGAAPTransformer().transform_cashflow(
+        df,
+        stock_code="GLW",
+        cik="0000024741",
+    )
+
+    assert records[0]["capital_expenditures"] == 1_282_000_000
+
+
 # ── Q4I Instant Frame (PLTR 10-K) ──────────────────────────
 
 

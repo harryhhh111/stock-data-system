@@ -219,6 +219,13 @@ CASHFLOW_TAG_PRIORITY: dict[str, list[str]] = {
         "PaymentsToAcquireOtherProductiveAssets",
         "PaymentsToAcquireProductiveAssets",
         "CapitalExpenditures",
+        # Cash CapEx tags disclosed by industry-specific issuers (e.g. REITs, utilities, oil & gas)
+        "PaymentsForCapitalImprovements",
+        "PaymentsToAcquireBuildings",
+        "PaymentsToAcquireWasteWaterSystems",
+        "PaymentsToAcquireOilAndGasPropertyAndEquipment",
+        "PaymentsToAcquireOilAndGasProperty",
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment",
     ],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired"],
     "investment_purchases": [

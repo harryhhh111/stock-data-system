@@ -1,0 +1,31 @@
+stock_code,report_date,field,reason,evidence_ref,registered_at
+ARE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+ARE,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+CMS,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+CMS,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+D,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+D,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+DTE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+DTE,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+FR,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+FR,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+LYFT,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+LYFT,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+NEE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+NEE,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PDD,2024-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PDD,2024-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+REG,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+REG,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+RYN,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+RYN,2025-12-31,fcf,NO_CASH_CAPEX_DISCLOSURE,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,revenue,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,net_profit,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,operating_cash_flow,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,capex,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,fcf,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,roe,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,roa,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,operating_margin,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+PSKY,2025-12-31,net_margin,FISCAL_YEAR_CHANGE_STUB,capex_mapping_ledger.csv; companyfacts_capex_scan.json,2026-08-04
+UHS,2025-12-31,debt_ratio,TOTAL_LIABILITIES_COMPOSITE_TAG,capex_mapping_ledger.csv; us_financial_fact_version UHS total_liabilities composite tag,2026-08-04

@@ -438,6 +438,63 @@ def test_other_productive_assets_capex_tag_is_selectable():
     assert selected[0].value_numeric == 17_011_000_000
 
 
+@pytest.mark.parametrize("tag", [
+    "PaymentsForCapitalImprovements",
+    "PaymentsToAcquireBuildings",
+    "PaymentsToAcquireWasteWaterSystems",
+    "PaymentsToAcquireOilAndGasPropertyAndEquipment",
+    "PaymentsToAcquireOilAndGasProperty",
+    "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+])
+def test_industry_specific_cash_capex_tags_are_selectable(tag):
+    """Phase A CapEx 映射修复：新增行业特定现金 CapEx tag 可被 selector 选择。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="capital_expenditures",
+            value_hash="cash",
+            value_numeric=123_456_000,
+            sec_tag=tag,
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].value_numeric == 123_456_000
+    assert selected[0].sec_tag == tag
+
+
+def test_payments_for_capital_improvements_wins_over_unpaid_capex_in_selector():
+    """GLW 型：selector canonical 优先级应让现金 CapEx 击败应计 CapEx。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="capital_expenditures",
+            value_hash="unpaid",
+            value_numeric=241_000_000,
+            sec_tag="CapitalExpendituresIncurredButNotYetPaid",
+        ),
+        _fact(
+            2,
+            standard_field="capital_expenditures",
+            value_hash="cash",
+            value_numeric=1_282_000_000,
+            sec_tag="PaymentsForCapitalImprovements",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["GLW"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].fact_version_id == 2
+    assert selected[0].value_numeric == 1_282_000_000
+
+
 def test_tag_priority_does_not_discard_cross_accession_migration():
     selector = USFactSelector()
     facts = [

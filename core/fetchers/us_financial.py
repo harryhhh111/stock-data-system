@@ -656,6 +656,13 @@ class USFinancialFetcher(BaseFetcher):
         "PaymentsToAcquirePropertyPlantAndEquipmentNetOfAccumulatedDepreciationAndAmortization": "capital_expenditures",
         "PaymentsToAcquireOtherProductiveAssets": "capital_expenditures",
         "PaymentsToAcquireProductiveAssets": "capital_expenditures",
+        # Cash CapEx tags disclosed by industry-specific issuers (e.g. REITs, utilities, oil & gas)
+        "PaymentsForCapitalImprovements": "capital_expenditures",
+        "PaymentsToAcquireBuildings": "capital_expenditures",
+        "PaymentsToAcquireWasteWaterSystems": "capital_expenditures",
+        "PaymentsToAcquireOilAndGasPropertyAndEquipment": "capital_expenditures",
+        "PaymentsToAcquireOilAndGasProperty": "capital_expenditures",
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment": "capital_expenditures",
         # Acquisitions
         "PaymentsToAcquireBusinessesNetOfCashAcquired": "acquisitions",
         # Investments
