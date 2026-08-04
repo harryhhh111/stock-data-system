@@ -51,9 +51,15 @@ def _legacy_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         SELECT s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
                fy.trade_date, fy.close, fy.market_cap, fy.pe_ttm, fy.pb, fy.fcf_yield,
                fy.fcf_ttm, fy.revenue_ttm, fy.net_profit_ttm, fy.cfo_ttm,
-               fy.ttm_report_date
+               fy.ttm_report_date,
+               t.filed_date AS ttm_notice_date
         FROM stock_info s
         LEFT JOIN mv_us_fcf_yield fy ON s.stock_code = fy.stock_code
+        LEFT JOIN LATERAL (
+            SELECT filed_date FROM mv_us_indicator_ttm
+            WHERE stock_code = s.stock_code
+            ORDER BY report_date DESC LIMIT 1
+        ) t ON true
         WHERE s.stock_code = %s AND s.market = %s
     """
     sql_fallback = """
@@ -112,9 +118,10 @@ def _legacy_ttm_data(stock_code: str) -> pd.DataFrame:
     """获取 TTM 滚动指标。
 
     net_income_ttm 别名为 net_profit_ttm 以保持下游兼容。
+    filed_date 别名为 ttm_notice_date 用于判断数据时效。
     """
     sql = """
-        SELECT report_date, report_type,
+        SELECT report_date, report_type, filed_date AS ttm_notice_date,
                revenue_ttm, net_income_ttm AS net_profit_ttm, cfo_ttm, capex_ttm
         FROM mv_us_indicator_ttm
         WHERE stock_code = %s

@@ -14,6 +14,13 @@ import { fmtMcap, fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
 import type { StrategyStock, FcfRoeResult } from "@/lib/types/strategy";
 
+function formatDataFreshness(s: StrategyStock): string {
+  const report = s.ttm_report_date;
+  const notice = s.ttm_notice_date;
+  if (report && notice) return `${report}（${notice} 公告）`;
+  return report ?? notice ?? "";
+}
+
 function escapeCsv(val: unknown): string {
   const s = String(val ?? "");
   if (/[,"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -40,7 +47,7 @@ function exportCsv(results: StrategyStock[]) {
     s.pb?.toFixed(2) ?? "",
     s.pe_ttm?.toFixed(1) ?? "",
     s.score?.toFixed(2) ?? "",
-    s.stale_warning ? "数据过时" : (s.ttm_report_date ?? ""),
+    s.stale_warning ? "数据过时" : formatDataFreshness(s),
   ]);
   const csv = [headers, ...rows].map((r) => r.map(escapeCsv).join(",")).join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
@@ -163,16 +170,19 @@ const columns: ColumnDef<StrategyStock>[] = [
     size: 80,
     cell: ({ row }) => {
       const stale = row.original.stale_warning;
-      const date = row.original.ttm_report_date;
+      const text = formatDataFreshness(row.original);
       if (stale) {
         return (
-          <Badge variant="outline" className="border-amber-500 text-amber-600 gap-1 text-xs">
-            <AlertTriangle className="h-3 w-3" />
-            数据过时
-          </Badge>
+          <div className="flex flex-col gap-0.5">
+            <Badge variant="outline" className="border-amber-500 text-amber-600 gap-1 text-xs w-fit">
+              <AlertTriangle className="h-3 w-3" />
+              数据过时
+            </Badge>
+            <span className="text-muted-foreground text-xs">{text || "-"}</span>
+          </div>
         );
       }
-      return <span className="text-muted-foreground text-xs">{date ?? "-"}</span>;
+      return <span className="text-muted-foreground text-xs">{text || "-"}</span>;
     },
   },
 ];

@@ -67,7 +67,10 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
         fy.fcf_ttm,
         fy.cfo_ttm AS fcf_cfo_ttm,
         fy.capex_ttm AS fcf_capex_ttm,
-        fy.ttm_report_date
+        fy.ttm_report_date,
+
+        -- TTM 公告日（用于判断数据时效）
+        t.notice_date AS ttm_notice_date
 
     FROM stock_info s
 
@@ -220,7 +223,10 @@ def get_us_universe() -> pd.DataFrame:
         fy.fcf_ttm,
         fy.cfo_ttm AS fcf_cfo_ttm,
         NULL::numeric AS fcf_capex_ttm,
-        fy.ttm_report_date
+        fy.ttm_report_date,
+
+        -- 美股 TTM 申报日（filed_date）用于判断数据时效
+        t.filed_date AS ttm_notice_date
 
     FROM stock_info s
 

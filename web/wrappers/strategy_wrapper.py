@@ -42,7 +42,7 @@ OUTPUT_COLUMNS = [
     "industry", "market_cap", "pe_ttm", "pb",
     "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago",
     "gross_margin", "net_margin", "debt_ratio",
-    "ttm_report_date", "currency",
+    "ttm_report_date", "ttm_notice_date", "currency",
 ]
 
 STALE_DAYS = 180
@@ -58,18 +58,23 @@ MARKET_DEFAULTS = {
 VALID_MARKETS = {"US", "CN_A", "CN_HK"}
 
 
-def _stale_warning(report_date) -> bool:
-    """TTM 数据超过 STALE_DAYS 天视为过时。"""
-    if report_date is None:
+def _stale_warning(report_date, notice_date=None) -> bool:
+    """TTM 数据超过 STALE_DAYS 天视为过时。
+
+    优先按公告日（notice_date/filed_date）判断；没有公告日再回退到报告期。
+    避免年报期末距今天数长、但实际才公告的误导（如港股年报）。
+    """
+    ref = notice_date if notice_date is not None else report_date
+    if ref is None:
         return True
-    if isinstance(report_date, str):
+    if isinstance(ref, str):
         try:
-            report_date = date.fromisoformat(report_date)
+            ref = date.fromisoformat(ref)
         except (ValueError, TypeError):
             return True
-    if isinstance(report_date, datetime):
-        report_date = report_date.date()
-    return (date.today() - report_date).days > STALE_DAYS
+    if isinstance(ref, datetime):
+        ref = ref.date()
+    return (date.today() - ref).days > STALE_DAYS
 
 
 def _to_json_safe(val):
@@ -183,8 +188,10 @@ def run_fcf_roe_strategy(
             if col.endswith("_rank") and col not in OUTPUT_COLUMNS:
                 factor_ranks[col] = _to_json_safe(row[col])
         item["factor_ranks"] = factor_ranks
-        # stale warning
-        item["stale_warning"] = _stale_warning(item.get("ttm_report_date"))
+        # stale warning：优先使用公告日判断
+        item["stale_warning"] = _stale_warning(
+            item.get("ttm_report_date"), item.get("ttm_notice_date")
+        )
         # currency per market
         item["currency"] = "USD" if market == "US" else ("CNY" if market == "CN_A" else "HKD")
         results.append(item)
