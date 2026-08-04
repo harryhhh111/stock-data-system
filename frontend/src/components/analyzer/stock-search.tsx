@@ -27,9 +27,15 @@ export function StockSearch({ market, onSelect }: Props) {
   const searchResults = useQueries({
     queries: [
       {
-        queryKey: ["analyzer", "search", debouncedQuery, "CN"],
+        queryKey: ["analyzer", "search", debouncedQuery, "CN_A"],
         queryFn: () => analyzerApi.search(debouncedQuery, "CN_A"),
-        enabled: debouncedQuery.length >= 2 && (market === "all" || market === "CN_A" || market === "CN_HK"),
+        enabled: debouncedQuery.length >= 2 && (market === "all" || market === "CN_A"),
+        staleTime: 60_000,
+      },
+      {
+        queryKey: ["analyzer", "search", debouncedQuery, "CN_HK"],
+        queryFn: () => analyzerApi.search(debouncedQuery, "CN_HK"),
+        enabled: debouncedQuery.length >= 2 && (market === "all" || market === "CN_HK"),
         staleTime: 60_000,
       },
       {
@@ -42,11 +48,13 @@ export function StockSearch({ market, onSelect }: Props) {
   });
 
   const results = useMemo(() => {
-    const cn = searchResults[0].data ?? [];
-    const us = searchResults[1].data ?? [];
+    const cnA = searchResults[0].data ?? [];
+    const cnHk = searchResults[1].data ?? [];
+    const us = searchResults[2].data ?? [];
     if (market === "US") return us;
-    if (market !== "all") return cn;
-    return [...cn, ...us];
+    if (market === "CN_A") return cnA;
+    if (market === "CN_HK") return cnHk;
+    return [...cnA, ...cnHk, ...us];
   }, [searchResults, market]);
 
   const handleSelect = useCallback((stock: StockSearchResult) => {
