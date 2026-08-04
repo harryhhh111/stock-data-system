@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAnalyzerStore } from "@/lib/store/analyzer-store";
 import { PageHeader } from "@/components/layout/page-header";
-import { LineChart } from "lucide-react";
+import { LineChart, AlertTriangle } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
 import { fmtMcap, fmtPct, fmtYi } from "@/lib/utils/format";
@@ -142,6 +142,36 @@ export function AnalyzerPage() {
             { label: "财务健康", rating: report.sections.health.rating, star: report.sections.health.star, verdict: report.sections.health.verdict },
             { label: "现金流", rating: report.sections.cashflow.rating, star: report.sections.cashflow.star, verdict: report.sections.cashflow.verdict },
             { label: "估值", rating: report.sections.valuation.rating, star: report.sections.valuation.star, verdict: report.sections.valuation.verdict },
+            {
+              label: "数据时效",
+              rating: null,
+              star: "-",
+              verdict: "",
+              content: (
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <span>报告期</span>
+                    <span className="font-medium tabular-nums">{report.sections.cashflow.details.ttm_report_date ?? "-"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>公告日</span>
+                    <span className="font-medium tabular-nums">{report.sections.cashflow.details.ttm_notice_date ?? "-"}</span>
+                  </div>
+                  <div className="pt-0.5">
+                    {report.sections.cashflow.details.stale_warning ? (
+                      <Badge variant="outline" className="border-amber-500 text-amber-600 gap-1 text-xs">
+                        <AlertTriangle className="h-3 w-3" />
+                        数据过时
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="border-emerald-500 text-emerald-600 text-xs">
+                        数据正常
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ),
+            },
           ]} />
 
           {/* 一次性事项 */}
