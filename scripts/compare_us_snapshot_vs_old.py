@@ -38,6 +38,10 @@ from core.selectors.us_financial import USFactSelector
 # 复用 projection 的 TTM 组件计算逻辑，保证组件重算值与 snapshot 一致
 import project_us_financial_snapshots as _snap
 
+# 默认 52/53 周白名单路径与加载器（与 projection 一致）
+DEFAULT_TTM_52_53_ALLOWLIST_PATH = _snap.DEFAULT_TTM_52_53_ALLOWLIST_PATH
+load_ttm_52_53_allowlist = _snap.load_ttm_52_53_allowlist
+
 logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────────
@@ -1018,9 +1022,14 @@ def _classify_ttm_old_logic_fallbacks(
     rows: list[ComparisonRow],
     merged_df: pd.DataFrame,
 ) -> list[ComparisonRow]:
-    """对 TTM 净利润差异应用旧逻辑 fallback 分类。"""
+    """对 TTM 净利润差异应用旧逻辑 fallback 分类。
+
+    旧表 net_profit_ttm 常常直接取 NetIncomeLossAvailableToCommonStockholdersBasic，
+    而新快照将 net_income_ttm（native/consolidated）与 net_income_common_ttm 严格区分。
+    当 native 缺失、common 可用且旧值与 common 相等时，归为 OLD_LOGIC_FALLBACK。
+    """
     for row in rows:
-        if row.reason not in (Reason.MISSING_MAPPING, Reason.UNEXPLAINED):
+        if row.reason not in (Reason.MISSING_MAPPING, Reason.UNEXPLAINED, Reason.MISSING_COMPONENT):
             continue
         if row.field != "net_income_ttm":
             continue
@@ -1030,10 +1039,14 @@ def _classify_ttm_old_logic_fallbacks(
             continue
         r = sub.iloc[0]
 
-        # 同 TTM 截止期校验：期间不同的“值相同”只是巧合，不认定为旧逻辑 fallback
+        # 同 TTM 截止期校验：期间不同的“值相同”只是巧合，不认定为旧逻辑 fallback。
+        # 旧物化视图可能缺失 ttm_report_date；只要新表有报告期且旧表未提供冲突的期间，
+        # 就不因旧表元数据缺失而拒绝 fallback。
         old_rd = _to_date(r.get("ttm_report_date"))
         new_rd = _to_date(r.get("new_report_date"))
-        if old_rd is None or new_rd is None or old_rd != new_rd:
+        if new_rd is None:
+            continue
+        if old_rd is not None and old_rd != new_rd:
             continue
 
         old_v = row.old_value
@@ -1336,11 +1349,14 @@ def run_comparison(
     logger.info("Enriching unexplained margin ratios with numerator evidence...")
     all_rows = enrich_ratio_with_numerator_evidence(all_rows)
 
+    logger.info("Loading 52/53-week TTM allowlist...")
+    allowlist = load_ttm_52_53_allowlist(DEFAULT_TTM_52_53_ALLOWLIST_PATH)
+
     logger.info("Building TTM component index from projection selector...")
-    ttm_component_index = _build_ttm_component_index(all_rows)
+    ttm_component_index = _build_ttm_component_index(all_rows, allowlist=allowlist)
 
     logger.info("Detecting old-data-quality issues for TTM differences...")
-    all_rows = detect_ttm_old_data_quality(all_rows, ttm_component_index)
+    all_rows = detect_ttm_old_data_quality(all_rows, ttm_component_index, allowlist=allowlist)
 
     logger.info("Propagating resolved reasons to derived ratios...")
     all_rows = propagate_reasons_to_ratios(all_rows)
@@ -1373,11 +1389,15 @@ def _ttm_component_standard_fields(fields: set[str]) -> list[str]:
     return sorted([s for s in std if s])
 
 
-def _build_ttm_component_index(rows: list[ComparisonRow]) -> dict[tuple[str, str], dict]:
+def _build_ttm_component_index(
+    rows: list[ComparisonRow],
+    allowlist: set[tuple[str, date, date, str]] | None = None,
+) -> dict[tuple[str, str], dict]:
     """为需要组件导出/核对的 TTM 行构建可复现组件索引。
 
     使用与 projection 相同的 latest-restated selector 与计算逻辑，
     因此重算值必须与 us_financial_current_ttm 一致。
+    传入 52/53 周白名单，确保组件索引与 projection 的期间可比性判断一致。
     """
     ttm_fields = {"revenue_ttm", "net_income_ttm", "cfo_ttm", "capex_ttm", "fcf_ttm"}
     target_rows = [r for r in rows if r.field in ttm_fields and r.reason != Reason.SAME]
@@ -1393,7 +1413,7 @@ def _build_ttm_component_index(rows: list[ComparisonRow]) -> dict[tuple[str, str
     )
     selector = USFactSelector()
     all_facts = selector.select(stock_codes=stocks, basis="latest-restated", fields=std_fields)
-    return _snap.build_ttm_component_index(all_facts)
+    return _snap.build_ttm_component_index(all_facts, allowlist=allowlist)
 
 
 def _get_component_value(components: dict, key: str) -> Any:
@@ -1419,6 +1439,7 @@ def _get_component_meta(components: dict, key: str) -> dict:
 def detect_ttm_old_data_quality(
     rows: list[ComparisonRow],
     component_index: dict[tuple[str, str], dict] | None = None,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
 ) -> list[ComparisonRow]:
     """对 TTM UNEXPLAINED 行，用 projection 相同逻辑重算 TTM 判定旧表数据质量问题。
 
@@ -1436,7 +1457,7 @@ def detect_ttm_old_data_quality(
         return rows
 
     if component_index is None:
-        component_index = _build_ttm_component_index(rows)
+        component_index = _build_ttm_component_index(rows, allowlist=allowlist)
 
     for row in target_rows:
         if row.field == "fcf_ttm":
@@ -1492,6 +1513,7 @@ def export_ttm_components(
     rows: list[ComparisonRow],
     output_path: Path,
     component_index: dict[tuple[str, str], dict] | None = None,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
 ) -> None:
     """为 TTM 差异导出四组件详情，FCF 以 CFO - CapEx 重算。
 
@@ -1516,7 +1538,7 @@ def export_ttm_components(
         return
 
     if component_index is None:
-        component_index = _build_ttm_component_index(rows)
+        component_index = _build_ttm_component_index(rows, allowlist=allowlist)
 
     records = []
     for row in target_rows:

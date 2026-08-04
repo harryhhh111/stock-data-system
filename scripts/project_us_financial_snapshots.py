@@ -673,6 +673,11 @@ def _compute_ttm_for_field_with_components(
         (group_copy["standard_field"] == field)
         & (group_copy["date_diff"] <= 7)
     ].sort_values("date_diff")
+    # 去年同期必须与本期处于相同累计财季位置（fiscal_period_raw）
+    if latest_fp and "fiscal_period_raw" in candidates.columns:
+        same_fp = candidates[candidates["fiscal_period_raw"].astype(str).str.upper() == latest_fp.upper()]
+        if not same_fp.empty:
+            candidates = same_fp
     if candidates.empty:
         return None, ["missing_component_prior_year"], components
 

@@ -29,3 +29,52 @@ PSKY,2025-12-31,roa,FISCAL_YEAR_CHANGE_STUB,MISSING_MAPPING,2026-08-04,
 PSKY,2025-12-31,operating_margin,FISCAL_YEAR_CHANGE_STUB,MISSING_MAPPING,2026-08-04,
 PSKY,2025-12-31,net_margin,FISCAL_YEAR_CHANGE_STUB,MISSING_MAPPING,2026-08-04,
 UHS,2025-12-31,debt_ratio,TOTAL_LIABILITIES_COMPOSITE_TAG,MISSING_MAPPING,2026-08-04,
+ADC,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+AEP,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+ALK,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+ARE,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+BEN,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+CUZ,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+CWEN,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+D,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+D,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+DAR,2026-04-04,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+DD,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+DOC,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+DOW,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+DTE,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+EQIX,2026-06-30,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+FR,2026-06-30,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+FTV,2026-04-03,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+HUBB,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+IP,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+IP,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+KIM,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+KMB,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+LII,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+LYFT,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+MDLN,2026-03-28,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+MIDD,2026-04-04,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+MLM,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+MPWR,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+NEE,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+PAG,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+PAG,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+PDD,2024-12-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+PH,2026-03-31,net_income_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+REG,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+RL,2026-03-28,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+RYN,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+STAG,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+STWD,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+SUI,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+TFX,2026-03-31,revenue_ttm,PRIOR_YEAR_COMPONENT_NOT_AVAILABLE_IN_RESTATED,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+THO,2026-04-30,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+WTFC,2026-03-31,fcf_ttm,NO_CASH_CAPEX_DISCLOSURE_TTM,MISSING_COMPONENT,ttm_unexplained_components.csv; latest-restated selector lacks comparable prior-year component,2026-08-04
+FRMI,2026-03-31,net_income_ttm,IPO_FISCAL_YEAR_STUB_NO_COMPARABLE_PRIOR_YEAR,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; IPO stub FY2025-01-10 to 2025-12-31; no comparable Q1 prior year,2026-08-04
+FRMI,2026-03-31,cfo_ttm,IPO_FISCAL_YEAR_STUB_NO_COMPARABLE_PRIOR_YEAR,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; IPO stub FY2025-01-10 to 2025-12-31; no comparable Q1 prior year,2026-08-04
+FRMI,2026-03-31,fcf_ttm,IPO_FISCAL_YEAR_STUB_NO_COMPARABLE_PRIOR_YEAR,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; IPO stub FY2025-01-10 to 2025-12-31; no comparable Q1 prior year,2026-08-04
+PSKY,2025-09-30,net_income_ttm,FISCAL_YEAR_CHANGE_STUB,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; FY changed to 2025-08-08 stub; Q3 not comparable,2026-08-04
+PSKY,2025-09-30,revenue_ttm,FISCAL_YEAR_CHANGE_STUB,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; FY changed to 2025-08-08 stub; Q3 not comparable,2026-08-04
+PSKY,2025-09-30,cfo_ttm,FISCAL_YEAR_CHANGE_STUB,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; FY changed to 2025-08-08 stub; Q3 not comparable,2026-08-04
+PSKY,2025-09-30,fcf_ttm,FISCAL_YEAR_CHANGE_STUB,PERIOD_MISMATCH,ttm_52_53_week_ledger.csv; FY changed to 2025-08-08 stub; Q3 not comparable,2026-08-04
