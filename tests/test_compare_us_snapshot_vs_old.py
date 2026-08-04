@@ -146,6 +146,61 @@ class TestClassifyDiff:
         new_meta = {"accession": "accn-2"}
         assert CMP.classify_diff(Decimal("10000000"), Decimal("20000000"), old_meta, new_meta, []) == CMP.Reason.UNEXPLAINED
 
+    def test_registered_exception_exact_match(self):
+        exceptions = {("X", "2025-12-31", "capex")}
+        assert (
+            CMP.classify_diff(
+                Decimal("100"),
+                None,
+                {},
+                {},
+                [],
+                exception_key=("X", "2025-12-31", "capex"),
+                exceptions=exceptions,
+            )
+            == CMP.Reason.REGISTERED_EXCEPTION
+        )
+
+    def test_registered_exception_no_match_stays_missing_mapping(self):
+        exceptions = {("X", "2025-12-31", "capex")}
+        assert (
+            CMP.classify_diff(
+                Decimal("100"),
+                None,
+                {},
+                {},
+                [],
+                exception_key=("X", "2025-12-31", "revenue"),
+                exceptions=exceptions,
+            )
+            == CMP.Reason.MISSING_MAPPING
+        )
+
+
+# ── load_registered_exceptions ──────────────────────────────────
+
+class TestLoadRegisteredExceptions:
+    def test_loads_csv(self, tmp_path):
+        csv_path = tmp_path / "exceptions.csv"
+        csv_path.write_text(
+            "stock_code,report_date,field,reason,evidence_ref,registered_at\n"
+            "ARE,2025-12-31,capex,NO_CASH_CAPEX_DISCLOSURE,ledger,2026-08-04\n"
+            "PSKY,2025-12-31,revenue,FISCAL_YEAR_CHANGE_STUB,ledger,2026-08-04\n"
+        )
+        result = CMP.load_registered_exceptions(csv_path)
+        assert result == {
+            ("ARE", "2025-12-31", "capex"),
+            ("PSKY", "2025-12-31", "revenue"),
+        }
+
+    def test_empty_for_missing_file(self, tmp_path, caplog):
+        result = CMP.load_registered_exceptions(tmp_path / "missing.csv")
+        assert result == set()
+        assert "not found" in caplog.text.lower()
+
+    def test_empty_for_none(self):
+        assert CMP.load_registered_exceptions(None) == set()
+
 
 # ── enrich_with_evidence ──────────────────────────────────────
 

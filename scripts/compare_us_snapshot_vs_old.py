@@ -102,6 +102,7 @@ class Reason:
     MISSING_COMPONENT = "MISSING_COMPONENT"   # 新无，且 quality_flags 含 missing_component
     OUT_OF_SYNC_SCOPE = "OUT_OF_SYNC_SCOPE"   # 新无，且 quality_flags 含 out_of_sync_scope
     FORMULA_DIFFERENCE = "FORMULA_DIFFERENCE"
+    REGISTERED_EXCEPTION = "REGISTERED_EXCEPTION"  # 已登记 selector exception
     UNEXPLAINED = "UNEXPLAINED"
 
 
@@ -235,6 +236,7 @@ class ComparisonResult:
             + reason_stats.get(Reason.INHERITED_FROM_TOTAL_EQUITY, 0)
             + reason_stats.get(Reason.INHERITED_FROM_TOTAL_ASSETS, 0)
             + reason_stats.get(Reason.INHERITED_FROM_TOTAL_LIABILITIES, 0)
+            + reason_stats.get(Reason.REGISTERED_EXCEPTION, 0)
         )
         blocking = (
             reason_stats.get(Reason.MISSING_MAPPING, 0)
@@ -282,13 +284,14 @@ class ComparisonResult:
                     f"{f'{float(r.rel_diff_pct) * 100:.2f}%' if r.rel_diff_pct else ''} |"
                 )
 
-        # MISSING_MAPPING / PERIOD_MISMATCH / MISSING_COMPONENT 列表
+        # MISSING_MAPPING / PERIOD_MISMATCH / MISSING_COMPONENT / REGISTERED_EXCEPTION 列表
         section_titles = {
             Reason.MISSING_MAPPING: "MISSING_MAPPING (unresolved — needs mapping or exception)",
             Reason.PERIOD_MISMATCH: "PERIOD_MISMATCH (strict TTM behavior)",
             Reason.MISSING_COMPONENT: "MISSING_COMPONENT (strict TTM behavior)",
+            Reason.REGISTERED_EXCEPTION: "REGISTERED_EXCEPTION (explicit selector exception)",
         }
-        for reason in [Reason.MISSING_MAPPING, Reason.PERIOD_MISMATCH, Reason.MISSING_COMPONENT]:
+        for reason in [Reason.MISSING_MAPPING, Reason.PERIOD_MISMATCH, Reason.MISSING_COMPONENT, Reason.REGISTERED_EXCEPTION]:
             subset = [r for r in self.rows if r.reason == reason]
             if subset:
                 lines.append("")
@@ -327,6 +330,7 @@ def _all_reasons() -> list[str]:
         Reason.MISSING_COMPONENT,
         Reason.OUT_OF_SYNC_SCOPE,
         Reason.FORMULA_DIFFERENCE,
+        Reason.REGISTERED_EXCEPTION,
         Reason.UNEXPLAINED,
     ]
 
@@ -613,6 +617,31 @@ def _flags_to_list(flags: Any) -> list[str]:
             return []
         return [x.strip('"') for x in s.split(",")]
     return []
+
+
+def load_registered_exceptions(path: Path | str | None) -> set[tuple[str, str, str]]:
+    """加载 Phase A selector exception 清单。
+
+    CSV 列：stock_code, report_date, field, reason, evidence_ref, registered_at
+    返回精确匹配键集合：(stock_code, report_date, field)
+    """
+    exceptions: set[tuple[str, str, str]] = set()
+    if not path:
+        return exceptions
+    p = Path(path)
+    if not p.exists():
+        logger.warning("Exception list not found: %s", p)
+        return exceptions
+    with open(p, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            stock = (row.get("stock_code") or "").strip().upper()
+            report_date = (row.get("report_date") or "").strip()
+            field = (row.get("field") or "").strip()
+            if stock and report_date and field:
+                exceptions.add((stock, report_date, field))
+    logger.info("Loaded %d registered exceptions from %s", len(exceptions), p)
+    return exceptions
 
 
 def _values_equal(a: Decimal | None, b: Decimal | None, tol: Decimal = VALUE_EQUAL_TOL) -> bool:
@@ -1021,8 +1050,13 @@ def classify_diff(
     new_meta: dict,
     quality_flags: list[str],
     is_ratio: bool = False,
+    exceptions: set[tuple[str, str, str]] | None = None,
+    exception_key: tuple[str, str, str] | None = None,
 ) -> str:
     """判断单条差异原因。"""
+    if exceptions and exception_key in exceptions:
+        return Reason.REGISTERED_EXCEPTION
+
     if old_val is None and new_val is None:
         return Reason.SAME
 
@@ -1067,7 +1101,11 @@ def classify_diff(
 
 # ── 对比流程 ──────────────────────────────────────────────────
 
-def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[ComparisonRow]:
+def _compare_annual(
+    old_df: pd.DataFrame,
+    new_df: pd.DataFrame,
+    exceptions: set[tuple[str, str, str]] | None = None,
+) -> list[ComparisonRow]:
     rows: list[ComparisonRow] = []
 
     field_map = [
@@ -1116,7 +1154,8 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
             old_v = _to_decimal(r.get(old_col)) if old_col in r.index else None
             new_v = _to_decimal(r.get(new_col)) if new_col in r.index else None
 
-            reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio)
+            exception_key = (stock_code, str(report_date), display_name)
+            reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio, exceptions=exceptions, exception_key=exception_key)
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None
 
@@ -1156,7 +1195,11 @@ def _compare_annual(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[Comparis
     return rows
 
 
-def _compare_ttm(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[ComparisonRow]:
+def _compare_ttm(
+    old_df: pd.DataFrame,
+    new_df: pd.DataFrame,
+    exceptions: set[tuple[str, str, str]] | None = None,
+) -> list[ComparisonRow]:
     rows: list[ComparisonRow] = []
 
     field_map = [
@@ -1187,7 +1230,8 @@ def _compare_ttm(old_df: pd.DataFrame, new_df: pd.DataFrame) -> list[ComparisonR
             old_v = _to_decimal(r.get(old_col)) if old_col and old_col in r.index else None
             new_v = _to_decimal(r.get(new_col)) if new_col in r.index else None
 
-            reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio)
+            exception_key = (stock_code, str(report_date), display_name)
+            reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio, exceptions=exceptions, exception_key=exception_key)
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None
 
@@ -1217,7 +1261,10 @@ def _get_stock_universe() -> list[str]:
             return [r[0] for r in cur.fetchall()]
 
 
-def run_comparison(stock_codes: list[str] | None = None) -> ComparisonResult:
+def run_comparison(
+    stock_codes: list[str] | None = None,
+    exceptions: set[tuple[str, str, str]] | None = None,
+) -> ComparisonResult:
     if stock_codes is None:
         stock_codes = _get_stock_universe()
 
@@ -1237,8 +1284,8 @@ def run_comparison(stock_codes: list[str] | None = None) -> ComparisonResult:
     new_ttm = fetch_new_ttm(stock_codes)
     logger.info("New TTM rows: %d", len(new_ttm))
 
-    annual_rows = _compare_annual(old_annual, new_annual)
-    ttm_rows = _compare_ttm(old_ttm, new_ttm)
+    annual_rows = _compare_annual(old_annual, new_annual, exceptions=exceptions)
+    ttm_rows = _compare_ttm(old_ttm, new_ttm, exceptions=exceptions)
 
     # 旧逻辑 fallback / mixed-basis 分类（必须在 enrich 之前，优先判断精确证据）
     logger.info("Classifying old-logic fallback / mixed-basis differences...")
@@ -1504,6 +1551,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Compare Phase A snapshots with old current-only financials")
     p.add_argument("--sample", action="store_true", help=f"Only compare {SAMPLE_STOCKS}")
     p.add_argument("--stocks", default=None, help="Comma-separated stock codes")
+    p.add_argument("--exceptions", default=None, help="Path to Phase A selector exception CSV (e.g. docs/core/US_PHASE_A_EXCEPTIONS.csv)")
     return p.parse_args()
 
 
@@ -1518,7 +1566,8 @@ def main():
     else:
         stock_codes = None
 
-    result = run_comparison(stock_codes)
+    exceptions = load_registered_exceptions(args.exceptions)
+    result = run_comparison(stock_codes, exceptions=exceptions)
 
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 

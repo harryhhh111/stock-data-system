@@ -1,9 +1,11 @@
 # 美股财务快照：cash CapEx 映射与证据收口（#5）
 
-> 状态：待执行  
+> 状态：已完成  
 > 阶段：`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md` Phase A 收口  
 > 前置：#2/#3/#4（同口径 fallback）已完成，提交 `3f21536`  
-> 后续：本任务全量重跑后的残留清单，是 #6（52/53 周 TTM 期间规则）的唯一输入。
+> 完成提交：mapping/测试/exception 清单见 `4afabd5`；对比器 `--exceptions` 支持待当前提交  
+> 后续：本任务全量重跑后的残留清单，是 #6（52/53 周 TTM 期间规则）的唯一输入。  
+> 关键结果：`UNEXPLAINED=0`，`MISSING_MAPPING=0`，`REGISTERED_EXCEPTION=30`，`PERIOD_MISMATCH=102`，`MISSING_COMPONENT=77`。
 
 ## 1. 目标
 
