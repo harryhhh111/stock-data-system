@@ -198,6 +198,193 @@ class TestComputeTtmForField:
         assert flags == []
 
 
+# ── 52/53-week allowlist ──────────────────────────────────────
+
+class TestTtm52_53WeekAllowlist:
+    def _make_group(self, records: list[dict]) -> pd.DataFrame:
+        defaults = {
+            "stock_code": "ARW",
+            "standard_field": "revenues",
+            "form": "10-Q",
+            "is_annual": False,
+            "fiscal_period_raw": "Q1",
+            "filed_date": date(2025, 5, 1),
+            "accession_no": "accn-q",
+        }
+        full = []
+        for r in records:
+            d = defaults.copy()
+            d.update(r)
+            full.append(d)
+        return pd.DataFrame(full)
+
+    def _allowlist(self, stock="ARW", latest=None, prior=None, fp="Q1"):
+        return {(stock, latest, prior, fp)}
+
+    def test_allowlisted_6_day_diff_computes_and_flags(self):
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 93, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 4, 5), "value_numeric": Decimal("200"),
+             "period_days": 87, "fiscal_period_raw": "Q1"},
+        ])
+        allowlist = self._allowlist(latest=date(2026, 4, 4), prior=date(2025, 4, 5))
+        val, flags, comps = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=allowlist
+        )
+        assert val == Decimal("1700")  # 900 + 1000 - 200
+        assert "ttm_period_52_53_week_allowlisted" in flags
+        assert comps["prior_year"]["period_days"] == 87
+
+    def test_allowlisted_7_day_diff_computes(self):
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 94, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 4, 4), "value_numeric": Decimal("200"),
+             "period_days": 87, "fiscal_period_raw": "Q1"},
+        ])
+        allowlist = self._allowlist(latest=date(2026, 4, 4), prior=date(2025, 4, 4))
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=allowlist
+        )
+        assert val == Decimal("1700")
+        assert "ttm_period_52_53_week_allowlisted" in flags
+
+    def test_8_day_diff_still_period_mismatch(self):
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 95, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 4, 3), "value_numeric": Decimal("200"),
+             "period_days": 87, "fiscal_period_raw": "Q1"},
+        ])
+        allowlist = self._allowlist(latest=date(2026, 4, 4), prior=date(2025, 4, 3))
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=allowlist
+        )
+        assert val is None
+        assert "period_mismatch" in flags
+        assert "ttm_period_52_53_week_allowlisted" not in flags
+
+    def test_not_in_allowlist_6_day_diff_rejected(self):
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 93, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 4, 5), "value_numeric": Decimal("200"),
+             "period_days": 87, "fiscal_period_raw": "Q1"},
+        ])
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=set()
+        )
+        assert val is None
+        assert "period_mismatch" in flags
+
+    def test_date_diff_over_7_still_rejected(self):
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 90, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 3, 25), "value_numeric": Decimal("200"),
+             "period_days": 90, "fiscal_period_raw": "Q1"},
+        ])
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=self._allowlist()
+        )
+        assert val is None
+        assert "missing_component_prior_year" in flags
+
+    def test_cross_period_pair_rejected(self):
+        """ fiscal_period_raw 不同则不允许，即使 period_diff 在 4-7 天内。 """
+        group = self._make_group([
+            {"report_date": date(2026, 4, 4), "value_numeric": Decimal("900"),
+             "period_days": 93, "fiscal_period_raw": "Q1"},
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 4, 5), "value_numeric": Decimal("200"),
+             "period_days": 87, "fiscal_period_raw": "Q4"},
+        ])
+        allowlist = {("ARW", date(2026, 4, 4), date(2025, 4, 5), "Q1")}
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2026, 4, 4), allowlist=allowlist
+        )
+        assert val is None
+        assert "period_mismatch" in flags
+
+    def test_psky_stub_not_in_allowlist(self):
+        """PSKY 财年变更 stub 不应进入白名单；期间差远超 7 天，保持 period_mismatch。"""
+        group = self._make_group([
+            {"report_date": date(2025, 12, 31), "value_numeric": Decimal("900"),
+             "period_days": 145, "fiscal_period_raw": "FY", "form": "10-K", "is_annual": True},
+            {"report_date": date(2024, 12, 31), "value_numeric": Decimal("1000"),
+             "form": "10-K", "is_annual": True, "period_days": 365, "fiscal_period_raw": "FY"},
+            {"report_date": date(2025, 8, 7), "value_numeric": Decimal("200"),
+             "period_days": 145, "fiscal_period_raw": "FY", "form": "10-K", "is_annual": True},
+        ])
+        val, flags, _ = PJ._compute_ttm_for_field_with_components(
+            group, "revenues", date(2025, 12, 31), allowlist=set()
+        )
+        assert val is None
+        assert "period_mismatch" in flags
+        assert "ttm_period_52_53_week_allowlisted" not in flags
+
+    def test_fcf_formula_computed_after_allowlist(self):
+        """白名单放宽后 FCF 仍等于 CFO - CapEx，且打上 allowlist flag。"""
+        def make(rd, field, val, ps, form="10-Q", is_annual=False, fp="Q1"):
+            f = MagicMock()
+            f.stock_code = "GD"
+            f.report_date = rd
+            f.standard_field = field
+            f.value_numeric = Decimal(str(val))
+            f.form = form
+            f.unit = "USD"
+            f.period_kind = "duration"
+            f.period_start = ps
+            f.filed_date = date(rd.year + 1, 2, 20)
+            f.accession_no = f"accn-{rd.isoformat()}"
+            f.fiscal_period_raw = fp
+            f.is_annual = is_annual
+            return f
+
+        facts = [
+            make(date(2026, 4, 5), "net_cash_from_operations", 50, date(2026, 1, 1)),
+            make(date(2025, 12, 31), "net_cash_from_operations", 100, date(2025, 1, 1), form="10-K", is_annual=True, fp="FY"),
+            make(date(2025, 4, 5), "net_cash_from_operations", 10, date(2025, 1, 7)),
+            make(date(2026, 4, 5), "capital_expenditures", 5, date(2026, 1, 1)),
+            make(date(2025, 12, 31), "capital_expenditures", 20, date(2025, 1, 1), form="10-K", is_annual=True, fp="FY"),
+            make(date(2025, 4, 5), "capital_expenditures", 2, date(2025, 1, 7)),
+            # 净利润与收入事实：保证其他 TTM 组件不缺件，使 quality_flags 能体现 allowlist
+            make(date(2026, 4, 5), "net_income", 30, date(2026, 1, 1)),
+            make(date(2025, 12, 31), "net_income", 80, date(2025, 1, 1), form="10-K", is_annual=True, fp="FY"),
+            make(date(2025, 4, 5), "net_income", 8, date(2025, 1, 7)),
+            make(date(2026, 4, 5), "net_income_common", 28, date(2026, 1, 1)),
+            make(date(2025, 12, 31), "net_income_common", 75, date(2025, 1, 1), form="10-K", is_annual=True, fp="FY"),
+            make(date(2025, 4, 5), "net_income_common", 7, date(2025, 1, 7)),
+            make(date(2026, 4, 5), "revenues", 200, date(2026, 1, 1)),
+            make(date(2025, 12, 31), "revenues", 500, date(2025, 1, 1), form="10-K", is_annual=True, fp="FY"),
+            make(date(2025, 4, 5), "revenues", 50, date(2025, 1, 7)),
+        ]
+        annual_df = pd.DataFrame([{
+            "stock_code": "GD", "report_date": date(2025, 12, 31),
+            "filed_date": date(2026, 2, 20), "accession_no": "accn-2025-12-31",
+            "total_equity": Decimal("1000"),
+        }])
+        allowlist = {("GD", date(2026, 4, 5), date(2025, 4, 5), "Q1")}
+        result = PJ.build_ttm_snapshot(facts, annual_df, "run-1", allowlist=allowlist)
+        row = result.iloc[0]
+        assert row["cfo_ttm"] == Decimal("140")     # 50 + 100 - 10
+        assert row["capex_ttm"] == Decimal("23")    # 5 + 20 - 2
+        assert row["fcf_ttm"] == Decimal("117")     # 140 - 23
+        assert "ttm_period_52_53_week_allowlisted" in row["quality_flags"]
+
+
 # ── _keep_latest_5_annual ─────────────────────────────────────
 
 class TestKeepLatest5Annual:
@@ -227,7 +414,7 @@ class TestKeepLatest5Annual:
 
 class TestBuildTtmSnapshot:
     def _make_fact(self, stock, rd, field, val, form, pk="duration",
-                   ps=None, unit="USD"):
+                   ps=None, unit="USD", fiscal_period_raw=None):
         """Helper to create mock SelectedFact objects."""
         f = MagicMock()
         f.stock_code = stock
@@ -240,6 +427,9 @@ class TestBuildTtmSnapshot:
         f.period_start = ps
         f.filed_date = date(rd.year + 1, 2, 20)
         f.accession_no = f"accn-{rd.isoformat()}"
+        if fiscal_period_raw is None:
+            fiscal_period_raw = "FY" if form.upper() in {"10-K", "10-K/A"} else "Q1"
+        f.fiscal_period_raw = fiscal_period_raw
         return f
 
     def test_quarterly_ttm_uses_cumulative_formula(self):

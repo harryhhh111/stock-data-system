@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -110,6 +111,74 @@ def _safe_div(a, b) -> Decimal | None:
     if ad is not None and bd is not None and bd != 0:
         return ad / bd
     return None
+
+
+# ── 52/53 周 TTM 期间白名单 ────────────────────────────────────
+
+DEFAULT_TTM_52_53_ALLOWLIST_PATH = Path("docs/core/US_TTM_52_53_WEEK_ALLOWLIST.csv")
+
+
+def _parse_date_str(value: str) -> date | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def load_ttm_52_53_allowlist(path: Path | str | None = None) -> set[tuple[str, date, date, str]]:
+    """加载 52/53 周 TTM 期间白名单。
+
+    每行定义一个被精确允许的最新期/去年同期配对：
+      (stock_code, latest_report_date, prior_year_report_date, fiscal_period_raw)
+    只有该配对精确命中且 4 <= period_diff <= 7 时，才放宽 TTM 可比性判断。
+    """
+    if path is None:
+        path = DEFAULT_TTM_52_53_ALLOWLIST_PATH
+    p = Path(path)
+    allowlist: set[tuple[str, date, date, str]] = set()
+    if not p.exists():
+        logger.warning("52/53-week allowlist not found: %s", p)
+        return allowlist
+    with open(p, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            stock = (row.get("stock_code") or "").strip().upper()
+            latest = _parse_date_str(row.get("latest_report_date") or "")
+            prior = _parse_date_str(row.get("prior_year_report_date") or "")
+            fp = (row.get("fiscal_period_raw") or "").strip().upper()
+            if stock and latest and prior and fp:
+                allowlist.add((stock, latest, prior, fp))
+    logger.info("Loaded %d 52/53-week allowlist entries from %s", len(allowlist), p)
+    return allowlist
+
+
+def is_allowlisted_52_53_pair(
+    allowlist: set[tuple[str, date, date, str]] | None,
+    stock_code: str,
+    latest_report_date: date,
+    prior_year_report_date: date,
+    latest_period_days: int | None,
+    prior_year_period_days: int | None,
+    fiscal_period_raw: str | None,
+) -> bool:
+    """判断该期间配对是否在 52/53 周白名单中。
+
+    调用者已确认 4 <= period_diff <= 7；本函数只做精确名单命中检查。
+    """
+    if not allowlist:
+        return False
+    if not fiscal_period_raw:
+        return False
+    key = (
+        stock_code.upper(),
+        latest_report_date,
+        prior_year_report_date,
+        str(fiscal_period_raw).strip().upper(),
+    )
+    return key in allowlist
 
 
 # ── 数据采集 ──────────────────────────────────────────────────
@@ -345,7 +414,10 @@ def _keep_latest_5_annual(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── TTM 快照构建 ──────────────────────────────────────────────
 
-def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
+def build_ttm_component_index(
+    all_facts: list,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
+) -> dict[tuple[str, str], dict]:
     """从 selector 输出构建可复现的 TTM 组件索引。
 
     返回 dict: {(stock_code, standard_field): {
@@ -393,6 +465,7 @@ def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
             "is_annual": f.form.upper() in ANNUAL_FORMS,
             "period_start": f.period_start,
             "period_days": period_days,
+            "fiscal_period_raw": f.fiscal_period_raw,
         })
 
     df = pd.DataFrame(records)
@@ -421,7 +494,9 @@ def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
                             "period_days": lr["period_days"],
                         }
             else:
-                val, flags, components = _compute_ttm_for_field_with_components(sub, field, latest_date)
+                val, flags, components = _compute_ttm_for_field_with_components(
+                    sub, field, latest_date, allowlist=allowlist
+                )
             index[(stock_code, field)] = {
                 "value": val,
                 "quality_flags": flags,
@@ -430,9 +505,14 @@ def build_ttm_component_index(all_facts: list) -> dict[tuple[str, str], dict]:
     return index
 
 
-def build_ttm_snapshot(all_facts: list, annual_df: pd.DataFrame, projection_run_id: str) -> pd.DataFrame:
+def build_ttm_snapshot(
+    all_facts: list,
+    annual_df: pd.DataFrame,
+    projection_run_id: str,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
+) -> pd.DataFrame:
     """从事实和年度快照构建 TTM 快照。"""
-    component_index = build_ttm_component_index(all_facts)
+    component_index = build_ttm_component_index(all_facts, allowlist=allowlist)
     if not component_index:
         return pd.DataFrame()
 
@@ -528,19 +608,28 @@ def _get_field_value(group: pd.DataFrame, report_date, field: str) -> Decimal | 
 
 
 def _compute_ttm_for_field_with_components(
-    group: pd.DataFrame, field: str, latest_date
+    group: pd.DataFrame,
+    field: str,
+    latest_date,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
 ) -> tuple[Decimal | None, list[str], dict]:
     """TTM = latest_cumulative + last_annual - prior_year_same_period。
 
     同时验证累计期间可比性：去年同期必须与本期期间长度一致（±3天）。
+    对 52/53 周财年，若精确白名单命中且 4 <= period_diff <= 7，则允许放宽并打
+    quality flag `ttm_period_52_53_week_allowlisted`。
     返回 (value, quality_flags, components)。任一组件缺失或期间不匹配时 value 为 None。
     components 包含 latest / last_annual / prior_year 的 value/accession/filed_date/period_days。
     """
     components: dict[str, dict | None] = {"latest": None, "last_annual": None, "prior_year": None}
+    stock_code = group["stock_code"].iloc[0] if not group.empty else None
 
     latest_val = _get_field_value(group, latest_date, field)
     latest_rows = group[(group["report_date"] == latest_date) & (group["standard_field"] == field)]
     latest_days = latest_rows["period_days"].max() if "period_days" in latest_rows.columns else None
+    latest_fp = None
+    if not latest_rows.empty and "fiscal_period_raw" in latest_rows.columns:
+        latest_fp = str(latest_rows.iloc[0]["fiscal_period_raw"] or "").strip() or None
 
     if latest_val is None:
         return None, [f"missing_component_latest_{field}"], components
@@ -588,6 +677,7 @@ def _compute_ttm_for_field_with_components(
         return None, ["missing_component_prior_year"], components
 
     # 选期间长度最匹配的去年同期
+    flags: list[str] = []
     if latest_days is not None and "period_days" in candidates.columns:
         candidates = candidates.copy()
         candidates["period_diff"] = candidates["period_days"].apply(
@@ -595,7 +685,34 @@ def _compute_ttm_for_field_with_components(
         )
         candidates = candidates.sort_values(["period_diff", "date_diff"])
         py_row = candidates.iloc[0]
-        period_mismatch = py_row["period_diff"] > 3
+        period_diff = py_row["period_diff"]
+        if period_diff <= 3:
+            period_mismatch = False
+        elif 4 <= period_diff <= 7:
+            prior_fp = None
+            if "fiscal_period_raw" in candidates.columns:
+                prior_fp = str(py_row.get("fiscal_period_raw") or "").strip() or None
+            if (
+                stock_code
+                and latest_fp
+                and prior_fp
+                and latest_fp.upper() == prior_fp.upper()
+                and is_allowlisted_52_53_pair(
+                    allowlist,
+                    stock_code,
+                    latest_date,
+                    py_row["report_date"],
+                    latest_days,
+                    py_row["period_days"],
+                    latest_fp,
+                )
+            ):
+                period_mismatch = False
+                flags.append("ttm_period_52_53_week_allowlisted")
+            else:
+                period_mismatch = True
+        else:
+            period_mismatch = True
     else:
         py_row = candidates.iloc[0]
         period_mismatch = False
@@ -615,12 +732,19 @@ def _compute_ttm_for_field_with_components(
     if period_mismatch:
         return None, ["period_mismatch"], components
 
-    return latest_val + la_val - py_val, [], components
+    return latest_val + la_val - py_val, flags, components
 
 
-def _compute_ttm_for_field(group: pd.DataFrame, field: str, latest_date) -> tuple:
+def _compute_ttm_for_field(
+    group: pd.DataFrame,
+    field: str,
+    latest_date,
+    allowlist: set[tuple[str, date, date, str]] | None = None,
+) -> tuple:
     """兼容旧接口：仅返回 (value, quality_flags)。"""
-    val, flags, _ = _compute_ttm_for_field_with_components(group, field, latest_date)
+    val, flags, _ = _compute_ttm_for_field_with_components(
+        group, field, latest_date, allowlist=allowlist
+    )
     return val, flags
 
 
@@ -714,6 +838,11 @@ def parse_args():
     p = argparse.ArgumentParser(description="Generate US financial snapshots from version layer")
     p.add_argument("--dry-run", action="store_true", help="Build DataFrames but do not write to DB")
     p.add_argument("--stocks", default=None, help="Comma-separated stock codes (overrides full market)")
+    p.add_argument(
+        "--ttm-allowlist",
+        default=None,
+        help="Path to 52/53-week TTM allowlist CSV (default: docs/core/US_TTM_52_53_WEEK_ALLOWLIST.csv)",
+    )
     return p.parse_args()
 
 
@@ -746,7 +875,8 @@ def main():
 
     # 3. 构建 TTM 快照
     logger.info("Building TTM snapshot...")
-    ttm_df = build_ttm_snapshot(all_facts, annual_df, projection_run_id)
+    allowlist = load_ttm_52_53_allowlist(args.ttm_allowlist)
+    ttm_df = build_ttm_snapshot(all_facts, annual_df, projection_run_id, allowlist=allowlist)
     logger.info("TTM rows: %d", len(ttm_df))
 
     if args.dry_run:
