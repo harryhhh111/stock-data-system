@@ -1,7 +1,7 @@
 # 美股旧财务宽表退役计划
 
-> 状态：待执行  
-> 更新日期：2026-07-30<br>
+> 状态：Phase A 与 Phase B1 已完成
+> 更新日期：2026-08-05<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -290,9 +290,11 @@ Phase E 后：
 ## 7. 建议执行顺序
 
 ```text
-Phase A：current snapshot
+Phase A：current snapshot（已完成）
   ↓
-Phase B1：个股分析移除 fallback
+Phase B1：个股分析移除 fallback（已完成）
+  ↓
+#7：COGS 合并行选择证据审计（Phase B2 前置）
   ↓
 Phase B2：筛选器
   ↓
@@ -310,5 +312,6 @@ Phase E：对象存储归档并删除旧对象
 Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与
 `UNEXPLAINED` 均为 0，例外项均通过受限 `REGISTERED_EXCEPTION` 契约登记。
 
-下一项开发任务固定为 **Phase B1（个股分析读取者切换）**，执行
-`US_PHASE_B1_ANALYZER_SWITCH_TASK.md`；不要提前切换筛选器、修改同步写入或删除数据库对象。
+下一项任务固定为 **#7 COGS 合并行选择证据审计**，执行
+`US_COGS_CONSOLIDATED_SELECTION_TASK.md`。它只授权生成可复核证据报告；在项目所有者审阅
+报告前，不得修改 selector 或切换筛选器。不要提前进入 Phase B2、修改同步写入或删除数据库对象。
