@@ -1,7 +1,7 @@
 # 美股旧财务宽表退役计划
 
-> 状态：Phase A 与 Phase B1 已完成
-> 更新日期：2026-08-05<br>
+> 状态：Phase A、Phase B1 与 Phase B2 已完成；下一项为 Phase B3a（dashboard）
+> 更新日期：2026-08-06<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -298,7 +298,9 @@ Phase B1：个股分析移除 fallback（已完成）
   ↓
 Phase B2：筛选器（#7 批次 1 已解除阻塞）
   ↓
-Phase B3：dashboard / 校验
+Phase B3a：dashboard 财报新鲜度
+  ↓
+Phase B3b：日常数据校验
   ↓
 Phase B4：PIT 回测
   ↓
@@ -321,3 +323,10 @@ Phase B2 已于 2026-08-06 完成：美股筛选器、FCF+ROE 策略与 US 行�
 影子对比（build/financial_comparison/phaseB2_screener/）UNEXPLAINED=0，
 PLTR screener PE=129.57 与 B1 一致，全量测试与前端构建通过。
 下一项任务为 **Phase B3（dashboard / 校验）**；不要提前进入 B4、修改同步写入或删除数据库对象。
+
+Phase B3a 已于 2026-08-06 完成：dashboard 美股财报新鲜度在独立开关
+`US_DASHBOARD_SNAPSHOT_CURRENT=1`（.env 已启用）下切换至
+`us_financial_current_ttm.ttm_report_date`；影子对比
+（build/financial_comparison/phaseB3_dashboard/）两边最大报告期一致（2026-07-04），
+缺 snapshot 股票恰为已登记的 CCEP/GFS/SPY。
+下一项任务为 **Phase B3b（日常数据校验）**；不要提前进入 B4、修改同步写入或删除数据库对象。

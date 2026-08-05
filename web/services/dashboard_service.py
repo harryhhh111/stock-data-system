@@ -5,6 +5,40 @@ from datetime import date, timedelta
 from db import Connection
 
 
+def _dashboard_snapshot_enabled() -> bool:
+    """Phase B3a 独立开关：dashboard 美股财报新鲜度走 current snapshot。
+
+    默认关闭（legacy）。不复用 B1/B2 开关，避免部署时意外切换不相关读取者。
+    """
+    return os.getenv("US_DASHBOARD_SNAPSHOT_CURRENT", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _us_financial_date_legacy(cur) -> date | None:
+    """US 财报最新报告期（legacy）：旧宽表 us_income_statement。"""
+    cur.execute(
+        """
+        SELECT MAX(inc.report_date)
+        FROM us_income_statement inc
+        JOIN stock_info si ON inc.stock_code = si.stock_code
+        WHERE si.market = 'US'
+        """
+    )
+    return cur.fetchone()[0]
+
+
+def _us_financial_date_snapshot(cur) -> date | None:
+    """US 财报最新报告期（snapshot）：MAX(current TTM 的经济报告期)。
+
+    只用 ttm_report_date（经济口径），不得用 ttm_filed_date/generated_at 冒充。
+    snapshot 无行时返回 None，由调用方呈现 financial_date=null + stale=true，
+    不得回读旧宽表。
+    """
+    cur.execute("SELECT MAX(ttm_report_date) FROM us_financial_current_ttm")
+    return cur.fetchone()[0]
+
+
 def get_stats() -> dict:
     """聚合仪表板数据，返回 DashboardStats 结构。"""
     markets = os.getenv("STOCK_MARKETS", "CN_A,CN_HK").split(",")
@@ -74,19 +108,15 @@ def get_stats() -> dict:
         )
         quote_latest = {r[0]: r[1] for r in cur.fetchall()}
 
-        # US financial last report date from us_income_statement
+        # US financial last report date
         if "US" in markets:
-            cur.execute(
-                """
-                SELECT MAX(inc.report_date)
-                FROM us_income_statement inc
-                JOIN stock_info si ON inc.stock_code = si.stock_code
-                WHERE si.market = 'US'
-                """
-            )
-            us_fin = cur.fetchone()[0]
-            if us_fin:
-                fin_latest["US"] = us_fin
+            if _dashboard_snapshot_enabled():
+                # Phase B3a:current TTM snapshot;显式赋值,无行时 None → null + stale
+                fin_latest["US"] = _us_financial_date_snapshot(cur)
+            else:
+                us_fin = _us_financial_date_legacy(cur)
+                if us_fin:
+                    fin_latest["US"] = us_fin
 
         # US quote from daily_quote (if synced on this server)
         # already covered by daily_quote query above
