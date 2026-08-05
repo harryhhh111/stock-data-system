@@ -7,6 +7,14 @@ export interface StockSearchResult {
   industry: string | null;
 }
 
+export type NetIncomeBasis = "consolidated" | "common" | "unavailable";
+
+export type FinancialDataStatus =
+  | "snapshot_available"
+  | "selector_exception"
+  | "out_of_sync_scope"
+  | "snapshot_unavailable";
+
 export interface StockInfo {
   stock_code: string;
   stock_name: string;
@@ -21,6 +29,14 @@ export interface StockInfo {
   revenue_ttm: number | null;
   net_profit_ttm: number | null;
   cfo_ttm: number | null;
+  /** TTM 财务数据截止报告期（current snapshot 路径） */
+  ttm_report_date: string | null;
+  /** 估值所用行情的交易日 */
+  quote_date: string | null;
+  /** TTM 净利润口径：consolidated / common / unavailable */
+  net_income_basis: NetIncomeBasis | null;
+  /** current snapshot 数据状态；null 表示旧路径 */
+  financial_data_status: FinancialDataStatus | null;
 }
 
 export interface AnalysisSection<T = Record<string, unknown>> {

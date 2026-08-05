@@ -25,6 +25,23 @@ function Star({ rating }: { rating: number | null }) {
   return <span className="text-yellow-500">{"★".repeat(stars)}{"☆".repeat(5 - stars)}</span>;
 }
 
+/**
+ * PE 展示：有值显示数值；TTM 净利润 <= 0（亏损）显示 N/M；
+ * 财务数据不可用（无 snapshot / 净利润缺失）显示 —，不能把 null 误称为低估。
+ */
+function fmtPe(pe: number | null | undefined, netProfitTtm: number | null | undefined): string {
+  if (pe != null) return pe.toFixed(1);
+  if (netProfitTtm != null && netProfitTtm <= 0) return "N/M";
+  return "—";
+}
+
+const FINANCIAL_STATUS_LABEL: Record<string, string> = {
+  snapshot_available: "current snapshot",
+  selector_exception: "snapshot 例外（已登记）",
+  out_of_sync_scope: "超出同步范围",
+  snapshot_unavailable: "无 current snapshot",
+};
+
 export function AnalyzerPage() {
   const [market, setMarket] = useState<Market | "all">("all");
   const { addHistory } = useAnalyzerStore();
@@ -127,11 +144,27 @@ export function AnalyzerPage() {
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4 text-sm">
                 <div><span className="text-muted-foreground">收盘价</span><p className="font-medium">{report.stock.close ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">市值</span><p className="font-medium">{fmtMcap(report.stock.market_cap)}</p></div>
-                <div><span className="text-muted-foreground">PE TTM</span><p className="font-medium">{report.stock.pe_ttm?.toFixed(1) ?? "-"}</p></div>
+                <div><span className="text-muted-foreground">PE TTM</span><p className="font-medium">{fmtPe(report.stock.pe_ttm, report.stock.net_profit_ttm)}</p></div>
                 <div><span className="text-muted-foreground">PB</span><p className="font-medium">{report.stock.pb?.toFixed(2) ?? "-"}</p></div>
                 <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.stock.fcf_yield)}</p></div>
                 <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtYi(report.stock.revenue_ttm)}</p></div>
               </div>
+              {/* 数据状态与溯源（current snapshot 路径） */}
+              {report.stock.financial_data_status && (
+                <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground border-t pt-3">
+                  <Badge
+                    variant={report.stock.financial_data_status === "snapshot_available" ? "outline" : "destructive"}
+                  >
+                    {FINANCIAL_STATUS_LABEL[report.stock.financial_data_status] ?? report.stock.financial_data_status}
+                  </Badge>
+                  {report.stock.net_income_basis === "common" && (
+                    <span>TTM 净利润口径：common（归母）</span>
+                  )}
+                  {report.stock.ttm_report_date && <span>TTM 截止 {report.stock.ttm_report_date}</span>}
+                  {report.stock.quote_date && <span>行情日期 {report.stock.quote_date}</span>}
+                  <span>财务：latest-restated current snapshot；价格/市值：最新行情；估值：本地计算</span>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -267,7 +300,7 @@ export function AnalyzerPage() {
           {/* 估值 */}
           <SectionCard title="估值" section={report.sections.valuation}>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
-              <div><span className="text-muted-foreground">PE</span><p className="font-medium">{report.sections.valuation.details.pe?.toFixed(1) ?? "-"}</p></div>
+              <div><span className="text-muted-foreground">PE</span><p className="font-medium">{fmtPe(report.sections.valuation.details.pe, report.stock.net_profit_ttm)}</p></div>
               <div><span className="text-muted-foreground">PB</span><p className="font-medium">{report.sections.valuation.details.pb?.toFixed(2) ?? "-"}</p></div>
               <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.sections.valuation.details.fcf_yield)}</p></div>
               <div><span className="text-muted-foreground">同行 PE 中位数</span><p className="font-medium">{report.sections.valuation.details.median_pe?.toFixed(1) ?? "-"}</p></div>

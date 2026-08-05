@@ -4,9 +4,10 @@
 > 于 2026-08-05 补闭）
 > 阶段：`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md` Phase A 收口
 > 前置：#2/#3/#4 已完成（`3f21536`）；#5 已消除 `MISSING_MAPPING`（`4afabd5`、`7652b4c`）
-> 当前基线：全量 compare 有 `PERIOD_MISMATCH=102`（27 只股票）、`MISSING_COMPONENT=77`、
+> 实施前基线：全量 compare 有 `PERIOD_MISMATCH=102`（27 只股票）、`MISSING_COMPONENT=77`、
 > `UNEXPLAINED=0`、`MISSING_MAPPING=0`。
-> 完成本任务且满足 §10 后，才可申请 Phase A 最终验收；不得提前进入 Phase B。
+> 最终结果：17,000 行对比中四类阻断项均为 0，`REGISTERED_EXCEPTION=85`；Phase A 已验收，
+> 可以进入 Phase B。
 
 ## 1. 目标与范围
 

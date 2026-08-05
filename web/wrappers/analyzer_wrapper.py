@@ -134,6 +134,19 @@ def get_report(stock_code: str, market: str | None) -> dict:
         "revenue_ttm": _safe_val(row.get("revenue_ttm")),
         "net_profit_ttm": _safe_val(row.get("net_profit_ttm")),
         "cfo_ttm": _safe_val(row.get("cfo_ttm")),
+        # Phase B1 snapshot 溯源字段（旧路径/CN 为 None）
+        "ttm_report_date": (
+            str(row.get("ttm_report_date"))[:10]
+            if _safe_val(row.get("ttm_report_date")) is not None
+            else None
+        ),
+        "quote_date": (
+            str(row.get("trade_date"))[:10]
+            if _safe_val(row.get("trade_date")) is not None
+            else None
+        ),
+        "net_income_basis": _safe_val(row.get("net_income_basis")),
+        "financial_data_status": _safe_val(row.get("financial_data_status")),
     }
 
     return {

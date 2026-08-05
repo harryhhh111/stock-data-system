@@ -307,4 +307,8 @@ Phase D：14 天观察 + 最近 filing 重放
 Phase E：对象存储归档并删除旧对象
 ```
 
-下一项开发任务固定为 **Phase A**，不要提前修改同步写入或删除数据库对象。
+Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与
+`UNEXPLAINED` 均为 0，例外项均通过受限 `REGISTERED_EXCEPTION` 契约登记。
+
+下一项开发任务固定为 **Phase B1（个股分析读取者切换）**，执行
+`US_PHASE_B1_ANALYZER_SWITCH_TASK.md`；不要提前切换筛选器、修改同步写入或删除数据库对象。
