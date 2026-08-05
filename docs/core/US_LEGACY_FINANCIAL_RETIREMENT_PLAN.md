@@ -294,9 +294,9 @@ Phase A：current snapshot（已完成）
   ↓
 Phase B1：个股分析移除 fallback（已完成）
   ↓
-#7：COGS 合并行选择证据审计（Phase B2 前置）
+#7：COGS 合并行选择（批次 1 已完成；批次 2 待处理）
   ↓
-Phase B2：筛选器
+Phase B2：筛选器（#7 批次 1 已解除阻塞）
   ↓
 Phase B3：dashboard / 校验
   ↓
@@ -312,6 +312,7 @@ Phase E：对象存储归档并删除旧对象
 Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与
 `UNEXPLAINED` 均为 0，例外项均通过受限 `REGISTERED_EXCEPTION` 契约登记。
 
-下一项任务固定为 **#7 COGS 合并行选择证据审计**，执行
-`US_COGS_CONSOLIDATED_SELECTION_TASK.md`。它只授权生成可复核证据报告；在项目所有者审阅
-报告前，不得修改 selector 或切换筛选器。不要提前进入 Phase B2、修改同步写入或删除数据库对象。
+#7 状态（2026-08-05)：证据审计与批次 1(CAT/CCI/ITW per-stock 合并行修复）已完成，
+selector 变更已按任务文档 §6 的预先约束落地并验收；批次 2(90 个跨 accession 组）属于
+既有重述审核机制，不阻塞 Phase B2。下一项任务为 **Phase B2（筛选器及行业中位数切换）**;
+不要提前进入 B3/B4、修改同步写入或删除数据库对象。
