@@ -291,6 +291,11 @@ PR 2025 10-K 同样将 `Acquisition of oil and natural gas properties, net`（1,
   = 13.7M。该金额仅代表“其他财产设备”，PR 真实 cash capex（drilling/development 约 19.7 亿）
   仍为自定义/带维度披露、未映射。对比器将 old 248.3M vs new 13.7M 归类为
   `OLD_DATA_QUALITY_DIRECT`（旧值来源为已排除的收购 tag）。
+  **2026-08-05 后续收口**：13.7M 子项充当 total capex 违反 §3.1.4，已通过 per-stock
+  disallow（`_DISALLOWED_STOCK_FIELD_TAGS`，PR + OtherPropertyPlantAndEquipment）使 PR
+  capex/fcf 保持 `NULL`，并登记 `NO_CASH_CAPEX_DISCLOSURE` exception（annual capex/fcf
+  + TTM fcf_ttm，与 FANG 同型）。同一 tag 对 MAT/VNO/WEC 等股票仍为合法 total capex，
+  不受影响（有回归测试）。
 - **EOG FY2025**：仍保留 `PaymentsToAcquireOilAndGasPropertyAndEquipment` = 61.15 亿。
   该 tag description 包含 "purchase long lived physical asset for use in normal oil and gas
   operations"，与 EOG 10-K "Additions to Oil and Gas Properties" 一致，继续视为 cash capex。

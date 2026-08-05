@@ -438,6 +438,49 @@ def test_oil_and_gas_mineral_interest_tag_is_not_selectable():
     assert len(selected) == 0
 
 
+def test_pr_other_property_ppe_subline_is_not_selectable():
+    """PR 的 OtherPropertyPlantAndEquipment 只是组成子项（主 capex 为自定义/带维度
+    披露），对 PR 按股票禁用，selector 应返回空而不是子项值。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            stock_code="PR",
+            standard_field="capital_expenditures",
+            value_hash="subline",
+            value_numeric=13_682_000,
+            sec_tag="PaymentsToAcquireOtherPropertyPlantAndEquipment",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["PR"], basis="first-reported")
+
+    assert len(selected) == 0
+
+
+def test_other_property_ppe_still_selectable_for_other_stocks():
+    """同一 tag 对其他股票仍是合法 cash capex（如 MAT/VNO/WEC），不受 per-stock
+    禁用影响。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            stock_code="MAT",
+            standard_field="capital_expenditures",
+            value_hash="cash",
+            value_numeric=110_618_000,
+            sec_tag="PaymentsToAcquireOtherPropertyPlantAndEquipment",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["MAT"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].value_numeric == 110_618_000
+
+
 def test_other_productive_assets_capex_tag_is_selectable():
     selector = USFactSelector()
     facts = [

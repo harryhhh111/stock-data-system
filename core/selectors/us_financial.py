@@ -65,6 +65,16 @@ _DISALLOWED_STANDARD_FIELD_TAGS = {
     ("capital_expenditures", "PaymentsToAcquireOilAndGasProperty"),
 }
 
+# 按股票排除的 (stock_code, standard_field, sec_tag)：该 tag 全局语义正确，
+# 但对该股票只是组成子项而非披露的 total cash CapEx（其主 capex 行为自定义/
+# 带维度披露，companyfacts 无合并行）。此时保持 NULL 优于使用子项。
+# PR: 10-K 现金流量表分行披露 Drilling and development capital expenditures
+# (~19.7 亿,自定义 tag),OtherPropertyPlantAndEquipment 仅 13.7M 为其他基建子项。
+# 见 US_SNAPSHOT_CAPEX_MAPPING_TASK.md §12。
+_DISALLOWED_STOCK_FIELD_TAGS = {
+    ("PR", "capital_expenditures", "PaymentsToAcquireOtherPropertyPlantAndEquipment"),
+}
+
 _OFFICIAL_ANNUAL_FORMS = {
     "10-K",
     "10-K/A",
@@ -185,6 +195,11 @@ class USFactSelector:
                 str(fact.get("standard_field") or ""),
                 str(fact.get("sec_tag") or ""),
             ) not in _DISALLOWED_STANDARD_FIELD_TAGS
+            and (
+                str(fact.get("stock_code") or ""),
+                str(fact.get("standard_field") or ""),
+                str(fact.get("sec_tag") or ""),
+            ) not in _DISALLOWED_STOCK_FIELD_TAGS
         ]
         if not usable:
             return []

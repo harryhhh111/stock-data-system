@@ -1,6 +1,7 @@
 # 美股财务快照：52/53 周 TTM 期间规则与 Phase A 最终收口（#6）
 
-> 状态：待执行
+> 状态：已完成（2026-08-04 收口，含 FRMI/PSKY stub exception;PR per-stock disallow
+> 于 2026-08-05 补闭）
 > 阶段：`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md` Phase A 收口
 > 前置：#2/#3/#4 已完成（`3f21536`）；#5 已消除 `MISSING_MAPPING`（`4afabd5`、`7652b4c`）
 > 当前基线：全量 compare 有 `PERIOD_MISMATCH=102`（27 只股票）、`MISSING_COMPONENT=77`、
