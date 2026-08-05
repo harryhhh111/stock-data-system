@@ -481,6 +481,68 @@ def test_other_property_ppe_still_selectable_for_other_stocks():
     assert selected[0].value_numeric == 110_618_000
 
 
+# ── #7 批次 1: COGS 合并行 per-stock 禁用 ─────────────────────
+
+@pytest.mark.parametrize("stock,disallowed,consolidated", [
+    # CAT: 子项=COGSAS(methodology 调节行),合并行=CostOfRevenue
+    ("CAT", "CostOfGoodsAndServicesSold", "CostOfRevenue"),
+    # CCI: 子项=COGSAS(services 组成行),合并行=CostOfRevenue
+    ("CCI", "CostOfGoodsAndServicesSold", "CostOfRevenue"),
+    # ITW: 子项=CostOfRevenue(分部附注行),合并行=COGSAS —— 与 CAT 相反
+    ("ITW", "CostOfRevenue", "CostOfGoodsAndServicesSold"),
+])
+def test_cogs_per_stock_disallow(stock, disallowed, consolidated):
+    """per-stock 禁用后,子项 tag 不可选,合并行 tag 仍可选。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            stock_code=stock,
+            standard_field="cost_of_goods_sold",
+            value_hash="subline",
+            value_numeric=49_000_000,
+            sec_tag=disallowed,
+        ),
+        _fact(
+            2,
+            stock_code=stock,
+            standard_field="cost_of_goods_sold",
+            value_hash="consolidated",
+            value_numeric=44_752_000_000,
+            sec_tag=consolidated,
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=[stock], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].sec_tag == consolidated
+    assert selected[0].value_numeric == 44_752_000_000
+
+
+def test_cogs_disallow_does_not_leak_across_stocks():
+    """CAT 的合并行 tag(CostOfRevenue)恰是 ITW 的禁用 tag,但只对本股票生效:
+    其他股票(如 CAT)的 CostOfRevenue 不受影响。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            stock_code="CAT",
+            standard_field="cost_of_goods_sold",
+            value_hash="consolidated",
+            value_numeric=44_752_000_000,
+            sec_tag="CostOfRevenue",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["CAT"], basis="first-reported")
+
+    assert len(selected) == 1
+    assert selected[0].value_numeric == 44_752_000_000
+
+
 def test_other_productive_assets_capex_tag_is_selectable():
     selector = USFactSelector()
     facts = [

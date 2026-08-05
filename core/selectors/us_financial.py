@@ -73,6 +73,18 @@ _DISALLOWED_STANDARD_FIELD_TAGS = {
 # 见 US_SNAPSHOT_CAPEX_MAPPING_TASK.md §12。
 _DISALLOWED_STOCK_FIELD_TAGS = {
     ("PR", "capital_expenditures", "PaymentsToAcquireOtherPropertyPlantAndEquipment"),
+    # 以下为 #7 批次 1：COGS 合并行选择，逐只 10-K 取证后定性（台账见
+    # docs/evidence/us_cogs_consolidated_ledger_review.csv）。注意 CAT 与 ITW 对同样两个
+    # tag 的处置相反——证明合并行选择只能 per-stock，不能全局规则。
+    # CAT: 合并行是利润表 "Cost of goods sold"(=CostOfRevenue，如 FY2025 44,752M);
+    #      COGSAS 是分部调节表 "methodology differences" 行(49M/33M/160M)。
+    ("CAT", "cost_of_goods_sold", "CostOfGoodsAndServicesSold"),
+    # CCI: 合并行是分部附注 "Segment cost of operations" 合计(=CostOfRevenue，不含
+    #      股权激励成本);COGSAS 仅为 "services and other" 成本组成行(119M/316M/466M)。
+    ("CCI", "cost_of_goods_sold", "CostOfGoodsAndServicesSold"),
+    # ITW: 合并行是利润表 "Cost of revenue"(=COGSAS，如 FY2025 8,969M);
+    #      CostOfRevenue 仅出现在分部附注(7,556M/7,604M 等),非合并总额。
+    ("ITW", "cost_of_goods_sold", "CostOfRevenue"),
 }
 
 _OFFICIAL_ANNUAL_FORMS = {

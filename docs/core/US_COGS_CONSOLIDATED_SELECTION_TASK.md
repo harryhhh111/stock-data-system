@@ -1,9 +1,37 @@
 # 美股财务快照：COGS 合并行选择证据审计（#7，第 1 步）
 
-> 状态：待执行（仅证据审计；本任务**不授权**修改 selector 语义）
+> 状态：第 1 步（审计）与批次 1（CAT/CCI/ITW per-stock 修复）均已完成（2026-08-05）；
+> 批次 2（90 组跨 accession）留既有重述审核机制；80 行单候选合理性审查轴记为已知局限。
 > 阶段：Phase B2 的前置质量门
 > 前置：Phase A 已验收；Phase B1（个股分析读取者切换）已于 2026-08-05 完成
 > 后续：本任务经人工审阅并形成受限规则后，才可起草并执行 Phase B2（筛选器切换）
+
+## 0. 批次 1 执行结果（2026-08-05）
+
+审计触发 ≥100 质量门后，项目所有者批准按批次 1 落地，结果如下：
+
+- **三只股票逐只 10-K 取证**（证据快照在 `build/financial_comparison/cogs_consolidated_audit/sec_evidence/`，
+  台账 `docs/evidence/us_cogs_consolidated_ledger_review.csv` 共 11 组全部
+  `CONSOLIDATED_TOTAL_PROVEN`）：
+  - CAT：合并行 = `CostOfRevenue`（利润表 "Cost of goods sold"）;`CostOfGoodsAndServicesSold`
+    = 分部调节表 "methodology differences" 行。禁用 COGSAS。修正后 FY2023/24/25 毛利率
+    0.362 / 0.380 / 0.338（原 0.999）;
+  - CCI：合并行 = `CostOfRevenue`（分部附注 "Segment cost of operations" 合计，不含股权
+    激励）;COGSAS = "services and other" 组成行。禁用 COGSAS。修正后 FY2021/22 毛利率
+    0.692 / 0.710;FY2023/24 为 0.591 / 0.595（FY2025 10-K 将光纤业务重述为终止经营，
+    收入按持续经营口径重述而 COGS 仍是旧口径合计，属批次 2 重述审核域）;
+  - ITW：合并行 = `CostOfGoodsAndServicesSold`（利润表 "Cost of revenue"）;`CostOfRevenue`
+    仅在分部附注。禁用 CostOfRevenue——与 CAT 处置相反，坐实"无全局规则"。修正后
+    FY2025 毛利率 0.4410，与 ITW 披露的 ~44% 一致。
+- **CCI FY2025**：重述为持续经营后，成本仅以扩展 tag 组成行（744+255=999M）披露，无
+  us-gaap 合并 COGS；按"宁可 NULL 不选子项"保持毛利率 NULL，登记
+  `NO_CONSOLIDATED_COGS_DISCLOSURE` exception。
+- **实施**:`_DISALLOWED_STOCK_FIELD_TAGS` 增加 CAT/CCI/ITW 三条；selector 测试 34 个
+  （含同 tag 跨股票不泄漏）；重跑 projection + compare：四项阻断归零，
+  `REGISTERED_EXCEPTION=86`,`UNEXPLAINED=0`。
+- **已知局限（明确不做）**:80 行"单候选也可能口径偏窄"的派生行（LCID/VICI/CNP 等）
+  需要独立的合理性审查轴；Financial Statement Data Sets 工程的触发条件维持
+  "同类 CAT 型冲突股票累积 >5 只"。
 
 ## 1. 目的
 
