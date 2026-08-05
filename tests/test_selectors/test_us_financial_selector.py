@@ -419,6 +419,25 @@ def test_unpaid_capex_tag_is_not_selectable():
     assert selected[0].fact_version_id == 2
 
 
+def test_oil_and_gas_mineral_interest_tag_is_not_selectable():
+    """PaymentsToAcquireOilAndGasProperty 指矿产权益收购，不是 cash capex。"""
+    selector = USFactSelector()
+    facts = [
+        _fact(
+            1,
+            standard_field="capital_expenditures",
+            value_hash="mineral_interest",
+            value_numeric=5_938_000_000,
+            sec_tag="PaymentsToAcquireOilAndGasProperty",
+        ),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    selected = selector.select(stock_codes=["TEST"], basis="first-reported")
+
+    assert len(selected) == 0
+
+
 def test_other_productive_assets_capex_tag_is_selectable():
     selector = USFactSelector()
     facts = [
@@ -443,7 +462,6 @@ def test_other_productive_assets_capex_tag_is_selectable():
     "PaymentsToAcquireBuildings",
     "PaymentsToAcquireWasteWaterSystems",
     "PaymentsToAcquireOilAndGasPropertyAndEquipment",
-    "PaymentsToAcquireOilAndGasProperty",
     "PaymentsToAcquireOtherPropertyPlantAndEquipment",
 ])
 def test_industry_specific_cash_capex_tags_are_selectable(tag):

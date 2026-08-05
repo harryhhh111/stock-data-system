@@ -3,9 +3,9 @@
 > 状态：已完成  
 > 阶段：`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md` Phase A 收口  
 > 前置：#2/#3/#4（同口径 fallback）已完成，提交 `3f21536`  
-> 完成提交：mapping/测试/exception 清单见 `4afabd5`；对比器 `--exceptions` 支持待当前提交  
+> 完成提交：mapping/测试/exception 清单见 `4afabd5`；油气 tag 语义复核修正见当前提交  
 > 后续：本任务全量重跑后的残留清单，是 #6（52/53 周 TTM 期间规则）的唯一输入。  
-> 关键结果：`UNEXPLAINED=0`，`MISSING_MAPPING=0`，`REGISTERED_EXCEPTION=30`，`PERIOD_MISMATCH=102`，`MISSING_COMPONENT=77`。
+> 关键结果（2026-08-05 复核后）：`UNEXPLAINED=0`，`MISSING_MAPPING=0`，`REGISTERED_EXCEPTION=82`，`PERIOD_MISMATCH=0`，`MISSING_COMPONENT=0`。
 
 ## 1. 目标
 
@@ -261,6 +261,59 @@ ARE、DTE、FR、LYFT、NEE、REG。
    受影响股票清单，确认不会因新映射改变已有正确值；
 4. 映射变更会改变全市场事实层，不只这 25 只——重跑后对比报告的 `SAME` 数不得下降，
    若下降必须逐条解释。
+
+## 12. 2026-08-05 复核：移除 `PaymentsToAcquireOilAndGasProperty`
+
+### 12.1 触发原因
+
+全市场审计（§10）将 `PaymentsToAcquireOilAndGasProperty` 纳入 canonical 候选，但后续
+10-K 原文核对发现该 tag 的 SEC description 为：
+
+> "The cash outflow to purchase of mineral interests in oil and gas properties ..."
+
+这表示矿产权益收购，而非 drilling/development cash capex。FANG 2025 10-K 现金流量表将
+`Property acquisitions`（5,938M）与 `Additions to oil and natural gas properties`（3,523M）
+分行披露，前者即 `PaymentsToAcquireOilAndGasProperty`，后者为真实 cash capex 但属
+自定义/带维度行，未映射到任何 canonical tag。
+
+PR 2025 10-K 同样将 `Acquisition of oil and natural gas properties, net`（1,070,547）
+与 `Drilling and development capital expenditures`（1,965,926）分行；前者映射到
+`PaymentsToAcquireOilAndGasProperty`，后者为自定义/带维度行，未进入映射。
+
+因此将该 tag 从 `_CANONICAL_TAG_PRIORITY["capital_expenditures"]` 移除，并加入
+`_DISALLOWED_STANDARD_FIELD_TAGS`，明确排除矿产权益收购。
+
+### 12.2 影响范围
+
+- **FANG FY2025**：移除后无剩余现金 CapEx tag（仅剩 `CapitalExpendituresIncurredButNotYetPaid`
+  非现金 tag）。登记 `NO_CASH_CAPEX_DISCLOSURE` exception（annual + TTM fcf_ttm）。
+- **PR FY2025**：移除后 selector 回退到 `PaymentsToAcquireOtherPropertyPlantAndEquipment`
+  = 13.7M。该金额仅代表“其他财产设备”，PR 真实 cash capex（drilling/development 约 19.7 亿）
+  仍为自定义/带维度披露、未映射。对比器将 old 248.3M vs new 13.7M 归类为
+  `OLD_DATA_QUALITY_DIRECT`（旧值来源为已排除的收购 tag）。
+- **EOG FY2025**：仍保留 `PaymentsToAcquireOilAndGasPropertyAndEquipment` = 61.15 亿。
+  该 tag description 包含 "purchase long lived physical asset for use in normal oil and gas
+  operations"，与 EOG 10-K "Additions to Oil and Gas Properties" 一致，继续视为 cash capex。
+
+### 12.3 审计产物更新
+
+- `build/financial_comparison/phaseA_snapshot/capex_mapping_impact_audit.csv`：
+  新 tag 首选股票从 14 只降至 13 只（FANG 移出），冲突风险仍为 0。
+- `build/financial_comparison/phaseA_snapshot/no_cash_capex_10k_review.csv`：
+  新增 FANG，结论 `NO_CASH_CAPEX_DISCLOSURE`。
+- `docs/core/US_PHASE_A_EXCEPTIONS.csv`：
+  新增 FANG 2025-12-31 capex、fcf 及 2026-03-31 fcf_ttm 三条 exception。
+
+### 12.4 复跑结果
+
+执行全量 projection + compare（带 `--exceptions docs/core/US_PHASE_A_EXCEPTIONS.csv`）：
+
+- `UNEXPLAINED=0`
+- `MISSING_MAPPING=0`
+- `MISSING_COMPONENT=0`
+- `PERIOD_MISMATCH=0`
+- `REGISTERED_EXCEPTION=82`
+- `OLD_DATA_QUALITY_DIRECT=319`（含 PR capex 1 条）
 
 ## 11. 已知小瑕疵（不阻塞 #5 验收，留待后续收口）
 

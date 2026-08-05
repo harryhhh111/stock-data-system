@@ -51,13 +51,18 @@ _CANONICAL_TAG_PRIORITY: dict[str, tuple[str, ...]] = {
         "PaymentsToAcquireBuildings",
         "PaymentsToAcquireWasteWaterSystems",
         "PaymentsToAcquireOilAndGasPropertyAndEquipment",
-        "PaymentsToAcquireOilAndGasProperty",
+        # PaymentsToAcquireOilAndGasProperty is explicitly excluded: its description refers to
+        # "purchase of mineral interests in oil and gas properties", which is an acquisition of
+        # mineral rights rather than cash capital expenditures for drilling/development.
+        # Keep it out of cash capex; see US_SNAPSHOT_CAPEX_MAPPING_TASK.md §10.1/§11.
         "PaymentsToAcquireOtherPropertyPlantAndEquipment",
     ),
 }
 
 _DISALLOWED_STANDARD_FIELD_TAGS = {
     ("capital_expenditures", "CapitalExpendituresIncurredButNotYetPaid"),
+    # Mineral-interest acquisition tag; not cash capex.
+    ("capital_expenditures", "PaymentsToAcquireOilAndGasProperty"),
 }
 
 _OFFICIAL_ANNUAL_FORMS = {
