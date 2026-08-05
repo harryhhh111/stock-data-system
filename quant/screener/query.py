@@ -1,10 +1,16 @@
 """
 选股筛选器 — 数据查询层
 只读数据库，不修改任何数据
+
+Phase B2：``US_SCREENER_SNAPSHOT_CURRENT=1`` 时，US universe 与 US ROE 历史
+切换到 current snapshot（us_financial_current_annual / us_financial_current_ttm /
+daily_quote 最新行），估值口径与 quant.analyzer.query_us（B1）完全一致；
+默认关闭走 legacy 宽表/物化视图。CN_A / CN_HK 路径不受该开关影响。
 """
 
 import pandas as pd
 from db import Connection
+from quant.analyzer import query_us
 from quant.metrics import compute_pb, compute_pe
 from quant.metrics.us_pb import load_latest_parent_equity
 
@@ -136,15 +142,47 @@ def compute_dividend_yield(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Phase B2：US 连续 ROE 只读 current annual snapshot。
+# 故意不过滤 roe IS NOT NULL——缺失年份保留 NULL 行，先取行后判断。
+_SQL_US_ROE_HISTORY_SNAPSHOT = """
+SELECT f.stock_code, f.report_date, f.roe
+FROM (
+    SELECT stock_code, report_date, roe,
+           ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn
+    FROM us_financial_current_annual
+) f
+JOIN stock_info s ON f.stock_code = s.stock_code AND s.market = 'US'
+WHERE f.rn <= %s
+ORDER BY f.stock_code, f.report_date DESC
+"""
+
+
+def _get_us_roe_history_snapshot(years: int) -> pd.DataFrame:
+    """US 最近 N 个年度 ROE，只读 us_financial_current_annual（Phase B2）。
+
+    缺失 ROE 的年份保留 NULL 行，由 filter_consecutive_roe 淘汰，不得以更早
+    年度顶替。DB/数据错误直接向上抛，不回退旧宽表。
+    """
+    with Connection() as conn:
+        return pd.read_sql(_SQL_US_ROE_HISTORY_SNAPSHOT, conn, params=(years,))
+
+
 def get_roe_history(market: str | None = None, years: int = 3) -> pd.DataFrame:
     """查询每只股票最近 N 个年度报告期的 ROE。
 
     注意：这里不能过滤 roe IS NOT NULL。否则缺失 ROE 的年份会被跳过，
     更老年份的 ROE 会顶替成为“前年”，造成 VZ/ACGL 这类错位。
 
+    Phase B2 开关开启时：market='US' 只读 current annual snapshot；
+    market=None/'all' 时 CN 部分不变，US 部分追加 snapshot 行。
+
     Returns:
         DataFrame with columns: stock_code, report_date, roe（roe 可能为 NULL）
     """
+    snapshot = query_us.screener_snapshot_enabled()
+    if market == "US" and snapshot:
+        return _get_us_roe_history_snapshot(years)
+
     market_filter = ""
     if market and market != "all":
         if market == "US":
@@ -171,10 +209,61 @@ def get_roe_history(market: str | None = None, years: int = 3) -> pd.DataFrame:
     """
     with Connection() as conn:
         df = pd.read_sql(sql, conn, params=(years,))
+
+    if snapshot and (market is None or market == "all"):
+        us = _get_us_roe_history_snapshot(years)
+        df = (
+            pd.concat([df, us], ignore_index=True)
+            .sort_values(["stock_code", "report_date"], ascending=[True, False])
+            .reset_index(drop=True)
+        )
     return df
 
 
 def get_us_universe() -> pd.DataFrame:
+    """获取美股选股池数据（按 Phase B2 开关分发）。
+
+    - 开关关闭（默认）：legacy 宽表/物化视图路径（``get_us_universe_legacy``）；
+    - ``US_SCREENER_SNAPSHOT_CURRENT=1``：current snapshot 路径
+      （``get_us_universe_snapshot``），估值全部本地自算并带溯源状态。
+
+    列名保持与 CN 版本一致，以便复用 filters / scorer / presets。
+    """
+    if query_us.screener_snapshot_enabled():
+        return get_us_universe_snapshot()
+    return get_us_universe_legacy()
+
+
+def get_us_universe_snapshot() -> pd.DataFrame:
+    """美股选股池 — current snapshot 路径（Phase B2）。
+
+    数据装配在 quant.analyzer.query_us.load_us_snapshot_universe()（与行业中位数
+    共用同一集合查询）；这里只把列名映射到 legacy 筛选器列契约，并保留溯源字段：
+    financial_data_status / net_income_basis / ttm_report_date / ttm_filed_date /
+    ttm_accession_no / quote_date / equity_report_date / quality_flags。
+
+    与 legacy 的已知口径差异（影子对比需逐条标注）：
+    - 行情取绝对最新 trade_date（legacy 取最近一个 market_cap>0 的交易日）；
+    - PB 只用 TTM snapshot parent equity（legacy 用 load_latest_parent_equity
+      的时点 selector fallback）；
+    - effective NI = COALESCE(net_income_ttm, net_income_common_ttm)。
+    """
+    df = query_us.load_us_snapshot_universe()
+    if df.empty:
+        return df
+
+    # 列契约对齐 legacy get_us_universe：下游 filters/scorer/presets 无需改动。
+    df["trade_date"] = df["quote_date"]
+    df["float_market_cap"] = None
+    df["total_liab"] = df["total_liabilities"]
+    # parent_equity 即 PB 分母：TTM snapshot 的 parent equity，不做现场 selector fallback。
+    df["parent_equity"] = df["total_equity"]
+    df["fcf_cfo_ttm"] = df["cfo_ttm"]
+    df["fcf_capex_ttm"] = df["capex_ttm"]
+    return df
+
+
+def get_us_universe_legacy() -> pd.DataFrame:
     """
     获取美股选股池数据，整合最新财务指标 + 行情 + TTM + FCF Yield。
 

@@ -314,5 +314,10 @@ Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断
 
 #7 状态（2026-08-05)：证据审计与批次 1(CAT/CCI/ITW per-stock 合并行修复）已完成，
 selector 变更已按任务文档 §6 的预先约束落地并验收；批次 2(90 个跨 accession 组）属于
-既有重述审核机制，不阻塞 Phase B2。下一项任务为 **Phase B2（筛选器及行业中位数切换）**;
-不要提前进入 B3/B4、修改同步写入或删除数据库对象。
+既有重述审核机制，不阻塞 Phase B2。
+
+Phase B2 已于 2026-08-06 完成：美股筛选器、FCF+ROE 策略与 US 行业中位数在独立开关
+`US_SCREENER_SNAPSHOT_CURRENT=1`（.env 已启用）下切换至 current snapshot；
+影子对比（build/financial_comparison/phaseB2_screener/）UNEXPLAINED=0，
+PLTR screener PE=129.57 与 B1 一致，全量测试与前端构建通过。
+下一项任务为 **Phase B3（dashboard / 校验）**；不要提前进入 B4、修改同步写入或删除数据库对象。

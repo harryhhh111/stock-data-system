@@ -34,6 +34,8 @@ OUTPUT_COLUMNS = [
     "industry", "market_cap", "pe_ttm", "pb", "dividend_yield",
     "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago",
     "gross_margin", "net_margin", "debt_ratio",
+    # Phase B2 溯源字段（仅 US snapshot 路径存在；CN/legacy 无此列时自动跳过）
+    "ttm_report_date", "quote_date", "financial_data_status", "net_income_basis",
 ]
 
 

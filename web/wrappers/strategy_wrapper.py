@@ -43,6 +43,8 @@ OUTPUT_COLUMNS = [
     "fcf_yield", "roe", "roe_1y_ago", "roe_2y_ago",
     "gross_margin", "net_margin", "debt_ratio",
     "ttm_report_date", "currency",
+    # Phase B2 溯源字段（仅 US snapshot 路径存在；CN/legacy 无此列时自动跳过）
+    "quote_date", "financial_data_status", "net_income_basis",
 ]
 
 STALE_DAYS = 180

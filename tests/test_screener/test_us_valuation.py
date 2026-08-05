@@ -17,7 +17,9 @@ class _DummyConn:
 
 
 class TestUSValuation:
-    def test_get_us_universe_computes_pe_pb_from_fundamentals(self):
+    def test_get_us_universe_computes_pe_pb_from_fundamentals(self, monkeypatch):
+        # 本用例针对 legacy 路径；Phase B2 开关（.env 可能启用）必须显式关闭
+        monkeypatch.delenv("US_SCREENER_SNAPSHOT_CURRENT", raising=False)
         raw = pd.DataFrame({
             "stock_code": ["TDC", "VZ", "LOSS"],
             "market_cap": [2.759953e9, 182.805969e9, 1.0e9],

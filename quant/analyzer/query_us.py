@@ -8,6 +8,10 @@
   只读 ``us_financial_current_annual`` / ``us_financial_current_ttm`` /
   ``daily_quote``（仅 close、market_cap、trade_date）。
 
+Phase B2 复用本模块的 snapshot 装配：``load_us_snapshot_universe()`` 为筛选器、
+FCF+ROE 策略与 US 行业中位数提供同一集合查询，由独立开关
+``US_SCREENER_SNAPSHOT_CURRENT`` 控制（不复用 B1 开关）。
+
 snapshot 路径的硬约束（Phase B1 规格 §2）：
 
 - 不读取 mv_us_fcf_yield / mv_us_indicator_ttm / mv_us_financial_indicator /
@@ -107,6 +111,73 @@ _LEGACY_FORBIDDEN_OBJECTS = (
     "us_cash_flow_statement",
 )
 
+# Phase B2 全市场 universe 集合查询：stock + 最新行情 + 最新 annual snapshot + TTM snapshot。
+# 禁止逐股循环查权益；daily_quote 只取 close / market_cap / trade_date / currency，
+# 不读供应商 pe_ttm / pb。{extra_where} 仅供行业中位数按 industry / exclude_code 过滤。
+_SQL_US_SNAPSHOT_UNIVERSE = """
+    SELECT
+        s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
+        (CURRENT_DATE - s.list_date) AS days_since_list,
+
+        q.trade_date AS quote_date, q.close, q.market_cap,
+        q.currency AS quote_currency,
+
+        a.report_date AS annual_report_date,
+        a.filed_date AS annual_filed_date,
+        a.accession_no AS annual_accession_no,
+        a.roe, a.gross_margin, a.operating_margin, a.net_margin,
+        a.debt_ratio, a.current_ratio, a.quick_ratio,
+        a.revenue_yoy, a.net_profit_yoy, a.eps_basic, a.revenues,
+        a.total_assets, a.total_liabilities,
+        a.total_equity AS annual_total_equity,
+        a.fcf AS annual_fcf,
+        a.quality_flags AS annual_quality_flags,
+
+        t.ttm_report_date, t.ttm_filed_date, t.ttm_accession_no,
+        t.revenue_ttm, t.net_income_ttm, t.net_income_common_ttm,
+        t.cfo_ttm, t.capex_ttm, t.fcf_ttm,
+        t.equity_report_date, t.equity_filed_date, t.total_equity,
+        t.quality_flags
+
+    FROM stock_info s
+
+    LEFT JOIN LATERAL (
+        SELECT trade_date, close, market_cap, currency
+        FROM daily_quote
+        WHERE stock_code = s.stock_code AND market = 'US'
+        ORDER BY trade_date DESC LIMIT 1
+    ) q ON true
+
+    LEFT JOIN LATERAL (
+        SELECT report_date, filed_date, accession_no,
+               roe, gross_margin, operating_margin, net_margin,
+               debt_ratio, current_ratio, quick_ratio,
+               revenue_yoy, net_profit_yoy, eps_basic, revenues,
+               total_assets, total_liabilities, total_equity, fcf, quality_flags
+        FROM us_financial_current_annual a2
+        WHERE a2.stock_code = s.stock_code
+        ORDER BY a2.report_date DESC, a2.filed_date DESC, a2.accession_no DESC
+        LIMIT 1
+    ) a ON true
+
+    LEFT JOIN us_financial_current_ttm t ON t.stock_code = s.stock_code
+
+    WHERE s.market = 'US'
+    {extra_where}
+    ORDER BY s.stock_code
+"""
+
+
+def screener_snapshot_enabled() -> bool:
+    """Phase B2 独立开关：筛选器 / FCF+ROE 策略 / US 行业中位数走 current snapshot。
+
+    默认关闭（legacy）。不得复用 B1 的 US_FINANCIAL_VERSION_CURRENT，
+    避免部署时意外切换筛选器。
+    """
+    return os.getenv("US_SCREENER_SNAPSHOT_CURRENT", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
 
 def _canary_enabled(stock_code: str) -> bool:
     """兼容旧 canary 开关，并支持通过单一开关扩大到全部美股。"""
@@ -168,14 +239,33 @@ def _load_registered_exceptions() -> frozenset:
     return frozenset(keys)
 
 
-def _financial_data_status(stock_code: str, ttm_row) -> str:
-    """根据 TTM snapshot 行判定 financial_data_status（规格 §2.3）。"""
+def compute_effective_net_income(net_income_ttm, net_income_common_ttm):
+    """effective NI = COALESCE(net_income_ttm, net_income_common_ttm)。
+
+    返回 (value, basis)，basis ∈ consolidated | common | unavailable。
+    B1 个股页与 B2 筛选器/行业中位数共用同一口径，禁止复制第二套分母逻辑。
+    """
+    ni = _pandas_scalar(net_income_ttm)
+    nic = _pandas_scalar(net_income_common_ttm)
+    if ni is not None:
+        return ni, "consolidated"
+    if nic is not None:
+        return nic, "common"
+    return None, "unavailable"
+
+
+def _financial_data_status(stock_code: str, ttm_row, exceptions: frozenset | None = None) -> str:
+    """根据 TTM snapshot 行判定 financial_data_status（规格 §2.3）。
+
+    exceptions 可由调用方批量预加载（如全市场 universe），避免每行重读 CSV。
+    """
     if ttm_row is None:
         return STATUS_SNAPSHOT_UNAVAILABLE
     flags = [f.lower() for f in _flags_list(ttm_row.get("quality_flags"))]
     if any("out_of_sync_scope" in f for f in flags):
         return STATUS_OUT_OF_SYNC_SCOPE
-    exceptions = _load_registered_exceptions()
+    if exceptions is None:
+        exceptions = _load_registered_exceptions()
     report_date = str(ttm_row.get("ttm_report_date") or "")[:10]
     for field in ("revenue_ttm", "net_income_ttm", "fcf_ttm", "cfo_ttm", "capex_ttm"):
         if ttm_row.get(field) is None or pd.isna(ttm_row.get(field)):
@@ -319,14 +409,9 @@ def _snapshot_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         return pd.DataFrame([out])
 
     t = ttm.iloc[0]
-    net_income = _pandas_scalar(t.get("net_income_ttm"))
-    net_income_common = _pandas_scalar(t.get("net_income_common_ttm"))
-    if net_income is not None:
-        effective_net_income, basis = net_income, "consolidated"
-    elif net_income_common is not None:
-        effective_net_income, basis = net_income_common, "common"
-    else:
-        effective_net_income, basis = None, "unavailable"
+    effective_net_income, basis = compute_effective_net_income(
+        t.get("net_income_ttm"), t.get("net_income_common_ttm"),
+    )
 
     fcf = _pandas_scalar(t.get("fcf_ttm"))
     equity = _pandas_scalar(t.get("total_equity"))
@@ -371,6 +456,130 @@ def _snapshot_stock_info(stock_code: str, market: str) -> pd.DataFrame:
     return pd.DataFrame([out])
 
 
+# ── Phase B2：全市场 snapshot universe（筛选器 / 策略 / 行业中位数共用） ──
+
+
+def load_us_snapshot_universe(
+    industry: str | None = None,
+    exclude_code: str = "",
+) -> pd.DataFrame:
+    """从 current snapshot + 最新行情装配全市场（或单行业）universe，估值全部本地自算。
+
+    - 单次集合查询装配 stock / 最新 daily_quote / 最新 annual snapshot / TTM snapshot，
+      禁止逐股循环查询权益；
+    - PE/PB/FCF Yield 口径与 B1 个股页完全一致（compute_pe/compute_pb + 同一行情市值）；
+    - PB 只用 TTM snapshot 的 parent equity，且 equity_filed_date ≤ quote_date；
+    - 无 snapshot 的股票保留行情行，财务/估值字段为 NULL，status 显式标注；
+    - DB/数据错误直接向上抛，不得 catch 回退旧财务数据。
+    """
+    extra_where = ""
+    params: list = []
+    if industry is not None:
+        extra_where += " AND s.industry = %s"
+        params.append(industry)
+    if exclude_code:
+        extra_where += " AND s.stock_code != %s"
+        params.append(exclude_code)
+
+    sql = _SQL_US_SNAPSHOT_UNIVERSE.format(extra_where=extra_where)
+    with Connection() as conn:
+        df = pd.read_sql(sql, conn, params=params or None)
+    if df.empty:
+        return df
+
+    # Phase A exception 清单整批加载一次；缺失时 _load_registered_exceptions 已 warning。
+    exceptions = _load_registered_exceptions()
+
+    eff = [
+        compute_effective_net_income(ni, nic)
+        for ni, nic in zip(df["net_income_ttm"], df["net_income_common_ttm"])
+    ]
+    df["net_profit_ttm"] = [v for v, _ in eff]
+    df["net_income_basis"] = [b for _, b in eff]
+
+    market_caps = [_pandas_scalar(v) for v in df["market_cap"]]
+    df["pe_ttm"] = [
+        compute_pe(mc, ni) for mc, ni in zip(market_caps, df["net_profit_ttm"])
+    ]
+    # FCF Yield：负值保留；fcf_ttm 为 NULL（含已登记 exception）时为 NULL。
+    df["fcf_yield"] = [
+        (fcf / mc if fcf is not None and mc is not None and mc > 0 else None)
+        for fcf, mc in zip(
+            (_pandas_scalar(v) for v in df["fcf_ttm"]), market_caps,
+        )
+    ]
+
+    # PB：parent equity 必须在行情 trade_date 当日已披露（equity_filed_date ≤ quote_date）。
+    pb_values: list = []
+    pb_equity_dates: list = []
+    for _, row in df.iterrows():
+        mc = _pandas_scalar(row.get("market_cap"))
+        equity = _pandas_scalar(row.get("total_equity"))
+        equity_filed = _as_date(row.get("equity_filed_date"))
+        quote_date = _as_date(row.get("quote_date"))
+        if equity_filed is not None and quote_date is not None and equity_filed <= quote_date:
+            pb_values.append(compute_pb(mc, equity))
+            pb_equity_dates.append(_as_date(row.get("equity_report_date")))
+        else:
+            if equity is not None:
+                logger.warning(
+                    "skip PB for %s: equity filed %s not available at trade date %s",
+                    row.get("stock_code"), equity_filed, quote_date,
+                )
+            pb_values.append(None)
+            pb_equity_dates.append(None)
+    df["pb"] = pb_values
+    df["pb_equity_date"] = pb_equity_dates
+
+    df["financial_data_status"] = [
+        (
+            _financial_data_status(code, row, exceptions)
+            if not pd.isna(row.get("ttm_report_date"))
+            else STATUS_SNAPSHOT_UNAVAILABLE
+        )
+        for code, (_, row) in zip(df["stock_code"], df.iterrows())
+    ]
+    return df
+
+
+def industry_stats_from_universe(df: pd.DataFrame) -> dict:
+    """对已装配的 snapshot universe（单行业子集）计算中位数统计。
+
+    年度中位数：ROE / gross margin / net margin / debt ratio；
+    估值中位数：本地计算的 PE / PB / FCF Yield，PE/PB 仅正值入中位数。
+    空行业或样本不足（无有效值）返回明确 NULL。
+    """
+    def _median(column: str, positive_only: bool = False):
+        if df.empty or column not in df.columns:
+            return None
+        s = pd.to_numeric(df[column], errors="coerce").dropna()
+        if positive_only:
+            s = s[s > 0]
+        if s.empty:
+            return None
+        return float(s.median())
+
+    return {
+        "peer_count": len(df),
+        "median_roe": _median("roe"),
+        "median_gross_margin": _median("gross_margin"),
+        "median_net_margin": _median("net_margin"),
+        "median_debt_ratio": _median("debt_ratio"),
+        "median_pe": _median("pe_ttm", positive_only=True),
+        "median_pb": _median("pb", positive_only=True),
+        "median_fcf_yield": _median("fcf_yield"),
+    }
+
+
+def _snapshot_industry_stats(industry: str, exclude_code: str = "") -> pd.DataFrame:
+    """US 同行业中位数（Phase B2 新分支）：与筛选器同一 snapshot universe。
+
+    排除当前股票；中位数语义见 industry_stats_from_universe()。
+    """
+    df = load_us_snapshot_universe(industry=industry, exclude_code=exclude_code)
+    return pd.DataFrame([industry_stats_from_universe(df)])
+
+
 # ── 对外接口：按 feature flag 分发 ──
 
 
@@ -397,7 +606,13 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
 
 
 def get_industry_stats(industry: str, market: str, exclude_code: str = "") -> pd.DataFrame:
-    """获取同行业股票的估值和财务指标中位数。"""
+    """获取同行业股票的估值和财务指标中位数。
+
+    US 市场在 ``US_SCREENER_SNAPSHOT_CURRENT`` 开启时走 current snapshot
+    （Phase B2）；默认 legacy 宽表/物化视图路径。CN 市场由 query_cn 处理。
+    """
+    if market == "US" and screener_snapshot_enabled():
+        return _snapshot_industry_stats(industry, exclude_code)
     sql = """
         WITH peers AS (
             SELECT stock_code FROM stock_info
