@@ -10,7 +10,7 @@
 
 将美股日常数据校验从旧宽表/物化视图切换到版本层，分为两类：
 
-- **Part A（直接迁移）**:`fcf_roe_check` 的 US 分支只读 current 物化视图
+- **Part A（直接迁移）**:`fcf_roe_check` 的 US 分支只读旧物化视图
   （`mv_us_fcf_yield`、`mv_us_financial_indicator`)，无历史依赖，直接切到 B2 已建成的
   snapshot universe;
 - **Part B（重建）**:`core/validate.py` 的三个美股校验是全历史/跨季度粒度，
@@ -58,20 +58,36 @@ CN_A/CN_HK 校验、市值日环比检查、跨源信息记录均不在本任务
    USD duration/instant):revenues、net_income、total_assets、total_liabilities、
    total_equity、total_equity_including_nci、total_current_assets、cash_and_equivalents、
    net_cash_from_operations;
-2. pivot 成 per-(stock_code, report_date) 宽行，供 `check_anomalies_us` 与
-   `check_logic_us` 使用；会计等式的 NCI fallback 语义保持不变；
-3. selector 分块调用（参考 projection 的 200 只/块）;失败必须抛错，不得返回部分数据
+2. **pivot 粒度不得提前合并**：保留
+   `stock_code, period_kind, period_start, report_date, unit, form / fiscal_period`，
+   一行一个事实。同一报告日可能同时存在年度、季度累计与单季事实（旧表按 report_type
+   分行校验），任何提前合并都会把不同期间口径混成一行并制造误报；
+3. 是否合并、如何合并由每条校验规则显式决定：
+   - `check_anomalies_us`：按期间粒度逐行校验（相当于旧表的 report_type 分行），
+     不跨期间合并；
+   - `check_logic_us`（会计等式）：确需按报告日合并时，只允许合并**同 period_kind、
+     同 period_start** 的行取非 NULL 值（对应旧实现中 annual/quarterly 两行明细互补的
+     语义），并在代码注释与测试中固定该规则；跨 period_start 的事实不得合并；
+4. selector 分块调用（参考 projection 的 200 只/块）;失败必须抛错，不得返回部分数据
    伪装完整校验。
 
 ### 3.4 standalone 跨季校验的重建
 
-旧表的 `revenues_standalone` 列在版本层不存在，用期间信息重建：
+旧表的 `revenues_standalone` 列在版本层不存在，用期间信息重建。候选事实必须先收窄
+范围，防止不同 accession、不同 tag 或不同维度的重述值被混合制造假阳性：
 
-- standalone 季度 = duration 事实且期间 ≈ 90 天（与现有投影的期间判定一致）;
-- cumulative = 同财年更长的 YTD 期间；
-- 财年边界推导、Q4 排除、阈值（>1% 或 $10M）沿用现有实现；
-- 仅当同期间同时存在 standalone 与 cumulative 事实时才比较；缺任一侧跳过并计数，
-  计数写入校验摘要，不得静默。
+1. **候选过滤**：仅取 USD、无维度（dimensions 为空）、正式 10-Q/10-K（含 /A)
+   的 revenues 事实；
+2. **tag 归一**：先在同一 accession 内应用 selector 已有的 canonical-tag 优先级与
+   `_DISALLOWED_STOCK_FIELD_TAGS` 规则，保证同 filing 内每个经济键只有一个候选；
+3. **期间分类**:standalone 季度 = duration 且期间 ≈ 90 天；cumulative = 同财年更长的
+   YTD 期间（与现有投影的期间判定一致）;
+4. **配对键**:standalone 与 cumulative 的配对必须带
+   `accession_no + period_start + report_date` 语义对齐（同一披露来源、同一财年累计
+   区间），仅日期接近不算配对；
+5. 财年边界推导、Q4 排除、阈值（>1% 或 $10M）沿用现有实现；
+6. **跳过必须按原因计数**：缺 standalone、缺 cumulative、候选歧义（同键多值）、
+   无法确定财年，分别计数并写入校验摘要；不得静默跳过。
 
 ## 4. 实现范围
 
@@ -99,7 +115,7 @@ build/financial_comparison/phaseB3b_validation/
 └── issue_diffs.csv
 ```
 
-- 按 (check_name, stock_code, report_date) 对齐问题清单；
+- 按 (check_name, stock_code, report_date, field_name) 对齐问题清单；
 - 旧有新无 / 新有旧无 / 两边都有但严重度不同，逐条给原因；
 - 预期"旧有新无"占多数且可解释（latest-restated 修复了旧表已知错值，如 CAT 成本、
   FIX 营业利润）;"新有旧无"必须逐条证明是新路径正确发现的问题，否则视为 blocker;
