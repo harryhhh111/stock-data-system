@@ -345,10 +345,11 @@ tag 一致 + vintage 对齐 + 同 accession 配对，跳过按四类原因计数
 崩溃的既有 bug（legacy 路径同样复现）。全量测试与前端构建通过。
 下一项任务为 **Phase B4（PIT 回测）**；不要提前进入 Phase C、修改同步写入或删除数据库对象。
 
-Phase B4 已于 2026-08-06 实现，待验收（开关 `US_BACKTEST_PIT_VERSION` 默认关闭）：
-回测美股财务输入从"旧宽表 + filed_date 过滤"切换到"版本事实层 + as-of selector"
-（`quant/backtest/us_pit_source.py`），指标公式与 current snapshot 共享（严格三组件
-TTM、ROE 四象限、GP 推导、common 备用口径）；影子对比
-（build/financial_comparison/phaseB4_backtest/）36,930 条字段差异的主导机制已抽样实证
-为 legacy 的陈旧年度顶替（MOH 案例）与口径修正，非新路径缺陷。全量测试 893 通过。
+Phase B4 已于 2026-08-07 完成实现与证据链（开关 `US_BACKTEST_PIT_VERSION` 默认关闭，
+待验收启用）：回测美股财务输入从"旧宽表 + filed_date 过滤"切换到"版本事实层 +
+as-of selector"（`quant/backtest/us_pit_source.py` 引擎热路径 +
+`quant/backtest/us_pit_dataset.py` 带 audit 的数据集构建器）；指标公式与 current
+snapshot 共享；6 截面分类影子对比 UNEXPLAINED=0（主导为 legacy 陈旧年度顶替）;
+persist manifest 3 个代表截面；fcf_roe_value 两年回测对比 legacy +15.9% vs
+as-of +38.9%（口径修正与覆盖率提升属预期差异）。全量测试通过。
 验收启用后，下一项任务为 **Phase C（同步后自动 projection、停止旧写入）**。

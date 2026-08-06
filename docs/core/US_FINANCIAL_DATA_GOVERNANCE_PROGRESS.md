@@ -9,6 +9,7 @@
 - [历史归档索引](../archive/us_financial_versioning/README.md)
 - [财报版本化方案](./US_FINANCIAL_VERSIONING_PLAN.md)
 - [旧财务宽表退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md)
+- [数据质量问题台账](./US_FINANCIAL_QUALITY_ISSUE_LEDGER.md)
 - [跨财年比较框架](../quant/CROSS_FISCAL_YEAR_COMPARABILITY_FRAMEWORK.md)
 - [财务指标前置治理](../quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md)
 - [ROIC 实施方案](../quant/ROIC_IMPLEMENTATION_PLAN.md)

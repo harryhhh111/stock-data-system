@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from core.selectors.us_financial import USFactSelector
@@ -47,6 +48,9 @@ PIT_FIELDS = [
 ]
 
 CACHE_DIR = Path("build/pit_cache")
+
+# 缓存内容格式版本:输出契约变化(如 Decimal→float)时递增,避免读到旧格式缓存
+CACHE_SCHEMA = "v2"
 
 _QUARTERLY_FORMS = {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
 
@@ -163,7 +167,7 @@ def select_as_of(
     return selector.select(basis="as-of", as_of_date=as_of_date, fields=PIT_FIELDS)
 
 
-# ── 年度衍生(与 current snapshot 同一套公式)──────────────────
+# ── 年度衍生:复用 current projection 已验收的纯函数 ──────────
 
 def _to_dec(v):
     return _snap._to_decimal(v)
@@ -173,80 +177,37 @@ def _safe_div(a, b):
     return _snap._safe_div(a, b)
 
 
-def _annual_records(selected: list) -> dict[str, dict]:
-    """as-of 事实 → 每股 {(stock, report_date): 年度记录}(同 projection 过滤)。"""
-    records: dict[tuple, dict] = {}
-    for f in selected:
-        if not f.form or f.form.upper() not in ANNUAL_FORMS:
-            continue
-        if not f.unit or f.unit.upper() != "USD":
-            continue
-        if not _snap._is_annual_period(f):
-            continue
-        key = (f.stock_code, f.report_date)
-        rec = records.setdefault(key, {"stock_code": f.stock_code, "report_date": f.report_date})
-        val = _to_dec(f.value_numeric)
-        if val is not None:
-            rec[f.standard_field] = val
-    out: dict[str, dict] = {}
-    for (stock, rd), rec in records.items():
-        out.setdefault(stock, {})[rd] = rec
-    return out
+def _build_annual_df(
+    selected: list, run_id: str, keep_years: int | None = None
+) -> pd.DataFrame:
+    """as-of 事实 → 年度快照(与 current projection 同一 pivot+派生路径)。
 
-
-def _derive_annual(rec: dict) -> dict:
-    """对单个年度记录计算衍生指标(公式与 projection._compute_derived_fields 一致)。"""
-    ni = _to_dec(rec.get("net_income"))
-    nic = _to_dec(rec.get("net_income_common"))
-    te = _to_dec(rec.get("total_equity"))
-    tei = _to_dec(rec.get("total_equity_including_nci"))
-    ta = _to_dec(rec.get("total_assets"))
-    tl = _to_dec(rec.get("total_liabilities"))
-    rev = _to_dec(rec.get("revenues"))
-    gp = _to_dec(rec.get("gross_profit"))
-    cogs = _to_dec(rec.get("cost_of_goods_sold"))
-    oi = _to_dec(rec.get("operating_income"))
-    cfo = _to_dec(rec.get("net_cash_from_operations"))
-    capex = _to_dec(rec.get("capital_expenditures"))
-    tca = _to_dec(rec.get("total_current_assets"))
-    tcl = _to_dec(rec.get("total_current_liabilities"))
-    inv = _to_dec(rec.get("inventory_net"))
-
-    # ROE 四象限(禁双 fallback 混合口径)
-    if ni is not None and te is not None and te != 0:
-        roe = ni / te
-    elif ni is not None and tei is not None and tei != 0:
-        roe = ni / tei
-    elif nic is not None and te is not None and te != 0:
-        roe = nic / te
-    else:
-        roe = None
-
-    ni_eff = ni if ni is not None else nic
-    gp_eff = gp if gp is not None else (
-        rev - cogs if rev is not None and cogs is not None else None
-    )
-
-    return {
-        "roe": roe,
-        "roa": _safe_div(ni_eff, ta),
-        "gross_margin": _safe_div(gp_eff, rev),
-        "operating_margin": _safe_div(oi, rev),
-        "net_margin": _safe_div(ni_eff, rev),
-        "debt_ratio": _safe_div(tl, ta),
-        "current_ratio": _safe_div(tca, tcl),
-        "quick_ratio": (
-            _safe_div(tca - (inv or 0), tcl) if tca is not None else None
-        ),
-        "fcf": (cfo - capex) if cfo is not None and capex is not None else None,
-        "revenues": rev,
-        "net_income": ni,
-        "total_equity": te,
-        "total_assets": ta,
-        "total_liab": tl,
-        "eps_basic": _to_dec(rec.get("eps_basic")),
-        "eps_diluted": _to_dec(rec.get("eps_diluted")),
-    }
+    keep_years 非 None 时,每只股票只保留最近 N 个年度(引擎热路径的性能优化:
+    最新年度 + yoy 只需要最近 2 年,ROE 历史只需要最近 N 年;更早年度不影响
+    这些值)。数据集构建(manifest/审计)用 keep_years=None 保留全历史。
+    """
+    if keep_years is not None:
+        # 先按 (stock) 找年度期间集合,再过滤事实
+        annual_rds: dict[str, set] = {}
+        for f in selected:
+            if not f.form or f.form.upper() not in ANNUAL_FORMS:
+                continue
+            if not f.unit or f.unit.upper() != "USD":
+                continue
+            if not _snap._is_annual_period(f):
+                continue
+            annual_rds.setdefault(f.stock_code, set()).add(f.report_date)
+        keep: dict[str, set] = {
+            s: set(sorted(rds, reverse=True)[:keep_years])
+            for s, rds in annual_rds.items()
+        }
+        filtered = [
+            f for f in selected
+            if not (f.form and f.form.upper() in ANNUAL_FORMS)
+            or f.report_date in keep.get(f.stock_code, set())
+        ]
+        return _snap.build_annual_snapshot(filtered, run_id)
+    return _snap.build_annual_snapshot(selected, run_id)
 
 
 def _yoy(curr, prev):
@@ -262,37 +223,32 @@ def build_universe(
     as_of_date: date,
     info: pd.DataFrame,
     shares: pd.DataFrame,
+    run_id: str = "pit",
+    annual_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """由 as-of 选择结果构建与 legacy _get_universe_us 同列契约的选股池。"""
-    by_stock = _annual_records(selected)
+    if annual_df is None:
+        # 引擎热路径:最新年度 + yoy 只需最近 2 个年度
+        annual_df = _build_annual_df(selected, run_id, keep_years=2)
 
     annual_latest: dict[str, dict] = {}
-    yoy_rows: dict[str, dict] = {}
-    for stock, periods in by_stock.items():
-        ordered = sorted(periods.keys(), reverse=True)
-        latest_rd = ordered[0]
-        latest = periods[latest_rd]
-        derived = _derive_annual(latest)
-        # 年度 yoy:与上一可见年度比较
-        if len(ordered) >= 2:
-            prev = periods[ordered[1]]
-            derived["revenue_yoy"] = _yoy(
-                _to_dec(latest.get("revenues")), _to_dec(prev.get("revenues"))
-            )
-            derived["net_profit_yoy"] = _yoy(
-                _to_dec(latest.get("net_income")), _to_dec(prev.get("net_income"))
-            )
-        else:
-            derived["revenue_yoy"] = None
-            derived["net_profit_yoy"] = None
-        annual_latest[stock] = derived
-        yoy_rows[stock] = derived
+    if not annual_df.empty:
+        for stock, group in annual_df.groupby("stock_code"):
+            latest = group.sort_values("report_date").iloc[-1]
+            d = latest.to_dict()
+            # 列名对齐 universe 契约(total_liabilities → total_liab)
+            d["total_liab"] = d.get("total_liabilities")
+            annual_latest[stock] = d
 
     # 季度 yoy 补充(legacy 行为:年度缺失时用最新季度 yoy 填充)
     q_yoy = _quarterly_yoy(selected)
 
     # TTM(严格三组件,与 production projection 同逻辑)
-    component_index = _snap.build_ttm_component_index(selected)
+    # 组件只可能落在最近 ~3.3 年:更早的事实对 TTM 无贡献,先裁剪再建索引
+    from datetime import timedelta
+    ttm_cutoff = as_of_date - timedelta(days=1200)
+    ttm_facts = [f for f in selected if f.report_date and f.report_date >= ttm_cutoff]
+    component_index = _snap.build_ttm_component_index(ttm_facts)
 
     rows = []
     for _, info_row in info.iterrows():
@@ -360,6 +316,15 @@ def build_universe(
     result = result.merge(
         latest_shares[["stock_code", "total_shares"]], on="stock_code", how="left"
     )
+
+    # universe 契约是 float 数值列(legacy 为 float64);Decimal → float,None → NaN
+    for col in result.columns:
+        if col in ("stock_code", "stock_name", "market", "industry", "list_date",
+                   "report_date"):
+            continue
+        result[col] = result[col].map(
+            lambda v: float(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else np.nan
+        ).astype(float)
     return result
 
 
@@ -405,18 +370,23 @@ def _quarterly_yoy(selected: list) -> dict[str, dict]:
     return out
 
 
-def build_roe_history(selected: list, years: int) -> pd.DataFrame:
+def build_roe_history(
+    selected: list, years: int, run_id: str = "pit",
+    annual_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """PIT 连续年 ROE:取最近 N 个可见年度(先取行,不排除 NULL——由过滤规则判定)。"""
-    by_stock = _annual_records(selected)
+    if annual_df is None:
+        annual_df = _build_annual_df(selected, run_id, keep_years=max(years, 2))
+    if annual_df.empty:
+        return pd.DataFrame(columns=["stock_code", "report_date", "roe"])
     rows = []
-    for stock, periods in by_stock.items():
-        ordered = sorted(periods.keys(), reverse=True)[:years]
-        for rd in ordered:
-            derived = _derive_annual(periods[rd])
+    for stock, group in annual_df.groupby("stock_code"):
+        latest_n = group.sort_values("report_date").tail(years)
+        for _, r in latest_n.iterrows():
             rows.append({
                 "stock_code": stock,
-                "report_date": rd,
-                "roe": derived["roe"],
+                "report_date": r["report_date"],
+                "roe": float(r["roe"]) if r.get("roe") is not None and not pd.isna(r.get("roe")) else np.nan,
             })
     df = pd.DataFrame(rows)
     if df.empty:
@@ -427,7 +397,7 @@ def build_roe_history(selected: list, years: int) -> pd.DataFrame:
 # ── 磁盘缓存 ──────────────────────────────────────────────────
 
 def _cache_path(kind: str, as_of_date: date, watermark: str, extra: str = "") -> Path:
-    name = f"{kind}_{as_of_date.isoformat()}_{watermark}{extra}.pkl"
+    name = f"{kind}_{CACHE_SCHEMA}_{as_of_date.isoformat()}_{watermark}{extra}.pkl"
     return CACHE_DIR / name
 
 

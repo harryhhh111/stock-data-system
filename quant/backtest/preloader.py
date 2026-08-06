@@ -286,6 +286,20 @@ class PITPreloader:
 
         return result
 
+    def _pit_selected(self, as_of_date: date):
+        """同一调仓日的 as-of 选择结果缓存(避免 universe 与 ROE 历史重复选择)。"""
+        from quant.backtest import us_pit_source
+
+        if getattr(self, "_pit_sel_date", None) != as_of_date:
+            self._pit_sel = us_pit_source.select_as_of(
+                self._pit_facts, self._pit_exclusions, as_of_date
+            )
+            self._pit_annual = us_pit_source._build_annual_df(
+                self._pit_sel, "pit", keep_years=3
+            )
+            self._pit_sel_date = as_of_date
+        return self._pit_sel
+
     def _get_universe_us(self, as_of_date: date) -> pd.DataFrame:
         if getattr(self, "_us_pit_enabled", False):
             from quant.backtest import us_pit_source
@@ -295,11 +309,10 @@ class PITPreloader:
             )
             if cached is not None:
                 return cached
-            selected = us_pit_source.select_as_of(
-                self._pit_facts, self._pit_exclusions, as_of_date
-            )
+            selected = self._pit_selected(as_of_date)
             result = us_pit_source.build_universe(
-                selected, as_of_date, self.info, self.shares
+                selected, as_of_date, self.info, self.shares,
+                annual_df=self._pit_annual,
             )
             us_pit_source.save_cached(
                 "universe", as_of_date, self._pit_watermark, result
@@ -487,10 +500,14 @@ class PITPreloader:
             )
             if cached is not None:
                 return cached
-            selected = us_pit_source.select_as_of(
-                self._pit_facts, self._pit_exclusions, as_of_date
-            )
-            result = us_pit_source.build_roe_history(selected, years)
+            selected = self._pit_selected(as_of_date)
+            if years <= 3:
+                # 共享 _pit_selected 的年度帧(keep_years=3)
+                result = us_pit_source.build_roe_history(
+                    selected, years, annual_df=self._pit_annual
+                )
+            else:
+                result = us_pit_source.build_roe_history(selected, years)
             us_pit_source.save_cached(
                 "roe_hist", as_of_date, self._pit_watermark, result, extra
             )

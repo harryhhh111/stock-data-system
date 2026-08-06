@@ -255,3 +255,15 @@ class TestUniverseContract:
             "report_date", "days_since_list", "total_shares",
         }
         assert expected <= set(universe.columns)
+
+    def test_numeric_columns_are_float(self):
+        """universe 数值列必须是 float64——引擎的 pandas 运算不接受 Decimal/object。"""
+        facts = _annual_fact_set()
+        selected = pit.select_as_of(facts, [], date(2025, 3, 1))
+        universe = pit.build_universe(selected, date(2025, 3, 1), _info_df(), _shares_df())
+        for col in ("roe", "gross_margin", "net_profit_ttm", "fcf", "total_equity",
+                    "revenue_yoy", "capex_ttm"):
+            assert universe[col].dtype == "float64", f"{col} dtype={universe[col].dtype}"
+        row = universe.iloc[0]
+        assert row["fcf"] == pytest.approx(100.0)
+        assert row["roe"] == pytest.approx(0.2)
