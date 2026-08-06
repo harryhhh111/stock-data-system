@@ -114,60 +114,74 @@ class PITPreloader:
             ).dt.date
 
     def _load_us(self) -> None:
+        from core.selectors.us_financial import USFactSelector
+        from quant.backtest import us_pit_source
+
+        self._us_pit_enabled = us_pit_source.us_backtest_pit_enabled()
+
         with Connection() as conn:
-            self.us_fin = _copy_df(
-                conn,
-                "SELECT stock_code, report_date, report_type, filed_date,"
-                "  roe, gross_margin, operating_margin, net_margin,"
-                "  debt_ratio, current_ratio, quick_ratio,"
-                "  total_equity, total_assets, total_liab,"
-                "  eps_basic, eps_diluted, revenue_yoy, net_profit_yoy, fcf"
-                " FROM mv_us_financial_indicator"
-                " WHERE report_type IN ('annual', 'quarterly')"
-                "  AND filed_date >= '2015-01-01'",
-                str_cols=("stock_code", "report_type"),
-            )
-            for col in ("filed_date", "report_date"):
-                self.us_fin[col] = pd.to_datetime(
-                    self.us_fin[col], errors="coerce"
-                ).dt.date
-            self.us_fin = self.us_fin.sort_values(
-                ["stock_code", "report_date"], ascending=[True, False]
-            )
+            if self._us_pit_enabled:
+                # Phase B4:版本事实层 as-of 数据源,替代旧三表
+                self._pit_facts = us_pit_source.load_fact_rows()
+                self._pit_exclusions = us_pit_source.load_exclusions()
+                max_id = max((f["fact_version_id"] for f in self._pit_facts), default=0)
+                self._pit_watermark = (
+                    f"{USFactSelector.VERSION}_{max_id}_{len(self._pit_facts)}"
+                )
+            else:
+                self.us_fin = _copy_df(
+                    conn,
+                    "SELECT stock_code, report_date, report_type, filed_date,"
+                    "  roe, gross_margin, operating_margin, net_margin,"
+                    "  debt_ratio, current_ratio, quick_ratio,"
+                    "  total_equity, total_assets, total_liab,"
+                    "  eps_basic, eps_diluted, revenue_yoy, net_profit_yoy, fcf"
+                    " FROM mv_us_financial_indicator"
+                    " WHERE report_type IN ('annual', 'quarterly')"
+                    "  AND filed_date >= '2015-01-01'",
+                    str_cols=("stock_code", "report_type"),
+                )
+                for col in ("filed_date", "report_date"):
+                    self.us_fin[col] = pd.to_datetime(
+                        self.us_fin[col], errors="coerce"
+                    ).dt.date
+                self.us_fin = self.us_fin.sort_values(
+                    ["stock_code", "report_date"], ascending=[True, False]
+                )
 
-            self.us_income = _copy_df(
-                conn,
-                "SELECT stock_code, report_date, report_type, filed_date,"
-                "  revenues, net_income"
-                " FROM us_income_statement"
-                " WHERE report_type IN ('annual', 'quarterly')"
-                "  AND filed_date >= '2015-01-01'",
-                str_cols=("stock_code", "report_type"),
-            )
-            for col in ("filed_date", "report_date"):
-                self.us_income[col] = pd.to_datetime(
-                    self.us_income[col], errors="coerce"
-                ).dt.date
-            self.us_income = self.us_income.sort_values(
-                ["stock_code", "report_date"], ascending=[True, False]
-            )
+                self.us_income = _copy_df(
+                    conn,
+                    "SELECT stock_code, report_date, report_type, filed_date,"
+                    "  revenues, net_income"
+                    " FROM us_income_statement"
+                    " WHERE report_type IN ('annual', 'quarterly')"
+                    "  AND filed_date >= '2015-01-01'",
+                    str_cols=("stock_code", "report_type"),
+                )
+                for col in ("filed_date", "report_date"):
+                    self.us_income[col] = pd.to_datetime(
+                        self.us_income[col], errors="coerce"
+                    ).dt.date
+                self.us_income = self.us_income.sort_values(
+                    ["stock_code", "report_date"], ascending=[True, False]
+                )
 
-            self.us_cf = _copy_df(
-                conn,
-                "SELECT stock_code, report_date, report_type, filed_date,"
-                "  net_cash_from_operations, capital_expenditures"
-                " FROM us_cash_flow_statement"
-                " WHERE report_type IN ('annual', 'quarterly')"
-                "  AND filed_date >= '2015-01-01'",
-                str_cols=("stock_code", "report_type"),
-            )
-            for col in ("filed_date", "report_date"):
-                self.us_cf[col] = pd.to_datetime(
-                    self.us_cf[col], errors="coerce"
-                ).dt.date
-            self.us_cf = self.us_cf.sort_values(
-                ["stock_code", "report_date"], ascending=[True, False]
-            )
+                self.us_cf = _copy_df(
+                    conn,
+                    "SELECT stock_code, report_date, report_type, filed_date,"
+                    "  net_cash_from_operations, capital_expenditures"
+                    " FROM us_cash_flow_statement"
+                    " WHERE report_type IN ('annual', 'quarterly')"
+                    "  AND filed_date >= '2015-01-01'",
+                    str_cols=("stock_code", "report_type"),
+                )
+                for col in ("filed_date", "report_date"):
+                    self.us_cf[col] = pd.to_datetime(
+                        self.us_cf[col], errors="coerce"
+                    ).dt.date
+                self.us_cf = self.us_cf.sort_values(
+                    ["stock_code", "report_date"], ascending=[True, False]
+                )
 
             self.shares = _copy_df(
                 conn,
@@ -273,6 +287,25 @@ class PITPreloader:
         return result
 
     def _get_universe_us(self, as_of_date: date) -> pd.DataFrame:
+        if getattr(self, "_us_pit_enabled", False):
+            from quant.backtest import us_pit_source
+
+            cached = us_pit_source.load_cached(
+                "universe", as_of_date, self._pit_watermark
+            )
+            if cached is not None:
+                return cached
+            selected = us_pit_source.select_as_of(
+                self._pit_facts, self._pit_exclusions, as_of_date
+            )
+            result = us_pit_source.build_universe(
+                selected, as_of_date, self.info, self.shares
+            )
+            us_pit_source.save_cached(
+                "universe", as_of_date, self._pit_watermark, result
+            )
+            return result
+
         # latest annual from mv_us_financial_indicator
         fin_annual = self.us_fin[
             (self.us_fin["report_type"] == "annual")
@@ -445,6 +478,24 @@ class PITPreloader:
 
     def get_roe_history(self, as_of_date: date, years: int = 3) -> pd.DataFrame:
         """PIT 连续年 ROE。"""
+        if self.market == "US" and getattr(self, "_us_pit_enabled", False):
+            from quant.backtest import us_pit_source
+
+            extra = f"_y{years}"
+            cached = us_pit_source.load_cached(
+                "roe_hist", as_of_date, self._pit_watermark, extra
+            )
+            if cached is not None:
+                return cached
+            selected = us_pit_source.select_as_of(
+                self._pit_facts, self._pit_exclusions, as_of_date
+            )
+            result = us_pit_source.build_roe_history(selected, years)
+            us_pit_source.save_cached(
+                "roe_hist", as_of_date, self._pit_watermark, result, extra
+            )
+            return result
+
         if self.market == "US":
             fin = self.us_fin
             date_col = "filed_date"

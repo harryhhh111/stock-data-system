@@ -1,6 +1,6 @@
 # 美股旧财务宽表退役计划
 
-> 状态：Phase A、B1、B2、B3a、B3b 已完成；下一项为 Phase B4（PIT 回测）
+> 状态：Phase A、B1、B2、B3a、B3b 已完成；下一项为 Phase B4a（PIT 数据集构建）
 > 更新日期：2026-08-06<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
@@ -302,7 +302,9 @@ Phase B3a：dashboard 财报新鲜度
   ↓
 Phase B3b：日常数据校验
   ↓
-Phase B4：PIT 回测
+Phase B4a：PIT 数据集构建与影子验收
+  ↓
+Phase B4b：PIT 回测引擎切换与策略影子验收
   ↓
 Phase C：停止旧写入
   ↓
@@ -342,3 +344,11 @@ tag 一致 + vintage 对齐 + 同 accession 配对，跳过按四类原因计数
 预期消灭项。另修复 `save_results` 在 SQL_ASCII 库（US 服务器）写入非 ASCII 消息
 崩溃的既有 bug（legacy 路径同样复现）。全量测试与前端构建通过。
 下一项任务为 **Phase B4（PIT 回测）**；不要提前进入 Phase C、修改同步写入或删除数据库对象。
+
+Phase B4 已于 2026-08-06 实现，待验收（开关 `US_BACKTEST_PIT_VERSION` 默认关闭）：
+回测美股财务输入从"旧宽表 + filed_date 过滤"切换到"版本事实层 + as-of selector"
+（`quant/backtest/us_pit_source.py`），指标公式与 current snapshot 共享（严格三组件
+TTM、ROE 四象限、GP 推导、common 备用口径）；影子对比
+（build/financial_comparison/phaseB4_backtest/）36,930 条字段差异的主导机制已抽样实证
+为 legacy 的陈旧年度顶替（MOH 案例）与口径修正，非新路径缺陷。全量测试 893 通过。
+验收启用后，下一项任务为 **Phase C（同步后自动 projection、停止旧写入）**。
