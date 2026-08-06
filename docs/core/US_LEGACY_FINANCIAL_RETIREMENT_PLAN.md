@@ -1,6 +1,6 @@
 # 美股旧财务宽表退役计划
 
-> 状态：Phase A、Phase B1 与 Phase B2 已完成；下一项为 Phase B3a（dashboard）
+> 状态：Phase A、B1、B2、B3a、B3b 已完成；下一项为 Phase B4（PIT 回测）
 > 更新日期：2026-08-06<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
@@ -330,3 +330,15 @@ Phase B3a 已于 2026-08-06 完成：dashboard 美股财报新鲜度在独立开
 （build/financial_comparison/phaseB3_dashboard/）两边最大报告期一致（2026-07-04），
 缺 snapshot 股票恰为已登记的 CCEP/GFS/SPY。
 下一项任务为 **Phase B3b（日常数据校验）**；不要提前进入 B4、修改同步写入或删除数据库对象。
+
+Phase B3b 已于 2026-08-06 完成：美股日常数据校验在独立开关
+`US_VALIDATION_SNAPSHOT_CURRENT=1`（.env 已启用）下切换——`fcf_roe_check` US 分支
+改读 B2 snapshot universe（估值本地自算），`core/validate.py` 三个美股校验改读
+版本事实层（latest-restated 全历史 pivot + 选择前 revenues 事实的 standalone 跨季重建，
+tag 一致 + vintage 对齐 + 同 accession 配对，跳过按四类原因计数）。影子对比
+（build/financial_comparison/phaseB3b_validation/）：严重度差异 0；new_only 1408 条
+全部逐条定性（机制分布见 new_only_analysis.csv，无 needs_review）；legacy_only 4508 条
+为 latest-restated 修复旧表错值、NCI fallback、期间配对替代 legacy 重复季度行误报等
+预期消灭项。另修复 `save_results` 在 SQL_ASCII 库（US 服务器）写入非 ASCII 消息
+崩溃的既有 bug（legacy 路径同样复现）。全量测试与前端构建通过。
+下一项任务为 **Phase B4（PIT 回测）**；不要提前进入 Phase C、修改同步写入或删除数据库对象。

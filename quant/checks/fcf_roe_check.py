@@ -91,8 +91,80 @@ def _resolve_markets(market: str | None) -> list[str]:
     return markets if markets else ["US"]
 
 
+def _us_validation_snapshot_enabled() -> bool:
+    """Phase B3b 独立开关：US 分支走 current snapshot 数据源（默认关）。"""
+    from core.validate_us_snapshot import us_validation_snapshot_enabled
+
+    return us_validation_snapshot_enabled()
+
+
+def _get_fcf_screen_us_snapshot(min_yield: float, min_mcap: float) -> pd.DataFrame:
+    """US FCF 筛选 — current snapshot 路径（Phase B3b）。
+
+    复用 B2 的 snapshot universe（估值已由 snapshot 分子与最新行情本地自算，
+    不读供应商 PE/PB）。``fcf_ttm`` 为 NULL（含已登记 exception）的股票不得
+    入选，不填 0 或旧值。DB/数据错误直接向上抛，不回退旧物化视图。
+    """
+    from quant.analyzer.query_us import load_us_snapshot_universe
+
+    df = load_us_snapshot_universe()
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "stock_code", "stock_name", "industry", "fcf_yield", "fcf_ttm",
+                "cfo_ttm", "market_cap", "pe_ttm", "pb", "close",
+                "ttm_report_date", "market",
+            ]
+        )
+    mask = (
+        df["fcf_ttm"].notna()
+        & df["fcf_yield"].notna()
+        & (df["fcf_yield"] > min_yield)
+        & df["market_cap"].notna()
+        & (df["market_cap"] > min_mcap)
+        & ~df["industry"].isin(US_EXCLUDED_INDUSTRIES)
+    )
+    cols = [
+        "stock_code", "stock_name", "industry", "fcf_yield", "fcf_ttm",
+        "cfo_ttm", "market_cap", "pe_ttm", "pb", "close",
+        "ttm_report_date", "market",
+    ]
+    return (
+        df.loc[mask, cols]
+        .sort_values("fcf_yield", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+# Phase B3b：US 连续 ROE 只读 current annual snapshot；NULL 过滤与排名
+# 语义与 legacy 分支完全一致（先滤 NULL 再排名，取前 3 名）。
+_SQL_US_ROE_HISTORY_SNAPSHOT = """
+SELECT
+    stock_code,
+    report_date,
+    roe,
+    ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS roe_rank
+FROM us_financial_current_annual
+WHERE stock_code IN %s
+  AND roe IS NOT NULL
+"""
+
+
+def _get_roe_history_us_snapshot(stock_codes: list[str]) -> pd.DataFrame:
+    """US 最近 annual ROE — current snapshot 路径（Phase B3b）。
+
+    只读 us_financial_current_annual；DB/数据错误直接向上抛，不回退旧视图。
+    """
+    with Connection() as conn:
+        return pd.read_sql(
+            _SQL_US_ROE_HISTORY_SNAPSHOT, conn, params=(tuple(stock_codes),)
+        )
+
+
 def get_fcf_screen(market: str, min_yield: float = 0.10, min_mcap: float = 0) -> pd.DataFrame:
     """获取指定市场 FCF Yield > min_yield 的股票，排除不适用行业和小市值。"""
+    if market == "US" and _us_validation_snapshot_enabled():
+        return _get_fcf_screen_us_snapshot(min_yield, min_mcap)
     cfg = MARKET_CONFIG[market]
     excluded = tuple(cfg["excluded_industries"])
     sql = f"""
@@ -129,6 +201,8 @@ def get_roe_history(market: str, stock_codes: list[str]) -> pd.DataFrame:
     """获取指定股票的最近 3 期 annual ROE。"""
     if not stock_codes:
         return pd.DataFrame()
+    if market == "US" and _us_validation_snapshot_enabled():
+        return _get_roe_history_us_snapshot(stock_codes)
     cfg = MARKET_CONFIG[market]
     codes = tuple(stock_codes)
     sql = f"""

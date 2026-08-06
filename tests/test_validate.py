@@ -387,9 +387,10 @@ class TestCrossSource:
 # ── save_results ─────────────────────────────────────────
 
 class TestSaveResults:
+    @patch("core.validate.db._check_db_encoding", return_value="UTF8")
     @patch("core.validate.db.Connection")
-    def test_preserves_chinese_characters(self, mock_conn_cls):
-        """中文消息不应被替换成问号。"""
+    def test_preserves_chinese_characters(self, mock_conn_cls, mock_enc):
+        """中文消息不应被替换成问号（UTF8 库，如 CN 服务器）。"""
         from core.validate import save_results, ValidationReport, ValidationIssue
 
         report = ValidationReport(started_at="2026-01-01T00:00:00")
@@ -427,6 +428,38 @@ class TestSaveResults:
         assert "?" not in row["actual_value"]
         assert "?" not in row["expected_value"]
         assert "?" not in row["suggestion"]
+
+    @patch("core.validate.db._check_db_encoding", return_value="SQL_ASCII")
+    @patch("core.validate.db.Connection")
+    def test_sanitizes_non_ascii_on_sql_ascii_db(self, mock_conn_cls, mock_enc):
+        """SQL_ASCII 库（US 服务器）：非 ASCII 字符（如 →）替换为 ?，避免写入失败。"""
+        from core.validate import save_results, ValidationReport, ValidationIssue
+
+        report = ValidationReport(started_at="2026-01-01T00:00:00")
+        report.issues.append(
+            ValidationIssue(
+                stock_code="AAPL",
+                market="US",
+                report_date="2024-12-31",
+                check_name="market_cap_jump",
+                severity="warning",
+                field_name="market_cap",
+                message="close 9.90→10.00, mcap $0.50B→$1.00B",
+            )
+        )
+
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 1
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_conn_cls.return_value.__enter__.return_value = mock_conn
+
+        save_results(report, "20260101_120000")
+
+        params_list = mock_cur.executemany.call_args[0][1]
+        row = params_list[0]
+        assert "→" not in row["message"]
+        assert "?" in row["message"]
 
 
 # ── Integration: run_validation ─────────────────────────
@@ -471,8 +504,12 @@ class TestRunValidation:
     @patch("core.validate.check_anomalies_us")
     @patch("core.validate.ensure_table")
     def test_run_validation_market_us(self, mock_ensure, mock_anomalies_us, mock_logic_us,
-                                       mock_standalone_us, mock_cross, mock_mcap_jump, mock_save):
+                                       mock_standalone_us, mock_cross, mock_mcap_jump, mock_save,
+                                       monkeypatch):
         from core.validate import run_validation
+
+        # Phase B3b：与 US_VALIDATION_SNAPSHOT_CURRENT 环境隔离，固定走 legacy 分支
+        monkeypatch.delenv("US_VALIDATION_SNAPSHOT_CURRENT", raising=False)
 
         mock_anomalies_us.return_value = 50
         mock_logic_us.return_value = 50

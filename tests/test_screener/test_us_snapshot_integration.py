@@ -36,8 +36,10 @@ def test_pltr_screener_pe_matches_b1(universe):
     assert row["ttm_report_date"] == date(2026, 6, 30)
     assert row["net_income_basis"] == "consolidated"
     assert row["financial_data_status"] == query_us.STATUS_SNAPSHOT_AVAILABLE
-    # 与 B1 个股页一致：PE = 市值 / TTM 净利润 ≈ 129.57
-    assert row["pe_ttm"] == pytest.approx(129.57, abs=0.01)
+    # 与 B1 个股页一致：PE = 市值 / TTM 净利润。市值随行情日变化，
+    # 必须与 B1 同库现值比较，不能钉死历史常量。
+    b1 = query_us.get_stock_info("PLTR", "US").iloc[0]
+    assert row["pe_ttm"] == pytest.approx(b1["pe_ttm"], rel=1e-9)
     assert row["pe_ttm"] == pytest.approx(
         row["market_cap"] / row["net_profit_ttm"], rel=1e-9,
     )

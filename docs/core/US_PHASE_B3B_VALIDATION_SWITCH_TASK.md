@@ -1,6 +1,6 @@
 # 美股财务宽表退役：Phase B3b 日常数据校验切换
 
-> 状态：待执行
+> 状态：已完成（2026-08-06，开关 `US_VALIDATION_SNAPSHOT_CURRENT=1` 已启用）
 > 前置：Phase A、B1、B2、B3a 已完成；`US_FINANCIAL_VERSION_CURRENT=1`、
 > `US_SCREENER_SNAPSHOT_CURRENT=1`、`US_DASHBOARD_SNAPSHOT_CURRENT=1` 均已启用
 > 范围：`quant/checks/fcf_roe_check.py` 与 `core/validate.py` 的美股部分；

@@ -940,6 +940,14 @@ def save_results(report: ValidationReport, batch_id: str) -> int:
             }
         )
 
+    # SQL_ASCII 库（US 服务器）无法存储非 ASCII 字符（如市值跳变消息中的
+    # "→"），按 db.py 既有约定替换为 "?"；UTF8 库（CN 服务器）保留原文。
+    if db._check_db_encoding() == "SQL_ASCII":
+        for row in rows:
+            for key, value in row.items():
+                if isinstance(value, str):
+                    row[key] = value.encode("ascii", errors="replace").decode("ascii")
+
     count = 0
     with db.Connection() as conn:
         with conn.cursor() as cur:
@@ -1043,17 +1051,53 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
             logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
 
         elif mkt == "US":
-            scanned = check_anomalies_us(report.issues)
-            report.total_rows_scanned += scanned
-            logger.info("  异常值检测: 扫描 %d 行", scanned)
+            # Phase B3b：US_VALIDATION_SNAPSHOT_CURRENT=1 时走版本事实层路径，
+            # 默认关闭走 legacy 宽表路径（延迟 import 避免循环依赖）。
+            from core.validate_us_snapshot import us_validation_snapshot_enabled
 
-            scanned_logic = check_logic_us(report.issues)
-            report.total_rows_scanned += scanned_logic
-            logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
+            if us_validation_snapshot_enabled():
+                from core import validate_us_snapshot as vus
 
-            scanned_standalone = check_standalone_cross_validation_us(report.issues)
-            report.total_rows_scanned += scanned_standalone
-            logger.info("  累计/独立交叉验证: 扫描 %d 行", scanned_standalone)
+                snapshot_stats: dict = {}
+                scanned_map = vus.run_us_snapshot_checks(
+                    report.issues, stats=snapshot_stats
+                )
+                scanned = scanned_map["anomalies"]
+                report.total_rows_scanned += scanned
+                logger.info("  异常值检测(snapshot): 扫描 %d 行", scanned)
+
+                scanned_logic = scanned_map["logic"]
+                report.total_rows_scanned += scanned_logic
+                logger.info("  逻辑一致性(snapshot): 扫描 %d 行", scanned_logic)
+
+                scanned_standalone = scanned_map["standalone"]
+                report.total_rows_scanned += scanned_standalone
+                logger.info(
+                    "  累计/独立交叉验证(snapshot): 扫描 %d 行, 跳过计数: %s",
+                    scanned_standalone,
+                    {
+                        k: snapshot_stats.get(k, 0)
+                        for k in (
+                            "missing_standalone",
+                            "missing_cumulative",
+                            "ambiguous_candidates",
+                            "undeterminable_fiscal_year",
+                            "q4_excluded",
+                        )
+                    },
+                )
+            else:
+                scanned = check_anomalies_us(report.issues)
+                report.total_rows_scanned += scanned
+                logger.info("  异常值检测: 扫描 %d 行", scanned)
+
+                scanned_logic = check_logic_us(report.issues)
+                report.total_rows_scanned += scanned_logic
+                logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
+
+                scanned_standalone = check_standalone_cross_validation_us(report.issues)
+                report.total_rows_scanned += scanned_standalone
+                logger.info("  累计/独立交叉验证: 扫描 %d 行", scanned_standalone)
 
         # 跨源比对
         check_cross_source(mkt, report.issues)
