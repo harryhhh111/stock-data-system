@@ -237,3 +237,61 @@ def test_update_task_sync_db_does_not_duplicate_task_id(mock_update_run):
 
     assert mock_update_run.called
     assert mock_update_run.call_args.kwargs["status"] == "RUNNING"
+
+
+# ── SQL_ASCII 非 ASCII 文本清洗(US 服务器)────────────────────
+
+class TestSafeText:
+    def test_sql_ascii_replaces_non_ascii(self):
+        from web.services import backtest_history_service as svc
+        with patch.object(svc, "_check_db_encoding", return_value="SQL_ASCII"):
+            assert svc._safe_text("等待开始...") == "????..."
+            assert svc._safe_text("plain ascii") == "plain ascii"
+            assert svc._safe_text(None) is None
+            assert svc._safe_text(123) == 123
+
+    def test_utf8_passthrough(self):
+        from web.services import backtest_history_service as svc
+        with patch.object(svc, "_check_db_encoding", return_value="UTF8"):
+            assert svc._safe_text("等待开始...") == "等待开始..."
+
+    @patch("web.services.backtest_history_service.execute")
+    def test_create_run_sanitizes_label_on_sql_ascii(self, mock_execute):
+        """SQL_ASCII 库:中文 progress_label 不得让 create_run 崩溃。"""
+        from web.services import backtest_history_service as svc
+        with patch.object(svc, "_check_db_encoding", return_value="SQL_ASCII"):
+            svc.create_run(
+                run_id=str(uuid.uuid4()),
+                preset_name="fcf_roe_value",
+                preset_type="normal",
+                market="US",
+                start_month="2025-07",
+                end_month="2025-12",
+                rebalance_months=6,
+                top_n=None,
+                initial_capital=1_000_000,
+                benchmark=None,
+                timing=False,
+                params={"preset_name": "fcf_roe_value"},
+            )
+        label = mock_execute.call_args[0][1][12]
+        assert label == "????..."
+        label.encode("ascii")  # 必须可被 ASCII 编码
+
+    @patch("web.services.backtest_history_service.execute")
+    def test_update_run_sanitizes_error_on_sql_ascii(self, mock_execute):
+        from web.services import backtest_history_service as svc
+        with patch.object(svc, "_check_db_encoding", return_value="SQL_ASCII"):
+            svc.update_run(str(uuid.uuid4()), error="失败:非 ASCII")
+            svc.update_run(str(uuid.uuid4()), progress_label="调仓 1/4")
+        for call in mock_execute.call_args_list:
+            for v in call[0][1]:
+                if isinstance(v, str):
+                    v.encode("ascii")
+
+    def test_to_jsonb_sanitizes_on_sql_ascii(self):
+        from web.services import backtest_history_service as svc
+        with patch.object(svc, "_check_db_encoding", return_value="SQL_ASCII"):
+            out = svc._to_jsonb({"msg": "数据预加载完成", "n": 1})
+        out.encode("ascii")
+        assert json.loads(out)["n"] == 1

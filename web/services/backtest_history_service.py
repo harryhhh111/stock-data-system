@@ -10,9 +10,22 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
-from db import Connection, execute
+from db import Connection, execute, _check_db_encoding
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_text(value: Any) -> Any:
+    """SQL_ASCII 库(US 服务器)无法写入非 ASCII 文本。
+
+    与 db.py 的 JSON 清洗同口径(B3b 修复模式):非 ASCII 字符替换为 '?',
+    不让 progress_label / error / JSON 里的中文使整条写入崩溃。
+    """
+    if not isinstance(value, str):
+        return value
+    if _check_db_encoding() == "SQL_ASCII":
+        return value.encode("ascii", errors="replace").decode("ascii")
+    return value
 
 
 # ── 建表迁移 ──────────────────────────────────────────────
@@ -83,7 +96,7 @@ def _to_jsonb(value: Any) -> Optional[str]:
     """把 dict/list 序列化为 JSON 字符串；None 返回 None。"""
     if value is None:
         return None
-    return json.dumps(value, default=str, ensure_ascii=False)
+    return _safe_text(json.dumps(value, default=str, ensure_ascii=False))
 
 
 def _row_to_dict(row: tuple) -> dict:
@@ -252,7 +265,7 @@ def create_run(
             benchmark,
             timing,
             "CREATED",
-            "等待开始...",
+            _safe_text("等待开始..."),
             _to_jsonb(params),
         ),
         commit=True,
@@ -284,13 +297,13 @@ def update_run(
         values.append(progress_pct)
     if progress_label is not None:
         fields.append("progress_label = %s")
-        values.append(progress_label)
+        values.append(_safe_text(progress_label))
     if result is not None:
         fields.append("result = %s")
         values.append(_to_jsonb(result))
     if error is not None:
         fields.append("error = %s")
-        values.append(error)
+        values.append(_safe_text(error))
     if metrics is not None:
         fields.append("metrics = %s")
         values.append(_to_jsonb(metrics))

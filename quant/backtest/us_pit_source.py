@@ -49,8 +49,9 @@ PIT_FIELDS = [
 
 CACHE_DIR = Path("build/pit_cache")
 
-# 缓存内容格式版本:输出契约变化(如 Decimal→float)时递增,避免读到旧格式缓存
-CACHE_SCHEMA = "v2"
+# 缓存内容格式版本:输出契约变化(如 Decimal→float、新增 pe_ttm/pb 占位列)时递增,
+# 避免读到旧格式缓存
+CACHE_SCHEMA = "v3"
 
 _QUARTERLY_FORMS = {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
 
@@ -303,6 +304,11 @@ def build_universe(
             "net_profit_ttm": ni_ttm,
             "cfo_ttm": _ttm("net_cash_from_operations"),
             "capex_ttm": _ttm("capital_expenditures"),
+            # 显式 NULL 占位:与 quote 合并时把 daily_quote 的供应商 pe_ttm/pb
+            # 顶到 _q 后缀列并丢弃——启用分支的 PE/PB 只能由 common.build_universe
+            # 用 as-of 分子/分母本地计算,否则保持 NULL(发布门槛 §4.1)。
+            "pe_ttm": None,
+            "pb": None,
             "report_date": None,
             "days_since_list": days_since,
         })

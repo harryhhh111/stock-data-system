@@ -267,3 +267,25 @@ class TestUniverseContract:
         row = universe.iloc[0]
         assert row["fcf"] == pytest.approx(100.0)
         assert row["roe"] == pytest.approx(0.2)
+
+    def test_vendor_pe_pb_do_not_leak(self):
+        """发布门槛 §4.1:启用分支不得透出 daily_quote 的供应商 PE/PB。
+
+        base 显式携带 pe_ttm/pb=NULL 占位列后,quote 的 vendor 列在 merge 时
+        被顶为 _q 后缀并丢弃;PE/PB 只能由 common.build_universe 本地计算。
+        """
+        from quant.backtest.common import build_universe as merge_quote
+        # 去掉 net_income → net_profit_ttm NULL → pe_ttm 无法本地计算
+        facts = [f for f in _annual_fact_set() if f["standard_field"] != "net_income"]
+        selected = pit.select_as_of(facts, [], date(2025, 3, 1))
+        base = pit.build_universe(selected, date(2025, 3, 1), _info_df(), _shares_df())
+        quote = pd.DataFrame([{
+            "stock_code": "X", "close": 10.0, "market_cap": 10000.0,
+            "pe_ttm": 8.5, "pb": 1.2, "currency": "USD",
+        }])
+        universe = merge_quote(base, quote)
+        row = universe.iloc[0]
+        # vendor pe_ttm=8.5 不得透出;无法本地计算时为 NULL
+        assert pd.isna(row["pe_ttm"])
+        # equity=500>0 且 market_cap>0 → pb 本地计算 = 10000/500,不是 vendor 的 1.2
+        assert row["pb"] == pytest.approx(20.0)

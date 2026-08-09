@@ -27,7 +27,7 @@
 | Revenue 历史差异审核 | ✅ 已关闭 | 301 个年度 revenue 案例完成规则/人工复核；approved、rejected 与技术 exclusion 已落库；selector 未决为 0 | 新 filing 出现未决时按需运行 |
 | 当前分析 latest-restated | ✅ 已切换 | current-only 全市场对比 `UNEXPLAINED=0`；固定 canary、10 家官方 10-K 外部抽查、失败回退、实库及公网 API 验证完成；生产已启用 `US_FINANCIAL_VERSION_CURRENT=1` | 保留短期回退能力；筛选器另行切换 |
 | 旧财务宽表退役 | 🟡 已规划 | 完成依赖与空间盘点；旧六对象约 357 MB | 按[退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md)先实施 Phase A current snapshot |
-| 历史回测 PIT | ⬜ 未切换 | 设计已完成 | as-of selector、dataset manifest、基准回测 |
+| 历史回测 PIT | ✅ 已切换（2026-08-09 启用 `US_BACKTEST_PIT_VERSION=1`) | 6 截面影子对比 UNEXPLAINED=0;3 persist manifest；冷/热缓存 smoke 与全量测试通过 | as-of selector、dataset manifest、基准回测 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
 
 ## 2. 已完成提交

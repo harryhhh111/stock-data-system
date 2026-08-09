@@ -1,6 +1,8 @@
 # 美股旧财务宽表退役计划
 
-> 状态：Phase A、B1、B2、B3a、B3b 已完成；下一项为 Phase B4a（PIT 数据集构建）
+> 状态：Phase A、B1、B2、B3a、B3b、B4 已完成并全部启用（Phase B 五类读取者
+> 均已切换，2026-08-09 发布收尾验收通过）；下一项为 Phase C（同步后自动
+> projection、停止旧写入）
 > 更新日期：2026-08-06<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
@@ -345,11 +347,15 @@ tag 一致 + vintage 对齐 + 同 accession 配对，跳过按四类原因计数
 崩溃的既有 bug（legacy 路径同样复现）。全量测试与前端构建通过。
 下一项任务为 **Phase B4（PIT 回测）**；不要提前进入 Phase C、修改同步写入或删除数据库对象。
 
-Phase B4 已于 2026-08-07 完成实现与证据链（开关 `US_BACKTEST_PIT_VERSION` 默认关闭，
-待验收启用）：回测美股财务输入从"旧宽表 + filed_date 过滤"切换到"版本事实层 +
+Phase B4 已于 2026-08-07 完成实现与证据链，并于 2026-08-09 经发布收尾
+（`docs/core/US_PHASE_B_RELEASE_GATE_TASK.md`）验收启用（`US_BACKTEST_PIT_VERSION=1`
+已写入 `.env`)：回测美股财务输入从"旧宽表 + filed_date 过滤"切换到"版本事实层 +
 as-of selector"（`quant/backtest/us_pit_source.py` 引擎热路径 +
 `quant/backtest/us_pit_dataset.py` 带 audit 的数据集构建器）；指标公式与 current
 snapshot 共享；6 截面分类影子对比 UNEXPLAINED=0（主导为 legacy 陈旧年度顶替）;
 persist manifest 3 个代表截面；fcf_roe_value 两年回测对比 legacy +15.9% vs
-as-of +38.9%（口径修正与覆盖率提升属预期差异）。全量测试通过。
-验收启用后，下一项任务为 **Phase C（同步后自动 projection、停止旧写入）**。
+as-of +38.9%（口径修正与覆盖率提升属预期差异；该对比 end 取运行日 ≈2026-08)。
+发布收尾：启用分支修复供应商 PE/PB 残存（base 加 NULL 占位列，CACHE_SCHEMA v3);
+冷缓存 smoke 22:59 / 热缓存 1:18，四个调仓日持仓与 B4b 完全一致；全量测试 902
+passed。**Phase B 五类读取者至此全部启用新路径。**
+下一项任务为 **Phase C（同步后自动 projection、停止旧写入）**。

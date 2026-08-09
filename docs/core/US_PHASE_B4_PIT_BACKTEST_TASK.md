@@ -1,6 +1,8 @@
 # 美股财务宽表退役：Phase B4 PIT 回测切换（实施记录）
 
-> 状态：实现完成，待验收（开关 `US_BACKTEST_PIT_VERSION` 默认关闭）
+> 状态：已启用并验收（2026-08-09,`US_BACKTEST_PIT_VERSION=1` 已写入 `.env`;
+> 发布收尾记录见 `docs/core/US_PHASE_B_RELEASE_GATE_TASK.md` 与
+> `build/financial_comparison/phaseB_release/summary.md`)
 > 前置：Phase A、B1、B2、B3a、B3b 已完成
 > 范围：`quant/backtest` 的美股财务数据源；行情（daily_quote）、股本（stock_share）、
 > CN_A/CN_HK、复合策略、海龟与二八轮动均不在范围
@@ -118,7 +120,12 @@ ROE 四象限、#5/#7 修复、common 口径）；产物在
 2. `_compute_derived_fields` 逐行 apply 在 PIT 全历史（~10 万行/日）下过慢，需向量化;
 3. 单截面全历史构建当前约 30-80 分钟，引擎热路径经 pit_cache 缓存后日常使用无感。
 
-## 7. B4b 回测对比结果（fcf_roe_value，2024-01 → 2025-12，months=6)
+## 7. B4b 回测对比结果（fcf_roe_value,2024-01 起、end 取运行日 ≈2026-08-07,months=6)
+
+> 注：本节标题原写"2024-01 → 2025-12"不准确——对比脚本未传 end，实际跑到
+> 运行日（持仓记录含 2026-01-30、2026-07-31 两个调仓日）。发布收尾时按
+> 2024-01→2025-12 复跑，重叠的四个调仓日持仓与下表完全一致（见
+> `build/financial_comparison/phaseB_release/summary.md`)。
 
 | 路径 | final_value | total_return | avg 持仓数 | 说明 |
 |---|---|---|---|---|
@@ -137,6 +144,16 @@ ROE 四象限、#5/#7 修复、common 口径）；产物在
 - `_quarterly_yoy` 闰日（2/29 → 平年 2/28);
 - 引擎热路径性能：年度派生只算最近 3 年/股、TTM 只取 ~3.3 年事实、
   universe 与 ROE 历史共享同一次 as-of 选择。
+
+发布收尾期修复（2026-08-09，均已带回归测试）:
+
+- universe base 显式携带 `pe_ttm`/`pb` NULL 占位列：此前启用分支在
+  TTM 净利润或权益为 NULL/非正时，daily_quote 的供应商 PE/PB 会经 quote
+  合并残存到打分输入，违反"启用分支不得读供应商 PE/PB";修复后 PE/PB 只能
+  本地计算或 NULL,legacy 分支行为不变（CACHE_SCHEMA 升至 v3);
+- `web/services/backtest_history_service.py` 的 SQL_ASCII 非 ASCII 写入崩溃
+  （与 B3b `save_results` 同类既有 bug,legacy 路径同样复现）:`progress_label`/
+  `error`/JSON 写入前按库编码清洗。
 
 ## 6. B4b 信号与成交时点约定（固化，不改变行为）
 
