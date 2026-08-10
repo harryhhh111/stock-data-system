@@ -1,6 +1,6 @@
 # ADT 合并 Cost of Revenue：受限 Inline XBRL 映射实施任务
 
-> 状态：待项目所有者审核；审核通过后方可执行。  
+> 状态：待项目所有者审核；已根据批准前技术核对修订，审核通过后方可执行。
 > 前置：[`US_ADT_CONSOLIDATED_COGS_AUDIT_TASK.md`](./US_ADT_CONSOLIDATED_COGS_AUDIT_TASK.md)
 > 已完成，FY2021–FY2025 均为 `CONSOLIDATED_TOTAL_PROVEN`。  
 > 目标：只修复 **USQ-001**（ADT 的报表口径 `gross_margin` 缺失）。  
@@ -49,42 +49,56 @@ gross_margin = (revenues - cost_of_goods_sold) / revenues
 
 ## 3. 受控输入清单
 
-只重放以下已被审计认可的官方年度 filing；FY2022 只以 10-K/A 作为 current 口径来源。
+重放以下已被审计认可的官方年度 filing。FY2022 的原 10-K 与 10-K/A **均须**写入版本层：
+前者保证其披露日至修订日前的 `as-of` 历史完整，后者由既有 `latest-restated` 语义作为当前口径。
+不得为了 current 口径而制造 FY2022 的历史空窗。
 
-| FY | report date | 采用 accession | form | 审计的合并成本（USD） |
+| FY | report date | accession | form | 版本用途 / 审计的合并成本（USD） |
 |---|---|---|---|---:|
-| 2021 | 2021-12-31 | `0001703056-22-000042` | 10-K | 1,550,173,000 |
-| 2022 | 2022-12-31 | `0001703056-23-000146` | 10-K/A | 2,039,848,000 |
-| 2023 | 2023-12-31 | `0001703056-24-000020` | 10-K | 1,008,466,000 |
-| 2024 | 2024-12-31 | `0001703056-25-000022` | 10-K | 847,114,000 |
-| 2025 | 2025-12-31 | `0001703056-26-000022` | 10-K | 982,972,000 |
+| 2021 | 2021-12-31 | `0001703056-22-000042` | 10-K | first/current: 1,550,173,000 |
+| 2022 | 2022-12-31 | `0001703056-23-000046` | 10-K | first-reported；重放前须以原 filing 独立复核金额 |
+| 2022 | 2022-12-31 | `0001703056-23-000146` | 10-K/A | latest-restated/current: 2,039,848,000 |
+| 2023 | 2023-12-31 | `0001703056-24-000020` | 10-K | first/current: 1,008,466,000 |
+| 2024 | 2024-12-31 | `0001703056-25-000022` | 10-K | first/current: 847,114,000 |
+| 2025 | 2025-12-31 | `0001703056-26-000022` | 10-K | first/current: 982,972,000 |
 
 解析器必须从受保存的 filing 原件（或通过既有 raw snapshot 机制重新抓取并保存的同一原件）
 读取 Inline XBRL；`build/financial_comparison/adt_cogs_audit/` 只作验证证据，不能成为生产数值源。
 
 ## 4. 实施内容
 
-### 4.1 受限 Inline XBRL 补充 ingest
+### 4.1 新建受限 Inline XBRL 原件链路
 
-在现有 `core/fetchers/us_financial.py` 的 Filing XBRL 补充能力旁新增一个**专用、显式命名**的
-ADT 补充路径，或将已审计脚本的通用 Inline XBRL/context 解析部分抽为可复用 helper。该路径必须：
+现有生产链路只有 `company_facts` raw snapshot；
+`core/us_financial_xbrl_fallback.py` 也只是一个不保存原件、仅补 `total_liabilities` 的特例。
+它**不能**作为 ADT extension fact 的来源链路。故本任务须新建一个专用、显式命名的 ADT
+filing-source 链路，可复用审计脚本的 Inline XBRL/context 解析核心，但不能复用其 build 产物。
 
-1. 仅在 `stock_code == "ADT"`、年度官方表单、上述 approved accession 和目标 tag 全部匹配时启用；
-2. 解析 fact 的 `contextRef`，保留 duration start/end、USD unit、context dimensions、原 tag
+该路径必须：
+
+1. 从 SEC Archives 的 filing index/main Inline XBRL 原件抓取内容；以例如
+   `data_type="filing_xbrl_instance"`、`source="sec_edgar_archives"` 的明确 source 身份，保存
+   不可变 `raw_snapshot_version` 与 observation。`api_params` 至少保存 accession、CIK、主文档 URL
+   与表单；content hash 必须基于实际原件内容；
+2. 为这个 filing raw snapshot 建立 `FetchContext`，再创建 `us_ingest_run` 并调用
+   `USFactVersionWriter`。不得把 extension facts 绑定到 companyfacts snapshot；
+3. 解析 fact 的 `contextRef`，保留 duration start/end、USD unit、context dimensions、原 tag
    taxonomy（`adt`）与 tag local name；
-3. 为每个有效年度 duration fact 构造与普通事实相同结构的 `fact_records`，其中
+4. 为每个有效年度 duration fact 构造与普通事实相同结构的 `fact_records`，其中
    `standard_field="cost_of_goods_sold"`、`statement="income"`；
-4. 把所有同 tag、同年度期间的无维度总额与有维度子项都交给既有
+5. 扩展 `USFactVersionWriter`，使它从受控 `fact_records` 接收 `taxonomy`，而非把所有事实固定写为
+   `us-gaap`；companyfacts 现有记录仍显式传入/默认 `us-gaap`，不得改变其行为；
+6. 把所有同 tag、同年度期间的无维度总额与有维度子项都交给既有
    `USFactVersionWriter`，使 `compute_context_hash` 与 raw snapshot / fact-source / ingest-run
    审计关系照常生成；
-5. 对不在受控清单内的 accession、非年度/非 USD、无 context、instant 或无法确定期间的事实
+7. 对不在受控清单内的 accession、非年度/非 USD、无 context、instant 或无法确定期间的事实
    只记录可诊断日志/产物，不得映射为 COGS；
-6. 若 Inline XBRL source、context 或目标无维度事实不可用，令该 filing ingest 失败或显式
+8. 若 Inline XBRL source、context 或目标无维度事实不可用，令该 filing ingest 失败或显式
    blocked，不能让宽表回退路径伪装为成功。
 
-实现不得修改 CompanyFacts 的内容哈希校验语义。由于 extension facts 的来源不是 CompanyFacts，
-应使用与对应 filing 原件绑定的 raw snapshot / `FetchContext`；不得把 extension fact 伪装成
-CompanyFacts 已返回的事实。
+实现不得修改 CompanyFacts 的内容哈希校验语义。`scripts/backfill_us_financial_versions.py` 当前也
+只发现 `company_facts`，因此须补一条仅在显式 ADT 受控重放时使用的 filing-XBRL source discovery /
+replay 路径；否则将来重建版本层会丢失本次补入的事实。
 
 ### 4.2 selector 的 ADT 合并事实限制
 
@@ -126,7 +140,15 @@ build/financial_comparison/adt_cogs_implementation/
 `ingested_facts.csv` 必须显示每年无维度合并总额和有维度子项均已保存；
 `selected_cogs.csv` 必须显示只选到无维度行。
 
-### 4.4 对比与台账
+### 4.4 白名单维护与故障可见性
+
+§3 的 accession registry 是证据边界，不是对 ADT 的永久映射授权。ADT 新的年度 filing（例如
+FY2026 的后续 10-K）默认**不得**自动映射：必须先完成同等的合并 context 审计，再以小提交扩充
+registry 与回归期望值。执行者须在 summary / 运维日志中将“发现新的 ADT 官方年度 filing 但未在
+registry”列为显式待审计事件；在批准前，`gross_margin=NULL` 是预期的保守结果，而不是可静默忽略的
+成功。
+
+### 4.5 对比与台账
 
 1. 如果 legacy 与新 snapshot 的 ADT 毛利率/COGS 完全一致，compare 应为 `SAME`；
 2. 如因旧层原本缺失而出现“新有、旧无”，只能以一个**限定到 ADT 目标 tag 及 §3 accession 的**
@@ -141,18 +163,23 @@ build/financial_comparison/adt_cogs_implementation/
 
 1. Inline XBRL fixture 同时含无维度总额、`ProductOrServiceAxis` 子项与同一子项的多维重复时，
    三者均进入 version-write 输入，且 dimensions/context hash 各自不同；
-2. 目标 tag 只在 ADT + approved accession 映射；其他股票、其他 extension tag 或未批准 accession
+2. filing 原件 raw snapshot、observation、`FetchContext`、ingest run 与 fact source 全部使用
+   filing-XBRL source；不得复用 companyfacts snapshot；
+3. `taxonomy="adt"` 经 writer 原样落库，既有 companyfacts `us-gaap` 写入回归不变；
+4. 目标 tag 只在 ADT + approved accession 映射；其他股票、其他 extension tag 或未批准 accession
    均不映射；
-3. selector 对 ADT 只返回 `dimensions={}` 的 COGS，绝不返回子项；无维度总额不存在时不以
+5. selector 对 ADT 只返回 `dimensions={}` 的 COGS，绝不返回子项；无维度总额不存在时不以
    子项/最大值/求和补齐；
-4. 同一经济期间两个不一致的无维度总额触发可诊断失败/阻断，不产生任意选取；
-5. FY2021–FY2025 选择值逐年精确等于 §3 金额，FY2022 选 10-K/A；
-6. 投影后五年毛利率精确匹配（至少 Decimal 6 位）：
+6. 同一经济期间两个不一致的无维度总额触发可诊断失败/阻断，不产生任意选取；
+7. FY2021、FY2023–FY2025 的 current 选择值精确等于 §3 金额；FY2022 current 选 10-K/A，
+   并断言原 10-K 在其 filed date 至 amendment filed date 前对 `as-of` 可见；
+8. 投影后逐年直接以 §3 的完整 Decimal 收入和成本断言
+   `(revenues - cost_of_goods_sold) / revenues`；展示核对值为
    `70.79% / 68.10% / 79.76% / 82.71% / 80.83%`，且每行均有
    `gross_profit_derived_from_cogs`；
-7. existing native `gross_profit` 优先级不变；CAT/CCI/ITW/PR 既有 selector 回归继续通过；
-8. `as-of` 在对应 filing 披露日前不看到该事实，披露日后仅按版本语义看到已披露且无维度的事实；
-9. 受控实库重放后，fact/source/ingest-run/audit 链可从 snapshot 行追溯到 accession 与
+9. existing native `gross_profit` 优先级不变；CAT/CCI/ITW/PR 既有 selector 回归继续通过；
+10. `as-of` 在对应 filing 披露日前不看到该事实，披露日后仅按版本语义看到已披露且无维度的事实；
+11. 受控实库重放后，fact/source/ingest-run/audit 链可从 snapshot 行追溯到 accession 与
    context hash。
 
 ## 6. 验收与退出条件
@@ -175,4 +202,3 @@ build/financial_comparison/adt_cogs_implementation/
 - 不改毛利率显示规则、不调整毛利率以计入 D&A，也不处理跨公司可比性提示（USQ-002）；
 - 不修复 COGS 批次 2、PDD freshness，或把此任务并入 Phase C；
 - 不修改任何 legacy 读取回退、旧物化视图刷新策略或生产开关。
-
