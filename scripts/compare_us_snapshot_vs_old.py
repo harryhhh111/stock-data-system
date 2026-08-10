@@ -1085,9 +1085,16 @@ def classify_diff(
     if (
         exceptions
         and exception_key in exceptions
-        and old_val is not None
-        and new_val is None
         and base_reason.upper() in exceptions[exception_key]
+        and (
+            # 正向:旧有值、新 NULL(原始 exception 契约)
+            (old_val is not None and new_val is None)
+            # 反向:旧 NULL、新有值,仅限 base reason 为 NEW_ONLY 的受限登记
+            # (如 ADT_EXTENSION_TAG_CONSOLIDATED_COGS_INGESTED;
+            #  见退役计划"反向登记"条款)
+            or (old_val is None and new_val is not None
+                and base_reason == Reason.NEW_ONLY)
+        )
     ):
         return Reason.REGISTERED_EXCEPTION
     return base_reason

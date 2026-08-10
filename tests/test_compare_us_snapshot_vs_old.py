@@ -176,6 +176,38 @@ class TestClassifyDiff:
             == CMP.Reason.MISSING_MAPPING
         )
 
+    def test_registered_exception_reverse_new_only(self):
+        """反向登记:旧 NULL、新有值且 base=NEW_ONLY 的受限 exception(ADT COGS)。"""
+        exceptions = {("ADT", "2025-12-31", "gross_margin"): {"NEW_ONLY"}}
+        assert (
+            CMP.classify_diff(
+                None,
+                Decimal("0.8083354797901262"),
+                {},
+                {},
+                [],
+                exception_key=("ADT", "2025-12-31", "gross_margin"),
+                exceptions=exceptions,
+            )
+            == CMP.Reason.REGISTERED_EXCEPTION
+        )
+
+    def test_reverse_exception_requires_new_only_base(self):
+        """反向登记不适用于非 NEW_ONLY 的 base reason(防止掩盖真实差异)。"""
+        exceptions = {("X", "2025-12-31", "roe"): {"OLD_LOGIC_FALLBACK"}}
+        assert (
+            CMP.classify_diff(
+                None,
+                Decimal("0.15"),
+                {},
+                {},
+                [],
+                exception_key=("X", "2025-12-31", "roe"),
+                exceptions=exceptions,
+            )
+            == CMP.Reason.NEW_ONLY
+        )
+
 
 # ── load_registered_exceptions ──────────────────────────────────
 

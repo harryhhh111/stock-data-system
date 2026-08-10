@@ -320,7 +320,7 @@ def _update_item(
 # ═══════════════════════════════════════════════════════════
 
 
-def _discover_sources(stock_codes: list[str]) -> list[dict[str, Any]]:
+def _discover_sources(stock_codes: list[str], include_adt_filing_xbrl: bool = False) -> list[dict[str, Any]]:
     """为每只股票发现可用来源，按 Runbook 优先级返回 source 候选。"""
     sources = []
 
@@ -387,11 +387,44 @@ def _discover_sources(stock_codes: list[str]) -> list[dict[str, Any]]:
                 "reconstruction_flag": "RECONSTRUCTED_FROM_LEGACY_SNAPSHOT",
             })
 
+    # 3. 显式 ADT 受控重放:filing-XBRL 原件快照(US_ADT_CONSOLIDATED_COGS_IMPLEMENTATION_TASK §4.1)
+    # 仅在 --include-adt-filing-xbrl 时启用;每个白名单 filing 快照是独立 source/item。
+    if include_adt_filing_xbrl and "ADT" in stock_codes:
+        rows = execute(
+            """
+            SELECT snapshot_id, content_hash, fetched_at
+            FROM raw_snapshot_version
+            WHERE stock_code = 'ADT' AND data_type = 'filing_xbrl_instance'
+            ORDER BY fetched_at
+            """,
+            fetch=True,
+        ) or []
+        for snapshot_id, content_hash, fetched_at in rows:
+            sources.append({
+                "stock_code": "ADT",
+                "source_kind": "adt_filing_xbrl",
+                "source_locator": f"raw_snapshot_version.snapshot_id={snapshot_id}",
+                "source_content_hash": content_hash,
+                "source_snapshot_id": snapshot_id,
+                "fetched_at": fetched_at.isoformat() if fetched_at else None,
+                "priority": 2,
+            })
+
     return sources
 
 
 def _parse_facts_from_source(source: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """读取来源原始 JSON 并解析为 SEC Company Facts dict。"""
+    if source["source_kind"] == "adt_filing_xbrl":
+        rows = execute(
+            "SELECT raw_data FROM raw_snapshot_version WHERE snapshot_id = %s",
+            (source["source_snapshot_id"],),
+            fetch=True,
+        )
+        if not rows:
+            return None, "SOURCE_SNAPSHOT_NOT_FOUND"
+        return rows[0][0], None
+
     if source["source_kind"] == "raw_snapshot_version":
         rows = execute(
             "SELECT raw_data FROM raw_snapshot_version WHERE snapshot_id = %s",
@@ -422,6 +455,43 @@ def _parse_facts_from_source(source: dict[str, Any]) -> tuple[dict[str, Any] | N
     return None, "UNSUPPORTED_SOURCE_KIND"
 
 
+def _extract_adt_filing_xbrl_records(
+    source: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], str | None]:
+    """ADT filing-XBRL 受控源:从 raw_snapshot_version 的原件内容重建 fact_records。
+
+    accession 必须在 APPROVED_FILINGS 白名单,且解析出的无维度总额必须与审计
+    证据一致,否则返回错误(不静默)。
+    """
+    from core.fetchers.us_adt_cogs_filing import (
+        APPROVED_FILINGS,
+        extract_cogs_fact_records,
+        verify_against_audit,
+    )
+
+    rows = execute(
+        "SELECT raw_data FROM raw_snapshot_version WHERE snapshot_id = %s",
+        (source["source_snapshot_id"],),
+        fetch=True,
+    )
+    if not rows:
+        return [], [], {}, "SOURCE_SNAPSHOT_NOT_FOUND"
+    raw_data = rows[0][0]
+    accession = str(raw_data.get("accession_no") or "")
+    filing = next((f for f in APPROVED_FILINGS if f.accession_no == accession), None)
+    if filing is None:
+        return [], [], {}, f"ADT_ACCESSION_NOT_APPROVED:{accession}"
+    records, skipped = extract_cogs_fact_records(raw_data["content"], filing)
+    try:
+        verify_against_audit(records, filing)
+    except Exception as exc:
+        return [], [], {}, f"ADT_AUDIT_VERIFY_FAILED:{exc}"
+    return records, [], {
+        "income": {"record_count": len(records), "invalid_count": 0,
+                   "fact_count": len(records)},
+    }, None
+
+
 def _extract_source_records(
     source: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], str | None]:
@@ -430,6 +500,9 @@ def _extract_source_records(
     Returns:
         (fact_records, invalid_records, statement_results, error)
     """
+    if source.get("source_kind") == "adt_filing_xbrl":
+        return _extract_adt_filing_xbrl_records(source)
+
     raw_data, error = _parse_facts_from_source(source)
     if raw_data is None:
         return [], [], {}, error
@@ -519,7 +592,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         logger.error("%s", exc)
         return 1
 
-    sources = _discover_sources(stock_codes)
+    sources = _discover_sources(stock_codes, include_adt_filing_xbrl=getattr(args, "include_adt_filing_xbrl", False))
     found_stocks = {s["stock_code"] for s in sources}
     missing = sorted(set(stock_codes) - found_stocks)
 
@@ -567,7 +640,7 @@ def cmd_stage(args: argparse.Namespace) -> int:
         logger.error("batch %s 状态 %s 不允许 stage", batch_id, existing["status"])
         return 1
 
-    sources = _discover_sources(stock_codes)
+    sources = _discover_sources(stock_codes, include_adt_filing_xbrl=getattr(args, "include_adt_filing_xbrl", False))
     if not sources:
         logger.error("未找到任何来源")
         return 1
@@ -824,30 +897,51 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 source_staged = 0
                 with Connection() as conn:
                     writer = USFactVersionWriter(parser_git_sha=parser_git_sha)
-                    for statement, tags in [
-                        ("income", USFinancialFetcher().INCOME_TAGS),
-                        ("balance", USFinancialFetcher().BALANCE_TAGS),
-                        ("cashflow", USFinancialFetcher().CASHFLOW_TAGS),
-                    ]:
-                        # 仅提取该 statement 的记录
-                        _, stmt_invalid, stmt_facts = USFinancialFetcher()._extract_facts(raw_data, tags, statement=statement)
-                        if not stmt_facts and not stmt_invalid:
-                            continue
+                    if source.get("source_kind") == "adt_filing_xbrl":
+                        # ADT 受控 filing-XBRL 源:不走 companyfacts 提取,
+                        # 由白名单+审计校验的专用路径重建 fact_records
+                        records, _, _, extract_error = _extract_adt_filing_xbrl_records(source)
+                        if extract_error:
+                            raise RuntimeError(extract_error)
                         result = writer.write_facts(
                             conn=conn,
                             context=ctx,
                             run_id=None,
-                            fact_records=stmt_facts,
-                            invalid_records=stmt_invalid,
-                            statement=statement,
-                            reconstruction_flag=source.get("reconstruction_flag"),
+                            fact_records=records,
+                            invalid_records=[],
+                            statement="income",
                             batch_item_id=item_id,
                         )
                         source_inserted += result["facts_inserted"]
                         source_repeated += result["facts_repeated"]
                         source_conflicted += result["facts_conflicted"]
                         source_staged += result["facts_staged"]
-                        statement_results_write[statement] = result
+                        statement_results_write["income"] = result
+                    else:
+                        for statement, tags in [
+                            ("income", USFinancialFetcher().INCOME_TAGS),
+                            ("balance", USFinancialFetcher().BALANCE_TAGS),
+                            ("cashflow", USFinancialFetcher().CASHFLOW_TAGS),
+                        ]:
+                            # 仅提取该 statement 的记录
+                            _, stmt_invalid, stmt_facts = USFinancialFetcher()._extract_facts(raw_data, tags, statement=statement)
+                            if not stmt_facts and not stmt_invalid:
+                                continue
+                            result = writer.write_facts(
+                                conn=conn,
+                                context=ctx,
+                                run_id=None,
+                                fact_records=stmt_facts,
+                                invalid_records=stmt_invalid,
+                                statement=statement,
+                                reconstruction_flag=source.get("reconstruction_flag"),
+                                batch_item_id=item_id,
+                            )
+                            source_inserted += result["facts_inserted"]
+                            source_repeated += result["facts_repeated"]
+                            source_conflicted += result["facts_conflicted"]
+                            source_staged += result["facts_staged"]
+                            statement_results_write[statement] = result
                     conn.commit()
 
                 total_inserted += source_inserted
@@ -1175,12 +1269,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_scan = sub.add_parser("scan", help="只扫描来源和覆盖率，不写事实")
     p_scan.add_argument("--stocks", required=True, help="Comma-separated stock codes")
     p_scan.add_argument("--output", required=True, help="Output JSON path")
+    p_scan.add_argument("--include-adt-filing-xbrl", action="store_true",
+                        help="同时发现 ADT 受控 filing-XBRL 快照(仅显式 ADT 重放)")
     p_scan.set_defaults(func=cmd_scan)
 
     p_stage = sub.add_parser("stage", help="解析到 staging/内存，生成 manifest；不写正式版本层")
     p_stage.add_argument("--batch-id", required=True, help="UUID for this batch")
     p_stage.add_argument("--stocks", required=True, help="Comma-separated stock codes")
     p_stage.add_argument("--dry-run", action="store_true", help="不持久化 batch/item")
+    p_stage.add_argument("--include-adt-filing-xbrl", action="store_true",
+                         help="同时发现 ADT 受控 filing-XBRL 快照(仅显式 ADT 重放)")
     p_stage.set_defaults(func=cmd_stage)
 
     p_verify = sub.add_parser("verify", help="校验 batch 结果并迁移到 verified")

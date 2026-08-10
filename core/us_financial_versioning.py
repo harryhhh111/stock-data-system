@@ -485,7 +485,9 @@ class USFactVersionWriter:
                 "cik": context.cik,
                 "accession_no": rec["accn"],
                 "statement": statement,
-                "taxonomy": "us-gaap",
+                # companyfacts 记录不带 taxonomy,默认 us-gaap(行为不变);
+                # 受限 filing-XBRL 链路显式传入发行人扩展 taxonomy(如 adt)。
+                "taxonomy": rec.get("taxonomy") or "us-gaap",
                 "sec_tag": rec["tag"],
                 "standard_field": rec.get("field"),
                 "period_kind": rec["_period_kind"],
@@ -623,7 +625,7 @@ class USFactVersionWriter:
             "cik": context.cik,
             "accession_no": str(rec.get("accn") or "").strip() or None,
             "statement": statement,
-            "taxonomy": "us-gaap",
+            "taxonomy": rec.get("taxonomy") or "us-gaap",
             "sec_tag": rec.get("tag"),
             "period_kind": rec.get("_period_kind"),
             "period_start": rec.get("start"),

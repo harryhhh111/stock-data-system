@@ -1,6 +1,7 @@
 # ADT 合并 Cost of Revenue：受限 Inline XBRL 映射实施任务
 
-> 状态：待项目所有者审核；已根据批准前技术核对修订，审核通过后方可执行。
+> 状态：已执行（2026-08-11)。实施中发现并解决了 ADT 持续经营重述配对问题
+> （见 §3 末注与 §4.6);USQ-001 已按台账格式关闭。
 > 前置：[`US_ADT_CONSOLIDATED_COGS_AUDIT_TASK.md`](./US_ADT_CONSOLIDATED_COGS_AUDIT_TASK.md)
 > 已完成，FY2021–FY2025 均为 `CONSOLIDATED_TOTAL_PROVEN`。  
 > 目标：只修复 **USQ-001**（ADT 的报表口径 `gross_margin` 缺失）。  
@@ -64,6 +65,27 @@ gross_margin = (revenues - cost_of_goods_sold) / revenues
 
 解析器必须从受保存的 filing 原件（或通过既有 raw snapshot 机制重新抓取并保存的同一原件）
 读取 Inline XBRL；`build/financial_comparison/adt_cogs_audit/` 只作验证证据，不能成为生产数值源。
+
+> **实施期发现（2026-08-11,已按本表执行）**:ADT 自 FY2023 10-K 起把收入按
+> **持续经营重述**(recast):latest-restated 的 FY2021/2022/2023 收入分别是
+> 4,202,723,000 / 4,381,904,000 / 4,652,824,000,与原报值不同。只 ingest 各 filing
+> 当前年度 COGS 会把"重述收入 × 原报 COGS"配成混合口径毛利率(63.12%/53.45%/78.33%
+> ——比 NULL 更糟)。解法:每个白名单 filing 的**比较期**无维度/子项事实同样入层,
+> 重述 COGS 与重述收入同 accession 天然配对(见下表),selector 的 first-filed-preserved
+> 与 latest-restated 语义自动完成选择。验收时 verify 阶段对全部年度做
+> revenue-accession == cogs-accession 硬性配对检查(pairing_check.csv)。
+>
+> | accession | 覆盖年度 → 无维度合并成本(USD) |
+> |---|---|
+> | `0001703056-22-000042` | 2019: 1,390,284,000;2020: 1,516,528,000;2021: 1,550,173,000 |
+> | `0001703056-23-000046` | 2020: 1,516,528,000;2021: 1,550,173,000;2022: 2,039,848,000 |
+> | `0001703056-23-000146` | 2020: 1,516,528,000;2021: 1,550,173,000;2022: 2,039,848,000 |
+> | `0001703056-24-000020` | 2021: 772,785,000(重述);2022: 1,200,492,000(重述);2023: 1,008,466,000 |
+> | `0001703056-25-000022` | 2022: 698,782,000(重述);2023: 751,682,000(重述);2024: 847,114,000 |
+> | `0001703056-26-000022` | 2023: 751,682,000;2024: 847,114,000;2025: 982,972,000 |
+>
+> 重述一致口径的毛利率对照:FY2021 81.61%、FY2022 84.05%、FY2023 83.84%、
+> FY2024 82.71%、FY2025 80.83%(替代 §5.8 的原报口径 70.79%/68.10%/79.76%)。
 
 ## 4. 实施内容
 
@@ -173,10 +195,10 @@ registry”列为显式待审计事件；在批准前，`gross_margin=NULL` 是�
 6. 同一经济期间两个不一致的无维度总额触发可诊断失败/阻断，不产生任意选取；
 7. FY2021、FY2023–FY2025 的 current 选择值精确等于 §3 金额；FY2022 current 选 10-K/A，
    并断言原 10-K 在其 filed date 至 amendment filed date 前对 `as-of` 可见；
-8. 投影后逐年直接以 §3 的完整 Decimal 收入和成本断言
+8. 投影后逐年直接以重述一致的完整 Decimal 收入和成本断言
    `(revenues - cost_of_goods_sold) / revenues`；展示核对值为
-   `70.79% / 68.10% / 79.76% / 82.71% / 80.83%`，且每行均有
-   `gross_profit_derived_from_cogs`；
+   `81.61% / 84.05% / 83.84% / 82.71% / 80.83%`(§3 末注的重述配对口径),
+   且每行均有 `gross_profit_derived_from_cogs`;
 9. existing native `gross_profit` 优先级不变；CAT/CCI/ITW/PR 既有 selector 回归继续通过；
 10. `as-of` 在对应 filing 披露日前不看到该事实，披露日后仅按版本语义看到已披露且无维度的事实；
 11. 受控实库重放后，fact/source/ingest-run/audit 链可从 snapshot 行追溯到 accession 与

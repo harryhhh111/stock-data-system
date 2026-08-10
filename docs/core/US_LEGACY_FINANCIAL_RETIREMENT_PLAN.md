@@ -207,6 +207,11 @@ Phase A 可计入 explained 的 expected reason：
   - 正常 base reason 属于该条目允许的 reason（如 `MISSING_MAPPING`、`MISSING_COMPONENT`、
     `PERIOD_MISMATCH`）；
   - CSV 中保存了具体原因、原文或版本层证据引用。
+- 反向登记（2026-08-11 起允许）：旧 NULL/新有值且 base reason 为 `NEW_ONLY` 时，
+  若 reason code 限定到具体已审计任务与 filing 清单（首个实例：
+  `ADT_EXTENSION_TAG_CONSOLIDATED_COGS_INGESTED`，见
+  `US_ADT_CONSOLIDATED_COGS_IMPLEMENTATION_TASK.md` §4.5)，也可登记为
+  `REGISTERED_EXCEPTION`；不得用笼统 `NEW_ONLY` 掩盖该等有任务的修复。
 
 `MISSING_MAPPING` 必须补映射或登记为明确 selector exception，不能直接视为验收通过。
 

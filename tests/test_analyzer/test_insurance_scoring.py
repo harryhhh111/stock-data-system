@@ -46,7 +46,7 @@ def test_insurer_cashflow_is_displayed_but_not_scored():
         history,
         ttm,
         "2025-12-31",
-        INSURANCE_INDUSTRY,
+        industry=INSURANCE_INDUSTRY,
     )
 
     assert result["rating"] is None

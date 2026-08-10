@@ -652,3 +652,108 @@ def test_checksum_is_stable():
     checksum2 = selector._compute_checksum(selected)
     assert checksum1 == checksum2
     assert len(checksum1) == 64
+
+
+# ── ADT COGS 仅无维度限制(US_ADT_CONSOLIDATED_COGS_IMPLEMENTATION §4.2/§5)──
+
+_ADT_TAG = "CostofRevenueExcludingDepreciationDepletionandAmortization"
+
+
+def _adt_cogs(fid, dimensions, filed_date="2026-03-02", accession_no="0001703056-26-000022",
+              value_numeric=982972000.0, report_date="2025-12-31"):
+    f = _fact(fid, stock_code="ADT", standard_field="cost_of_goods_sold",
+              sec_tag=_ADT_TAG, accession_no=accession_no, filed_date=filed_date,
+              value_numeric=value_numeric, report_date=report_date)
+    f["dimensions"] = dimensions
+    return f
+
+
+def test_adt_cogs_only_dimensionless_selected():
+    """有维度子项不得作为独立 economic key 进入选择结果。"""
+    selector = USFactSelector()
+    facts = [
+        _adt_cogs(1, {}),
+        _adt_cogs(2, {"srt:ProductOrServiceAxis": "adt:MonitoringAndRelatedServicesMember"},
+                  value_numeric=642270000.0),
+        _adt_cogs(3, {"srt:ProductOrServiceAxis": "adt:SecurityInstallationProductAndOtherMember"},
+                  value_numeric=340702000.0),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    selected = selector.select(stock_codes=["ADT"], basis="latest-restated",
+                               fields=["cost_of_goods_sold"])
+    assert len(selected) == 1
+    assert selected[0].fact_version_id == 1
+    assert selected[0].dimensions == {}
+
+
+def test_adt_cogs_no_dimensionless_means_no_selection():
+    """无维度总额缺失时不得以子项/最大值/求和补齐。"""
+    selector = USFactSelector()
+    facts = [
+        _adt_cogs(1, {"srt:ProductOrServiceAxis": "adt:MonitoringAndRelatedServicesMember"},
+                  value_numeric=642270000.0),
+        _adt_cogs(2, {"srt:ProductOrServiceAxis": "adt:SecurityInstallationProductAndOtherMember"},
+                  value_numeric=340702000.0),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+    selected = selector.select(stock_codes=["ADT"], basis="latest-restated",
+                               fields=["cost_of_goods_sold"])
+    assert selected == []
+
+
+def test_adt_restriction_does_not_touch_other_stocks_or_tags():
+    """其他股票的 COGS 维度事实、ADT 其他字段不受影响。"""
+    selector = USFactSelector()
+    other = _fact(1, stock_code="CAT", standard_field="cost_of_goods_sold",
+                  sec_tag="CostOfRevenue")
+    other["dimensions"] = {"srt:ProductOrServiceAxis": "x"}
+    adt_other_field = _fact(2, stock_code="ADT", standard_field="revenues",
+                            sec_tag="Revenues")
+    adt_other_field["dimensions"] = {"srt:ProductOrServiceAxis": "x"}
+    selector._load_facts = lambda *args, **kwargs: [other, adt_other_field]
+    selected = selector.select(basis="latest-restated")
+    assert len(selected) == 2
+
+
+def test_adt_cogs_as_of_amendment_visibility():
+    """FY2022:10-K 在其披露日至 10-K/A 披露日前对 as-of 可见;之后只见修正案。"""
+    selector = USFactSelector()
+    facts = [
+        _adt_cogs(1, {}, filed_date="2023-02-28", accession_no="0001703056-23-000046",
+                  report_date="2022-12-31", value_numeric=2039848000.0),
+        _adt_cogs(2, {}, filed_date="2023-07-27", accession_no="0001703056-23-000146",
+                  report_date="2022-12-31", value_numeric=2039848000.0),
+    ]
+    selector._load_facts = lambda *args, **kwargs: facts
+
+    early = selector.select(stock_codes=["ADT"], basis="as-of", as_of_date="2023-05-01",
+                            fields=["cost_of_goods_sold"])
+    assert len(early) == 1
+    assert early[0].accession_no == "0001703056-23-000046"
+
+    late = selector.select(stock_codes=["ADT"], basis="as-of", as_of_date="2023-08-01",
+                           fields=["cost_of_goods_sold"])
+    assert len(late) == 1
+    # 10-K 与 10-K/A 披露值一致(2,039,848,000):既有 latest-restated 语义对
+    # 同值 repeat 保留 first-filed 版本行,数值不变,仅版本归属不同(溯源可接受)
+    assert late[0].value_numeric == 2039848000.0
+    assert late[0].accession_no == "0001703056-23-000046"
+    assert "first filed date preserved" in late[0].selection_reason
+
+    # 修正案值不同时,as-of 过修订日后切换到修正案版本
+    selector2 = USFactSelector()
+    facts2 = [
+        _adt_cogs(1, {}, filed_date="2023-02-28", accession_no="0001703056-23-000046",
+                  report_date="2022-12-31", value_numeric=2000000000.0),
+        _adt_cogs(2, {}, filed_date="2023-07-27", accession_no="0001703056-23-000146",
+                  report_date="2022-12-31", value_numeric=2039848000.0),
+    ]
+    facts2[1]["value_hash"] = "h2"
+    selector2._load_facts = lambda *args, **kwargs: facts2
+    switched = selector2.select(stock_codes=["ADT"], basis="as-of", as_of_date="2023-08-01",
+                                fields=["cost_of_goods_sold"])
+    assert switched[0].accession_no == "0001703056-23-000146"
+
+    before = selector.select(stock_codes=["ADT"], basis="as-of", as_of_date="2023-02-27",
+                             fields=["cost_of_goods_sold"])
+    assert before == []

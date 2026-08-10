@@ -96,6 +96,30 @@ _OFFICIAL_ANNUAL_FORMS = {
     "40-F/A",
 }
 
+# ADT:合并 Cost of Revenue 由发行人扩展 tag 的无维度 context 披露;同 tag 的
+# 维度事实(ProductOrServiceAxis 等)是业务/产品子项,绝不可作为 COGS 流入
+# projection(同一经济子项还会以多种维度组合重复披露,子项求和≠总额)。
+# 见 US_ADT_CONSOLIDATED_COGS_IMPLEMENTATION_TASK.md §4.2。
+_ADT_COGS_TAG = "CostofRevenueExcludingDepreciationDepletionandAmortization"
+
+
+def _apply_dimensionless_only_restrictions(
+    facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """逐股票逐 tag 的"仅无维度"正向限制,在经济键分组与 canonical 选择之前应用。
+
+    有维度子项在此直接移除,不会形成独立 economic key。
+    """
+    return [
+        f for f in facts
+        if not (
+            f.get("stock_code") == "ADT"
+            and f.get("standard_field") == "cost_of_goods_sold"
+            and f.get("sec_tag") == _ADT_COGS_TAG
+            and f.get("dimensions")
+        )
+    ]
+
 
 @dataclass(frozen=True)
 class SelectedFact:
@@ -159,6 +183,8 @@ class USFactSelector:
 
         reference_date = as_of_date if basis == "as-of" else datetime.now().date()
         facts = self._load_facts(stock_codes, fields, reference_date)
+        # ADT COGS 等"仅无维度"限制:先于经济键分组,子项不形成独立候选
+        facts = _apply_dimensionless_only_restrictions(facts)
 
         by_key: dict[tuple, list[dict[str, Any]]] = {}
         for fact in facts:
