@@ -90,6 +90,7 @@ export interface CashflowDetails {
   capex_intensity: number | null;
   fcf_years: FCFYearItem[];
   ttm_report_date: string | null;
+  ttm_notice_date: string | null;
   stale_warning: string | null;
 }
 

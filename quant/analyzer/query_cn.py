@@ -13,9 +13,15 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         SELECT s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
                fy.close, fy.market_cap, fy.pe_ttm, fy.pb, fy.fcf_yield,
                fy.fcf_ttm, fy.revenue_ttm, fy.net_profit_ttm, fy.cfo_ttm,
-               fy.ttm_report_date
+               fy.ttm_report_date,
+               t.notice_date AS ttm_notice_date
         FROM stock_info s
         LEFT JOIN mv_fcf_yield fy ON s.stock_code = fy.stock_code
+        LEFT JOIN LATERAL (
+            SELECT notice_date FROM mv_indicator_ttm
+            WHERE stock_code = s.stock_code
+            ORDER BY report_date DESC LIMIT 1
+        ) t ON true
         WHERE s.stock_code = %s AND s.market = %s
     """
     sql_fallback = """
@@ -68,7 +74,7 @@ def get_financial_history(stock_code: str, years: int = 5) -> pd.DataFrame:
 def get_ttm_data(stock_code: str) -> pd.DataFrame:
     """获取 TTM 滚动指标。"""
     sql = """
-        SELECT report_date, report_type,
+        SELECT report_date, report_type, notice_date AS ttm_notice_date,
                revenue_ttm, net_profit_ttm, cfo_ttm, capex_ttm
         FROM mv_indicator_ttm
         WHERE stock_code = %s

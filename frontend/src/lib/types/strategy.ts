@@ -32,6 +32,7 @@ export interface StrategyStock {
   net_margin: number | null;
   debt_ratio: number | null;
   ttm_report_date: string | null;
+  ttm_notice_date: string | null;
   stale_warning: boolean;
   currency: string;
   factor_ranks: Record<string, number>;

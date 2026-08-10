@@ -202,6 +202,7 @@ def analyze_cashflow(
     df_hist: pd.DataFrame,
     df_ttm: pd.DataFrame,
     ttm_report_date=None,
+    ttm_notice_date=None,
     industry: str | None = None,
 ) -> dict:
     """现金流质量分析：CFO/净利润、FCF 趋势、CAPEX 强度。
@@ -209,7 +210,8 @@ def analyze_cashflow(
     Args:
         df_hist: get_financial_history()
         df_ttm: get_ttm_data()
-        ttm_report_date: TTM 数据截止日期，用于判断数据新鲜度
+        ttm_report_date: TTM 数据截止日期（报告期）
+        ttm_notice_date: TTM 公告/申报日期，优先用于判断数据时效
     """
     if df_hist.empty:
         return {"rating": None, "verdict": "暂无现金流数据", "details": {}, "star": "暂无数据"}
@@ -293,11 +295,18 @@ def analyze_cashflow(
     if source == "TTM" and ttm_report_date is not None:
         try:
             import pandas as _pd
-            stale_days = (_pd.Timestamp.now() - _pd.Timestamp(ttm_report_date)).days
+            # 优先按公告日判断；没有公告日再回退到报告期，避免年报期末距今长但刚公告的误导
+            freshness_date = ttm_notice_date if ttm_notice_date is not None else ttm_report_date
+            stale_days = (_pd.Timestamp.now() - _pd.Timestamp(freshness_date)).days
             if stale_days > 180:
+                notice_text = (
+                    f"（{str(ttm_notice_date)[:10]} 公告）"
+                    if ttm_notice_date is not None
+                    else ""
+                )
                 stale_warning = (
-                    f"⚠ TTM 数据截止 {str(ttm_report_date)[:10]}，已 {stale_days} 天未更新，"
-                    f"基于过时数据，FCF Yield 参考价值有限"
+                    f"⚠ TTM 数据截止 {str(ttm_report_date)[:10]}{notice_text}，"
+                    f"距今 {stale_days} 天，基于过时数据，FCF Yield 参考价值有限"
                 )
         except Exception:
             pass
@@ -326,6 +335,7 @@ def analyze_cashflow(
             "capex_intensity": capex_intensity,
             "fcf_years": fcf_years,
             "ttm_report_date": str(ttm_report_date)[:10] if ttm_report_date is not None and str(ttm_report_date) != "NaT" else None,
+            "ttm_notice_date": str(ttm_notice_date)[:10] if ttm_notice_date is not None and str(ttm_notice_date) != "NaT" else None,
             "stale_warning": stale_warning,
         },
         "star": _star(rating),

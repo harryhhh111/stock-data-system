@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
 
@@ -6,6 +7,7 @@ interface RatingItem {
   rating: number | null;
   star: string;
   verdict: string;
+  content?: ReactNode;
 }
 
 interface Props {
@@ -36,12 +38,20 @@ export function RatingCardGrid({ items }: Props) {
           <CardContent className="p-3 space-y-1">
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{item.label}</span>
-              <span className={cn("text-lg font-bold tabular-nums", ratingColor(item.rating))}>
-                {item.rating?.toFixed(1) ?? "-"}
-              </span>
+              {!item.content && (
+                <span className={cn("text-lg font-bold tabular-nums", ratingColor(item.rating))}>
+                  {item.rating?.toFixed(1) ?? "-"}
+                </span>
+              )}
             </div>
-            <div className="text-xs">{item.star}</div>
-            <p className="text-xs text-muted-foreground line-clamp-2">{item.verdict}</p>
+            {item.content ? (
+              <div className="text-xs text-muted-foreground">{item.content}</div>
+            ) : (
+              <>
+                <div className="text-xs">{item.star}</div>
+                <p className="text-xs text-muted-foreground line-clamp-2">{item.verdict}</p>
+              </>
+            )}
           </CardContent>
         </Card>
       ))}
