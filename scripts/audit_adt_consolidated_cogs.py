@@ -715,6 +715,28 @@ def _dims_str(dims: dict[str, str]) -> str:
     return ";".join(f"{k}={v}" for k, v in sorted(dims.items()))
 
 
+def cost_line_excludes_da_evidence(
+    total: Optional[CostCandidate], statement_cost_label: str,
+) -> tuple[Optional[bool], str]:
+    """返回成本行是否排除 D&A 及其证据来源。
+
+    Financial_Report.xlsx / R 文件的展示行名有时简写为 ``Total cost of
+    revenue``，但 ADT 已审计的扩展 tag 本身明确为
+    ``CostofRevenueExcludingDepreciationDepletionandAmortization``。不能因
+    展示行名省略括号说明而把已证明的口径误写为 false。
+    """
+    if total is not None:
+        local_name = total.sec_tag.rsplit(":", 1)[-1].lower()
+        if local_name == TARGET_TAG_LOCAL:
+            return True, "inline_xbrl_target_tag_definition"
+    if statement_cost_label:
+        return (
+            "depreciation" in statement_cost_label.lower(),
+            "statement_line_label",
+        )
+    return None, ""
+
+
 def write_outputs(results: list[YearResult], gaps: list[dict[str, Any]], out_dir: Path,
                   generated_at: str) -> list[int]:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -762,17 +784,18 @@ def write_outputs(results: list[YearResult], gaps: list[dict[str, Any]], out_dir
         w.writerow(["fiscal_year", "report_date", "accession_no", "form",
                     "filed_date", "filing_url", "statement_name",
                     "cost_line_label", "cost_line_excludes_d_and_a",
+                    "cost_line_excludes_d_and_a_source",
                     "revenue_value", "total_cost_value", "reported_gross_margin",
                     "evidence_locator", "disposition", "reviewer_note"])
         for r in results:
-            excludes_da = ""
-            if r.statement_cost_label:
-                excludes_da = ("true" if "depreciation" in r.statement_cost_label.lower()
-                               else "false")
+            excludes_da, excludes_da_source = cost_line_excludes_da_evidence(
+                r.total, r.statement_cost_label)
             w.writerow([r.fiscal_year, f"{r.fiscal_year}-12-31", r.accession_used,
                         r.form_used, r.filed_date, r.filing_url,
                         r.statement_cost_label.split(":")[0] if r.statement_cost_label else "",
-                        r.statement_cost_label, excludes_da,
+                        r.statement_cost_label,
+                        {True: "true", False: "false", None: ""}[excludes_da],
+                        excludes_da_source,
                         _fmt_money(r.revenue),
                         _fmt_money(r.total.value_numeric if r.total else None),
                         _fmt_pct(r.gross_margin),

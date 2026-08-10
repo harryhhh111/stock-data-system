@@ -135,6 +135,24 @@ class TestGrossMargin:
                 parse_numeric(placeholder)
 
 
+class TestCostLineDisclosure:
+    def test_target_tag_proves_excluding_da_when_display_label_is_shortened(self, fy2025):
+        """R 文件把行名简写为 Total cost of revenue 也不能误写为 false。"""
+        from scripts.audit_adt_consolidated_cogs import cost_line_excludes_da_evidence
+        facts, contexts = fy2025
+        candidates = collect_cost_candidates(facts, contexts, 2025, "accn", "doc.htm")
+        total, _ = select_consolidated_total(candidates)
+        assert total is not None
+        assert cost_line_excludes_da_evidence(total, "R5.htm: Total cost of revenue") == (
+            True, "inline_xbrl_target_tag_definition")
+
+    def test_statement_label_is_only_fallback_when_tag_is_not_proven(self):
+        from scripts.audit_adt_consolidated_cogs import cost_line_excludes_da_evidence
+        assert cost_line_excludes_da_evidence(
+            None, "Operations: Cost of revenue (excluding depreciation)"
+        ) == (True, "statement_line_label")
+
+
 # ── 4. 子项求和只作交叉验证,不影响总额选取 ───────────────────
 
 class TestComponentsNotUsedForSelection:
