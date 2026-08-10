@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
     -- 利润表
     revenues                NUMERIC,
     net_income              NUMERIC,   -- consolidated net income (native)
-    net_income_common       NUMERIC,   -- common/attributable net income (raw)
 
     -- 资产负债表
     total_assets            NUMERIC,
@@ -53,6 +52,8 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
     projection_run_id         UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
     generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- 后加列：保持与线上既有表的物理字段顺序一致
+    net_income_common       NUMERIC,   -- common/attributable net income (raw)
 
     CONSTRAINT pk_us_financial_current_annual
         PRIMARY KEY (stock_code, report_date)
@@ -80,7 +81,6 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
     ttm_accession_no        VARCHAR(30),
     revenue_ttm             NUMERIC,
     net_income_ttm          NUMERIC,   -- consolidated net income TTM (native)
-    net_income_common_ttm   NUMERIC,   -- common net income TTM (raw)
     cfo_ttm                 NUMERIC,
     capex_ttm               NUMERIC,
     fcf_ttm                 NUMERIC,   -- = cfo_ttm - capex_ttm
@@ -94,7 +94,9 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
     -- 溯源
     projection_run_id         UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
-    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- 后加列：保持与线上既有表的物理字段顺序一致
+    net_income_common_ttm   NUMERIC    -- common net income TTM (raw)
 );
 
 CREATE INDEX IF NOT EXISTS idx_us_fct_selector_run

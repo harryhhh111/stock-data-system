@@ -552,21 +552,79 @@ CREATE TABLE sync_log (
 
 ---
 
-## 美股表（独立 schema）
+## 美股财务 schema（版本层为当前生产契约）
 
-美股使用独立的表结构，DDL 见 `scripts/us_tables.sql` 与 `scripts/us_financial_snapshots.sql`：
+本节记录仍会在 Phase C 及以后使用的美股财务表。字段清单于 **2026-08-11** 由海外 US
+生产库的 `information_schema` 核对，必须与下列 DDL 同步修改：
 
-| 表名 | 说明 |
-|------|------|
-| `us_income_statement` | 美股利润表（US-GAAP 标签） |
-| `us_balance_sheet` | 美股资产负债表 |
-| `us_cash_flow_statement` | 美股现金流量表 |
-| `us_financial_current_annual` | 版本层 current annual 快照（latest-restated） |
-| `us_financial_current_ttm` | 版本层 current TTM 快照（latest-restated） |
+- `scripts/us_financial_versioning.sql`：raw snapshot、filing、ingest、不可变事实、conflict、staging；
+- `scripts/us_financial_phase1b.sql`：事实关系、selection run/audit；
+- `scripts/us_financial_phase2.sql`：backfill、事实来源、exclusion、restatement review；
+- `scripts/us_financial_snapshots.sql`：current annual / TTM snapshots；
+- `scripts/us_tables.sql`：共享 `stock_info` 的 US metadata columns。
 
-美股物化视图：`mv_us_financial_indicator`、`mv_us_indicator_ttm`（见 `scripts/materialized_views.sql`）。
+### 退役边界
 
-> A 股/港股与美股字段差异较大（US-GAAP vs 中国会计准则），因此保持独立表结构。
+以下六个对象是 [旧宽表退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) 的删除目标，
+不再是生产读取契约，也不在本节维护其字段定义：
+
+```text
+us_income_statement
+us_balance_sheet
+us_cash_flow_statement
+mv_us_financial_indicator
+mv_us_indicator_ttm
+mv_us_fcf_yield
+```
+
+它们在 Phase C 停止旧写入、完成备份及观察期前仍会物理保留；“待退役”不表示现在可以直接删表。
+
+### 仍在使用的共享表字段
+
+`stock_info` 是跨市场表。美股专用扩展字段为：
+
+```text
+cik, sic_code, fiscal_year_end, sec_filing_count
+```
+
+`daily_quote` 也是跨市场表；美股估值读取最新报价、市值及交易日，完整字段定义仍见本文通用
+`daily_quote` 章节，不能在美股 schema 中另建副本。
+
+### 当前美股版本层表
+
+以下为实际字段顺序的紧凑清单。类型、NOT NULL、默认值、外键和索引以同名 SQL DDL 为准；
+此处用于避免文档遗漏事实层辅助表。
+
+#### Raw source 与 filing
+
+| 表 | 实际字段 |
+|---|---|
+| `raw_snapshot_version` | `snapshot_id, stock_code, data_type, source, api_params, fetched_at, source_last_modified, content_hash, raw_data, parser_status, parser_git_sha, parsed_at, error_message, created_at` |
+| `raw_snapshot_observation` | `observation_id, snapshot_id, fetched_at, http_status, source_last_modified, request_id, job_id, created_at, fetch_source` |
+| `us_filing` | `accession_no, stock_code, cik, form, filed_date, report_date, fiscal_year, fiscal_period, is_amendment, amendment_of, source_snapshot_id, metadata, created_at, updated_at` |
+| `us_ingest_run` | `run_id, snapshot_id, parser_git_sha, started_at, finished_at, status, facts_inserted, facts_repeated, facts_conflicted, facts_reviewed, error_message, manifest` |
+
+#### 不可变事实与选择审计
+
+| 表 | 实际字段 |
+|---|---|
+| `us_financial_fact_version` | `fact_version_id, stock_code, cik, accession_no, statement, taxonomy, sec_tag, standard_field, period_kind, period_start, report_date, fiscal_year, fiscal_period_raw, form, filed_date, frame, unit, value_numeric, value_text, dimensions, context_hash, source_snapshot_id, ingest_run_id, value_hash, quality_flags, created_at` |
+| `us_financial_fact_conflict` | `conflict_id, run_id, stock_code, cik, accession_no, statement, taxonomy, sec_tag, period_kind, period_start, report_date, fiscal_year, fiscal_period_raw, form, filed_date, frame, unit, existing_value_hash, new_value_hash, existing_value_numeric, existing_value_text, new_value_numeric, new_value_text, dimensions, context_hash, source_snapshot_id, detected_at, conflict_dedup_key` |
+| `us_financial_fact_staging` | `staging_id, run_id, stock_code, cik, accession_no, statement, taxonomy, sec_tag, period_kind, period_start, report_date, fiscal_year, fiscal_period_raw, form, filed_date, frame, unit, value_numeric, value_text, dimensions, context_hash, source_snapshot_id, reject_reason, raw_fact, detected_at, staging_dedup_key` |
+| `us_fact_version_relation` | `relation_id, stock_code, standard_field, period_kind, period_start, report_date, earlier_fact_id, later_fact_id, relation_type, value_changed, change_amount, change_ratio, classification_method, reason, quality_flags, reviewed_by, reviewed_at, created_at` |
+| `us_fact_selection_run` | `run_id, selection_basis, as_of_date, selector_version, mapping_version, stock_scope, started_at, finished_at, status, selected_count, rejected_count, checksum_algorithm, result_checksum, manifest, error_message` |
+| `us_fact_selection_audit` | `selection_id, run_id, stock_code, statement, standard_field, period_kind, period_start, report_date, selection_basis, as_of_date, selected_fact_id, selected_accession, selected_filed_date, candidate_count, selection_reason, quality_flags, selector_version, selected_at, unit, sec_tag, context_hash, dimensions, economic_key_hash` |
+
+#### 回填、来源与例外审计
+
+| 表 | 实际字段 |
+|---|---|
+| `us_financial_backfill_batch` | `batch_id, parent_batch_id, environment, mode, status, stock_scope, source_policy_version, parser_git_sha, mapping_version, selector_version, manifest_schema_version, manifest_hash, approved_manifest_hash, source_count, stock_count, success_count, failed_count, snapshot_count, facts_inserted, facts_repeated, facts_conflicted, facts_staged, relations_inserted, selection_count, started_at, finished_at, approved_by, approved_at, approval_note, heartbeat_at, lease_expires_at, worker_id, resume_count, last_completed_item_id, error_message, manifest, created_at` |
+| `us_financial_backfill_item` | `item_id, batch_id, stock_code, cik, source_kind, source_locator, source_content_hash, source_snapshot_id, status, attempt_count, facts_candidate, facts_inserted, facts_repeated, facts_conflicted, facts_staged, error_code, error_message, started_at, finished_at, item_manifest, created_at` |
+| `us_financial_backfill_batch_audit` | `audit_id, batch_id, from_status, to_status, changed_by, change_note, manifest_hash, created_at` |
+| `us_financial_fact_source` | `fact_source_id, fact_version_id, snapshot_id, ingest_run_id, batch_item_id, observation_kind, observed_value_hash, reconstruction_flag, created_at` |
+| `us_financial_fact_exclusion` | `exclusion_id, fact_version_id, batch_id, reason_code, reason, status, effective_from, effective_to, superseded_by_fact_id, reviewed_by, reviewed_at, created_at` |
+| `us_financial_restatement_review` | `fact_version_id, decision, notes, reviewed_by, created_at` |
 
 ### `us_financial_current_annual`
 
@@ -583,7 +641,6 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
 
     revenues                NUMERIC,
     net_income              NUMERIC,   -- consolidated net income (native)
-    net_income_common       NUMERIC,   -- common/attributable net income (raw)
 
     total_assets            NUMERIC,
     total_liabilities       NUMERIC,
@@ -614,6 +671,8 @@ CREATE TABLE IF NOT EXISTS us_financial_current_annual (
     projection_run_id       UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
     generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- 后加列：与当前生产表物理字段顺序一致
+    net_income_common       NUMERIC,   -- common/attributable net income (raw)
 
     CONSTRAINT pk_us_financial_current_annual
         PRIMARY KEY (stock_code, report_date)
@@ -641,7 +700,6 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
     ttm_accession_no        VARCHAR(30),
     revenue_ttm             NUMERIC,
     net_income_ttm          NUMERIC,   -- consolidated net income TTM (native)
-    net_income_common_ttm   NUMERIC,   -- common net income TTM (raw)
     cfo_ttm                 NUMERIC,
     capex_ttm               NUMERIC,
     fcf_ttm                 NUMERIC,   -- = cfo_ttm - capex_ttm
@@ -653,7 +711,9 @@ CREATE TABLE IF NOT EXISTS us_financial_current_ttm (
 
     projection_run_id       UUID,
     quality_flags           TEXT[] NOT NULL DEFAULT '{}',
-    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    generated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- 后加列：与当前生产表物理字段顺序一致
+    net_income_common_ttm   NUMERIC    -- common net income TTM (raw)
 );
 ```
 

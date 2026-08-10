@@ -3,11 +3,13 @@
 -- 执行：psql -U postgres -d stock_data -f scripts/us_tables.sql
 -- ============================================================
 
--- stock_info 表扩展：添加美股 SEC 相关字段
+-- stock_info 表扩展：添加美股 SEC 相关字段。
+-- 本段仍是生产契约；下方三张宽表及其 standalone 字段是待退役 legacy 对象，
+-- 不再作为版本层/快照读取者的 schema source。
 ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS cik VARCHAR(20);
 ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS sic_code VARCHAR(10);
 ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS fiscal_year_end VARCHAR(10);
-ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS sec_filing_count INTEGER DEFAULT 0;
+ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS sec_filing_count INTEGER;
 
 -- ============================================================
 -- us_income_statement（利润表）
