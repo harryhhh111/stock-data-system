@@ -218,7 +218,7 @@ us_cash_flow_statement           mv_us_fcf_yield
    三重比对(原字段子集 hash 可能漏报未选列的修改);全行基线重录前先用旧部分
    hash 校验了连续性(两基线间零写入)。
 
-另:PDD 虽完成 canary,但它与 BIDU/JD/MELI/NXPI/STX/BK 等共 35 只 universe 股票
+另:PDD 虽完成 canary,但它与 BIDU/JD/MELI/NXPI/STX/BK 等共 33 只 universe 股票
 不在当前 RUSSELL1000 成分解析(1,013)内,已被标记 `out_of_sync_scope`,不会自动
 日更。是否将这些股票补入同步范围(或调整指数解析源)是**待项目所有者决定的产品
 问题**;在决定前,这些股票的快照会随时间变旧,且状态对消费者可见(不伪装 fresh)。
