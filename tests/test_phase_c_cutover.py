@@ -155,9 +155,10 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
     monkeypatch.setattr(sched, "_sync_us", lambda: sync_result)
     monkeypatch.setattr(sched, "_load_expected_skips", lambda today=None: {})
     monkeypatch.setattr(sched, "_load_index_only_registry", lambda: {"Z9"})
-    monkeypatch.setattr(sched, "_reconcile_us_universe", lambda tickers, es: {
-        "universe_count": 1003, "index_ticker_count": 1000,
+    monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+        "universe_count": 1003, "index_ticker_count": 1000, "scope_ticker_count": 1033,
         "out_of_sync_scope": ["Z1"], "index_only_tickers": ["Z9"],
+        "universe_not_in_sync_scope": [], "expected_skip_in_universe": ["Z1"],
     })
     monkeypatch.setattr(sched, "_check_zero_write_baseline", lambda: [])
     monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
@@ -221,9 +222,10 @@ class TestOrchestration:
             "success": 20, "failed": 0, "skipped": 982, "no_write": [],
             "errors": [], "index_tickers": {"A"},
         })
-        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda tickers, es: {
-            "universe_count": 1003, "index_ticker_count": 1001,
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+            "universe_count": 1003, "index_ticker_count": 1001, "scope_ticker_count": 1001,
             "out_of_sync_scope": [], "index_only_tickers": ["Z9", "NEW1"],
+            "universe_not_in_sync_scope": [], "expected_skip_in_universe": [],
         })
         with pytest.raises(RuntimeError, match="index-only"):
             sched._run_us_financial_orchestration(0.0)
@@ -312,10 +314,12 @@ class TestIncrementalVersionSemantics:
 class TestUniverseReconciliation:
     def test_out_of_sync_scope_includes_universe_skip(self, monkeypatch):
         monkeypatch.setattr(sched, "execute", lambda sql, **kw: [("A",), ("B",), ("C",)])
-        out = sched._reconcile_us_universe({"A"}, ["B"])
+        out = sched._reconcile_us_universe({"A"}, {"A"}, ["B"])
         assert sorted(out["out_of_sync_scope"]) == ["B", "C"]
         assert out["universe_count"] == 3
         assert out["index_only_tickers"] == []
+        assert out["universe_not_in_sync_scope"] == ["B", "C"]
+        assert out["expected_skip_in_universe"] == ["B"]
 
 
 # ── 9. 零写入护栏(全行 hash + 时间戳)─────────────────────────
@@ -403,6 +407,34 @@ class TestCompareCrossPeriod:
         assert rev.old_report_date == date(2026, 6, 30)
         assert rev.new_report_date == date(2025, 12, 31)
 
+    def test_both_null_different_period_stays_same(self):
+        """跨期但双侧均为 NULL 不算"同值",保持 SAME(DXC 型,不得误报 UNEXPLAINED)。"""
+        import pandas as pd
+        import scripts.compare_us_snapshot_vs_old as cmp
+
+        old_df = pd.DataFrame([{
+            "stock_code": "DXC", "old_report_date": date(2025, 3, 31),
+            "old_revenue": None, "old_net_profit": None,
+            "old_accession": "a1", "old_filed": date(2025, 5, 15),
+            "old_total_equity": None, "old_total_assets": None,
+            "old_total_liabilities": None, "old_operating_cash_flow": None,
+            "old_capex": None, "old_fcf": None, "old_roe": None, "old_roa": None,
+            "old_gross_profit": None, "old_operating_income": None,
+        }])
+        new_df = pd.DataFrame([{
+            "stock_code": "DXC", "new_report_date": date(2026, 3, 31),
+            "new_revenue": None, "new_net_profit": None,
+            "new_accession": "a2", "new_filed": date(2026, 5, 8), "new_form": "10-K",
+            "new_total_equity": None, "new_total_assets": None,
+            "new_total_liabilities": None, "new_operating_cash_flow": None,
+            "new_capex": None, "new_fcf": None, "new_roe": None, "new_roa": None,
+            "new_gross_margin": None, "new_operating_margin": None,
+            "new_net_margin": None, "new_debt_ratio": None, "quality_flags": None,
+        }])
+        rows = cmp._compare_annual(old_df, new_df)
+        for r in rows:
+            assert r.reason == cmp.Reason.SAME, f"{r.field}: {r.reason}"
+
     def test_csv_has_dual_report_date_columns(self, tmp_path):
         import scripts.compare_us_snapshot_vs_old as cmp
 
@@ -456,3 +488,121 @@ class TestStaticScan:
                     if rel not in self.ALLOWLIST:
                         offenders.append(rel)
         assert offenders == [], f"六对象出现未登记引用: {offenders}"
+
+
+# ── Phase C2: universe 补充清单 ─────────────────────────────
+
+class TestSupplementLoader:
+    def _csv(self, tmp_path, rows: list[str]):
+        p = tmp_path / "supp.csv"
+        p.write_text(
+            "stock_code,evidence_ref,first_confirmed,review_by\n" + "\n".join(rows) + "\n")
+        return p
+
+    def test_load_normalize_and_validate_membership(self, tmp_path, monkeypatch):
+        p = self._csv(tmp_path, [
+            "pdd,proof,2026-08-12,2026-11-12",
+            "CWEN-A,proof,2026-08-12,2026-11-12",
+        ])
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV", p)
+        monkeypatch.setattr(sched, "execute",
+                            lambda sql, params=None, **kw: [("PDD",), ("CWEN-A",)])
+        out = sched._load_supplement_tickers(today=date(2026, 8, 12))
+        assert out == {"PDD", "CWEN-A"}
+
+    def test_duplicate_ticker_rejected(self, tmp_path, monkeypatch):
+        p = self._csv(tmp_path, [
+            "PDD,proof,2026-08-12,2026-11-12",
+            "pdd,proof,2026-08-12,2026-11-12",
+        ])
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV", p)
+        monkeypatch.setattr(sched, "execute", lambda *a, **kw: [("PDD",)])
+        with pytest.raises(ValueError, match="重复"):
+            sched._load_supplement_tickers(today=date(2026, 8, 12))
+
+    def test_non_universe_ticker_rejected(self, tmp_path, monkeypatch):
+        p = self._csv(tmp_path, ["NOPE,proof,2026-08-12,2026-11-12"])
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV", p)
+        monkeypatch.setattr(sched, "execute", lambda *a, **kw: [])
+        with pytest.raises(ValueError, match="非 US universe"):
+            sched._load_supplement_tickers(today=date(2026, 8, 12))
+
+    def test_empty_or_malformed_rejected(self, tmp_path, monkeypatch):
+        p = self._csv(tmp_path, ["\"\",proof,2026-08-12,2026-11-12"])
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV", p)
+        with pytest.raises(ValueError, match="非法"):
+            sched._load_supplement_tickers(today=date(2026, 8, 12))
+
+    def test_expired_review_warns_but_keeps_scope(self, tmp_path, monkeypatch, caplog):
+        p = self._csv(tmp_path, ["PDD,proof,2026-01-01,2026-06-01"])
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV", p)
+        monkeypatch.setattr(sched, "execute", lambda *a, **kw: [("PDD",)])
+        with caplog.at_level("ERROR"):
+            out = sched._load_supplement_tickers(today=date(2026, 8, 12))
+        assert out == {"PDD"}  # 保留范围,不静默移出
+        assert any("已过期" in r.message for r in caplog.records)
+
+
+class TestSupplementScopeMerge:
+    def test_scope_is_index_union_supplement(self, monkeypatch):
+        """C2 §4.1.3:最终 scope = index ∪ supplement,universe 缺口为 0。"""
+        monkeypatch.setattr(sched, "execute", lambda sql, **kw: [("A",), ("B",), ("C",)])
+        out = sched._reconcile_us_universe({"A", "B", "C"}, {"A"}, [])
+        assert out["universe_not_in_sync_scope"] == []
+        assert out["scope_ticker_count"] == 3
+        assert out["index_only_tickers"] == []
+
+    def test_expected_skip_in_index_stays_out_of_scope(self, monkeypatch):
+        """C2 §4.1.4:GFS/MASI 在指数内但因受控 skip 仍 out_of_sync_scope。"""
+        monkeypatch.setattr(sched, "execute",
+                            lambda sql, **kw: [("GFS",), ("A",)])
+        out = sched._reconcile_us_universe({"GFS", "A"}, {"GFS", "A"}, ["GFS"])
+        assert out["out_of_sync_scope"] == ["GFS"]
+        assert out["expected_skip_in_universe"] == ["GFS"]
+
+    def test_uncovered_universe_blocks(self, monkeypatch, tmp_path):
+        """C2 §4.1.5 旁证:universe 股票既不在 scope 又非 expected_skip → 阻断。"""
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+            "universe_count": 1003, "index_ticker_count": 1000, "scope_ticker_count": 1032,
+            "out_of_sync_scope": ["NEWSTOCK"], "index_only_tickers": ["Z9"],
+            "universe_not_in_sync_scope": ["NEWSTOCK"], "expected_skip_in_universe": [],
+        })
+        with pytest.raises(RuntimeError, match="未分类 universe"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []
+
+
+class TestSupplementSkipKindPrecision:
+    def test_ccep_zero_facts_only(self):
+        """CCEP 的 FOREIGN_IFRS 台账只放行 zero_facts;ingest 失败必须阻断。"""
+        skips = {"CCEP": {"stock_code": "CCEP", "reason_code": "FOREIGN_IFRS_NO_USGAAP_FACTS"}}
+        ok = sched._classify_us_sync_outcome(
+            {"no_write": ["CCEP"], "index_errors": [], "failures": []}, skips)
+        assert ok["expected_skip"] == ["CCEP"]
+        bad = sched._classify_us_sync_outcome(
+            {"no_write": [], "index_errors": [],
+             "failures": [{"ticker": "CCEP", "kind": "ingest", "error": "writer boom"}]}, skips)
+        assert bad["blocking_failure"] == ["CCEP"]
+
+    def test_spy_404_only(self):
+        """SPY 的 404 台账只放行 fetch_404。"""
+        skips = {"SPY": {"stock_code": "SPY", "reason_code": "COMPANYFACTS_PERMANENT_404"}}
+        ok = sched._classify_us_sync_outcome(
+            {"no_write": [], "index_errors": [],
+             "failures": [{"ticker": "SPY", "kind": "fetch_404", "error": "404"}]}, skips)
+        assert ok["expected_skip"] == ["SPY"]
+        bad = sched._classify_us_sync_outcome(
+            {"no_write": ["SPY"], "index_errors": [], "failures": []}, skips)
+        assert bad["blocking_failure"] == ["SPY"]
+
+    def test_third_ticker_same_failure_not_covered(self):
+        """台账只覆盖登记 ticker;第三只补充 ticker 相同失败仍阻断。"""
+        skips = {"SPY": {"stock_code": "SPY", "reason_code": "COMPANYFACTS_PERMANENT_404"}}
+        out = sched._classify_us_sync_outcome(
+            {"no_write": [], "index_errors": [],
+             "failures": [{"ticker": "BIDU", "kind": "fetch_404", "error": "404"}]}, skips)
+        assert out["blocking_failure"] == ["BIDU"]

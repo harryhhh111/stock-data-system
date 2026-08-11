@@ -1,6 +1,8 @@
 # Phase C2：补齐美股产品 universe 的 SEC 同步范围
 
-> 状态：**待审核，未经项目所有者批准不得实施。**
+> 状态：**已执行（2026-08-12)。** 33 只补充清单上线,universe 同步范围缺口归零;
+> 完整编排运行成功(zero_write=pass、UNEXPLAINED=0、projection 单次、validate 执行)。
+> 实施期发现两件事,见文末"实施记录"。
 > 前置：Phase C1 已上线；当前服务器 `STOCK_MARKETS=US`，`STOCK_US_INDEXES=RUSSELL1000`。
 > 范围：只把当前产品 universe 中、但不在 RUSSELL1000 解析集合的 33 只股票加入现有 SEC
 > 自动同步范围；同时为其中已证明无法形成 US-GAAP 财务事实的 CCEP、SPY 登记受控
@@ -158,3 +160,22 @@ US universe 成员资格和复核日期检查。loader 或集合校验失败必�
 重新标记范围外股票。不得回滚版本事实、直接修改 snapshot 或恢复旧宽表/MV 写入。
 
 本任务完成后继续 Phase D 观察；不代表可以移除旧读取 fallback 或进入 Phase E 删除。
+
+## 6. 实施记录（2026-08-12)
+
+1. **ticker 漂移发现**:33 只补充清单中 11 只（APLS、BK、BLD、CTRA、CWEN-A、HOLX、
+   IAC、JHG、NSA、PSTG、SATS）在当前 SEC `company_tickers.json` 中无映射——其中
+   BK→BNY、BLD→BLDR、SATS→ECHO、CWEN-A→CWEN 为已证实的更名，其余为 SEC 元数据
+   缺 ticker。已按 `TICKER_MAPPING_DRIFT`(kind=cik_mapping）登记 expected_skip,
+   `review_by=2026-09-12`。**这些股票的日更暂停,直到 universe 层完成 ticker 更名
+   维护**(另立任务;不属于 C2 范围)。
+2. **JD 的 net_profit MISSING_MAPPING 进入滚动队列**:JD 20-F 的 `ProfitLoss`
+   被映射为 operating_income、canonical net_income 历来为 NULL 并以
+   `net_income_common_fallback` 兜底(既有设计),需单独口径分析后决定映射或登记,
+   不在本任务处理。
+3. **跨期双 NULL 误报修复**:C1 的"跨期同值不得 SAME"规则对双 NULL 误触发
+   (DXC 型),已加非 NULL 条件并带回归测试。
+4. 验收核对:PDD/BIDU/JD/MELI/NXPI/STX 的 snapshot 值均可溯源到 filing accession;
+   PDD CapEx/FCF NULL 保持;`universe_not_in_sync_scope=[]`;
+   `expected_skip_in_universe` = 15 只受控条目;零写入护栏通过;compare
+   UNEXPLAINED=0。

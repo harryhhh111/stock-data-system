@@ -1285,10 +1285,11 @@ def _compare_annual(
 
             exception_key = (stock_code, str(report_date), display_name)
             reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio, exceptions=exceptions, exception_key=exception_key)
-            # Phase C1 §3.5.3:两侧报告期不同的同值不得归为 SAME(BXP 型"旧 H1 对新 FY"
-            # 必须显式可见),保持 UNEXPLAINED 直至登记
+            # Phase C1 §3.5.3:两侧报告期不同的同值(非 NULL)不得归为 SAME(BXP 型
+            # "旧 H1 对新 FY"必须显式可见),保持 UNEXPLAINED 直至登记;双 NULL 不算同值
             if (reason == Reason.SAME and old_report and new_report
-                    and old_report != new_report):
+                    and old_report != new_report
+                    and old_v is not None and new_v is not None):
                 reason = Reason.UNEXPLAINED
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None

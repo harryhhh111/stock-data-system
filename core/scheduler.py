@@ -384,6 +384,38 @@ def _sync_us() -> dict:
             total_result["errors"].append(error_msg)
             total_result["index_errors"].append(error_msg)
 
+    # Phase C2:补充清单(universe 内但不在指数集合)并入同步范围,结果合并进同一分类
+    supplement = _load_supplement_tickers()
+    total_result["supplement_tickers"] = sorted(supplement)
+    total_result["supplement_now_in_index"] = sorted(
+        supplement & total_result["index_tickers"])
+    extra = sorted(supplement - total_result["index_tickers"])
+    if extra:
+        logger.info("同步补充清单(universe 内不在指数): %d 只", len(extra))
+
+        class SArgs:
+            us_index = None
+            us_tickers = ",".join(extra)
+            force = config.scheduler.force_sync
+
+        try:
+            result = sync_us_market(SArgs())
+            total_result["total"] += result.get("total", 0)
+            total_result["success"] += result.get("success", 0)
+            total_result["failed"] += result.get("failed", 0)
+            total_result["skipped"] += result.get("skipped", 0)
+            total_result["elapsed"] += result.get("elapsed", 0)
+            total_result["no_write"].extend(result.get("no_write", []))
+            total_result["errors"].extend(result.get("errors", []))
+            total_result["failures"].extend(result.get("failures", []))
+            if result.get("error"):
+                total_result["index_errors"].append(f"supplement: {result['error']}")
+        except Exception as exc:
+            error_msg = f"supplement: {type(exc).__name__}: {exc}"
+            logger.error("补充清单同步失败: %s", exc)
+            total_result["errors"].append(error_msg)
+            total_result["index_errors"].append(error_msg)
+
     # 如果所有指数都失败，返回失败状态
     if not total_result["indexes_synced"] or total_result["success"] == 0:
         total_result["error"] = (
@@ -399,6 +431,7 @@ def _sync_us() -> dict:
 
 _PHASE_C_SKIPS_CSV = Path("docs/core/US_PHASE_C_EXPECTED_SKIPS.csv")
 _PHASE_C_INDEX_ONLY_CSV = Path("docs/core/US_PHASE_C_INDEX_ONLY.csv")
+_PHASE_C_SUPPLEMENT_CSV = Path("docs/core/US_PHASE_C_UNIVERSE_SCOPE_SUPPLEMENT.csv")
 _PHASE_C_SUMMARY_DIR = Path("build/financial_comparison/phaseC_sync")
 _PHASE_C_BASELINE = _PHASE_C_SUMMARY_DIR / "baseline.json"
 
@@ -424,6 +457,7 @@ def _load_expected_skips(today=None) -> dict[str, dict]:
 _SKIP_KIND_BY_REASON = {
     "COMPANYFACTS_PERMANENT_404": {"fetch_404"},
     "CIK_MAPPING_MISSING": {"cik_mapping"},
+    "TICKER_MAPPING_DRIFT": {"cik_mapping"},
     "FOREIGN_IFRS_NO_USGAAP_FACTS": {"zero_facts"},
     "NO_MAPPABLE_USGAAP_FACTS": {"zero_facts"},
     "NO_USGAAP_FACTS": {"zero_facts"},
@@ -480,19 +514,69 @@ def _load_index_only_registry() -> set[str]:
         return {r["stock_code"].strip().upper() for r in _csv.DictReader(f)}
 
 
-def _reconcile_us_universe(index_tickers: set[str], expected_skip: list[str]) -> dict:
-    """RUSSELL1000 解析集合 vs stock_info US universe 对账(§3.2)。
+def _load_supplement_tickers(today=None) -> set[str]:
+    """加载 universe 补充清单(C2 §3.1),带完整校验。
 
-    out_of_sync_scope = 不在指数范围的 universe 股票 + universe 内的 expected_skip。
+    校验失败(空值/重复/非 US universe/格式非法)抛 ValueError → 调用方阻断。
+    review_by 过期:明确告警并保留当前范围,不静默移出(人工决定前不清除)。
+    """
+    import csv as _csv
+    import re as _re
+
+    if today is None:
+        today = datetime.now().date()
+    if not _PHASE_C_SUPPLEMENT_CSV.exists():
+        return set()
+    tickers: list[str] = []
+    with open(_PHASE_C_SUPPLEMENT_CSV) as f:
+        for row in _csv.DictReader(f):
+            code = (row.get("stock_code") or "").strip().upper()
+            if not code or not _re.fullmatch(r"[A-Z0-9.\-]+", code):
+                raise ValueError(f"补充清单非法 ticker: {row!r}")
+            review_by = (row.get("review_by") or "").strip()
+            if not review_by:
+                raise ValueError(f"补充清单缺 review_by: {code}")
+            if date.fromisoformat(review_by) < today:
+                logger.error(
+                    "补充清单 ticker %s 的 review_by=%s 已过期,需人工复核(范围保留)",
+                    code, review_by,
+                )
+            tickers.append(code)
+    dupes = sorted({t for t in tickers if tickers.count(t) > 1})
+    if dupes:
+        raise ValueError(f"补充清单重复 ticker: {dupes}")
+    rows = execute(
+        "SELECT stock_code FROM stock_info WHERE market = 'US' AND stock_code = ANY(%s)",
+        (tickers,), fetch=True,
+    ) or []
+    unknown = sorted(set(tickers) - {r[0] for r in rows})
+    if unknown:
+        raise ValueError(f"补充清单含非 US universe ticker: {unknown}")
+    return set(tickers)
+
+
+def _reconcile_us_universe(
+    scope_tickers: set[str],
+    index_tickers: set[str],
+    expected_skip: list[str],
+) -> dict:
+    """最终 sync scope(指数 ∪ 补充清单)vs stock_info US universe 对账(§3.2 + C2)。
+
+    out_of_sync_scope = 不在 scope 的 universe 股票 + universe 内的 expected_skip。
+    index_only 仅针对指数集合定义,不混入补充清单。
     """
     universe = {r[0] for r in execute(
         "SELECT stock_code FROM stock_info WHERE market = 'US'", fetch=True) or []}
-    out_scope = sorted((universe - index_tickers) | (set(expected_skip) & universe))
+    not_in_scope = sorted(universe - scope_tickers)
+    out_scope = sorted(set(not_in_scope) | (set(expected_skip) & universe))
     return {
         "universe_count": len(universe),
         "index_ticker_count": len(index_tickers),
+        "scope_ticker_count": len(scope_tickers),
         "out_of_sync_scope": out_scope,
+        "universe_not_in_sync_scope": not_in_scope,
         "index_only_tickers": sorted(index_tickers - universe),
+        "expected_skip_in_universe": sorted(set(expected_skip) & universe),
     }
 
 
@@ -531,8 +615,15 @@ def _write_phase_c_summary(summary: dict) -> Path:
         "",
         f"- universe: {summary['reconciliation']['universe_count']} | "
         f"index tickers: {summary['reconciliation']['index_ticker_count']} | "
+        f"最终 scope: {summary['reconciliation'].get('scope_ticker_count', 'n/a')} | "
         f"out_of_sync_scope: {len(summary['reconciliation']['out_of_sync_scope'])} | "
         f"index-only: {summary['reconciliation']['index_only_tickers']}",
+        f"- universe_not_in_sync_scope: "
+        f"{summary['reconciliation'].get('universe_not_in_sync_scope', 'n/a')}",
+        f"- expected_skip_in_universe: "
+        f"{summary['reconciliation'].get('expected_skip_in_universe', 'n/a')}",
+        f"- supplement: {summary['sync'].get('supplement_tickers', 'n/a')}",
+        f"- supplement_now_in_index: {summary['sync'].get('supplement_now_in_index', 'n/a')}",
         "",
         "## projection / compare",
         "",
@@ -564,9 +655,15 @@ def _run_us_financial_orchestration(t0: float) -> dict:
     skips = _load_expected_skips()
     sync_result = _sync_us()
     classification = _classify_us_sync_outcome(sync_result, skips)
+    index_tickers = sync_result["index_tickers"]
+    supplement_tickers = set(sync_result.get("supplement_tickers", []))
+    scope_tickers = index_tickers | supplement_tickers
     reconciliation = _reconcile_us_universe(
-        sync_result["index_tickers"], classification["expected_skip"])
-    summary["sync"] = {k: v for k, v in sync_result.items() if k != "index_tickers"}
+        scope_tickers, index_tickers, classification["expected_skip"])
+    summary["sync"] = {
+        k: (sorted(v) if isinstance(v, set) else v)
+        for k, v in sync_result.items() if k != "index_tickers"
+    }
     summary["classification"] = classification
     summary["reconciliation"] = reconciliation
     logger.info(
@@ -584,6 +681,12 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         set(reconciliation["index_only_tickers"]) - _load_index_only_registry())
     summary["unregistered_index_only"] = unregistered_index_only
 
+    # universe 内既不在 scope 又非受控 expected_skip 的股票 = 未分类,阻断
+    uncovered_universe = sorted(
+        set(reconciliation["universe_not_in_sync_scope"])
+        - set(classification["expected_skip"]))
+    summary["uncovered_universe"] = uncovered_universe
+
     blocking_reasons = []
     if classification["blocking_failure"]:
         blocking_reasons.append(f"ticker 级未登记失败: {classification['blocking_failure']}")
@@ -591,6 +694,8 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         blocking_reasons.append(f"指数级失败: {classification['index_errors']}")
     if unregistered_index_only:
         blocking_reasons.append(f"未登记 index-only ticker: {unregistered_index_only}")
+    if uncovered_universe:
+        blocking_reasons.append(f"未分类 universe 股票: {uncovered_universe}")
     if blocking_reasons:
         summary["status"] = "blocked"
         summary["blocking_reasons"] = blocking_reasons

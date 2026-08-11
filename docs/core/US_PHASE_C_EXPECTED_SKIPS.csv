@@ -17,3 +17,16 @@ SPOT,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full+ffd,
 TIGO,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
 VIK,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
 XP,NO_MAPPABLE_USGAAP_FACTS,"sec_cache companyfacts us-gaap 仅 1 个 OtherOperatingIncome tag,无三张报表可映射事实(2026-08-11 核实)",2026-08-11,2026-11-11
+CCEP,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap 事实可映射(2026-08-12 核实);Phase A 已登记无版本事实例外",2026-08-12,2026-11-12
+SPY,COMPANYFACTS_PERMANENT_404,"data.sec.gov/api/xbrl/companyfacts/CIK0000884394.json 返回 HTTP 404(2026-08-12 实时复核);SPY 为 ETF,无公司财报",2026-08-12,2026-11-12
+APLS,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 实时复核 fresh 文件);需 universe 层 ticker 维护后恢复",2026-08-12,2026-09-12
+BK,TICKER_MAPPING_DRIFT,"BK 已更名 BNY(CIK 1390777,SEC company_tickers.json 证实,2026-08-12);stock_info 仍为旧 ticker,需 universe 更名维护",2026-08-12,2026-09-12
+BLD,TICKER_MAPPING_DRIFT,"BLD 已更名 BLDR(CIK 1316835,SEC company_tickers.json 证实,2026-08-12);需 universe 更名维护",2026-08-12,2026-09-12
+CTRA,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+CWEN-A,TICKER_MAPPING_DRIFT,"CWEN-A 已并为 CWEN(CIK 1567683,SEC company_tickers.json 证实,2026-08-12);需 universe 更名维护",2026-08-12,2026-09-12
+HOLX,TICKER_MAPPING_DRIFT,"SEC submissions CIK0000859737 的 tickers 元数据为空,company_tickers.json 无 HOLX(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+IAC,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+JHG,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+NSA,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+PSTG,TICKER_MAPPING_DRIFT,"SEC company_tickers.json 无该 ticker(2026-08-12 复核);需 universe 层维护",2026-08-12,2026-09-12
+SATS,TICKER_MAPPING_DRIFT,"SATS 已更名 ECHO(CIK 1415404,SEC company_tickers.json 证实,2026-08-12);需 universe 更名维护",2026-08-12,2026-09-12
