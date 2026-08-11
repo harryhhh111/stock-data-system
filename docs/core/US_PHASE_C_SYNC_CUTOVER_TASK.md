@@ -1,0 +1,162 @@
+# Phase C1：美股 SEC 同步切换至版本层与快照
+
+> 状态：**待审核，未授权执行**  
+> 前置：[`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md`](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) 的 Phase A、Phase B 已完成；当前服务器 `STOCK_MARKETS=US`，同步 universe 为 `RUSSELL1000`（1,003 只）。  
+> 范围：只完成“在线同步 → 版本层 → current snapshot”的原子切换，并停止旧宽表/旧 MV 的在线写入。  
+> 不包含：14 天观察、旧对象归档/删除、补齐本财报季所有 TTM exception、移除旧读取回退开关。
+
+## 1. 目的与触发事实
+
+Phase B 的五类生产读取者已经改读 version/snapshot 路径；旧三张宽表只剩双写、回退和对比用途。
+
+`BXP` 证明旧写入不是无害冗余：旧表现存
+`(BXP, 2026-06-30, annual)`，其 accession 为 2026-08-06 的 10-Q，金额为 H1 累计值。它不应出现在 `annual` 行，且同类非年末 `annual` 行在 BXP 历史中长期存在。下一次 Q3 有再次写错的结构性风险。
+
+本任务的根治不是修复准备退役的宽表算法，而是让在线 US 同步不再触及它们：
+
+```text
+SEC CompanyFacts / filing XBRL
+  → raw snapshot + us_ingest_run + us_filing + us_financial_fact_version
+  → 全批成功后 project_us_financial_snapshots.py
+  → current annual / current TTM
+```
+
+旧三宽表和三个旧 MV 在本任务结束后只能作为只读回退/审计基线，不能再接收线上同步写入。
+
+## 2. 不变约束
+
+1. 在线路径仍使用现有 `USFactVersionWriter`、`latest-restated` selector 与 staging → 单事务替换的 projection；禁止直接写 `us_financial_current_*`。
+2. 版本层写入失败是同步失败，不能记录日志后继续写旧宽表或报成功。
+3. 同步批次任一 ticker 失败时，不发布部分新 snapshot；保留上一完整 projection，明确记录失败并让下一轮重试。
+4. 不修正、清洗或删除现有旧宽表的 BXP 历史脏行；它们是退役前对比证据。
+5. 不删除六个待退役对象，也不移除 Phase B 的旧读取回退开关。
+6. 不把新 filing 引入的 `PERIOD_MISMATCH` / `MISSING_COMPONENT` 静默当作成功；它们进入本任务定义的滚动队列，按既有 #5/#6 机制另行取证。
+
+待退役对象：
+
+```text
+us_income_statement              mv_us_financial_indicator
+us_balance_sheet                 mv_us_indicator_ttm
+us_cash_flow_statement           mv_us_fcf_yield
+```
+
+## 3. 实施内容
+
+### 3.1 严格版本层在线 ingest
+
+修改 `core/sync/us_market.py` 的在线 US 路径，使它不再调用 transformer/upsert 写
+`MARKET_CONFIG['US']['tables']`。保留原有 fetch、SEC 限流、raw snapshot、ticker/index 汇总与
+`sync_progress` 记录。
+
+抽取一个明确的 version-only ingest 入口（可复用 `USFinancialFetcher` 的事实抽取和
+`USFactVersionWriter`，但不得依赖“`extract_table()` 失败被捕获后旧表继续写”的现有双写语义）。该入口必须：
+
+- 对 income、balance、cashflow 的事实统一写入 `us_filing`、`us_financial_fact_version`、
+  `us_financial_fact_source`、`us_fact_conflict` / staging；
+- 返回每个 ticker 的 ingest run / inserted / repeated / conflicted / staged 统计；
+- 任一所需版本层写入失败时抛出有 ticker、statement、snapshot id 的异常；调用方将该 ticker 记为失败；
+- 成功时 `tables_synced` 改为版本层语义（不得假装已写旧三表）；
+- 保持 ADT filing-XBRL 受限 ingest 的独立手工入口不变，不把它并入普通 CompanyFacts 映射。
+
+`sync_us_market_reparse` 及其他在线可调用的 US 重放入口必须同样避免写旧三表；历史归档脚本可保留，
+但必须有显式 `legacy/retired` 保护，不得被 scheduler 调用。
+
+### 3.2 完成度改为版本层
+
+改造 `core/incremental.py` 和 `core/sync/us_market.py::_filter_pending_us_tickers`：
+
+- 不再以旧三宽表 `MAX(report_date)` 判断“是否有财报”；
+- 使用 `us_filing` 的 filing 日期/表单，以及对应成功 `us_ingest_run` 与可选事实存在性判断；
+- 沿用现有 60 / 14 / 7 天网络复查节奏，保证新增 10-Q/10-K 仍会被发现；
+- 版本层缺席、ingest run 失败或 staging 未完成时必须进入 pending / 失败状态，不能被旧表历史数据掩盖。
+
+### 3.3 scheduler 原子编排
+
+在 `core/scheduler.py` 中，US financial job 的成功顺序固定为：
+
+```text
+所有配置 index 的 SEC sync 成功
+  → 一次全 universe projection
+  → US validate
+```
+
+- projection 在 `_sync_us()` 汇总完成后只运行一次，不能按 ticker 或按 index 运行；
+- 若 `failed > 0`、版本层 ingest 失败或 projection 失败：本次 job 为失败，不跑 validate，不替换现有 snapshot；
+- 若全部 ticker 都是已同步跳过：不运行 projection，记录 `no_new_filings`，保留原 snapshot；
+- 删除 US financial 对 `mv_us_financial_indicator`、`mv_us_indicator_ttm`、`mv_us_fcf_yield` 的刷新；
+- 删除 US daily quote 对 `mv_us_fcf_yield` 的刷新。行情估值仍由已启用的 snapshot 读取路径按 `daily_quote` 实时计算；不得为旧 MV 新增兼容层；
+- CN_A / CN_HK 的同步与 MV 刷新不得改变。
+
+### 3.4 BXP 型硬护栏与可审计产物
+
+1. 在线 US 同步后，对六个旧对象做只读写入计数/时间戳检查；发现写入即让 job 显式失败，输出对象名与变化量。
+2. 更新 Phase A compare CSV：增加 `old_report_date`、`new_report_date` 两列。两侧报告期不同时不得只展示一个合并日期；BXP 这类差异必须可直接读出“旧 H1 对新 FY”。
+3. 每次 SEC + projection 成功后写出一个运行摘要（日志或 `build/financial_comparison/phaseC_sync/`）：
+   - sync ticker 成功/失败/跳过数、版本 ingest run 范围；
+   - projection run id、annual/TTM 行数、生成时间与前后 checksum；
+   - 未解释差异数；
+   - 新 filing 滚动队列按 `PERIOD_MISMATCH`、`MISSING_COMPONENT`、`REGISTERED_EXCEPTION` 分组，并带 report/filing date。
+
+运行摘要中的“稳定基线”与“新 filing 队列”必须分开：
+
+| 组别 | 定义 | 阻断条件 |
+|---|---|---|
+| 稳定基线 | 观察开始日前已存在的报告期 | 出现任何新的 `UNEXPLAINED` 即阻断 |
+| 新 filing 队列 | 观察开始日后首次出现的 report/filing | 未取证的 `PERIOD_MISMATCH` / `MISSING_COMPONENT` 保持显式 blocking；不得用旧计数或 NULL 静默掩盖 |
+
+本任务只建立该产物和分类，不为当前 Q2 的 77 条滚动项批量登记 exception。
+
+### 3.5 生产引用与历史脚本保护
+
+- 对 `core/`、`quant/`、`web/`、scheduler 生产入口做静态扫描：不得读取或写入六个待退役对象。
+- 明确允许：受控 legacy fallback 分支、compare/audit 脚本、归档脚本、文档与测试 fixture；它们必须标注 legacy-only，且不在 scheduler 调用图中。
+- 旧写入脚本的入口加保护：默认拒绝执行，需显式 `--legacy-write-override`（只用于 Phase C 回退演练）；该开关、操作者和时间必须写日志。
+
+## 4. 测试与实库验证
+
+### 单元/集成测试
+
+1. version-only US sync 成功时，断言旧三宽表完全没有 `upsert`；版本层与 raw snapshot/source 链完整。
+2. 模拟版本层写入失败：ticker 失败、job 不报告 success、旧表不写、projection/validate 均不运行。
+3. scheduler 成功顺序：多 index 全部完成后只调用一次 projection，随后才 validate。
+4. scheduler 失败与 projection 失败：当前 snapshot checksum 不变，旧 MV 不刷新。
+5. daily quote US 不刷新 `mv_us_fcf_yield`；CN 两个市场原行为不变。
+6. incremental 只查询 `us_filing` / `us_ingest_run` / 版本事实；版本层缺席必定 pending。
+7. BXP fixture：10-Q 的 H1 duration facts 进入版本层，能形成 Q2/TTM 输入，但绝不产生 `(2026-06-30, annual)` 旧宽表记录。
+8. compare CSV 同时输出 old/new report date；跨期值不能归为 `SAME` 或正常 version selection。
+9. 生产目录六对象静态禁扫；允许清单受测试约束。
+
+### 发布前实库 smoke
+
+1. 手动重放一个近期 10-Q 与一个 10-K，确认 source → ingest run → filing/facts → projection → snapshot 全链成功。
+2. 对 BXP 手工运行当前 compare，确认其旧值跨期差异仍有直接证据，但生产 snapshot 的 FY/TTM 不受旧表影响。
+3. 检查 ADT、PLTR、SNOW、PDD、PR、CCEP：各自既有的口径、NULL/exception 与新鲜度语义不回归。
+4. 运行相关测试、全量测试、前端构建；全量测试如超过约定时限，应输出失败/卡点，不得以“进程仍在运行”视为通过。
+
+## 5. 验收与回退
+
+### 验收条件
+
+- [ ] scheduler 的正常 US financial run 成功执行 `sync → projection → validate`，且 projection 只执行一次；
+- [ ] 在线 US sync 与 reparse 路径不写三张旧宽表；旧三个 MV 不再刷新；
+- [ ] BXP 型 Q2/Q3 累计事实不会生成旧 `annual` 行；
+- [ ] 版本层/快照失败会明确失败并保留上一完整 snapshot；
+- [ ] 新运行摘要具备稳定基线与新 filing 队列两种口径；
+- [ ] `UNEXPLAINED=0`；新 filing 的其他 blocking 项有明确队列归属；
+- [ ] 生产读取/写入静态扫描符合 §3.5；
+- [ ] 相关测试、全量测试、实库 smoke 通过。
+
+### 回退
+
+本任务的回退仅恢复 Phase B 已保留的旧双写/MV 刷新代码和旧读取开关；不回滚版本事实。
+发生 sync 或 projection 不可解释失败时，先停止新 scheduler 编排、保留现有 snapshot，再按日志定位；
+禁止通过直接写 snapshot 或修补旧宽表来掩盖故障。
+
+## 6. 明确不做与后续
+
+- **Phase D**：14 天观察、20 份 filing 重放与无旧对象访问证明；
+- **Phase E**：`pg_dump`、对象存储校验及经项目所有者确认后的删除；
+- 当前 Q2 `PERIOD_MISMATCH` / `MISSING_COMPONENT` 的逐项白名单或 exception：另立小任务；
+- 旧读取 fallback 开关的移除：在 Phase D 结束后再决定。
+
+本任务完成后，只能进入 Phase D 观察任务；不得直接删除数据库对象。
