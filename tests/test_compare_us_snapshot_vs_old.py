@@ -17,6 +17,12 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import compare_us_snapshot_vs_old as CMP
 
 
+@pytest.fixture(autouse=True)
+def no_period_evidence_lookup(monkeypatch):
+    """单元测试只覆盖传入的 tag/value 证据，避免意外访问本地数据库。"""
+    monkeypatch.setattr(CMP, "fetch_fact_version_period_evidence", lambda *_args, **_kwargs: {})
+
+
 # ── _to_decimal ───────────────────────────────────────────────
 
 class TestToDecimal:
@@ -53,15 +59,23 @@ class TestIsSame:
         assert CMP._is_same(Decimal("0.156234"), Decimal("0.156234"), is_ratio=True) is True
 
     def test_ratio_tiny_precision_diff_is_same(self):
-        # 1e-18 精度尾差应被比率容差吸收
+        # PostgreSQL NUMERIC / pandas / Decimal 的末位尾差应被比率容差吸收。
         assert CMP._is_same(
             Decimal("0.02685190269617264290813244742"),
             Decimal("0.026851902696172644"),
             is_ratio=True,
         ) is True
 
+    def test_ratio_postgres_decimal_tail_is_same(self):
+        # ROIV 实例：同一 -299,771,000 / 8,260,000 的两条计算路径。
+        assert CMP._is_same(
+            Decimal("-36.29188861985472154963680387"),
+            Decimal("-36.291888619854724"),
+            is_ratio=True,
+        ) is True
+
     def test_ratio_real_diff_is_not_same(self):
-        # 真实差异远超 1e-15，不应标为 SAME
+        # 真实差异远超 3e-15，不应标为 SAME。
         assert CMP._is_same(Decimal("0.156234"), Decimal("0.1562345"), is_ratio=True) is False
         assert CMP._is_same(Decimal("0.156234"), Decimal("0.156400"), is_ratio=True) is False
 
@@ -428,6 +442,60 @@ class TestEnrichWithEvidence:
         assert result[0].reason == CMP.Reason.OLD_VERSION_SELECTION
         assert result[0].old_tag == "Revenues"
         assert result[0].new_tag == "RevenueFromContractWithCustomerExcludingAssessedTax"
+
+    def test_old_value_only_in_later_quarter_becomes_old_data_quality_direct(self, monkeypatch):
+        """BXP 型：旧 annual 行错误使用后续 10-Q 的半年累计值。"""
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="BXP", report_date=date(2025, 12, 31), field="revenue",
+                old_value=Decimal("1767847000"), new_value=Decimal("3482279000"),
+                abs_diff=Decimal("1714432000"), rel_diff_pct=Decimal("0.97"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="q2-accn", new_accession="annual-accn",
+            )
+        ]
+        evidence = {
+            ("BXP", "q2-accn", "revenues"): [("Revenues", Decimal("1767847000"))],
+            ("BXP", "annual-accn", "revenues"): [("Revenues", Decimal("3482279000"))],
+        }
+        period_evidence = {
+            ("BXP", "q2-accn", "revenues"): [
+                ("Revenues", Decimal("1767847000"), date(2026, 6, 30))
+            ],
+        }
+        monkeypatch.setattr(CMP, "fetch_fact_version_evidence", lambda *_args, **_kwargs: evidence)
+        monkeypatch.setattr(CMP, "fetch_fact_version_period_evidence", lambda *_args, **_kwargs: period_evidence)
+
+        result = CMP.enrich_with_evidence(rows)
+
+        assert result[0].reason == CMP.Reason.OLD_DATA_QUALITY_DIRECT
+        assert result[0].old_tag == "Revenues"
+
+    def test_same_value_in_target_period_is_not_wrong_period_evidence(self, monkeypatch):
+        rows = [
+            CMP.ComparisonRow(
+                stock_code="X", report_date=date(2025, 12, 31), field="revenue",
+                old_value=Decimal("100"), new_value=Decimal("200"),
+                abs_diff=Decimal("100"), rel_diff_pct=Decimal("1"),
+                reason=CMP.Reason.UNEXPLAINED,
+                old_accession="old", new_accession="new",
+            )
+        ]
+        evidence = {
+            ("X", "old", "revenues"): [("Revenues", Decimal("100"))],
+            ("X", "new", "revenues"): [("Revenues", Decimal("200"))],
+        }
+        period_evidence = {
+            ("X", "old", "revenues"): [
+                ("Revenues", Decimal("100"), date(2025, 12, 31))
+            ],
+        }
+        monkeypatch.setattr(CMP, "fetch_fact_version_evidence", lambda *_args, **_kwargs: evidence)
+        monkeypatch.setattr(CMP, "fetch_fact_version_period_evidence", lambda *_args, **_kwargs: period_evidence)
+
+        result = CMP.enrich_with_evidence(rows)
+
+        assert result[0].reason == CMP.Reason.UNEXPLAINED
 
 
 # ── propagate_reasons_to_ratios ───────────────────────────────

@@ -57,8 +57,10 @@ OUTPUT_BASE = Path("build/financial_comparison/phaseA_snapshot")
 # _values_equal 中保留的极小容差仅用于与事实版本值核对，不用于 SAME 判定。
 VALUE_EQUAL_TOL = Decimal("1e-6")
 
-# 比率仅允许极小绝对容差，用于吸收不同计算路径产生的浮点/Decimal 精度尾差。
-RATIO_ABS_TOL = Decimal("1e-15")
+# 比率仅允许极小绝对容差，用于吸收 PostgreSQL NUMERIC 与 pandas/Decimal
+# 往返后最后一位的尾差。实测 ROIV 的同分子分母重算差为 2.46e-15；3e-15
+# 只覆盖这个存储精度边界，不会掩盖任何经济上有意义的公式差异。
+RATIO_ABS_TOL = Decimal("3e-15")
 
 # display field -> us_financial_fact_version.standard_field
 FIELD_TO_STANDARD = {
@@ -702,6 +704,39 @@ def fetch_fact_version_evidence(
     return evidence
 
 
+def fetch_fact_version_period_evidence(
+    stock_codes: list[str],
+    accessions: list[str],
+    standard_fields: list[str],
+) -> dict[tuple[str, str, str], list[tuple[str, Decimal | None, date | None]]]:
+    """取事实的报告期证据，用于识别旧宽表跨报告期写入。
+
+    仅 tag/value 一致不足以证明旧年度行正确：后续 10-Q 会带有相同 tag，
+    但它的 ``report_date`` 可能已经是新的半年累计期。这个函数保留事实
+    报告期，供 ``enrich_with_evidence`` 要求 value 与目标 annual 期同时匹配。
+    """
+    if not stock_codes or not accessions or not standard_fields:
+        return {}
+
+    evidence: dict[tuple[str, str, str], list[tuple[str, Decimal | None, date | None]]] = {}
+    sql = """
+        SELECT stock_code, accession_no, standard_field, sec_tag, value_numeric, report_date
+        FROM us_financial_fact_version
+        WHERE stock_code = ANY(%s)
+          AND accession_no = ANY(%s)
+          AND standard_field = ANY(%s)
+    """
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (stock_codes, accessions, standard_fields))
+            for stock_code, accession_no, standard_field, sec_tag, value_numeric, report_date in cur.fetchall():
+                key = (stock_code, accession_no, standard_field)
+                evidence.setdefault(key, []).append(
+                    (sec_tag, _to_decimal(value_numeric), _to_date(report_date))
+                )
+    return evidence
+
+
 def _find_matching_facts(
     value: Decimal | None,
     facts: list[tuple[str, Decimal | None]],
@@ -710,6 +745,22 @@ def _find_matching_facts(
     if value is None:
         return []
     return [f for f in facts if f[1] is not None and _values_equal(value, f[1])]
+
+
+def _matches_only_wrong_report_period(
+    value: Decimal | None,
+    facts: list[tuple[str, Decimal | None, date | None]],
+    expected_report_date: date | str | None,
+) -> bool:
+    """值存在，但只在非目标报告期的事实中匹配时返回 True。"""
+    expected = _to_date(expected_report_date)
+    if value is None or expected is None:
+        return False
+    matching = [
+        fact for fact in facts
+        if fact[1] is not None and _values_equal(value, fact[1])
+    ]
+    return bool(matching) and all(fact[2] != expected for fact in matching)
 
 
 def enrich_with_evidence(rows: list[ComparisonRow]) -> list[ComparisonRow]:
@@ -741,6 +792,9 @@ def enrich_with_evidence(rows: list[ComparisonRow]) -> list[ComparisonRow]:
     evidence = fetch_fact_version_evidence(
         list(stock_codes), list(accessions), list(standard_fields)
     )
+    period_evidence = fetch_fact_version_period_evidence(
+        list(stock_codes), list(accessions), list(standard_fields)
+    )
 
     for row in rows:
         if row.field not in EVIDENCE_FIELDS:
@@ -756,9 +810,24 @@ def enrich_with_evidence(rows: list[ComparisonRow]) -> list[ComparisonRow]:
 
         old_facts = evidence.get((row.stock_code, row.old_accession, std_field), [])
         new_facts = evidence.get((row.stock_code, row.new_accession, std_field), [])
+        old_period_facts = period_evidence.get(
+            (row.stock_code, row.old_accession, std_field), []
+        )
 
         old_matches = _find_matching_facts(row.old_value, old_facts)
         new_matches = _find_matching_facts(row.new_value, new_facts)
+
+        # 旧宽表 annual 行的值仅能在同一 accession 的其他报告期找到，说明旧层
+        # 把后续 10-Q（例如 H1 累计值）写进了年度行；不能把它误作正常版本选择。
+        if _matches_only_wrong_report_period(
+            row.old_value, old_period_facts, row.report_date
+        ):
+            row.reason = Reason.OLD_DATA_QUALITY_DIRECT
+            row.old_tag = old_matches[0][0] if old_matches else None
+            row.new_tag = new_matches[0][0] if new_matches else (
+                new_facts[0][0] if new_facts else None
+            )
+            continue
 
         # 旧 accession 在事实版本表中完全不存在 → 旧表数据质量问题（直接证据）
         if row.old_accession and not old_facts:
