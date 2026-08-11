@@ -1,0 +1,367 @@
+"""tests/test_phase_c_cutover.py
+
+Phase C1(US 同步切换至版本层)单元测试。
+规格:docs/core/US_PHASE_C_SYNC_CUTOVER_TASK.md §4。
+"""
+from __future__ import annotations
+
+import json
+import re
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+import core.scheduler as sched
+from core.sync import us_market
+
+
+# ── 1/2. version-only ingest 语义 ─────────────────────────────
+
+class TestVersionOnlyIngest:
+    def test_success_returns_version_layer_tables(self):
+        fetcher = MagicMock()
+        fetcher.ingest_version_layer.return_value = {
+            "income": {"facts_inserted": 10, "facts_repeated": 2, "facts_conflicted": 0,
+                       "facts_staged": 0, "run_id": 1},
+            "balance": {"facts_inserted": 5, "facts_repeated": 0, "facts_conflicted": 0,
+                        "facts_staged": 0, "run_id": 2},
+            "cashflow": {"facts_inserted": 3, "facts_repeated": 0, "facts_conflicted": 0,
+                         "facts_staged": 0, "run_id": 3},
+        }
+        ctx = SimpleNamespace(stock_code="X", cik="1", snapshot_id=1, content_hash="h")
+        tables = us_market._process_us_company_data(fetcher, {"facts": {}}, ctx)
+        assert tables == us_market.VERSION_LAYER_TABLES
+        assert "us_income_statement" not in tables
+
+    def test_zero_write_returns_empty(self):
+        fetcher = MagicMock()
+        fetcher.ingest_version_layer.return_value = {
+            s: {"facts_inserted": 0, "facts_repeated": 0, "facts_conflicted": 0,
+                "facts_staged": 0, "run_id": i}
+            for i, s in enumerate(("income", "balance", "cashflow"))
+        }
+        ctx = SimpleNamespace(stock_code="X", cik="1", snapshot_id=1, content_hash="h")
+        assert us_market._process_us_company_data(fetcher, {"facts": {}}, ctx) == []
+
+    def test_version_layer_failure_raises_not_caught(self):
+        """版本层写入失败必须抛出(记 ticker 失败),不得像旧双写一样吞掉。"""
+        fetcher = MagicMock()
+        fetcher.ingest_version_layer.side_effect = RuntimeError("X income (snapshot 9): boom")
+        ctx = SimpleNamespace(stock_code="X", cik="1", snapshot_id=9, content_hash="h")
+        with pytest.raises(RuntimeError, match="boom"):
+            us_market._process_us_company_data(fetcher, {"facts": {}}, ctx)
+
+    def test_write_version_layer_empty_returns_zero_dict(self):
+        """零事实(如 IFRS-only 发行人)不得返回 None/崩溃,而是零计数字典。"""
+        from core.fetchers.us_financial import USFinancialFetcher
+        fetcher = USFinancialFetcher()
+        ctx = SimpleNamespace(stock_code="GFS", cik="1", snapshot_id=1, content_hash="h")
+        out = fetcher._write_version_layer([], [], "income", ctx)
+        assert out["facts_inserted"] == 0
+        assert out["facts_repeated"] == 0
+        assert out["run_id"] is None
+
+    def test_reparse_without_snapshot_refuses_old_table_fallback(self):
+        """reparse 无 raw_snapshot_version 链时拒绝执行,不退化为旧表写入。"""
+        fetcher = MagicMock()
+        with pytest.raises(ValueError, match="FetchContext"):
+            us_market._process_us_company_data(fetcher, {"facts": {}}, None)
+
+    def test_us_market_module_has_no_old_table_upsert(self):
+        """BXP 型护栏的静态面:在线模块不再含旧宽表 upsert 路径。"""
+        src = Path("core/sync/us_market.py").read_text()
+        assert "upsert(" not in src
+        for table in ("us_income_statement", "us_balance_sheet", "us_cash_flow_statement"):
+            assert f'"{table}"' not in src
+
+
+# ── 3. expected_skip / blocking 分类 ──────────────────────────
+
+class TestClassification:
+    def test_registered_skip_allows_others(self):
+        sync_result = {
+            "success": 20, "skipped": 900, "no_write": [],
+            "errors": ["OZK: HTTPError: 404 Client Error"],
+        }
+        skips = {"OZK": {"stock_code": "OZK", "reason_code": "COMPANYFACTS_PERMANENT_404"}}
+        out = sched._classify_us_sync_outcome(sync_result, skips)
+        assert out["expected_skip"] == ["OZK"]
+        assert out["blocking_failure"] == []
+
+    def test_unregistered_failure_blocks(self):
+        sync_result = {
+            "success": 20, "skipped": 900, "no_write": ["FOO"],
+            "errors": ["OZK: HTTPError: 404 Client Error", "BAR: 无法解析 CIK"],
+        }
+        out = sched._classify_us_sync_outcome(sync_result, {})
+        assert out["expected_skip"] == []
+        assert out["blocking_failure"] == ["BAR", "FOO", "OZK"]
+
+    def test_expired_skip_blocks(self, tmp_path, monkeypatch):
+        csv_path = tmp_path / "skips.csv"
+        csv_path.write_text(
+            "stock_code,reason_code,evidence_ref,first_confirmed,review_by\n"
+            "OZK,COMPANYFACTS_PERMANENT_404,proof,2026-01-01,2026-06-01\n"
+        )
+        monkeypatch.setattr(sched, "_PHASE_C_SKIPS_CSV", csv_path)
+        skips = sched._load_expected_skips(today=date(2026, 8, 11))
+        assert skips == {}  # 已过期
+        out = sched._classify_us_sync_outcome(
+            {"no_write": [], "errors": ["OZK: 404"]}, skips)
+        assert out["blocking_failure"] == ["OZK"]
+
+
+# ── 4/5. scheduler 原子编排 ───────────────────────────────────
+
+def _orch_mocks(monkeypatch, tmp_path, sync_result):
+    calls: list[str] = []
+    monkeypatch.setattr(sched, "_sync_us", lambda: sync_result)
+    monkeypatch.setattr(sched, "_load_expected_skips", lambda today=None: {})
+    monkeypatch.setattr(sched, "_reconcile_us_universe", lambda tickers, es: {
+        "universe_count": 1003, "index_ticker_count": 1000,
+        "out_of_sync_scope": ["Z1"], "index_only_tickers": [],
+    })
+    monkeypatch.setattr(sched, "_check_zero_write_baseline", lambda: [])
+    monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
+
+    import scripts.project_us_financial_snapshots as proj_mod
+    import scripts.compare_us_snapshot_vs_old as cmp_mod
+
+    monkeypatch.setattr(
+        proj_mod, "run_projection",
+        lambda **kw: calls.append("projection") or {"projection_run_id": "r1"},
+    )
+    monkeypatch.setattr(
+        cmp_mod, "run_comparison",
+        lambda **kw: calls.append("compare") or SimpleNamespace(
+            stats_by_reason=lambda: {cmp_mod.Reason.UNEXPLAINED: 0}),
+    )
+    monkeypatch.setattr(cmp_mod, "load_registered_exceptions", lambda p: {})
+    import core.validate as validate_mod
+    monkeypatch.setattr(
+        validate_mod, "run_after_sync",
+        lambda market="": calls.append("validate") or {"success": True, "errors": 0},
+    )
+    return calls
+
+
+class TestOrchestration:
+    def test_success_order_projection_once_then_compare_then_validate(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 21, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A", "B"},
+        })
+        result = sched._run_us_financial_orchestration(0.0)
+        assert calls == ["projection", "compare", "validate"]
+        assert result["projection"] == {"projection_run_id": "r1"}
+
+    def test_blocking_failure_stops_before_projection(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 1, "skipped": 982, "no_write": [],
+            "errors": ["FOO: boom"], "index_tickers": {"A"},
+        })
+        with pytest.raises(RuntimeError, match="blocking failure"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []  # projection/compare/validate 均未运行
+
+    def test_zero_write_violation_stops(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 21, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        monkeypatch.setattr(sched, "_check_zero_write_baseline",
+                            lambda: [{"object": "us_income_statement", "row_delta": 5}])
+        with pytest.raises(RuntimeError, match="禁止的写入"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []
+
+    def test_all_skipped_no_projection(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 0, "failed": 0, "skipped": 1000, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        result = sched._run_us_financial_orchestration(0.0)
+        assert "projection" not in calls and "validate" not in calls
+        assert result["projection"] is None  # no_new_filings
+
+
+# ── 6. 停刷 US 物化视图 ───────────────────────────────────────
+
+class TestNoUsMvRefresh:
+    def test_us_financial_and_daily_quote_refresh_nothing(self, monkeypatch):
+        executed: list[str] = []
+        monkeypatch.setattr(sched, "execute", lambda sql, **kw: executed.append(sql))
+        sched._refresh_materialized_views("financial", "US")
+        sched._refresh_materialized_views("daily_quote_us", "US")
+        assert executed == []
+
+    def test_cn_refresh_unchanged(self, monkeypatch):
+        executed: list[str] = []
+        monkeypatch.setattr(sched, "execute", lambda sql, **kw: executed.append(sql))
+        sched._refresh_materialized_views("financial", "CN_A")
+        assert any("mv_financial_indicator" in s for s in executed)
+
+    def test_utils_refresh_map_us_empty(self):
+        from core.sync._utils import _REFRESH_MAP
+        assert _REFRESH_MAP["US"]["financial"] == []
+        assert _REFRESH_MAP["US"]["daily"] == []
+
+
+# ── 7. incremental 版本层语义 ─────────────────────────────────
+
+class TestIncrementalVersionSemantics:
+    def test_tables_complete_us_version_layer(self):
+        from core.incremental import _tables_complete
+        assert _tables_complete("US", ["us_filing", "us_financial_fact_version"])
+        assert not _tables_complete(
+            "US", ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"])
+
+    def test_update_last_report_date_us_uses_us_filing(self, monkeypatch):
+        import core.incremental as inc
+        seen: list[str] = []
+        monkeypatch.setattr(inc, "execute", lambda sql, params=None, **kw: (
+            seen.append(sql) or [(date(2026, 6, 30),)] if "MAX(report_date)" in sql else None))
+        out = inc.update_last_report_date("X", ["us_filing", "us_financial_fact_version"])
+        assert out == date(2026, 6, 30)
+        assert "us_filing" in seen[0]
+        assert "us_income_statement" not in seen[0]
+
+
+# ── 8. 范围对账 ───────────────────────────────────────────────
+
+class TestUniverseReconciliation:
+    def test_out_of_sync_scope_includes_universe_skip(self, monkeypatch):
+        monkeypatch.setattr(sched, "execute", lambda sql, **kw: [("A",), ("B",), ("C",)])
+        out = sched._reconcile_us_universe({"A"}, ["B"])
+        assert sorted(out["out_of_sync_scope"]) == ["B", "C"]
+        assert out["universe_count"] == 3
+        assert out["index_only_tickers"] == []
+
+
+# ── 9. 零写入护栏 ─────────────────────────────────────────────
+
+class TestZeroWriteBaseline:
+    def test_violation_detected(self, monkeypatch, tmp_path):
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text(json.dumps({"objects": {
+            "us_income_statement": {"row_count": 100, "content_md5": "abc"},
+            "us_balance_sheet": {"row_count": 50, "content_md5": "def"},
+            "us_cash_flow_statement": {"row_count": 30, "content_md5": "ghi"},
+            "mv_us_financial_indicator": {"row_count": 10, "content_md5": "j"},
+            "mv_us_indicator_ttm": {"row_count": 5, "content_md5": "k"},
+            "mv_us_fcf_yield": {"row_count": 3, "content_md5": "l"},
+        }}))
+        monkeypatch.setattr(sched, "_PHASE_C_BASELINE", baseline)
+        import scripts.phase_c_baseline as baseline_mod
+
+        def fake_stats(obj):
+            if obj == "us_income_statement":
+                return {"row_count": 101, "content_md5": "abc"}
+            return None
+        monkeypatch.setattr(baseline_mod, "_object_stats", lambda obj: fake_stats(obj) or {
+            "us_balance_sheet": {"row_count": 50, "content_md5": "def"},
+            "us_cash_flow_statement": {"row_count": 30, "content_md5": "ghi"},
+            "mv_us_financial_indicator": {"row_count": 10, "content_md5": "j"},
+            "mv_us_indicator_ttm": {"row_count": 5, "content_md5": "k"},
+            "mv_us_fcf_yield": {"row_count": 3, "content_md5": "l"},
+        }[obj])
+        violations = sched._check_zero_write_baseline()
+        assert len(violations) == 1
+        assert violations[0]["object"] == "us_income_statement"
+        assert violations[0]["row_delta"] == 1
+
+    def test_missing_baseline_is_violation(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sched, "_PHASE_C_BASELINE", tmp_path / "nope.json")
+        violations = sched._check_zero_write_baseline()
+        assert violations and violations[0]["object"] == "baseline"
+
+
+# ── 10. compare 跨期与双日期列 ────────────────────────────────
+
+class TestCompareCrossPeriod:
+    def test_same_value_different_period_is_unexplained(self):
+        import pandas as pd
+        import scripts.compare_us_snapshot_vs_old as cmp
+
+        old_df = pd.DataFrame([{
+            "stock_code": "BXP", "old_report_date": date(2026, 6, 30),
+            "old_revenue": Decimal("100"), "old_net_profit": None,
+            "old_accession": "a1", "old_filed": date(2026, 8, 6),
+            "old_total_equity": None, "old_total_assets": None,
+            "old_total_liabilities": None, "old_operating_cash_flow": None,
+            "old_capex": None, "old_fcf": None, "old_roe": None, "old_roa": None,
+            "old_gross_profit": None, "old_operating_income": None,
+        }])
+        new_df = pd.DataFrame([{
+            "stock_code": "BXP", "new_report_date": date(2025, 12, 31),
+            "new_revenue": Decimal("100"), "new_net_profit": None,
+            "new_accession": "a2", "new_filed": date(2026, 3, 1), "new_form": "10-K",
+            "new_total_equity": None, "new_total_assets": None,
+            "new_total_liabilities": None, "new_operating_cash_flow": None,
+            "new_capex": None, "new_fcf": None, "new_roe": None, "new_roa": None,
+            "new_gross_margin": None, "new_operating_margin": None,
+            "new_net_margin": None, "new_debt_ratio": None, "quality_flags": None,
+        }])
+        rows = cmp._compare_annual(old_df, new_df)
+        rev = [r for r in rows if r.field == "revenue"][0]
+        assert rev.reason == cmp.Reason.UNEXPLAINED
+        assert rev.old_report_date == date(2026, 6, 30)
+        assert rev.new_report_date == date(2025, 12, 31)
+
+    def test_csv_has_dual_report_date_columns(self, tmp_path):
+        import scripts.compare_us_snapshot_vs_old as cmp
+
+        result = cmp.ComparisonResult(rows=[cmp.ComparisonRow(
+            stock_code="X", report_date=date(2025, 12, 31), field="revenue",
+            old_value=Decimal("1"), new_value=Decimal("1"),
+            abs_diff=None, rel_diff_pct=None, reason=cmp.Reason.SAME,
+            old_report_date=date(2026, 6, 30), new_report_date=date(2025, 12, 31),
+        )])
+        out = tmp_path / "diffs.csv"
+        result.to_csv(out)
+        header = out.read_text().splitlines()[0]
+        assert "old_report_date" in header and "new_report_date" in header
+
+
+# ── 11. 静态禁扫:六对象生产引用收敛 ──────────────────────────
+
+class TestStaticScan:
+    RETIRING = (
+        "us_income_statement", "us_balance_sheet", "us_cash_flow_statement",
+        "mv_us_financial_indicator", "mv_us_indicator_ttm", "mv_us_fcf_yield",
+    )
+
+    # 允许引用六对象的文件(受控 legacy fallback 分支/审计校验模块/同步配置),
+    # 每个都必须能回答"为什么还在";新文件出现引用即失败。
+    ALLOWLIST = {
+        "core/sync/_utils.py",          # MARKET_CONFIG(US special 拒绝)+ CN 视图配置
+        "core/sync/us_market.py",       # 仅模块 docstring 说明退役范围
+        "core/scheduler.py",            # 仅注释说明停刷
+        "core/validate.py",             # 校验模块(版本层改造在 B3b,残留读取待清理)
+        "core/us_financial_chain_audit.py",  # 审计模块
+        "core/us_financial_verify.py",       # 审计模块
+        "quant/analyzer/query_us.py",   # B1 受控 legacy fallback 分支
+        "quant/screener/query.py",      # B2 受控 legacy fallback 分支
+        "quant/backtest/preloader.py",  # B4 受控 legacy fallback 分支
+        "quant/backtest/universe.py",   # B4 受控 legacy fallback 分支
+        "quant/checks/fcf_roe_check.py",     # B3b 受控 legacy fallback 分支
+        "quant/metrics/__init__.py",    # 受控 legacy fallback 分支
+        "web/services/dashboard_service.py",  # B3a 受控 legacy fallback 分支
+    }
+
+    def test_no_new_production_references(self):
+        offenders: list[str] = []
+        pattern = re.compile("|".join(self.RETIRING))
+        for root in ("core", "quant", "web"):
+            for path in Path(root).rglob("*.py"):
+                rel = str(path)
+                if "__pycache__" in rel:
+                    continue
+                if pattern.search(path.read_text(errors="ignore")):
+                    if rel not in self.ALLOWLIST:
+                        offenders.append(rel)
+        assert offenders == [], f"六对象出现未登记引用: {offenders}"

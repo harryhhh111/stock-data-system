@@ -1,4 +1,9 @@
-"""sync/us_market.py — 美股 SEC EDGAR 财务数据同步 + 重新解析。"""
+"""sync/us_market.py — 美股 SEC EDGAR 财务数据同步 + 重新解析。
+
+Phase C1(2026-08-11):在线路径只写版本层(us_filing + us_financial_fact_version),
+不再写旧三宽表 us_income_statement / us_balance_sheet / us_cash_flow_statement。
+规格:docs/core/US_PHASE_C_SYNC_CUTOVER_TASK.md
+"""
 
 from __future__ import annotations
 
@@ -9,43 +14,34 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from core.fetchers.us_financial import FetchContext
-from db import upsert, execute, save_raw_snapshot
-from ._utils import MARKET_CONFIG, logger
+from db import execute, save_raw_snapshot
+from ._utils import logger
 
 _US_FRESH_FILING_COOLDOWN = timedelta(days=60)
 _US_MID_CYCLE_REFETCH_INTERVAL = timedelta(days=14)
 _US_FILING_WINDOW_REFETCH_INTERVAL = timedelta(days=7)
 
+# tables_synced 的版本层语义(不得再出现旧三宽表名)
+VERSION_LAYER_TABLES = ["us_filing", "us_financial_fact_version"]
 
-def _process_us_company_data(fetcher, transformer, facts: dict, context) -> list[str]:
-    """Extract, transform, and upsert 3 financial statements from SEC Company Facts.
+_US_OFFICIAL_FORMS = "('10-K', '10-K/A', '10-Q', '10-Q/A', '20-F', '20-F/A', '40-F', '40-F/A')"
 
-    Args:
-        context: core.fetchers.us_financial.FetchContext or None
 
-    Returns list of table names successfully written.
+def _process_us_company_data(fetcher, facts: dict, context) -> list[str]:
+    """version-only ingest(Phase C1):统一写三张报表的事实进版本层。
+
+    版本层写入失败直接抛出(由调用方记 ticker 失败),不捕获。
+    Returns: 版本层语义 tables_synced;无事实版本写入时返回 []。
     """
-    income_df = fetcher.extract_table(facts, fetcher.INCOME_TAGS, context=context)
-    balance_df = fetcher.extract_table(facts, fetcher.BALANCE_TAGS, context=context)
-    cashflow_df = fetcher.extract_table(facts, fetcher.CASHFLOW_TAGS, context=context)
-
-    cfg = MARKET_CONFIG["US"]
-    tables_synced = []
-    stock_code = context.stock_code if context else ""
-    cik = context.cik if context else ""
-    for table, df, transform_method in zip(
-        cfg["tables"],
-        [income_df, balance_df, cashflow_df],
-        cfg["transform_methods"],
-    ):
-        if df is None or df.empty:
-            continue
-        records = getattr(transformer, transform_method)(df, stock_code=stock_code, cik=cik)
-        if records:
-            upsert(table, records, cfg["conflict_keys"])
-            tables_synced.append(table)
-
-    return tables_synced
+    if context is None:
+        raise ValueError("version-only ingest 需要 FetchContext(raw_snapshot_version 链)")
+    stats = fetcher.ingest_version_layer(facts, context)
+    written = sum(
+        s["facts_inserted"] + s["facts_repeated"] for s in stats.values()
+    )
+    if written == 0:
+        return []
+    return list(VERSION_LAYER_TABLES)
 
 
 def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[str], int]:
@@ -75,25 +71,32 @@ def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[st
     ) or []
     last_sync_times: dict[str, datetime] = {r[0]: r[1] for r in progress_rows}
 
-    # 2. Companies without any stored financial statement must sync now,
-    # regardless of a stale progress row.
-    tables = ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]
-    union_parts = []
-    for table in tables:
-        union_parts.append(
-            f"SELECT stock_code, MAX(report_date) AS max_date FROM {table} "
-            f"WHERE stock_code = ANY(%s) GROUP BY stock_code"
-        )
-    sql = " UNION ALL ".join(union_parts)
-    wrapped = f"SELECT stock_code, MAX(max_date) FROM ({sql}) sub GROUP BY stock_code"
-    db_rows = execute(wrapped, (tickers, tickers, tickers), fetch=True) or []
-    db_max_dates: dict[str, object] = {r[0]: r[1] for r in db_rows}
+    # 2. 版本层缺席(us_filing 官方表单或成功 ingest run 缺失)的必须同步,
+    #    不能被旧宽表历史数据掩盖(Phase C1 §3.2)。
+    filing_rows = execute(
+        f"SELECT DISTINCT stock_code FROM us_filing "
+        f"WHERE stock_code = ANY(%s) AND form IN {_US_OFFICIAL_FORMS}",
+        (tickers,),
+        fetch=True,
+    ) or []
+    stocks_with_filings = {r[0] for r in filing_rows}
+
+    run_rows = execute(
+        "SELECT DISTINCT v.stock_code FROM raw_snapshot_version v "
+        "JOIN us_ingest_run r ON r.snapshot_id = v.snapshot_id "
+        "WHERE v.stock_code = ANY(%s) AND r.status = 'success'",
+        (tickers,),
+        fetch=True,
+    ) or []
+    stocks_with_runs = {r[0] for r in run_rows}
+
+    stocks_with_version_data = stocks_with_filings & stocks_with_runs
 
     # 3. Latest SEC filing date determines where the company is in its cycle.
     filing_rows = execute(
-        "SELECT stock_code, MAX(filed_date) FROM us_filing "
-        "WHERE stock_code = ANY(%s) AND form IN ('10-K', '10-K/A', '10-Q', '10-Q/A') "
-        "GROUP BY stock_code",
+        f"SELECT stock_code, MAX(filed_date) FROM us_filing "
+        f"WHERE stock_code = ANY(%s) AND form IN {_US_OFFICIAL_FORMS} "
+        f"GROUP BY stock_code",
         (tickers,),
         fetch=True,
     ) or []
@@ -104,9 +107,9 @@ def _filter_pending_us_tickers(tickers: list[str], force: bool) -> tuple[list[st
     now = datetime.now(timezone.utc)
     today = now.date()
     for ticker in tickers:
-        db_max = db_max_dates.get(ticker)
+        has_version_data = ticker in stocks_with_version_data
         last_sync = last_sync_times.get(ticker)
-        if db_max is None:
+        if not has_version_data:
             pending.append(ticker)
         elif last_sync is None:
             pending.append(ticker)
@@ -154,10 +157,8 @@ def sync_us_market(args) -> dict:
         统计结果字典
     """
     from core.fetchers.us_financial import USFinancialFetcher
-    from core.transformers.us_gaap import USGAAPTransformer
 
     fetcher = USFinancialFetcher()
-    transformer = USGAAPTransformer()
 
     # 1. 获取公司列表（CIK ↔ ticker 映射）
     logger.info("Step 1/4: 获取 SEC 公司列表...")
@@ -190,6 +191,7 @@ def sync_us_market(args) -> dict:
     success = 0
     failed = 0
     errors: list[str] = []
+    no_write: list[str] = []
     t0 = time.time()
 
     pending_count = len(pending_tickers)
@@ -218,7 +220,8 @@ def sync_us_market(args) -> dict:
             # 保存原始快照（兼容旧 raw_snapshot 表）
             save_raw_snapshot(ticker, "company_facts", source="sec_edgar", api_params={}, raw_data=raw_data)
 
-            tables_synced = _process_us_company_data(fetcher, transformer, raw_data, ctx)
+            # Phase C1: 只写版本层;失败直接抛出进 except 记 ticker 失败
+            tables_synced = _process_us_company_data(fetcher, raw_data, ctx)
 
             if tables_synced:
                 success += 1
@@ -234,7 +237,9 @@ def sync_us_market(args) -> dict:
                 from core.incremental import update_last_report_date
                 update_last_report_date(ticker, tables_synced)
             else:
-                logger.warning("%s: 无数据写入", ticker)
+                # 抓到数据但版本层零写入:不是成功,也未登记豁免时由 scheduler 判 blocking
+                no_write.append(ticker)
+                logger.warning("%s: 版本层无事实写入", ticker)
 
         except Exception as exc:
             failed += 1
@@ -274,6 +279,8 @@ def sync_us_market(args) -> dict:
         "failed": failed,
         "skipped": skipped,
         "elapsed": elapsed,
+        "no_write": no_write,
+        "errors": errors,
     }
 
     logger.info(
@@ -294,9 +301,10 @@ def sync_us_market(args) -> dict:
 
 
 def sync_us_market_reparse(args) -> dict:
-    """重新解析美股数据：从 raw_snapshot 读取原始 JSON 并重新写入报表。
+    """重新解析美股数据：从 raw_snapshot 读取原始 JSON 并重新写入版本层。
 
     用途：当映射规则更新后，无需重新请求 SEC API，只需重新解析即可。
+    Phase C1:与在线路径一样只写版本层,不再写旧三宽表。
 
     Args:
         args: 命令行参数（需包含 us_tickers, force_reparse）
@@ -305,9 +313,6 @@ def sync_us_market_reparse(args) -> dict:
         统计结果字典
     """
     from core.fetchers.us_financial import USFinancialFetcher
-    from core.transformers.us_gaap import USGAAPTransformer
-
-    transformer = USGAAPTransformer()
 
     logger.info("=== 重新解析模式：从 raw_snapshot 读取并重新写入报表 ===")
 
@@ -352,10 +357,8 @@ def sync_us_market_reparse(args) -> dict:
         return {"total": 0, "success": 0, "failed": 0, "elapsed": 0}
 
     from core.fetchers.us_financial import USFinancialFetcher
-    from core.transformers.us_gaap import USGAAPTransformer
 
     fetcher = USFinancialFetcher()
-    transformer = USGAAPTransformer()
 
     success = 0
     failed = 0
@@ -403,12 +406,12 @@ def sync_us_market_reparse(args) -> dict:
                     content_hash=content_hash,
                 )
             else:
-                logger.warning(
-                    "%s: raw_snapshot_version 中未找到对应 snapshot，版本层跳过", ticker
+                # 无 raw_snapshot_version 链就无法写版本层(Phase C1 不允许退化为旧表写入)
+                raise RuntimeError(
+                    f"{ticker}: raw_snapshot_version 中未找到对应 snapshot,无法 version-only reparse"
                 )
-                ctx = None
 
-            tables_synced = _process_us_company_data(fetcher, transformer, facts, ctx)
+            tables_synced = _process_us_company_data(fetcher, facts, ctx)
 
             if tables_synced:
                 success += 1

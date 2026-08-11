@@ -206,8 +206,8 @@ class TestDetermineStocksToSync:
             "GOOGL": date(2025, 9, 30),
         }
         mock_progress.return_value = {
-            "AAPL": (date(2025, 9, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
-            "MSFT": (date(2025, 6, 30), ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "AAPL": (date(2025, 9, 30), ["us_filing", "us_financial_fact_version"]),
+            "MSFT": (date(2025, 6, 30), ["us_filing", "us_financial_fact_version"]),
         }
         mock_latest.return_value = {}  # 无数据
 
@@ -235,8 +235,8 @@ class TestDetermineStocksToSync:
             "MSFT": old_annual,
         }
         mock_progress.return_value = {
-            "AAPL": (recent_annual, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
-            "MSFT": (old_annual, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "AAPL": (recent_annual, ["us_filing", "us_financial_fact_version"]),
+            "MSFT": (old_annual, ["us_filing", "us_financial_fact_version"]),
         }
         mock_latest.return_value = {
             "AAPL": (recent_annual, "annual"),
@@ -267,8 +267,8 @@ class TestDetermineStocksToSync:
             "MSFT": old_quarterly,
         }
         mock_progress.return_value = {
-            "AAPL": (recent_quarterly, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
-            "MSFT": (old_quarterly, ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"]),
+            "AAPL": (recent_quarterly, ["us_filing", "us_financial_fact_version"]),
+            "MSFT": (old_quarterly, ["us_filing", "us_financial_fact_version"]),
         }
         mock_latest.return_value = {
             "AAPL": (recent_quarterly, "quarterly"),

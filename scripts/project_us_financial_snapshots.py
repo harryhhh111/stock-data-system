@@ -851,18 +851,24 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+def run_projection(
+    stocks: list[str] | None = None,
+    ttm_allowlist_path: str | None = None,
+    out_of_sync_scope: set[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """执行一次全 universe(或指定股票池)projection。
 
-    if os.environ.get("STOCK_MARKETS", "") != "US":
-        logger.error("STOCK_MARKETS must be 'US'")
-        return 1
+    out_of_sync_scope: 不在本轮同步范围的股票,其 annual/TTM 行追加
+    `out_of_sync_scope` quality flag(Phase C1 §3.2,不得伪装 fresh)。
 
+    Returns: {"projection_run_id", "stocks", "annual_rows", "ttm_rows", "dry_run"}
+    Raises: 写库/构建失败直接抛出,调用方保留上一版 snapshot。
+    """
     projection_run_id = str(uuid.uuid4())
     logger.info("Selector run ID: %s", projection_run_id)
 
-    stocks = args.stocks.split(",") if args.stocks else _get_all_us_stocks()
+    stocks = stocks or _get_all_us_stocks()
     logger.info("Processing %d stocks", len(stocks))
 
     # 1. 获取年度事实
@@ -876,21 +882,33 @@ def main():
     annual_df = build_annual_snapshot(all_facts, projection_run_id)
     annual_df = _keep_latest_5_annual(annual_df)
     logger.info("Annual rows: %d (%d stocks)", len(annual_df),
-                 annual_df["stock_code"].nunique() if not annual_df.empty else 0)
+                annual_df["stock_code"].nunique() if not annual_df.empty else 0)
 
     # 3. 构建 TTM 快照
     logger.info("Building TTM snapshot...")
-    allowlist = load_ttm_52_53_allowlist(args.ttm_allowlist)
+    allowlist = load_ttm_52_53_allowlist(ttm_allowlist_path)
     ttm_df = build_ttm_snapshot(all_facts, annual_df, projection_run_id, allowlist=allowlist)
     logger.info("TTM rows: %d", len(ttm_df))
 
-    if args.dry_run:
+    if out_of_sync_scope:
+        for df in (annual_df, ttm_df):
+            if df.empty or "quality_flags" not in df.columns:
+                continue
+            mask = df["stock_code"].isin(out_of_sync_scope)
+            df.loc[mask, "quality_flags"] = df.loc[mask, "quality_flags"].map(
+                lambda flags: sorted(set(flags or []) | {"out_of_sync_scope"})
+            )
+        logger.info("out_of_sync_scope 标记: %d 只股票", len(out_of_sync_scope))
+
+    if dry_run:
         logger.info("Dry run — skipping DB write")
-        if not annual_df.empty:
-            print(annual_df[["stock_code", "report_date", "revenues", "net_income", "roe"]].head(10).to_string())
-        if not ttm_df.empty:
-            print(ttm_df[["stock_code", "revenue_ttm", "net_income_ttm", "fcf_ttm"]].head(10).to_string())
-        return 0
+        return {
+            "projection_run_id": projection_run_id,
+            "stocks": len(stocks),
+            "annual_rows": len(annual_df),
+            "ttm_rows": len(ttm_df),
+            "dry_run": True,
+        }
 
     # 4. 写入数据库
     with Connection() as conn:
@@ -902,6 +920,29 @@ def main():
         logger.info("Wrote %d annual rows, %d TTM rows", n_annual, n_ttm)
 
     logger.info("Projection complete. Run ID: %s", projection_run_id)
+    return {
+        "projection_run_id": projection_run_id,
+        "stocks": len(stocks),
+        "annual_rows": n_annual,
+        "ttm_rows": n_ttm,
+        "dry_run": False,
+    }
+
+
+def main():
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    if os.environ.get("STOCK_MARKETS", "") != "US":
+        logger.error("STOCK_MARKETS must be 'US'")
+        return 1
+
+    stocks = args.stocks.split(",") if args.stocks else None
+    run_projection(
+        stocks=stocks,
+        ttm_allowlist_path=args.ttm_allowlist,
+        dry_run=args.dry_run,
+    )
     return 0
 
 

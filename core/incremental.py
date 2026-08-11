@@ -29,12 +29,28 @@ logger = logging.getLogger(__name__)
 
 
 # ── 按市场映射到财务表 ────────────────────────────────────
+# US(Phase C1):完成度改用版本层(us_filing 官方表单报告期),
+# 不再以旧三宽表 MAX(report_date) 判断。CN 保持不变。
 
 MARKET_TABLES: dict[str, list[str]] = {
     "CN_A": ["income_statement", "balance_sheet", "cash_flow_statement"],
     "CN_HK": ["income_statement", "balance_sheet", "cash_flow_statement"],
-    "US": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
 }
+
+_US_VERSION_TABLES = ["us_filing", "us_financial_fact_version"]
+_US_OFFICIAL_FORMS = ("10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A")
+_US_ANNUAL_FORMS = ("10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A")
+
+
+def _get_us_max_report_dates() -> dict[str, date]:
+    """US 版本层完成度:每只股票官方表单 filing 的最大报告期。"""
+    placeholders = ", ".join(f"'{f}'" for f in _US_OFFICIAL_FORMS)
+    rows = execute(
+        f"SELECT stock_code, MAX(report_date) FROM us_filing "
+        f"WHERE form IN ({placeholders}) GROUP BY stock_code",
+        fetch=True,
+    ) or []
+    return {r[0]: r[1] for r in rows if r[0] and r[1]}
 
 
 def ensure_last_report_date_column() -> None:
@@ -53,7 +69,7 @@ def get_stocks_max_report_date(market: str) -> dict[str, date]:
     """批量查询某市场所有股票在财务表中的最大报告期。
 
     对该市场的所有财务表取 MAX(report_date)，返回每只股票
-    最大的报告期。
+    最大的报告期。US 改用版本层 us_filing(Phase C1)。
 
     Args:
         market: 市场标识 ("CN_A", "CN_HK", "US")
@@ -61,6 +77,9 @@ def get_stocks_max_report_date(market: str) -> dict[str, date]:
     Returns:
         {stock_code: max_report_date} 字典
     """
+    if market == "US":
+        return _get_us_max_report_dates()
+
     tables = MARKET_TABLES.get(market)
     if not tables:
         logger.warning("未知市场: %s", market)
@@ -118,11 +137,11 @@ def get_sync_progress_report_dates(market: str) -> dict[str, tuple[date, list[st
     return {r[0]: (r[1], r[2] or []) for r in rows if r[0] and r[1]}
 
 
-# 各市场期望的三大报表表名
+# 各市场期望的报表/表名(US 为版本层语义,Phase C1)
 _EXPECTED_TABLES: dict[str, list[str]] = {
     "CN_A": ["income_statement", "balance_sheet", "cash_flow_statement"],
     "CN_HK": ["income_statement", "balance_sheet", "cash_flow_statement"],
-    "US": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
+    "US": ["us_filing", "us_financial_fact_version"],
 }
 
 # SEC 10-K filing deadline (large accelerated filer: 60 days, others: 75-90 days)
@@ -131,10 +150,11 @@ _US_ANNUAL_GRACE_DAYS = 105
 
 
 def _get_us_annual_report_dates() -> dict[str, date]:
-    """批量查询 US 股票最新 annual 报告期（用于推算财年末和 SEC 截止日）。"""
+    """批量查询 US 股票最新 annual 报告期(版本层 us_filing,Phase C1)。"""
+    placeholders = ", ".join(f"'{f}'" for f in _US_ANNUAL_FORMS)
     rows = execute(
-        "SELECT stock_code, MAX(report_date) FROM us_income_statement "
-        "WHERE report_type = 'annual' GROUP BY stock_code",
+        f"SELECT stock_code, MAX(report_date) FROM us_filing "
+        f"WHERE form IN ({placeholders}) GROUP BY stock_code",
         fetch=True,
     )
     if not rows:
@@ -215,17 +235,19 @@ _US_QUARTERLY_BUFFER_DAYS = 180  # 10-Q: 一个季度 + SEC deadline + 缓冲
 
 
 def _get_us_latest_report_info() -> dict[str, tuple[date, str]]:
-    """批量查询 US 股票最新报告的日期和类型。
+    """批量查询 US 股票最新报告的日期和类型(版本层 us_filing,Phase C1)。
 
     Returns:
         {stock_code: (report_date, report_type)} — report_type 为 'annual' 或 'quarterly'
     """
+    annual = ", ".join(f"'{f}'" for f in _US_ANNUAL_FORMS)
     rows = execute(
-        "SELECT stock_code, report_date, report_type FROM ("
-        "  SELECT stock_code, report_date, report_type,"
-        "         ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn"
-        "  FROM us_income_statement"
-        ") sub WHERE rn = 1",
+        f"SELECT stock_code, report_date, report_type FROM ("
+        f"  SELECT stock_code, report_date,"
+        f"         CASE WHEN form IN ({annual}) THEN 'annual' ELSE 'quarterly' END AS report_type,"
+        f"         ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY report_date DESC) AS rn"
+        f"  FROM us_filing WHERE form IN ({annual}, '10-Q', '10-Q/A')"
+        f") sub WHERE rn = 1",
         fetch=True,
     )
     if not rows:
@@ -378,6 +400,7 @@ def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date
 
     使用 MIN 而非 MAX：只当所有表都覆盖到同一报告期时，日期才推进。
     这样，任何一张表落后都会在下次增量判断中被检测到。
+    US 传入版本层标记时(Phase C1),直接取 us_filing 官方表单最大报告期。
 
     Args:
         stock_code: 股票代码
@@ -388,6 +411,22 @@ def update_last_report_date(stock_code: str, tables: list[str]) -> Optional[date
     """
     if not tables:
         return None
+
+    if set(tables) <= set(_US_VERSION_TABLES):
+        rows = execute(
+            "SELECT MAX(report_date) FROM us_filing WHERE stock_code = %s AND form IN ("
+            + ", ".join(f"'{f}'" for f in _US_OFFICIAL_FORMS) + ")",
+            (stock_code,),
+            fetch=True,
+        )
+        min_date = rows[0][0] if rows and rows[0][0] else None
+        if min_date:
+            execute(
+                "UPDATE sync_progress SET last_report_date = %s WHERE stock_code = %s",
+                (min_date, stock_code),
+                commit=True,
+            )
+        return min_date
 
     # 从同步涉及的表中取最小报告期（确保所有表都覆盖）
     union_parts = []

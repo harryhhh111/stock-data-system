@@ -824,6 +824,54 @@ class USFinancialFetcher(BaseFetcher):
 
         return records, invalid_records, fact_records
 
+    def ingest_version_layer(
+        self,
+        facts: dict,
+        context: FetchContext,
+    ) -> dict[str, dict]:
+        """version-only 在线 ingest(Phase C1 §3.1)。
+
+        对 income / balance / cashflow 统一执行事实抽取并写入版本层
+        (us_filing + us_financial_fact_version + source/conflict/staging)。
+        与 extract_table() 的双写语义不同:版本层写入失败**直接抛出**
+        (带 ticker/statement/snapshot id),不捕获、不退化。
+
+        Returns: {statement: writer 计数字典}
+        Raises: ValueError(content_hash 不匹配) / 底层写入异常
+        """
+        facts_hash = self._compute_content_hash(facts)
+        if facts_hash != context.content_hash:
+            raise ValueError(
+                f"{context.stock_code}: facts content_hash 与 context 不匹配: "
+                f"{facts_hash} vs {context.content_hash}"
+            )
+
+        stats: dict[str, dict] = {}
+        for statement, tags in (
+            ("income", self.INCOME_TAGS),
+            ("balance", self.BALANCE_TAGS),
+            ("cashflow", self.CASHFLOW_TAGS),
+        ):
+            try:
+                records, invalid_records, fact_records = self._extract_facts(
+                    facts, tags, statement=statement
+                )
+                if statement == "balance":
+                    records, fact_records = self._supplement_total_liabilities_records(
+                        records, fact_records, context
+                    )
+                stats[statement] = self._write_version_layer(
+                    fact_records,
+                    invalid_records=invalid_records,
+                    statement=statement,
+                    context=context,
+                )
+            except Exception as exc:
+                raise type(exc)(
+                    f"{context.stock_code} {statement} (snapshot {context.snapshot_id}): {exc}"
+                ) from exc
+        return stats
+
     def extract_table(
         self,
         facts: dict,
@@ -1262,7 +1310,13 @@ class USFinancialFetcher(BaseFetcher):
         失败直接抛出，由 extract_table 捕获并记录 error，不阻塞旧宽表。
         """
         if not fact_records and not invalid_records:
-            return
+            return {
+                "facts_inserted": 0,
+                "facts_repeated": 0,
+                "facts_conflicted": 0,
+                "facts_staged": 0,
+                "run_id": None,
+            }
 
         started_at = datetime.now()
         parser_git_sha = self._get_parser_git_sha()
@@ -1315,6 +1369,7 @@ class USFinancialFetcher(BaseFetcher):
                     result["facts_inserted"], result["facts_repeated"],
                     result["facts_conflicted"], result["facts_staged"],
                 )
+            return {**result, "run_id": run_id}
 
         except Exception as exc:
             # 数据事务已失败；用独立事务记录 ingest run 失败状态，

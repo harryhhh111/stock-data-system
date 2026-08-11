@@ -1,0 +1,19 @@
+stock_code,reason_code,evidence_ref,first_confirmed,review_by
+OZK,COMPANYFACTS_PERMANENT_404,"data.sec.gov/api/xbrl/companyfacts/CIK0001569650.json 持续 404(sync_progress error_detail,2026-08-11 06:12 复现);ticker→CIK 映射存在但 companyfacts 端点无此实体;不在 stock_info 1,003 universe 内",2026-08-11,2026-11-11
+MASI,CIK_MAPPING_MISSING,"ticker_to_cik 无法解析(2026-08-06 sync 日志);SEC company list 中无 MASI 映射;本地已有 63 份 filing 至 2026-02-27,恢复映射后须立即移出台账并补同步",2026-08-11,2026-11-11
+ALM,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full 命名空间,无 us-gaap 事实可映射(2026-08-11 核实)",2026-08-11,2026-11-11
+AS,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+ASND,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+AU,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 ifrs-full+dei,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+AUGO,NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei 命名空间,无任何财务事实(2026-08-11 核实)",2026-08-11,2026-11-11
+BEPC,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+BIRK,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+BLSH,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+GFS,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full+srt,无 us-gaap;Phase A 已登记的无版本事实例外(2026-08-11 核实)",2026-08-11,2026-11-11
+GLOB,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full+invest+ffd,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+NU,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+ONON,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+SPOT,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full+ffd,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+TIGO,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 dei+ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+VIK,FOREIGN_IFRS_NO_USGAAP_FACTS,"sec_cache companyfacts 仅 ifrs-full,无 us-gaap(2026-08-11 核实)",2026-08-11,2026-11-11
+XP,NO_MAPPABLE_USGAAP_FACTS,"sec_cache companyfacts us-gaap 仅 1 个 OtherOperatingIncome tag,无三张报表可映射事实(2026-08-11 核实)",2026-08-11,2026-11-11

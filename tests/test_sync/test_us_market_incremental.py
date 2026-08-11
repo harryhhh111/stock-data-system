@@ -4,10 +4,16 @@ from unittest.mock import patch
 from core.sync.us_market import _filter_pending_us_tickers
 
 
-def _run(progress_rows, db_rows, filing_rows=None):
+def _run(progress_rows, filing_stocks=None, run_stocks=None, latest_filed=None):
+    """模拟四次查询:progress / 有 filing / 有成功 ingest run / 最新 filed_date。"""
     with patch(
         "core.sync.us_market.execute",
-        side_effect=[progress_rows, db_rows, filing_rows or []],
+        side_effect=[
+            progress_rows,
+            [(s,) for s in (filing_stocks or [])],
+            [(s,) for s in (run_stocks or [])],
+            latest_filed or [],
+        ],
     ):
         return _filter_pending_us_tickers(["AAPL", "TDC"], force=False)
 
@@ -26,7 +32,8 @@ def test_recent_successful_sync_is_skipped():
 
     pending, skipped = _run(
         [("AAPL", recent), ("TDC", recent)],
-        [("AAPL", datetime(2025, 12, 31)), ("TDC", datetime(2025, 12, 31))],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["AAPL", "TDC"],
     )
 
     assert pending == []
@@ -39,7 +46,8 @@ def test_sync_older_than_seven_days_is_rechecked():
 
     pending, skipped = _run(
         [("AAPL", recent), ("TDC", stale)],
-        [("AAPL", datetime(2025, 12, 31)), ("TDC", datetime(2025, 12, 31))],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["AAPL", "TDC"],
     )
 
     assert pending == ["TDC"]
@@ -52,8 +60,9 @@ def test_filing_younger_than_sixty_days_is_not_rechecked():
 
     pending, skipped = _run(
         [("AAPL", stale), ("TDC", stale)],
-        [("AAPL", datetime(2025, 12, 31)), ("TDC", datetime(2025, 12, 31))],
-        [("AAPL", recent_filing), ("TDC", recent_filing)],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["AAPL", "TDC"],
+        latest_filed=[("AAPL", recent_filing), ("TDC", recent_filing)],
     )
 
     assert pending == []
@@ -67,8 +76,9 @@ def test_filing_between_sixty_and_seventy_five_days_uses_fourteen_days():
 
     pending, skipped = _run(
         [("AAPL", twelve_days_ago), ("TDC", fifteen_days_ago)],
-        [("AAPL", datetime(2025, 12, 31)), ("TDC", datetime(2025, 12, 31))],
-        [("AAPL", mid_cycle_filing), ("TDC", mid_cycle_filing)],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["AAPL", "TDC"],
+        latest_filed=[("AAPL", mid_cycle_filing), ("TDC", mid_cycle_filing)],
     )
 
     assert pending == ["TDC"]
@@ -82,8 +92,9 @@ def test_filing_older_than_seventy_five_days_uses_seven_days():
 
     pending, skipped = _run(
         [("AAPL", six_days_ago), ("TDC", eight_days_ago)],
-        [("AAPL", datetime(2025, 12, 31)), ("TDC", datetime(2025, 12, 31))],
-        [("AAPL", old_filing), ("TDC", old_filing)],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["AAPL", "TDC"],
+        latest_filed=[("AAPL", old_filing), ("TDC", old_filing)],
     )
 
     assert pending == ["TDC"]
@@ -91,12 +102,28 @@ def test_filing_older_than_seventy_five_days_uses_seven_days():
 
 
 def test_missing_statement_or_progress_forces_sync():
+    """AAPL 有 progress 但版本层缺席 → pending;TDC 有版本层但无 progress → pending。"""
     recent = datetime.now(timezone.utc) - timedelta(days=2)
 
     pending, skipped = _run(
         [("AAPL", recent)],
-        [("TDC", datetime(2025, 12, 31))],
+        filing_stocks=["TDC"],
+        run_stocks=["TDC"],
     )
 
     assert pending == ["AAPL", "TDC"]
     assert skipped == 0
+
+
+def test_filing_present_but_ingest_run_missing_forces_sync():
+    """有 filing 但无成功 ingest run → 视为版本层缺席,必须 pending(Phase C1 §3.2)。"""
+    recent = datetime.now(timezone.utc) - timedelta(days=2)
+
+    pending, skipped = _run(
+        [("AAPL", recent), ("TDC", recent)],
+        filing_stocks=["AAPL", "TDC"],
+        run_stocks=["TDC"],  # AAPL 缺成功 run
+    )
+
+    assert pending == ["AAPL"]
+    assert skipped == 1

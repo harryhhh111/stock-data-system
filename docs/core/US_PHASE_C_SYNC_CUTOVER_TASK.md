@@ -1,6 +1,8 @@
 # Phase C1：美股 SEC 同步切换至版本层与快照
 
-> 状态：**已审核，待执行**
+> 状态：**已执行（2026-08-11)。** 在线 sync → 版本层 → projection 原子切换已上线;
+> PDD canary、重放 smoke、零写入护栏、完整编排运行与全量测试均通过;
+> 详见 `build/financial_comparison/phaseC_sync/` 运行摘要。
 > 前置：[`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md`](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) 的 Phase A、Phase B 已完成；当前服务器 `STOCK_MARKETS=US`，同步 universe 为 `RUSSELL1000`（1,003 只）。  
 > 范围：只完成“在线同步 → 版本层 → current snapshot”的原子切换，并停止旧宽表/旧 MV 的在线写入。  
 > 不包含：14 天观察、旧对象归档/删除、补齐本财报季所有 TTM exception、移除旧读取回退开关。

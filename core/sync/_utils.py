@@ -285,8 +285,10 @@ _REFRESH_MAP: dict[str, dict[str, list[str]]] = {
         "dividend": [],
     },
     "US": {
-        "financial": ["mv_us_financial_indicator", "mv_us_indicator_ttm", "mv_us_fcf_yield"],
-        "daily": ["mv_us_fcf_yield"],
+        # Phase C1(2026-08-11):三个 US 旧物化视图与 mv_us_fcf_yield 停止刷新
+        # (待退役对象);CN 不变。
+        "financial": [],
+        "daily": [],
         "dividend": [],
     },
 }

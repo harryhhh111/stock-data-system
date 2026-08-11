@@ -778,16 +778,9 @@ def main():
         )
 
         # ── Refresh materialized views ──────────────────
+        # Phase C1(2026-08-11):mv_us_fcf_yield 为待退役对象,不再刷新。
         if not args.no_refresh and result["success"] > 0:
-            logger.info("刷新物化视图 mv_us_fcf_yield …")
-            try:
-                execute(
-                    "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_us_fcf_yield",
-                    commit=True,
-                )
-                logger.info("mv_us_fcf_yield 刷新完成")
-            except Exception as e:
-                logger.warning("物化视图刷新失败（可稍后手动刷新）: %s", e)
+            logger.info("Phase C1: mv_us_fcf_yield 已停刷,跳过物化视图刷新")
 
     except Exception as e:
         # 提取部分成功计数（由 _run_backfill 在异常上设置）

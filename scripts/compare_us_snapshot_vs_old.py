@@ -36,7 +36,10 @@ from db import Connection
 from core.selectors.us_financial import USFactSelector
 
 # 复用 projection 的 TTM 组件计算逻辑，保证组件重算值与 snapshot 一致
-import project_us_financial_snapshots as _snap
+try:
+    import project_us_financial_snapshots as _snap
+except ImportError:  # 作为 scripts.* 包导入(scheduler / pytest)时
+    from scripts import project_us_financial_snapshots as _snap
 
 # 默认 52/53 周白名单路径与加载器（与 projection 一致）
 DEFAULT_TTM_52_53_ALLOWLIST_PATH = _snap.DEFAULT_TTM_52_53_ALLOWLIST_PATH
@@ -122,6 +125,9 @@ class ComparisonRow:
     abs_diff: Decimal | None
     rel_diff_pct: Decimal | None
     reason: str
+    # 两侧各自的报告期(Phase C1 §3.5.3):不同时必须可直接读出,不得只展示合并日期
+    old_report_date: date | str | None = None
+    new_report_date: date | str | None = None
     old_accession: str | None = None
     new_accession: str | None = None
     old_filed: date | None = None
@@ -167,7 +173,7 @@ class ComparisonResult:
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "stock_code", "report_date", "field",
+                "stock_code", "report_date", "old_report_date", "new_report_date", "field",
                 "old_value", "new_value", "abs_diff", "rel_diff_pct", "reason",
                 "old_accession", "new_accession", "old_filed", "new_filed",
                 "old_tag", "new_tag", "quality_flags",
@@ -177,6 +183,8 @@ class ComparisonResult:
                 writer.writerow([
                     r.stock_code,
                     str(r.report_date),
+                    str(r.old_report_date) if r.old_report_date else "",
+                    str(r.new_report_date) if r.new_report_date else "",
                     r.field,
                     str(r.old_value) if r.old_value is not None else "",
                     str(r.new_value) if r.new_value is not None else "",
@@ -1277,6 +1285,11 @@ def _compare_annual(
 
             exception_key = (stock_code, str(report_date), display_name)
             reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio, exceptions=exceptions, exception_key=exception_key)
+            # Phase C1 §3.5.3:两侧报告期不同的同值不得归为 SAME(BXP 型"旧 H1 对新 FY"
+            # 必须显式可见),保持 UNEXPLAINED 直至登记
+            if (reason == Reason.SAME and old_report and new_report
+                    and old_report != new_report):
+                reason = Reason.UNEXPLAINED
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None
 
@@ -1303,6 +1316,8 @@ def _compare_annual(
                 abs_diff=abs_diff,
                 rel_diff_pct=rel,
                 reason=reason,
+                old_report_date=old_report,
+                new_report_date=new_report,
                 old_accession=old_meta.get("accession"),
                 new_accession=new_meta.get("accession"),
                 old_filed=old_meta.get("filed_date"),
@@ -1335,13 +1350,15 @@ def _compare_ttm(
 
     for _, r in merged.iterrows():
         stock_code = str(r["stock_code"])
-        report_date = _to_date(r.get("new_report_date")) or _to_date(r.get("ttm_report_date")) or "TTM"
+        old_report = _to_date(r.get("ttm_report_date"))
+        new_report = _to_date(r.get("new_report_date"))
+        report_date = new_report or old_report or "TTM"
 
         old_meta = {
-            "report_date": _to_date(r.get("ttm_report_date")),
+            "report_date": old_report,
         }
         new_meta = {
-            "report_date": _to_date(r.get("new_report_date")),
+            "report_date": new_report,
             "accession": r.get("new_accession"),
             "filed_date": _to_date(r.get("new_filed")),
         }
@@ -1353,6 +1370,9 @@ def _compare_ttm(
 
             exception_key = (stock_code, str(report_date), display_name)
             reason = classify_diff(old_v, new_v, old_meta, new_meta, quality_flags, is_ratio=is_ratio, exceptions=exceptions, exception_key=exception_key)
+            if (reason == Reason.SAME and old_report and new_report
+                    and old_report != new_report):
+                reason = Reason.UNEXPLAINED
             rel = _rel_diff(old_v, new_v)
             abs_diff = abs(old_v - new_v) if old_v is not None and new_v is not None else None
 
@@ -1365,6 +1385,8 @@ def _compare_ttm(
                 abs_diff=abs_diff,
                 rel_diff_pct=rel,
                 reason=reason,
+                old_report_date=old_report,
+                new_report_date=new_report,
                 new_accession=new_meta.get("accession"),
                 new_filed=new_meta.get("filed_date"),
                 quality_flags=quality_flags if reason in (Reason.MISSING_MAPPING, Reason.PERIOD_MISMATCH, Reason.MISSING_COMPONENT, Reason.OUT_OF_SYNC_SCOPE) else [],

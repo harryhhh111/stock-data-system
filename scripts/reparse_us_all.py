@@ -1,11 +1,29 @@
 #!/usr/bin/env python3
-"""Full reparse of US financial data from raw_snapshot."""
+"""Full reparse of US financial data from raw_snapshot.
+
+Phase C1(2026-08-11):本脚本直接写旧三宽表(待退役对象),默认拒绝执行;
+仅 Phase C 回退演练时显式加 --legacy-write-override。
+"""
 import sys, json, time, logging, os
 # Ensure project root is on path so 'core' package is importable
 _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _proj_root not in sys.path:
     sys.path.insert(0, _proj_root)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+
+if "--legacy-write-override" in sys.argv:
+    sys.argv.remove("--legacy-write-override")
+    logging.warning(
+        "legacy-write-override 已启用(回退演练): operator=%s time=%s",
+        os.environ.get("USER"), time.strftime("%Y-%m-%dT%H:%M:%S"),
+    )
+else:
+    print(
+        "拒绝执行:本脚本直接写旧三宽表(Phase C1 待退役对象)。"
+        "仅回退演练时显式加 --legacy-write-override",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 from core.transformers.us_gaap import USGAAPTransformer
 from core.fetchers.us_financial import USFinancialFetcher

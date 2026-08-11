@@ -18,11 +18,13 @@ scheduler.py — 定时任务调度器
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
@@ -105,8 +107,9 @@ def _refresh_materialized_views(job_type: str, market: str = "") -> None:
     """根据任务类型和市场刷新物化视图。
 
     行情同步后只刷新 mv_fcf_yield（因为只有市值变了）。
-    美股行情同步后刷新 mv_us_fcf_yield（美股独立的 FCF yield 视图）。
     财务同步后按依赖顺序刷新全部三层物化视图。
+    Phase C1(2026-08-11):US 的三个旧物化视图与 mv_us_fcf_yield 停止刷新
+    (待退役对象,估值由 snapshot 读取路径按 daily_quote 实时计算);CN 不变。
 
     刷新失败只记 warning，不影响同步结果。
     """
@@ -114,10 +117,10 @@ def _refresh_materialized_views(job_type: str, market: str = "") -> None:
     if job_type == "daily_quote":
         views = ["mv_fcf_yield"]
     elif job_type == "daily_quote_us":
-        views = ["mv_us_fcf_yield"]
+        views = []  # Phase C1: mv_us_fcf_yield 停刷
     elif job_type == "financial":
         if market == "US":
-            views = ["mv_us_financial_indicator", "mv_us_indicator_ttm", "mv_us_fcf_yield"]
+            views = []  # Phase C1: 三个 US 旧物化视图停刷
         else:
             views = ["mv_financial_indicator", "mv_indicator_ttm", "mv_fcf_yield"]
 
@@ -162,7 +165,8 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
             if job_type in ("daily_quote", "daily_quote_us"):
                 result = _sync_daily_quote(market)
             elif market == "US":
-                result = _sync_us()
+                # Phase C1: 原子编排(sync 分类 → 护栏 → projection → validate)
+                result = _run_us_financial_orchestration(t0)
             else:
                 result = _sync_financial(market)
 
@@ -196,7 +200,9 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
             )
 
             # 财务同步完成后自动触发数据校验
-            if job_type == "financial":
+            # Phase C1:US 的 validate 已在原子编排内执行,不再重复;
+            # CN 路径保持原样(其 validate import 问题不在本任务范围)
+            if job_type == "financial" and market != "US":
                 try:
                     from validate import run_after_sync
 
@@ -326,6 +332,8 @@ def _sync_us() -> dict:
         "elapsed": 0,
         "indexes_synced": [],
         "errors": [],
+        "no_write": [],
+        "index_tickers": set(),
     }
 
     for index in indexes:
@@ -337,6 +345,11 @@ def _sync_us() -> dict:
             force = config.scheduler.force_sync
 
         try:
+            # 解析该指数的 ticker 全集(用于范围对账,无论本轮是否增量跳过)
+            from core.fetchers.us_financial import USFinancialFetcher
+            index_tickers = set(USFinancialFetcher().get_tickers_by_index(index))
+            total_result["index_tickers"] |= index_tickers
+
             result = sync_us_market(Args())
 
             # 汇总统计
@@ -346,6 +359,8 @@ def _sync_us() -> dict:
             total_result["skipped"] += result.get("skipped", 0)
             total_result["elapsed"] += result.get("elapsed", 0)
             total_result["indexes_synced"].append(index)
+            total_result["no_write"].extend(result.get("no_write", []))
+            total_result["errors"].extend(result.get("errors", []))
 
             if result.get("error"):
                 total_result["errors"].append(f"{index}: {result['error']}")
@@ -370,6 +385,225 @@ def _sync_us() -> dict:
         )
 
     return total_result
+
+
+# ── Phase C1: US 原子编排(sync 分类 → 护栏 → projection → validate)────
+
+_PHASE_C_SKIPS_CSV = Path("docs/core/US_PHASE_C_EXPECTED_SKIPS.csv")
+_PHASE_C_SUMMARY_DIR = Path("build/financial_comparison/phaseC_sync")
+_PHASE_C_BASELINE = _PHASE_C_SUMMARY_DIR / "baseline.json"
+
+
+def _load_expected_skips(today=None) -> dict[str, dict]:
+    """加载受控 expected-skip 台账(仅未过期条目,§3.3)。"""
+    import csv as _csv
+
+    if today is None:
+        today = datetime.now().date()
+    skips: dict[str, dict] = {}
+    if not _PHASE_C_SKIPS_CSV.exists():
+        return skips
+    with open(_PHASE_C_SKIPS_CSV) as f:
+        for row in _csv.DictReader(f):
+            if date.fromisoformat(row["review_by"].strip()) >= today:
+                skips[row["stock_code"].strip().upper()] = row
+    return skips
+
+
+def _classify_us_sync_outcome(sync_result: dict, skips: dict[str, dict]) -> dict:
+    """把 sync 失败与零写入 ticker 分类为 expected_skip / blocking_failure(§3.3)。"""
+    expected: set[str] = set()
+    blocking: set[str] = set()
+    candidates: set[str] = {t.upper() for t in sync_result.get("no_write", [])}
+    for e in sync_result.get("errors", []):
+        ticker = e.split(":", 1)[0].strip().upper()
+        if ticker and ticker.isalpha():
+            candidates.add(ticker)
+    for ticker in sorted(candidates):
+        if ticker in skips:
+            expected.add(ticker)
+        else:
+            blocking.add(ticker)
+    return {
+        "expected_skip": sorted(expected),
+        "blocking_failure": sorted(blocking),
+    }
+
+
+def _reconcile_us_universe(index_tickers: set[str], expected_skip: list[str]) -> dict:
+    """RUSSELL1000 解析集合 vs stock_info US universe 对账(§3.2)。
+
+    out_of_sync_scope = 不在指数范围的 universe 股票 + universe 内的 expected_skip。
+    """
+    universe = {r[0] for r in execute(
+        "SELECT stock_code FROM stock_info WHERE market = 'US'", fetch=True) or []}
+    out_scope = sorted((universe - index_tickers) | (set(expected_skip) & universe))
+    return {
+        "universe_count": len(universe),
+        "index_ticker_count": len(index_tickers),
+        "out_of_sync_scope": out_scope,
+        "index_only_tickers": sorted(index_tickers - universe),
+    }
+
+
+def _check_zero_write_baseline() -> list[dict]:
+    """BXP 型硬护栏:六个旧对象相对切换前基线的任何写入(§3.5.2)。"""
+    if not _PHASE_C_BASELINE.exists():
+        return [{"object": "baseline", "error": f"基线缺失: {_PHASE_C_BASELINE}"}]
+    import scripts.phase_c_baseline as baseline_mod
+
+    baseline = json.loads(_PHASE_C_BASELINE.read_text())["objects"]
+    violations = []
+    for obj in baseline_mod.RETIRING_OBJECTS:
+        now = baseline_mod._object_stats(obj)
+        base = baseline[obj]
+        if now["row_count"] != base["row_count"] or now["content_md5"] != base["content_md5"]:
+            violations.append({
+                "object": obj,
+                "row_delta": now["row_count"] - base["row_count"],
+                "baseline_md5": base["content_md5"],
+                "current_md5": now["content_md5"],
+            })
+    return violations
+
+
+def _write_phase_c_summary(summary: dict) -> Path:
+    run_dir = _PHASE_C_SUMMARY_DIR / summary["run_id"]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+    lines = [
+        "# Phase C1 US financial run 摘要",
+        "",
+        f"- run_id: {summary['run_id']}",
+        f"- 时间: {summary['started_at']} → {summary['finished_at']}",
+        f"- 状态: {summary['status']}",
+        "",
+        "## sync 分类",
+        "",
+        f"- synced(success): {summary['sync']['success']} | no_new_filing(skip): "
+        f"{summary['sync']['skipped']} | expected_skip: {summary['classification']['expected_skip']} | "
+        f"blocking_failure: {summary['classification']['blocking_failure']}",
+        f"- 零写入(no_write): {summary['sync'].get('no_write', [])}",
+        "",
+        "## 范围对账",
+        "",
+        f"- universe: {summary['reconciliation']['universe_count']} | "
+        f"index tickers: {summary['reconciliation']['index_ticker_count']} | "
+        f"out_of_sync_scope: {len(summary['reconciliation']['out_of_sync_scope'])} | "
+        f"index-only: {summary['reconciliation']['index_only_tickers']}",
+        "",
+        "## projection / compare",
+        "",
+        f"- projection: {summary.get('projection')}",
+        f"- compare UNEXPLAINED: {summary.get('compare', {}).get('UNEXPLAINED', 'n/a')}",
+        f"- 新 filing 滚动队列: {summary.get('compare', {}).get('rolling_queue', 'n/a')}",
+        f"- 零写入护栏: {summary['zero_write']}",
+    ]
+    (run_dir / "summary.md").write_text("\n".join(lines) + "\n")
+    return run_dir
+
+
+def _run_us_financial_orchestration(t0: float) -> dict:
+    """Phase C1 §3.4:US financial job 的原子编排。
+
+    分类完成且无 blocking → 一次全 universe projection → US validate → 运行摘要。
+    任何阻断:不 projection、不 validate、保留上一版 snapshot,抛错标记 job 失败。
+    """
+    from scripts.project_us_financial_snapshots import run_projection
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary: dict = {
+        "run_id": run_id,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "started",
+    }
+
+    # 1. sync + 分类
+    skips = _load_expected_skips()
+    sync_result = _sync_us()
+    classification = _classify_us_sync_outcome(sync_result, skips)
+    reconciliation = _reconcile_us_universe(
+        sync_result["index_tickers"], classification["expected_skip"])
+    summary["sync"] = {k: v for k, v in sync_result.items() if k != "index_tickers"}
+    summary["classification"] = classification
+    summary["reconciliation"] = reconciliation
+    logger.info(
+        "Phase C1 分类: synced=%d skip=%d expected_skip=%s blocking=%s",
+        sync_result["success"], sync_result["skipped"],
+        classification["expected_skip"], classification["blocking_failure"],
+    )
+    logger.info(
+        "范围对账: universe=%d index=%d out_of_sync_scope=%d index_only=%s",
+        reconciliation["universe_count"], reconciliation["index_ticker_count"],
+        len(reconciliation["out_of_sync_scope"]), reconciliation["index_only_tickers"],
+    )
+
+    if classification["blocking_failure"]:
+        summary["status"] = "blocked"
+        summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        summary["zero_write"] = "not_run"
+        _write_phase_c_summary(summary)
+        raise RuntimeError(
+            f"US sync blocking failure(未登记): {classification['blocking_failure']}"
+        )
+
+    # 2. BXP 型零写入护栏
+    violations = _check_zero_write_baseline()
+    summary["zero_write"] = "pass" if not violations else violations
+    if violations:
+        summary["status"] = "blocked_zero_write"
+        summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_phase_c_summary(summary)
+        raise RuntimeError(f"旧对象出现禁止的写入: {[v['object'] for v in violations]}")
+
+    # 3. projection(全部跳过且无成功写入 → no_new_filings,保留原 snapshot)
+    if sync_result["success"] == 0 and not sync_result["no_write"]:
+        summary["status"] = "no_new_filings"
+        summary["projection"] = None
+        logger.info("全部 ticker 已同步跳过: 不运行 projection(no_new_filings)")
+    else:
+        proj = run_projection(
+            out_of_sync_scope=set(reconciliation["out_of_sync_scope"]))
+        summary["projection"] = proj
+        summary["status"] = "projected"
+
+    # 4. compare(运行摘要的 UNEXPLAINED 与滚动队列)
+    from scripts.compare_us_snapshot_vs_old import (
+        Reason, load_registered_exceptions, run_comparison,
+    )
+    compare_result = run_comparison(
+        exceptions=load_registered_exceptions("docs/core/US_PHASE_A_EXCEPTIONS.csv"))
+    stats = compare_result.stats_by_reason()
+    summary["compare"] = {
+        "UNEXPLAINED": stats.get(Reason.UNEXPLAINED, 0),
+        "rolling_queue": {
+            "PERIOD_MISMATCH": stats.get(Reason.PERIOD_MISMATCH, 0),
+            "MISSING_COMPONENT": stats.get(Reason.MISSING_COMPONENT, 0),
+            "REGISTERED_EXCEPTION": stats.get(Reason.REGISTERED_EXCEPTION, 0),
+        },
+        "by_reason": {str(k): v for k, v in stats.items()},
+    }
+
+    # 5. validate(仅 projection 后;Phase C1 修复 US 校验入口)
+    if summary["projection"]:
+        from core.validate import run_after_sync
+        val = run_after_sync(market="US")
+        summary["validate"] = val
+        if not val.get("success"):
+            logger.warning("US validate 失败: %s", val.get("error"))
+
+    summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    if summary["status"] == "projected":
+        summary["status"] = "success"
+    _write_phase_c_summary(summary)
+    return {
+        "success": sync_result["success"],
+        "failed": sync_result["failed"],
+        "skipped": sync_result["skipped"],
+        "classification": classification,
+        "projection": summary.get("projection"),
+    }
 
 
 # ── 调度任务定义 ────────────────────────────────────────────

@@ -302,6 +302,7 @@ class USFactVersionWriter:
                 "fact_version_ids": [],
                 "conflict_count": 0,
                 "staging_count": 0,
+                "run_id": None,
             }
 
         stock_code = context.stock_code
