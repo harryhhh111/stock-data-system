@@ -79,27 +79,57 @@ class TestVersionOnlyIngest:
             assert f'"{table}"' not in src
 
 
-# ── 3. expected_skip / blocking 分类 ──────────────────────────
+# ── 3. expected_skip / blocking 分类(kind 匹配)───────────────
 
 class TestClassification:
-    def test_registered_skip_allows_others(self):
+    def test_registered_skip_allows_matching_kind(self):
         sync_result = {
-            "success": 20, "skipped": 900, "no_write": [],
-            "errors": ["OZK: HTTPError: 404 Client Error"],
+            "no_write": [], "index_errors": [],
+            "failures": [{"ticker": "OZK", "kind": "fetch_404",
+                          "error": "HTTPError: 404 ..."}],
         }
         skips = {"OZK": {"stock_code": "OZK", "reason_code": "COMPANYFACTS_PERMANENT_404"}}
         out = sched._classify_us_sync_outcome(sync_result, skips)
         assert out["expected_skip"] == ["OZK"]
         assert out["blocking_failure"] == []
 
+    def test_kind_mismatch_blocks_even_if_registered(self):
+        """验收阻断项 1:OZK 报 version writer 失败不得被 404 台账放行。"""
+        sync_result = {
+            "no_write": [], "index_errors": [],
+            "failures": [{"ticker": "OZK", "kind": "ingest",
+                          "error": "RuntimeError: version writer failed"}],
+        }
+        skips = {"OZK": {"stock_code": "OZK", "reason_code": "COMPANYFACTS_PERMANENT_404"}}
+        out = sched._classify_us_sync_outcome(sync_result, skips)
+        assert out["expected_skip"] == []
+        assert out["blocking_failure"] == ["OZK"]
+
+    def test_ifrs_skip_matches_zero_facts_only(self):
+        skips = {"GFS": {"stock_code": "GFS", "reason_code": "FOREIGN_IFRS_NO_USGAAP_FACTS"}}
+        ok = sched._classify_us_sync_outcome(
+            {"no_write": ["GFS"], "index_errors": [], "failures": []}, skips)
+        assert ok["expected_skip"] == ["GFS"]
+        bad = sched._classify_us_sync_outcome(
+            {"no_write": [], "index_errors": [],
+             "failures": [{"ticker": "GFS", "kind": "fetch_other", "error": "timeout"}]}, skips)
+        assert bad["blocking_failure"] == ["GFS"]
+
     def test_unregistered_failure_blocks(self):
         sync_result = {
-            "success": 20, "skipped": 900, "no_write": ["FOO"],
-            "errors": ["OZK: HTTPError: 404 Client Error", "BAR: 无法解析 CIK"],
+            "no_write": ["FOO"], "index_errors": [],
+            "failures": [{"ticker": "BAR", "kind": "cik_mapping", "error": "无法解析 CIK"}],
         }
         out = sched._classify_us_sync_outcome(sync_result, {})
         assert out["expected_skip"] == []
-        assert out["blocking_failure"] == ["BAR", "FOO", "OZK"]
+        assert out["blocking_failure"] == ["BAR", "FOO"]
+
+    def test_index_error_always_blocking(self):
+        """验收阻断项 2:指数级失败(如公司列表不可用)必须阻断。"""
+        sync_result = {"no_write": [], "failures": [],
+                       "index_errors": ["RUSSELL1000: company list unavailable"]}
+        out = sched._classify_us_sync_outcome(sync_result, {})
+        assert out["index_errors"] == ["RUSSELL1000: company list unavailable"]
 
     def test_expired_skip_blocks(self, tmp_path, monkeypatch):
         csv_path = tmp_path / "skips.csv"
@@ -111,7 +141,8 @@ class TestClassification:
         skips = sched._load_expected_skips(today=date(2026, 8, 11))
         assert skips == {}  # 已过期
         out = sched._classify_us_sync_outcome(
-            {"no_write": [], "errors": ["OZK: 404"]}, skips)
+            {"no_write": [], "index_errors": [],
+             "failures": [{"ticker": "OZK", "kind": "fetch_404", "error": "404"}]}, skips)
         assert out["blocking_failure"] == ["OZK"]
 
 
@@ -119,11 +150,14 @@ class TestClassification:
 
 def _orch_mocks(monkeypatch, tmp_path, sync_result):
     calls: list[str] = []
+    sync_result.setdefault("failures", [])
+    sync_result.setdefault("index_errors", [])
     monkeypatch.setattr(sched, "_sync_us", lambda: sync_result)
     monkeypatch.setattr(sched, "_load_expected_skips", lambda today=None: {})
+    monkeypatch.setattr(sched, "_load_index_only_registry", lambda: {"Z9"})
     monkeypatch.setattr(sched, "_reconcile_us_universe", lambda tickers, es: {
         "universe_count": 1003, "index_ticker_count": 1000,
-        "out_of_sync_scope": ["Z1"], "index_only_tickers": [],
+        "out_of_sync_scope": ["Z1"], "index_only_tickers": ["Z9"],
     })
     monkeypatch.setattr(sched, "_check_zero_write_baseline", lambda: [])
     monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
@@ -162,11 +196,53 @@ class TestOrchestration:
     def test_blocking_failure_stops_before_projection(self, monkeypatch, tmp_path):
         calls = _orch_mocks(monkeypatch, tmp_path, {
             "success": 20, "failed": 1, "skipped": 982, "no_write": [],
-            "errors": ["FOO: boom"], "index_tickers": {"A"},
+            "errors": ["FOO: boom"],
+            "failures": [{"ticker": "FOO", "kind": "ingest", "error": "boom"}],
+            "index_tickers": {"A"},
         })
-        with pytest.raises(RuntimeError, match="blocking failure"):
+        with pytest.raises(RuntimeError, match="blocking"):
             sched._run_us_financial_orchestration(0.0)
         assert calls == []  # projection/compare/validate 均未运行
+
+    def test_index_error_stops_before_projection(self, monkeypatch, tmp_path):
+        """验收阻断项 2:指数级失败不得继续发布。"""
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 0, "failed": 0, "skipped": 0, "no_write": [], "errors": [],
+            "index_errors": ["RUSSELL1000: company list unavailable"],
+            "index_tickers": set(),
+        })
+        with pytest.raises(RuntimeError, match="指数级失败"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []
+
+    def test_unregistered_index_only_blocks(self, monkeypatch, tmp_path):
+        """验收阻断项 4:未登记的 index-only ticker 阻断发布。"""
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda tickers, es: {
+            "universe_count": 1003, "index_ticker_count": 1001,
+            "out_of_sync_scope": [], "index_only_tickers": ["Z9", "NEW1"],
+        })
+        with pytest.raises(RuntimeError, match="index-only"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []
+
+    def test_validate_failure_marks_job_failed(self, monkeypatch, tmp_path):
+        """验收阻断项 3:validate 失败不得报成功。"""
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        import core.validate as validate_mod
+        monkeypatch.setattr(
+            validate_mod, "run_after_sync",
+            lambda market="": calls.append("validate") or {"success": False, "error": "boom"},
+        )
+        with pytest.raises(RuntimeError, match="validate"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == ["projection", "compare", "validate"]
 
     def test_zero_write_violation_stops(self, monkeypatch, tmp_path):
         calls = _orch_mocks(monkeypatch, tmp_path, {
@@ -242,37 +318,52 @@ class TestUniverseReconciliation:
         assert out["index_only_tickers"] == []
 
 
-# ── 9. 零写入护栏 ─────────────────────────────────────────────
+# ── 9. 零写入护栏(全行 hash + 时间戳)─────────────────────────
+
+def _baseline_payload(md5="abc", ts="2026-08-11T06:00:00"):
+    obj = {"row_count": 100, "content_md5": md5,
+           "max_updated_column": "updated_at", "max_updated_at": ts}
+    return {"objects": {name: dict(obj) for name in (
+        "us_income_statement", "us_balance_sheet", "us_cash_flow_statement",
+        "mv_us_financial_indicator", "mv_us_indicator_ttm", "mv_us_fcf_yield")}}
+
 
 class TestZeroWriteBaseline:
-    def test_violation_detected(self, monkeypatch, tmp_path):
+    def _setup(self, monkeypatch, tmp_path, stats_map):
         baseline = tmp_path / "baseline.json"
-        baseline.write_text(json.dumps({"objects": {
-            "us_income_statement": {"row_count": 100, "content_md5": "abc"},
-            "us_balance_sheet": {"row_count": 50, "content_md5": "def"},
-            "us_cash_flow_statement": {"row_count": 30, "content_md5": "ghi"},
-            "mv_us_financial_indicator": {"row_count": 10, "content_md5": "j"},
-            "mv_us_indicator_ttm": {"row_count": 5, "content_md5": "k"},
-            "mv_us_fcf_yield": {"row_count": 3, "content_md5": "l"},
-        }}))
-        monkeypatch.setattr(sched, "_PHASE_C_BASELINE", baseline)
+        baseline.write_text(json.dumps(_baseline_payload()))
         import scripts.phase_c_baseline as baseline_mod
+        monkeypatch.setattr(baseline_mod, "OUT", baseline)
+        monkeypatch.setattr(baseline_mod, "_object_stats", lambda obj: stats_map[obj])
 
-        def fake_stats(obj):
-            if obj == "us_income_statement":
-                return {"row_count": 101, "content_md5": "abc"}
-            return None
-        monkeypatch.setattr(baseline_mod, "_object_stats", lambda obj: fake_stats(obj) or {
-            "us_balance_sheet": {"row_count": 50, "content_md5": "def"},
-            "us_cash_flow_statement": {"row_count": 30, "content_md5": "ghi"},
-            "mv_us_financial_indicator": {"row_count": 10, "content_md5": "j"},
-            "mv_us_indicator_ttm": {"row_count": 5, "content_md5": "k"},
-            "mv_us_fcf_yield": {"row_count": 3, "content_md5": "l"},
-        }[obj])
-        violations = sched._check_zero_write_baseline()
+    def _stats(self, rows=100, md5="abc", ts="2026-08-11T06:00:00"):
+        return {"row_count": rows, "content_md5": md5,
+                "max_updated_column": "updated_at", "max_updated_at": ts}
+
+    def test_clean_passes(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path,
+                    {o: self._stats() for o in _baseline_payload()["objects"]})
+        import scripts.phase_c_baseline as baseline_mod
+        assert baseline_mod.find_violations() == []
+
+    def test_row_change_detected(self, monkeypatch, tmp_path):
+        stats = {o: self._stats() for o in _baseline_payload()["objects"]}
+        stats["us_income_statement"] = self._stats(rows=101)
+        self._setup(monkeypatch, tmp_path, stats)
+        import scripts.phase_c_baseline as baseline_mod
+        violations = baseline_mod.find_violations()
         assert len(violations) == 1
         assert violations[0]["object"] == "us_income_statement"
         assert violations[0]["row_delta"] == 1
+
+    def test_timestamp_change_detected(self, monkeypatch, tmp_path):
+        """验收阻断项 5:仅时间戳变化(内容 hash 未变)也必须报。"""
+        stats = {o: self._stats() for o in _baseline_payload()["objects"]}
+        stats["mv_us_fcf_yield"] = self._stats(ts="2026-08-12T06:00:00")
+        self._setup(monkeypatch, tmp_path, stats)
+        import scripts.phase_c_baseline as baseline_mod
+        violations = baseline_mod.find_violations()
+        assert [v["object"] for v in violations] == ["mv_us_fcf_yield"]
 
     def test_missing_baseline_is_violation(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sched, "_PHASE_C_BASELINE", tmp_path / "nope.json")

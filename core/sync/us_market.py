@@ -191,6 +191,7 @@ def sync_us_market(args) -> dict:
     success = 0
     failed = 0
     errors: list[str] = []
+    failures: list[dict] = []  # {"ticker", "kind", "error"} — Phase C1 分类用
     no_write: list[str] = []
     t0 = time.time()
 
@@ -202,8 +203,11 @@ def sync_us_market(args) -> dict:
         except ValueError:
             failed += 1
             errors.append(f"{ticker}: 无法解析 CIK")
+            failures.append({"ticker": ticker, "kind": "cik_mapping",
+                             "error": "无法解析 CIK"})
             continue
 
+        stage = "fetch"
         try:
             # 进入待同步集合意味着本次承担“发现 SEC 新申报”的职责。
             # 这里必须访问网络；普通 TTL 缓存只供手工分析/重复解析使用，
@@ -215,12 +219,15 @@ def sync_us_market(args) -> dict:
             if not raw_data:
                 failed += 1
                 errors.append(f"{ticker}: 无 Company Facts 数据")
+                failures.append({"ticker": ticker, "kind": "no_data",
+                                 "error": "无 Company Facts 数据"})
                 continue
 
             # 保存原始快照（兼容旧 raw_snapshot 表）
             save_raw_snapshot(ticker, "company_facts", source="sec_edgar", api_params={}, raw_data=raw_data)
 
             # Phase C1: 只写版本层;失败直接抛出进 except 记 ticker 失败
+            stage = "ingest"
             tables_synced = _process_us_company_data(fetcher, raw_data, ctx)
 
             if tables_synced:
@@ -245,6 +252,16 @@ def sync_us_market(args) -> dict:
             failed += 1
             error_msg = f"{type(exc).__name__}: {exc}"
             errors.append(f"{ticker}: {error_msg}")
+            # Phase C1:失败 kind 决定台账可否豁免;版本写入/未知失败永不可豁免
+            if stage == "ingest":
+                kind = "ingest"
+            elif stage == "fetch" and "404" in error_msg:
+                kind = "fetch_404"
+            elif stage == "fetch":
+                kind = "fetch_other"
+            else:
+                kind = "other"
+            failures.append({"ticker": ticker, "kind": kind, "error": error_msg})
             logger.error("%s 同步失败: %s", ticker, exc)
             execute(
                 """INSERT INTO sync_progress (stock_code, market, last_sync_time, tables_synced, status, error_detail)
@@ -281,6 +298,7 @@ def sync_us_market(args) -> dict:
         "elapsed": elapsed,
         "no_write": no_write,
         "errors": errors,
+        "failures": failures,
     }
 
     logger.info(

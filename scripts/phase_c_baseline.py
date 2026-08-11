@@ -36,21 +36,13 @@ RETIRING_OBJECTS = [
     "mv_us_fcf_yield",
 ]
 
-# 采样列(确定性 checksum 用):主键列 + 金额列过多,改为行数 + 聚合 hash
-_PROBE_COLUMNS = {
-    "us_income_statement": "stock_code, report_date, report_type, revenues, net_income",
-    "us_balance_sheet": "stock_code, report_date, report_type, total_assets, total_equity",
-    "us_cash_flow_statement": "stock_code, report_date, report_type, net_cash_from_operations",
-    "mv_us_financial_indicator": "stock_code, report_date, report_type, roe, fcf",
-    "mv_us_indicator_ttm": "stock_code, report_date, revenue_ttm, net_income_ttm",
-    "mv_us_fcf_yield": "stock_code, trade_date, ttm_report_date, fcf_yield",
-}
-
-
 def _object_stats(obj: str) -> dict:
-    cols = _PROBE_COLUMNS[obj]
-    rows = execute(f"SELECT COUNT(*), md5(string_agg(md5(t::text), '' ORDER BY t::text)) "
-                   f"FROM (SELECT {cols} FROM {obj}) t", fetch=True)
+    """全行确定性 hash(所有列),不是字段子集——防止未选列被改而漏报。"""
+    rows = execute(
+        f"SELECT COUNT(*), md5(string_agg(md5(t::text), '' ORDER BY t::text)) "
+        f"FROM (SELECT * FROM {obj}) t",
+        fetch=True,
+    )
     count, agg = rows[0]
     updated_col = None
     for col in ("updated_at", "sync_time", "created_at"):
@@ -81,22 +73,32 @@ def record() -> int:
     return 0
 
 
-def check() -> int:
-    if not OUT.exists():
-        print(f"基线不存在: {OUT} — 先运行 record", file=sys.stderr)
-        return 2
+def find_violations() -> list[dict]:
+    """相对基线的全部违规(行数/全行 hash/最大时间戳),供 CLI 与 scheduler 共用。"""
     baseline = json.loads(OUT.read_text())["objects"]
     violations = []
     for obj in RETIRING_OBJECTS:
         now = _object_stats(obj)
         base = baseline[obj]
-        if now["row_count"] != base["row_count"] or now["content_md5"] != base["content_md5"]:
+        if (now["row_count"] != base["row_count"]
+                or now["content_md5"] != base["content_md5"]
+                or now["max_updated_at"] != base["max_updated_at"]):
             violations.append({
                 "object": obj,
                 "baseline_rows": base["row_count"], "current_rows": now["row_count"],
                 "row_delta": now["row_count"] - base["row_count"],
                 "baseline_md5": base["content_md5"], "current_md5": now["content_md5"],
+                "baseline_max_updated_at": base["max_updated_at"],
+                "current_max_updated_at": now["max_updated_at"],
             })
+    return violations
+
+
+def check() -> int:
+    if not OUT.exists():
+        print(f"基线不存在: {OUT} — 先运行 record", file=sys.stderr)
+        return 2
+    violations = find_violations()
     if violations:
         print(json.dumps({"zero_write_violations": violations}, indent=2, ensure_ascii=False))
         return 1

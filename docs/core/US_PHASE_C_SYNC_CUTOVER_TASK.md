@@ -1,6 +1,7 @@
 # Phase C1：美股 SEC 同步切换至版本层与快照
 
-> 状态：**已执行（2026-08-11)。** 在线 sync → 版本层 → projection 原子切换已上线;
+> 状态：**已执行（2026-08-11)；首轮验收发现 5 项阻断问题,已于同日修复复验**
+> （见文末"验收修复记录")。在线 sync → 版本层 → projection 原子切换已上线;
 > PDD canary、重放 smoke、零写入护栏、完整编排运行与全量测试均通过;
 > 详见 `build/financial_comparison/phaseC_sync/` 运行摘要。
 > 前置：[`US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md`](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) 的 Phase A、Phase B 已完成；当前服务器 `STOCK_MARKETS=US`，同步 universe 为 `RUSSELL1000`（1,003 只）。  
@@ -199,3 +200,25 @@ us_cash_flow_statement           mv_us_fcf_yield
 - 旧读取 fallback 开关的移除：在 Phase D 结束后再决定。
 
 本任务完成后，只能进入 Phase D 观察任务；不得直接删除数据库对象。
+
+## 7. 验收修复记录（2026-08-11 首轮验收后）
+
+首轮验收（5c2e5c0）发现 5 项阻断问题，修复如下，全部带回归测试：
+
+1. **expected_skip 按 (ticker, 失败 kind) 匹配，不再只看 ticker**:sync 失败带结构化
+   kind(`cik_mapping`/`fetch_404`/`fetch_other`/`no_data`/`ingest`/`other`/`zero_facts`),
+   台账 reason_code 只允许匹配对应 kind;version writer 等 ingest 失败永不豁免。
+2. **指数级失败一律 blocking**:`_sync_us` 单独收集 `index_errors`(公司列表失败、
+   整指数异常、成分解析为空),不混入 ticker 级分类,直接阻断发布。
+3. **validate 失败即 job 失败**:`run_after_sync` 返回 success=False 时,job 以
+   `validate_failed` 终止并报错,不再仅记 warning 后报成功。
+4. **范围对账闭环**:新增 `docs/core/US_PHASE_C_INDEX_ONLY.csv` 登记册(首批 43 个);
+   未登记的 index-only ticker 阻断发布;已登记的写入摘要可见。
+5. **零写入护栏全量化**:六对象改为全行确定性 hash + 行数 + `max_updated_at`
+   三重比对(原字段子集 hash 可能漏报未选列的修改);全行基线重录前先用旧部分
+   hash 校验了连续性(两基线间零写入)。
+
+另:PDD 虽完成 canary,但它与 BIDU/JD/MELI/NXPI/STX/BK 等共 33 只 universe 股票
+不在当前 RUSSELL1000 成分解析(1,013)内,已被标记 `out_of_sync_scope`,不会自动
+日更。是否将这些股票补入同步范围(或调整指数解析源)是**待项目所有者决定的产品
+问题**;在决定前,这些股票的快照会随时间变旧,且状态对消费者可见(不伪装 fresh)。

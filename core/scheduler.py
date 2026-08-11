@@ -332,6 +332,8 @@ def _sync_us() -> dict:
         "elapsed": 0,
         "indexes_synced": [],
         "errors": [],
+        "failures": [],       # ticker 级结构化失败(Phase C1)
+        "index_errors": [],   # 指数级失败(公司列表/整指数异常)——一律 blocking
         "no_write": [],
         "index_tickers": set(),
     }
@@ -348,6 +350,10 @@ def _sync_us() -> dict:
             # 解析该指数的 ticker 全集(用于范围对账,无论本轮是否增量跳过)
             from core.fetchers.us_financial import USFinancialFetcher
             index_tickers = set(USFinancialFetcher().get_tickers_by_index(index))
+            if not index_tickers:
+                total_result["index_errors"].append(f"{index}: 指数成分解析为空")
+                logger.error("指数 %s 成分解析为空", index)
+                continue
             total_result["index_tickers"] |= index_tickers
 
             result = sync_us_market(Args())
@@ -361,9 +367,10 @@ def _sync_us() -> dict:
             total_result["indexes_synced"].append(index)
             total_result["no_write"].extend(result.get("no_write", []))
             total_result["errors"].extend(result.get("errors", []))
+            total_result["failures"].extend(result.get("failures", []))
 
             if result.get("error"):
-                total_result["errors"].append(f"{index}: {result['error']}")
+                total_result["index_errors"].append(f"{index}: {result['error']}")
 
             logger.info(
                 "指数 %s 同步完成: success=%d, failed=%d",
@@ -375,6 +382,7 @@ def _sync_us() -> dict:
             error_msg = f"{index}: {type(exc).__name__}: {exc}"
             logger.error("指数 %s 同步失败: %s", index, exc)
             total_result["errors"].append(error_msg)
+            total_result["index_errors"].append(error_msg)
 
     # 如果所有指数都失败，返回失败状态
     if not total_result["indexes_synced"] or total_result["success"] == 0:
@@ -390,6 +398,7 @@ def _sync_us() -> dict:
 # ── Phase C1: US 原子编排(sync 分类 → 护栏 → projection → validate)────
 
 _PHASE_C_SKIPS_CSV = Path("docs/core/US_PHASE_C_EXPECTED_SKIPS.csv")
+_PHASE_C_INDEX_ONLY_CSV = Path("docs/core/US_PHASE_C_INDEX_ONLY.csv")
 _PHASE_C_SUMMARY_DIR = Path("build/financial_comparison/phaseC_sync")
 _PHASE_C_BASELINE = _PHASE_C_SUMMARY_DIR / "baseline.json"
 
@@ -410,24 +419,65 @@ def _load_expected_skips(today=None) -> dict[str, dict]:
     return skips
 
 
+# 台账 reason_code → 允许匹配的失败 kind;kind 不匹配一律 blocking(§3.3,
+# 防止"version writer 失败被 404 台账放行"类误豁免)
+_SKIP_KIND_BY_REASON = {
+    "COMPANYFACTS_PERMANENT_404": {"fetch_404"},
+    "CIK_MAPPING_MISSING": {"cik_mapping"},
+    "FOREIGN_IFRS_NO_USGAAP_FACTS": {"zero_facts"},
+    "NO_MAPPABLE_USGAAP_FACTS": {"zero_facts"},
+    "NO_USGAAP_FACTS": {"zero_facts"},
+    "NO_COMPANYFACTS_DATA": {"no_data"},
+}
+
+
 def _classify_us_sync_outcome(sync_result: dict, skips: dict[str, dict]) -> dict:
-    """把 sync 失败与零写入 ticker 分类为 expected_skip / blocking_failure(§3.3)。"""
+    """把 sync 结果分类为 expected_skip / blocking_failure(§3.3)。
+
+    规则:
+    - 指数级失败(index_errors)一律 blocking;
+    - ticker 级失败仅当 (ticker, 失败 kind) 与未过期台账条目的 reason_code
+      匹配时才计 expected_skip;kind 不匹配或未登记一律 blocking;
+    - no_write(抓取成功但版本层零事实)kind 为 zero_facts。
+    """
     expected: set[str] = set()
     blocking: set[str] = set()
-    candidates: set[str] = {t.upper() for t in sync_result.get("no_write", [])}
-    for e in sync_result.get("errors", []):
-        ticker = e.split(":", 1)[0].strip().upper()
-        if ticker and ticker.isalpha():
-            candidates.add(ticker)
-    for ticker in sorted(candidates):
-        if ticker in skips:
+
+    for f in sync_result.get("failures", []):
+        ticker = str(f.get("ticker", "")).upper()
+        kind = str(f.get("kind", "other"))
+        entry = skips.get(ticker)
+        allowed = _SKIP_KIND_BY_REASON.get(str((entry or {}).get("reason_code", "")), set())
+        if entry is not None and kind in allowed:
             expected.add(ticker)
         else:
             blocking.add(ticker)
+
+    for ticker in sync_result.get("no_write", []):
+        t = str(ticker).upper()
+        entry = skips.get(t)
+        allowed = _SKIP_KIND_BY_REASON.get(str((entry or {}).get("reason_code", "")), set())
+        if entry is not None and "zero_facts" in allowed:
+            expected.add(t)
+        else:
+            blocking.add(t)
+
+    index_errors = list(sync_result.get("index_errors", []))
     return {
         "expected_skip": sorted(expected),
         "blocking_failure": sorted(blocking),
+        "index_errors": index_errors,
     }
+
+
+def _load_index_only_registry() -> set[str]:
+    """加载已登记的 index-only ticker(指数可解析但不在 universe,§3.2 对账)。"""
+    import csv as _csv
+
+    if not _PHASE_C_INDEX_ONLY_CSV.exists():
+        return set()
+    with open(_PHASE_C_INDEX_ONLY_CSV) as f:
+        return {r["stock_code"].strip().upper() for r in _csv.DictReader(f)}
 
 
 def _reconcile_us_universe(index_tickers: set[str], expected_skip: list[str]) -> dict:
@@ -447,24 +497,15 @@ def _reconcile_us_universe(index_tickers: set[str], expected_skip: list[str]) ->
 
 
 def _check_zero_write_baseline() -> list[dict]:
-    """BXP 型硬护栏:六个旧对象相对切换前基线的任何写入(§3.5.2)。"""
+    """BXP 型硬护栏:六个旧对象相对切换前基线的任何写入(§3.5.2)。
+
+    全行确定性 hash + 行数 + 最大时间戳三重比对。
+    """
     if not _PHASE_C_BASELINE.exists():
         return [{"object": "baseline", "error": f"基线缺失: {_PHASE_C_BASELINE}"}]
     import scripts.phase_c_baseline as baseline_mod
 
-    baseline = json.loads(_PHASE_C_BASELINE.read_text())["objects"]
-    violations = []
-    for obj in baseline_mod.RETIRING_OBJECTS:
-        now = baseline_mod._object_stats(obj)
-        base = baseline[obj]
-        if now["row_count"] != base["row_count"] or now["content_md5"] != base["content_md5"]:
-            violations.append({
-                "object": obj,
-                "row_delta": now["row_count"] - base["row_count"],
-                "baseline_md5": base["content_md5"],
-                "current_md5": now["content_md5"],
-            })
-    return violations
+    return baseline_mod.find_violations()
 
 
 def _write_phase_c_summary(summary: dict) -> Path:
@@ -539,14 +580,24 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         len(reconciliation["out_of_sync_scope"]), reconciliation["index_only_tickers"],
     )
 
+    unregistered_index_only = sorted(
+        set(reconciliation["index_only_tickers"]) - _load_index_only_registry())
+    summary["unregistered_index_only"] = unregistered_index_only
+
+    blocking_reasons = []
     if classification["blocking_failure"]:
+        blocking_reasons.append(f"ticker 级未登记失败: {classification['blocking_failure']}")
+    if classification["index_errors"]:
+        blocking_reasons.append(f"指数级失败: {classification['index_errors']}")
+    if unregistered_index_only:
+        blocking_reasons.append(f"未登记 index-only ticker: {unregistered_index_only}")
+    if blocking_reasons:
         summary["status"] = "blocked"
+        summary["blocking_reasons"] = blocking_reasons
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
         summary["zero_write"] = "not_run"
         _write_phase_c_summary(summary)
-        raise RuntimeError(
-            f"US sync blocking failure(未登记): {classification['blocking_failure']}"
-        )
+        raise RuntimeError("US sync blocking: " + "; ".join(blocking_reasons))
 
     # 2. BXP 型零写入护栏
     violations = _check_zero_write_baseline()
@@ -586,12 +637,17 @@ def _run_us_financial_orchestration(t0: float) -> dict:
     }
 
     # 5. validate(仅 projection 后;Phase C1 修复 US 校验入口)
+    # validate 失败 = job 失败:不得把部分成功报成完整成功(snapshot 已投影,
+    # 但 job 状态必须反映校验失败)
     if summary["projection"]:
         from core.validate import run_after_sync
         val = run_after_sync(market="US")
         summary["validate"] = val
         if not val.get("success"):
-            logger.warning("US validate 失败: %s", val.get("error"))
+            summary["status"] = "validate_failed"
+            summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _write_phase_c_summary(summary)
+            raise RuntimeError(f"US validate 失败: {val.get('error')}")
 
     summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
     if summary["status"] == "projected":
