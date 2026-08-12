@@ -104,7 +104,8 @@ class SyncManager:
         all_stocks = []
         for m in markets:
             rows = execute(
-                "SELECT stock_code FROM stock_info WHERE market = %s",
+                "SELECT stock_code FROM stock_info WHERE market = %s "
+                "AND (market <> 'US' OR delist_date IS NULL OR delist_date > CURRENT_DATE)",
                 (m,),
                 fetch=True,
             )
@@ -325,7 +326,8 @@ class SyncManager:
         all_stocks: list[tuple[str, str]] = []
         for m in markets:
             rows = execute(
-                "SELECT stock_code FROM stock_info WHERE market = %s",
+                "SELECT stock_code FROM stock_info WHERE market = %s "
+                "AND (market <> 'US' OR delist_date IS NULL OR delist_date > CURRENT_DATE)",
                 (m,),
                 fetch=True,
             )
@@ -741,7 +743,8 @@ class SyncManager:
             tencent_codes = {r["stock_code"] for r in records}
             rejected_codes = {r["stock_code"] for r in rejected}
             known_for_fallback = execute(
-                "SELECT stock_code FROM stock_info WHERE market = 'US'",
+                "SELECT stock_code FROM stock_info WHERE market = 'US' "
+                "AND (delist_date IS NULL OR delist_date > CURRENT_DATE)",
                 fetch=True,
             )
             all_us_codes = {r[0] for r in known_for_fallback}
@@ -772,7 +775,8 @@ class SyncManager:
             return 0
 
         known_codes = execute(
-            "SELECT stock_code FROM stock_info WHERE market = %s",
+            "SELECT stock_code FROM stock_info WHERE market = %s "
+                "AND (market <> 'US' OR delist_date IS NULL OR delist_date > CURRENT_DATE)",
             (market,),
             fetch=True,
         )
@@ -808,7 +812,8 @@ class SyncManager:
         )
 
         stock_rows = execute(
-            "SELECT stock_code FROM stock_info WHERE market = %s",
+            "SELECT stock_code FROM stock_info WHERE market = %s "
+                "AND (market <> 'US' OR delist_date IS NULL OR delist_date > CURRENT_DATE)",
             (market,),
             fetch=True,
         )

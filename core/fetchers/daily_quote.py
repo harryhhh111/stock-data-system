@@ -539,7 +539,8 @@ class DailyQuoteFetcher(BaseFetcher):
         # 从数据库获取美股代码列表
         from db import execute
         rows = execute(
-            "SELECT stock_code FROM stock_info WHERE market = 'US'",
+            "SELECT stock_code FROM stock_info WHERE market = 'US' "
+            "AND (delist_date IS NULL OR delist_date > CURRENT_DATE)",
             fetch=True,
         )
         all_codes = [r[0] for r in rows]
@@ -549,8 +550,23 @@ class DailyQuoteFetcher(BaseFetcher):
             logger.warning("stock_info 中无美股，请先同步美股列表")
             return pd.DataFrame(columns=self._us_spot_columns())
 
+        # Phase C-US-IDENTITY §3.2 规则 5:出站请求用当前交易 ticker
+        # (BK→BNY 等),响应解析回 canonical code 后入库
+        _symbols = None
+        try:
+            from core.us_security_identity import current_ticker_for, load_symbols
+            _symbols = load_symbols()
+        except Exception as exc:
+            logger.warning("身份表加载失败,按原 code 请求: %s", exc)
+        outbound_tickers = [
+            current_ticker_for(code, _symbols) if _symbols is not None else code
+            for code in all_codes
+        ]
+        # 响应代码(当前 ticker)→ canonical 的静态映射,避免逐行查库
+        ticker_to_canonical = dict(zip(outbound_tickers, all_codes))
+
         # 转为腾讯格式: AAPL → usAAPL，BRK-B → usBRK.B（腾讯用点号）
-        tencent_codes = [f"us{code.replace('-', '.')}" for code in all_codes]
+        tencent_codes = [f"us{t.replace('-', '.')}" for t in outbound_tickers]
         # 批量查询（每批 300，避免 URL 过长）
         batch_size = 300
         all_lines: list[str] = []
@@ -585,6 +601,8 @@ class DailyQuoteFetcher(BaseFetcher):
                 # 代码：去掉交易所后缀，并把类别股的点号还原为连字符
                 raw_code = parts[2].strip()
                 code = _tencent_us_code_to_db(raw_code)
+                # 新 ticker 响应(BNY.OQ 等)映射回 canonical code(§3.2 规则 5)
+                code = ticker_to_canonical.get(code, code)
                 name = parts[1].strip()
                 quote_date = parts[30].strip()[:10]
                 price = _safe_float(parts[3])
@@ -677,7 +695,8 @@ class DailyQuoteFetcher(BaseFetcher):
         from db import execute
 
         rows = execute(
-            "SELECT stock_code FROM stock_info WHERE market = 'US'",
+            "SELECT stock_code FROM stock_info WHERE market = 'US' "
+            "AND (delist_date IS NULL OR delist_date > CURRENT_DATE)",
             fetch=True,
         )
         all_codes = [r[0] for r in rows]
@@ -1038,9 +1057,15 @@ def fetch_finnhub_quotes(stock_codes: list[str]) -> list[dict]:
 
         finnhub_limiter.wait()
         try:
+            # Phase C-US-IDENTITY §3.2 规则 5:出站用当前 ticker,结果归 canonical
+            try:
+                from core.us_security_identity import current_ticker_for
+                out_symbol = current_ticker_for(code)
+            except Exception:
+                out_symbol = code
             resp = requests.get(
                 url,
-                params={"symbol": code, "token": cfg.api_key},
+                params={"symbol": out_symbol, "token": cfg.api_key},
                 timeout=10,
             )
             resp.raise_for_status()

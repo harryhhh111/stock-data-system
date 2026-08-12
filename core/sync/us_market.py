@@ -198,14 +198,18 @@ def sync_us_market(args) -> dict:
     pending_count = len(pending_tickers)
 
     for i, ticker in enumerate(pending_tickers, 1):
-        try:
-            cik = fetcher.ticker_to_cik(ticker)
-        except ValueError:
-            failed += 1
-            errors.append(f"{ticker}: 无法解析 CIK")
-            failures.append({"ticker": ticker, "kind": "cik_mapping",
-                             "error": "无法解析 CIK"})
-            continue
+        # Phase C-US-IDENTITY §3.1:本地 stock_info.cik 优先;缺失才退回 SEC ticker 映射
+        from core.us_security_identity import resolve_us_cik
+        cik = resolve_us_cik(ticker)
+        if cik is None:
+            try:
+                cik = fetcher.ticker_to_cik(ticker)
+            except ValueError:
+                failed += 1
+                errors.append(f"{ticker}: 无法解析 CIK")
+                failures.append({"ticker": ticker, "kind": "cik_mapping",
+                                 "error": "无法解析 CIK"})
+                continue
 
         stage = "fetch"
         try:
@@ -215,6 +219,7 @@ def sync_us_market(args) -> dict:
             raw_data, ctx = fetcher.fetch_company_facts_with_context(
                 ticker,
                 allow_cache=False,
+                cik=cik,
             )
             if not raw_data:
                 failed += 1
@@ -252,9 +257,11 @@ def sync_us_market(args) -> dict:
             failed += 1
             error_msg = f"{type(exc).__name__}: {exc}"
             errors.append(f"{ticker}: {error_msg}")
-            # Phase C1:失败 kind 决定台账可否豁免;版本写入/未知失败永不可豁免
+            # Phase C1:失败 kind 决定台账可否豁免;版本写入/身份校验/未知失败永不可豁免
             if stage == "ingest":
                 kind = "ingest"
+            elif stage == "fetch" and "响应 CIK" in error_msg:
+                kind = "identity"
             elif stage == "fetch" and "404" in error_msg:
                 kind = "fetch_404"
             elif stage == "fetch":

@@ -1,6 +1,9 @@
 # US universe 身份、ticker 别名与退市状态维护
 
-> 状态：**待审核，未经项目所有者批准不得实施。**
+> 状态：**已执行（2026-08-12)。** 五只映射源缺陷恢复 CIK 直连;四个更名经身份表兼容;
+> BLD(2026-07-01)与 CWEN-A(2026-04-30,证据门通过:1:1 换码并入 CWEN)正确退出
+> active universe;身份 dry-run 与证据产物见 `build/financial_comparison/us_identity/`。
+> CWEN-A 处置基于 8-K 0001104659-26-053557(Class A 1:1 转 Class C,2026-05-01 生效)。
 > 前置：Phase C2 的同步范围已接入，但撤销临时 `TICKER_MAPPING_DRIFT` skip 后，11 只
 > ticker/身份问题会按 C1 门禁阻断 scheduler。这是预期的保守状态。
 > 范围：只处理 APLS、HOLX、CTRA、JHG、NSA、BK、SATS、IAC、PSTG、CWEN-A、BLD 的

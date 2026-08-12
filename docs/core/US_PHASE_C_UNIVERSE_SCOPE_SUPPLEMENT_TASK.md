@@ -1,7 +1,9 @@
 # Phase C2：补齐美股产品 universe 的 SEC 同步范围
 
-> 状态：**已执行（2026-08-12)。** 33 只补充清单上线,universe 同步范围缺口归零;
-> 完整编排运行成功(zero_write=pass、UNEXPLAINED=0、projection 单次、validate 执行)。
+> 状态：**已执行并验收（2026-08-12)。** 33 只补充清单上线(其中 BLD、CWEN-A 经身份
+> 任务分别按收购退市/1:1 换码处置,supplement 实收 31 只);最终编排摘要
+> `UNEXPLAINED=0`、`universe_not_in_sync_scope=[]`(active universe 1,001)、
+> projection 单次、validate 执行、零写入通过。
 > 实施期发现两件事,见文末"实施记录"。
 > 前置：Phase C1 已上线；当前服务器 `STOCK_MARKETS=US`，`STOCK_US_INDEXES=RUSSELL1000`。
 > 范围：只把当前产品 universe 中、但不在 RUSSELL1000 解析集合的 33 只股票加入现有 SEC
@@ -163,12 +165,20 @@ US universe 成员资格和复核日期检查。loader 或集合校验失败必�
 
 ## 6. 实施记录（2026-08-12)
 
-1. **ticker 漂移发现**:33 只补充清单中 11 只（APLS、BK、BLD、CTRA、CWEN-A、HOLX、
-   IAC、JHG、NSA、PSTG、SATS）在当前 SEC `company_tickers.json` 中无映射——其中
-   BK→BNY、BLD→BLDR、SATS→ECHO、CWEN-A→CWEN 为已证实的更名，其余为 SEC 元数据
-   缺 ticker。已按 `TICKER_MAPPING_DRIFT`(kind=cik_mapping）登记 expected_skip,
-   `review_by=2026-09-12`。**这些股票的日更暂停,直到 universe 层完成 ticker 更名
-   维护**(另立任务;不属于 C2 范围)。
+1. **ticker 漂移发现(2026-08-12 已勘误)**:33 只补充清单中 11 只在当前 SEC
+   `company_tickers.json` 中无映射。首轮实施曾按公司名匹配登记 `TICKER_MAPPING_DRIFT`
+   expected_skip,其中"BLD→BLDR 更名"结论**错误**(BLD=TopBuild 已被 QXO 收购,
+   BLDR=Builders FirstSource 是另一发行人),11 条登记已撤回,改为逐只 CIK 级身份
+   核验(见下)。未经项目所有者批准前,这 11 只不登记 skip,同步失败即阻断。
+   CIK 级核验(submissions API + companyfacts 端点,2026-08-12)将它们分为三类:
+   - **映射源缺陷,发行人健在**(companyfacts 200,仍正常申报):HOLX、CTRA、JHG、
+     NSA、APLS——SEC 的 ticker 元数据缺失,但 `stock_info.cik` 是权威本地映射,
+     技术上可绕过 ticker_to_cik 直接按 CIK 抓取;
+   - **真更名/重组**(同 CIK,发行人连续):BK→BNY(1390777)、SATS→ECHO(1415404)、
+     CWEN-A→CWEN(1567683)、IAC→People Inc/PPLI(1800227)、
+     PSTG→Everpure/P(1474432)——需要 universe 层 ticker 更名维护决策;
+   - **发行人状态变化**:BLD(TopBuild,CIK 1633931)已被 QXO 收购,主体变为
+     "QXO Insulation, LLC",无独立财报流——不是 ticker 更名。
 2. **JD 的 net_profit MISSING_MAPPING 进入滚动队列**:JD 20-F 的 `ProfitLoss`
    被映射为 operating_income、canonical net_income 历来为 NULL 并以
    `net_income_common_fallback` 兜底(既有设计),需单独口径分析后决定映射或登记,

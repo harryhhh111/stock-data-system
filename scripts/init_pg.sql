@@ -371,7 +371,8 @@ CREATE INDEX IF NOT EXISTS idx_quote_cap ON daily_quote(market_cap) WHERE market
 -- ============================================================
 -- 美股表（独立 schema）
 -- 美股使用独立的表结构，DDL 见 `scripts/us_tables.sql`
--- 包括：us_income_statement, us_balance_sheet, us_cash_flow_statement
+-- 包括：us_income_statement, us_balance_sheet, us_cash_flow_statement,
+-- us_security_ticker_symbol(交易代码身份映射,2026-08-12)
 --       及 standalone columns, frame columns
 -- ============================================================
 

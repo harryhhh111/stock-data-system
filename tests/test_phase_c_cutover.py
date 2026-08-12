@@ -152,11 +152,18 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
     calls: list[str] = []
     sync_result.setdefault("failures", [])
     sync_result.setdefault("index_errors", [])
+    sync_result.setdefault("raw_index_tickers", set(sync_result.get("index_tickers", set())))
     monkeypatch.setattr(sched, "_sync_us", lambda: sync_result)
     monkeypatch.setattr(sched, "_load_expected_skips", lambda today=None: {})
     monkeypatch.setattr(sched, "_load_index_only_registry", lambda: {"Z9"})
-    monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+    import core.us_security_identity as ident_mod
+    monkeypatch.setattr(ident_mod, "validate_us_security_symbols", lambda symbols=None: [])
+    monkeypatch.setattr(ident_mod, "resolve_us_symbols_batch",
+                        lambda tickers, symbols=None: {t: t for t in tickers})
+    monkeypatch.setattr(sched, "_reconcile_us_universe",
+                        lambda scope, idx, es, raw_index_tickers=None, resolved_map=None: {
         "universe_count": 1003, "index_ticker_count": 1000, "scope_ticker_count": 1033,
+        "raw_index_ticker_count": 1000,
         "out_of_sync_scope": ["Z1"], "index_only_tickers": ["Z9"],
         "universe_not_in_sync_scope": [], "expected_skip_in_universe": ["Z1"],
     })
@@ -222,7 +229,7 @@ class TestOrchestration:
             "success": 20, "failed": 0, "skipped": 982, "no_write": [],
             "errors": [], "index_tickers": {"A"},
         })
-        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es, raw_index_tickers=None, resolved_map=None: {
             "universe_count": 1003, "index_ticker_count": 1001, "scope_ticker_count": 1001,
             "out_of_sync_scope": [], "index_only_tickers": ["Z9", "NEW1"],
             "universe_not_in_sync_scope": [], "expected_skip_in_universe": [],
@@ -566,7 +573,7 @@ class TestSupplementScopeMerge:
             "success": 20, "failed": 0, "skipped": 982, "no_write": [],
             "errors": [], "index_tickers": {"A"},
         })
-        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es: {
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es, raw_index_tickers=None, resolved_map=None: {
             "universe_count": 1003, "index_ticker_count": 1000, "scope_ticker_count": 1032,
             "out_of_sync_scope": ["NEWSTOCK"], "index_only_tickers": ["Z9"],
             "universe_not_in_sync_scope": ["NEWSTOCK"], "expected_skip_in_universe": [],

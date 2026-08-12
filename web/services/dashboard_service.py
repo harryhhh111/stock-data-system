@@ -47,7 +47,8 @@ def get_stats() -> dict:
 
         # 1. 各市场股票总数
         cur.execute(
-            "SELECT market, COUNT(*) FROM stock_info WHERE market = ANY(%s) GROUP BY market",
+            "SELECT market, COUNT(*) FROM stock_info WHERE market = ANY(%s) "
+            "AND (market <> 'US' OR delist_date IS NULL OR delist_date > CURRENT_DATE) GROUP BY market",
             (markets,)
         )
         total_stocks = {r[0]: r[1] for r in cur.fetchall()}

@@ -198,12 +198,15 @@ class PITPreloader:
 
             self.info = _copy_df(
                 conn,
-                "SELECT stock_code, stock_name, market, industry, list_date"
+                "SELECT stock_code, stock_name, market, industry, list_date, delist_date"
                 " FROM stock_info WHERE market = 'US'",
                 str_cols=("stock_code", "stock_name", "industry", "market"),
             )
             self.info["list_date"] = pd.to_datetime(
                 self.info["list_date"], errors="coerce"
+            ).dt.date
+            self.info["delist_date"] = pd.to_datetime(
+                self.info["delist_date"], errors="coerce"
             ).dt.date
 
     # ── PIT 查询 ────────────────────────────────────────────

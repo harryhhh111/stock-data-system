@@ -102,7 +102,8 @@ def _d(val: Any) -> Optional[float]:
 
 def _get_all_us_stocks() -> list[str]:
     rows = db.execute(
-        "SELECT stock_code FROM stock_info WHERE market = 'US' ORDER BY stock_code",
+        "SELECT stock_code FROM stock_info WHERE market = 'US' "
+        "AND (delist_date IS NULL OR delist_date > CURRENT_DATE) ORDER BY stock_code",
         fetch=True,
     ) or []
     return [r[0] for r in rows]

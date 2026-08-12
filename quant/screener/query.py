@@ -155,6 +155,7 @@ FROM (
     FROM us_financial_current_annual
 ) f
 JOIN stock_info s ON f.stock_code = s.stock_code AND s.market = 'US'
+  AND (s.delist_date IS NULL OR s.delist_date > CURRENT_DATE)
 WHERE f.rn <= %s
 ORDER BY f.stock_code, f.report_date DESC
 """

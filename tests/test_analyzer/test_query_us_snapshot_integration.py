@@ -30,11 +30,13 @@ def test_pltr_pe_regression_against_live_db():
     assert row["net_income_basis"] == "consolidated"
     assert row["financial_data_status"] == query_us.STATUS_SNAPSHOT_AVAILABLE
     assert row["net_profit_ttm"] == pytest.approx(3016692000.0)
-    # PE 必须由市值/TTM 净利润自算，而不是供应商 139.03
+    # PE 必须由市值/TTM 净利润自算，而不是供应商值
     assert row["pe_ttm"] == pytest.approx(
         row["market_cap"] / 3016692000.0, rel=1e-9,
     )
-    assert row["pe_ttm"] != pytest.approx(139.03, abs=0.5)
+    # 注:原"!= 139.03(供应商值)"反向断言已移除——该值是 2026-08 时点快照,
+    # 本地正确计算值随行情漂移可能恰好落入该窗口(2026-08-12 实测 139.35);
+    # 上面的精确相等断言已能证明本地自算。
 
 
 @pytest.mark.parametrize("code", ["AAPL", "ONTO", "HRB", "ACGL"])

@@ -311,11 +311,12 @@ def _sync_financial(market: str) -> dict:
 def _sync_us() -> dict:
     """执行美股增量同步。
 
-    通过构造 sync.py 所需的 args 来调用。
-    支持从环境变量 STOCK_US_INDEXES 读取要同步的指数列表（逗号分隔）。
-    默认只同步 SP500（向后兼容）。
+    Phase C-US-IDENTITY(2026-08-12):指数 ticker 先经身份表 canonical 化
+    (BNY→BK 等),与补充清单 canonical code 求并集去重,每个 canonical
+    security 只同步一次;SEC 请求/事实/snapshot 全部落在 canonical key。
     """
     from core.sync import sync_us_market
+    from core.us_security_identity import resolve_us_symbols_batch
 
     # 从环境变量读取要同步的指数列表
     indexes_str = os.environ.get("STOCK_US_INDEXES", "SP500")
@@ -323,7 +324,6 @@ def _sync_us() -> dict:
 
     logger.info("美股同步范围: %s", ", ".join(indexes))
 
-    # 汇总所有指数的同步结果
     total_result = {
         "total": 0,
         "success": 0,
@@ -335,94 +335,70 @@ def _sync_us() -> dict:
         "failures": [],       # ticker 级结构化失败(Phase C1)
         "index_errors": [],   # 指数级失败(公司列表/整指数异常)——一律 blocking
         "no_write": [],
-        "index_tickers": set(),
+        "index_tickers": set(),      # canonical 化后的同步 ticker(去重)
+        "raw_index_tickers": set(),  # 原始指数 ticker(审计留痕,对账用)
     }
 
+    # 1. 解析所有指数 → 原始 ticker → canonical 化
+    from core.fetchers.us_financial import USFinancialFetcher
+    raw_index: set[str] = set()
     for index in indexes:
-        logger.info("开始同步指数: %s", index)
-
-        class Args:
-            us_index = index
-            us_tickers = None
-            force = config.scheduler.force_sync
-
         try:
-            # 解析该指数的 ticker 全集(用于范围对账,无论本轮是否增量跳过)
-            from core.fetchers.us_financial import USFinancialFetcher
-            index_tickers = set(USFinancialFetcher().get_tickers_by_index(index))
-            if not index_tickers:
+            tickers = set(USFinancialFetcher().get_tickers_by_index(index))
+            if not tickers:
                 total_result["index_errors"].append(f"{index}: 指数成分解析为空")
                 logger.error("指数 %s 成分解析为空", index)
                 continue
-            total_result["index_tickers"] |= index_tickers
-
-            result = sync_us_market(Args())
-
-            # 汇总统计
-            total_result["total"] += result.get("total", 0)
-            total_result["success"] += result.get("success", 0)
-            total_result["failed"] += result.get("failed", 0)
-            total_result["skipped"] += result.get("skipped", 0)
-            total_result["elapsed"] += result.get("elapsed", 0)
+            raw_index |= tickers
             total_result["indexes_synced"].append(index)
-            total_result["no_write"].extend(result.get("no_write", []))
-            total_result["errors"].extend(result.get("errors", []))
-            total_result["failures"].extend(result.get("failures", []))
-
-            if result.get("error"):
-                total_result["index_errors"].append(f"{index}: {result['error']}")
-
-            logger.info(
-                "指数 %s 同步完成: success=%d, failed=%d",
-                index,
-                result.get("success", 0),
-                result.get("failed", 0),
-            )
         except Exception as exc:
             error_msg = f"{index}: {type(exc).__name__}: {exc}"
-            logger.error("指数 %s 同步失败: %s", index, exc)
-            total_result["errors"].append(error_msg)
+            logger.error("指数 %s 解析失败: %s", index, exc)
             total_result["index_errors"].append(error_msg)
+    total_result["raw_index_tickers"] = raw_index
 
-    # Phase C2:补充清单(universe 内但不在指数集合)并入同步范围,结果合并进同一分类
+    canonical_index = set(resolve_us_symbols_batch(raw_index).values())
+    total_result["index_tickers"] = canonical_index
+
+    # 2. Phase C2 补充清单(canonical code),求并集去重
     supplement = _load_supplement_tickers()
     total_result["supplement_tickers"] = sorted(supplement)
-    total_result["supplement_now_in_index"] = sorted(
-        supplement & total_result["index_tickers"])
-    extra = sorted(supplement - total_result["index_tickers"])
-    if extra:
-        logger.info("同步补充清单(universe 内不在指数): %d 只", len(extra))
+    total_result["supplement_now_in_index"] = sorted(supplement & canonical_index)
+    scope = sorted(canonical_index | supplement)
 
-        class SArgs:
-            us_index = None
-            us_tickers = ",".join(extra)
-            force = config.scheduler.force_sync
+    if not scope:
+        total_result["index_errors"].append("empty scope: 无有效指数成分")
+        total_result["error"] = "empty scope"
+        return total_result
 
-        try:
-            result = sync_us_market(SArgs())
-            total_result["total"] += result.get("total", 0)
-            total_result["success"] += result.get("success", 0)
-            total_result["failed"] += result.get("failed", 0)
-            total_result["skipped"] += result.get("skipped", 0)
-            total_result["elapsed"] += result.get("elapsed", 0)
-            total_result["no_write"].extend(result.get("no_write", []))
-            total_result["errors"].extend(result.get("errors", []))
-            total_result["failures"].extend(result.get("failures", []))
-            if result.get("error"):
-                total_result["index_errors"].append(f"supplement: {result['error']}")
-        except Exception as exc:
-            error_msg = f"supplement: {type(exc).__name__}: {exc}"
-            logger.error("补充清单同步失败: %s", exc)
-            total_result["errors"].append(error_msg)
-            total_result["index_errors"].append(error_msg)
+    # 3. 每个 canonical security 只同步一次
+    class Args:
+        us_index = None
+        us_tickers = ",".join(scope)
+        force = config.scheduler.force_sync
 
-    # 如果所有指数都失败，返回失败状态
-    if not total_result["indexes_synced"] or total_result["success"] == 0:
-        total_result["error"] = (
-            "; ".join(total_result["errors"])
-            if total_result["errors"]
-            else "All indexes failed"
+    try:
+        result = sync_us_market(Args())
+        total_result["total"] += result.get("total", 0)
+        total_result["success"] += result.get("success", 0)
+        total_result["failed"] += result.get("failed", 0)
+        total_result["skipped"] += result.get("skipped", 0)
+        total_result["elapsed"] += result.get("elapsed", 0)
+        total_result["no_write"].extend(result.get("no_write", []))
+        total_result["errors"].extend(result.get("errors", []))
+        total_result["failures"].extend(result.get("failures", []))
+        if result.get("error"):
+            total_result["index_errors"].append(f"sync: {result['error']}")
+        logger.info(
+            "美股同步完成: scope=%d success=%d failed=%d skipped=%d",
+            len(scope), result.get("success", 0), result.get("failed", 0),
+            result.get("skipped", 0),
         )
+    except Exception as exc:
+        error_msg = f"sync: {type(exc).__name__}: {exc}"
+        logger.error("美股同步失败: %s", exc)
+        total_result["errors"].append(error_msg)
+        total_result["index_errors"].append(error_msg)
 
     return total_result
 
@@ -559,23 +535,35 @@ def _reconcile_us_universe(
     scope_tickers: set[str],
     index_tickers: set[str],
     expected_skip: list[str],
+    raw_index_tickers: set[str] | None = None,
+    resolved_map: dict[str, str] | None = None,
 ) -> dict:
-    """最终 sync scope(指数 ∪ 补充清单)vs stock_info US universe 对账(§3.2 + C2)。
+    """最终 sync scope(指数 canonical ∪ 补充清单)vs active US universe 对账。
 
     out_of_sync_scope = 不在 scope 的 universe 股票 + universe 内的 expected_skip。
-    index_only 仅针对指数集合定义,不混入补充清单。
+    index_only 按原始指数 ticker 定义,但经身份表解析到 active canonical 的
+    (BNY→BK 等)视为已覆盖,不再计入(Phase C-US-IDENTITY §3.2 规则 3)。
     """
     universe = {r[0] for r in execute(
-        "SELECT stock_code FROM stock_info WHERE market = 'US'", fetch=True) or []}
+        "SELECT stock_code FROM stock_info WHERE market = 'US' "
+        "AND (delist_date IS NULL OR delist_date > CURRENT_DATE)", fetch=True) or []}
     not_in_scope = sorted(universe - scope_tickers)
     out_scope = sorted(set(not_in_scope) | (set(expected_skip) & universe))
+    if raw_index_tickers is None:
+        raw_index_tickers = index_tickers
+    resolved_map = resolved_map or {}
+    index_only = sorted(
+        t for t in raw_index_tickers
+        if resolved_map.get(t, t) not in universe
+    )
     return {
         "universe_count": len(universe),
         "index_ticker_count": len(index_tickers),
+        "raw_index_ticker_count": len(raw_index_tickers),
         "scope_ticker_count": len(scope_tickers),
         "out_of_sync_scope": out_scope,
         "universe_not_in_sync_scope": not_in_scope,
-        "index_only_tickers": sorted(index_tickers - universe),
+        "index_only_tickers": index_only,
         "expected_skip_in_universe": sorted(set(expected_skip) & universe),
     }
 
@@ -651,15 +639,26 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         "status": "started",
     }
 
+    # 0. 身份冲突启动期校验(Phase C-US-IDENTITY §3.2):任何冲突禁止同步
+    from core.us_security_identity import (
+        resolve_us_symbols_batch, validate_us_security_symbols,
+    )
+    identity_conflicts = validate_us_security_symbols()
+    if identity_conflicts:
+        raise RuntimeError(f"US 身份表冲突,禁止同步: {identity_conflicts}")
+
     # 1. sync + 分类
     skips = _load_expected_skips()
     sync_result = _sync_us()
     classification = _classify_us_sync_outcome(sync_result, skips)
     index_tickers = sync_result["index_tickers"]
+    raw_index_tickers = sync_result.get("raw_index_tickers", set())
     supplement_tickers = set(sync_result.get("supplement_tickers", []))
     scope_tickers = index_tickers | supplement_tickers
+    resolved_map = resolve_us_symbols_batch(raw_index_tickers)
     reconciliation = _reconcile_us_universe(
-        scope_tickers, index_tickers, classification["expected_skip"])
+        scope_tickers, index_tickers, classification["expected_skip"],
+        raw_index_tickers=raw_index_tickers, resolved_map=resolved_map)
     summary["sync"] = {
         k: (sorted(v) if isinstance(v, set) else v)
         for k, v in sync_result.items() if k != "index_tickers"

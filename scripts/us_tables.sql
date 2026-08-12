@@ -221,3 +221,29 @@ ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS effect_of_exchange_r
 ALTER TABLE us_income_statement ADD COLUMN IF NOT EXISTS frame VARCHAR(20);
 ALTER TABLE us_balance_sheet ADD COLUMN IF NOT EXISTS frame VARCHAR(20);
 ALTER TABLE us_cash_flow_statement ADD COLUMN IF NOT EXISTS frame VARCHAR(20);
+
+-- ============================================================
+-- us_security_ticker_symbol — US 交易代码 → canonical security 身份映射
+-- Added: 2026-08-12 (US_UNIVERSE_SECURITY_IDENTITY_TASK.md §3.2)
+-- 交易 ticker、财务 CIK、canonical stock_code 是三个概念;同 CIK 多股权结构
+-- 合法存在,故 cik 不加唯一约束。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS us_security_ticker_symbol (
+    market               VARCHAR(10)  NOT NULL DEFAULT 'US',
+    ticker               VARCHAR(20)  NOT NULL,
+    canonical_stock_code VARCHAR(20)  NOT NULL REFERENCES stock_info(stock_code),
+    cik                  VARCHAR(10)  NOT NULL,
+    symbol_role          VARCHAR(10)  NOT NULL CHECK (symbol_role IN ('current', 'legacy')),
+    valid_from           DATE,
+    valid_to             DATE,
+    evidence_ref         TEXT         NOT NULL,
+    verified_at          DATE         NOT NULL,
+    created_at           TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ  DEFAULT NOW(),
+    PRIMARY KEY (market, ticker)
+);
+
+-- 每个 canonical security 最多一个 current ticker
+CREATE UNIQUE INDEX IF NOT EXISTS idx_us_sec_sym_one_current
+    ON us_security_ticker_symbol (canonical_stock_code)
+    WHERE symbol_role = 'current';

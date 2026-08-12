@@ -63,6 +63,33 @@ def search_stocks(q: str, market: str | None) -> list[dict]:
                 "market": row[2],
                 "industry": row[3],
             })
+
+        # Phase C-US-IDENTITY:新交易代码(BNY/ECHO/PPLI/P)也可搜到 canonical 行
+        if not market or market == "US":
+            cur.execute(
+                """
+                SELECT s.ticker, s.canonical_stock_code, i.stock_name, i.market, i.industry
+                FROM us_security_ticker_symbol s
+                JOIN stock_info i ON i.stock_code = s.canonical_stock_code
+                WHERE s.market = 'US' AND s.symbol_role = 'current'
+                  AND s.ticker ILIKE %s
+                ORDER BY s.ticker
+                LIMIT 20
+                """,
+                (f"%{q}%",),
+            )
+            existing = {r["stock_code"] for r in results}
+            for ticker, canon, name, mkt, industry in cur.fetchall():
+                if canon in existing:
+                    continue
+                results.append({
+                    "stock_code": canon,
+                    "stock_name": name,
+                    "market": mkt,
+                    "industry": industry,
+                    "requested_ticker": ticker,
+                    "resolved_stock_code": canon,
+                })
         cur.close()
 
     return results
@@ -70,6 +97,13 @@ def search_stocks(q: str, market: str | None) -> list[dict]:
 
 def get_report(stock_code: str, market: str | None) -> dict:
     """个股分析报告，返回 AnalysisReport 结构。"""
+    # 0. Phase C-US-IDENTITY:新交易代码解析回 canonical(BNY→BK 等)
+    try:
+        from core.us_security_identity import resolve_us_symbol
+        stock_code = resolve_us_symbol(stock_code)
+    except Exception:
+        pass  # 身份表不可用时按原 code 处理
+
     # 1. 确定市场
     if market:
         mkt = market

@@ -186,7 +186,8 @@ def is_allowlisted_52_53_pair(
 def _get_all_us_stocks() -> list[str]:
     with Connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT stock_code FROM stock_info WHERE market = 'US' ORDER BY stock_code")
+            cur.execute("SELECT DISTINCT stock_code FROM stock_info WHERE market = 'US' "
+                "AND (delist_date IS NULL OR delist_date > CURRENT_DATE) ORDER BY stock_code")
             return [r[0] for r in cur.fetchall()]
 
 

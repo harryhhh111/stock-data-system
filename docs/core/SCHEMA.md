@@ -415,6 +415,35 @@ CREATE INDEX idx_idx_stock ON index_constituent(stock_code);
 
 ## 辅助表
 
+### us_security_ticker_symbol（US 交易代码 ↔ canonical security 身份映射,2026-08-12)
+
+规格 `docs/core/US_UNIVERSE_SECURITY_IDENTITY_TASK.md`。交易 ticker(会更名)、
+财务 CIK(发行人身份)、canonical `stock_code`(历史主键)三者分离;SEC 同步按 CIK,
+行情出站请求用 current ticker、入库归 canonical,搜索可解析新代码。
+
+```sql
+CREATE TABLE us_security_ticker_symbol (
+    market               VARCHAR(10) NOT NULL DEFAULT 'US',
+    ticker               VARCHAR(20) NOT NULL,
+    canonical_stock_code VARCHAR(20) NOT NULL REFERENCES stock_info(stock_code),
+    cik                  VARCHAR(10) NOT NULL,   -- 不加唯一约束:同 CIK 多股权结构合法
+    symbol_role          VARCHAR(10) NOT NULL CHECK (symbol_role IN ('current','legacy')),
+    valid_from           DATE,
+    valid_to             DATE,
+    evidence_ref         TEXT NOT NULL,
+    verified_at          DATE NOT NULL,
+    created_at           TIMESTAMPTZ DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (market, ticker)
+);
+-- 每个 canonical 最多一个 current ticker
+CREATE UNIQUE INDEX idx_us_sec_sym_one_current
+    ON us_security_ticker_symbol (canonical_stock_code) WHERE symbol_role = 'current';
+```
+
+冲突校验由 `core/us_security_identity.validate_us_security_symbols()` 启动期执行
+(跨表规则:current ticker 不得撞另一 active stock_code、CIK 必须与 stock_info 一致等)。
+
 ### market_cap_backfill_audit（历史市值 PIT 回算审计）
 
 追踪 `scripts/backfill_historical_market_cap.py` 的逐行写入记录，支持按 `batch_id` 精确回滚。

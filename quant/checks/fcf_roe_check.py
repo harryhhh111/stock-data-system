@@ -183,6 +183,7 @@ def get_fcf_screen(market: str, min_yield: float = 0.10, min_mcap: float = 0) ->
         %s AS market
     FROM {cfg['fcf_yield_view']} fy
     JOIN stock_info s ON fy.stock_code = s.stock_code
+  AND (s.delist_date IS NULL OR s.delist_date > CURRENT_DATE)
     WHERE fy.fcf_yield > %s
       AND {cfg['market_filter']}
       AND s.industry NOT IN %s

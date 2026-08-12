@@ -254,6 +254,11 @@ def build_universe(
     rows = []
     for _, info_row in info.iterrows():
         stock = info_row["stock_code"]
+        # Phase C-US-IDENTITY §3.4:PIT as-of 过滤——退市股在其 delist_date 之后
+        # 不进入选股池(保留退市前历史,避免幸存者偏差)
+        delist = info_row.get("delist_date")
+        if delist is not None and pd.notna(delist) and delist <= as_of_date:
+            continue
         d = dict(annual_latest.get(stock) or {})
 
         rev_yoy = d.get("revenue_yoy")

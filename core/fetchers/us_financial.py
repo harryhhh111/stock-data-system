@@ -473,13 +473,21 @@ class USFinancialFetcher(BaseFetcher):
         ticker: str,
         *,
         allow_cache: bool = True,
+        cik: str | None = None,
     ) -> tuple[dict, FetchContext]:
         """获取 Company Facts，并返回不可变的 fetch context。
 
         context 包含 snapshot_id、content_hash、stock_code、cik，
         必须显式传给 extract_table() 以建立版本追溯，避免依赖 fetcher 可变状态。
+
+        cik(可选,Phase C-US-IDENTITY §3.1):本地权威 CIK(stock_info.cik)优先;
+        不传时退回 SEC company_tickers.json 的 ticker→CIK 映射。响应与缓存的
+        顶层 cik 必须与最终 CIK 一致,否则按 identity failure 抛错。
         """
-        cik = self.ticker_to_cik(ticker)
+        if cik:
+            expected_cik = str(cik).strip().zfill(10)
+        else:
+            expected_cik = self.ticker_to_cik(ticker).zfill(10)
         cache_file = CACHE_DIR / f"{ticker}.json"
 
         fetched_at = datetime.now()
@@ -489,16 +497,34 @@ class USFinancialFetcher(BaseFetcher):
 
         if allow_cache and self._load_cache(cache_file):
             data = json.loads(cache_file.read_text())
-            logger.debug("Company Facts 缓存命中: %s", ticker)
+            # 缓存实体校验:CIK 不符即弃用重拉,避免读到旧实体缓存
+            cached_cik = str(data.get("cik", "")).strip().zfill(10)
+            if cached_cik != expected_cik:
+                logger.warning(
+                    "%s: 缓存 CIK %s 与预期 %s 不符,弃用重拉",
+                    ticker, cached_cik, expected_cik,
+                )
+                data = None
+            else:
+                logger.debug("Company Facts 缓存命中: %s", ticker)
         else:
-            url = config.sec.base_url.format(cik=cik)
-            logger.info("拉取 Company Facts: %s (CIK=%s)...", ticker, cik)
+            data = None
+
+        if data is None:
+            url = config.sec.base_url.format(cik=expected_cik)
+            logger.info("拉取 Company Facts: %s (CIK=%s)...", ticker, expected_cik)
             self._rate_limiter.wait()
             resp = self._request_sec(url)
             data = resp.json()
             http_status = resp.status_code
             source_last_modified = resp.headers.get("Last-Modified")
             fetch_source = "network"
+            # 响应实体校验:返回的必须是预期发行人的 JSON
+            resp_cik = str(data.get("cik", "")).strip().zfill(10)
+            if resp_cik != expected_cik:
+                raise ValueError(
+                    f"{ticker}: CompanyFacts 响应 CIK {resp_cik} 与预期 {expected_cik} 不一致,拒绝接收"
+                )
             self._save_cache(cache_file, json.dumps(data))
             logger.info("Company Facts 拉取完成: %s", ticker)
 
@@ -531,7 +557,7 @@ class USFinancialFetcher(BaseFetcher):
 
         context = FetchContext(
             stock_code=ticker.upper(),
-            cik=cik.zfill(10),
+            cik=expected_cik,
             snapshot_id=snapshot_id,
             content_hash=content_hash,
         )
