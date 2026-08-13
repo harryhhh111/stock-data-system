@@ -141,6 +141,11 @@ standard_field = operating_income
 5. 所有旧 JD `ProfitLoss → operating_income` version facts 都有 active technical exclusion，新增
    `ProfitLoss → net_income` facts 能完整溯源到 raw snapshot 与 accession。
 
+历史影响是预期行为：本次待排除的不是单一 FY2025 事实，而是 **2015–2025 的 11 条** JD
+`ProfitLoss → operating_income` 错误分类事实。由于 `PARSER_TECHNICAL_ERROR` exclusion 对所有
+as-of 生效，JD 各历史年度 selected `operating_income` / `net_income` 的选择值随之改变。compare
+必须逐报告期逐字段归类并保留 evidence；不得以 broad exception 或汇总说明打包通过历史差异。
+
 ### 4.2 回归与运行质量
 
 1. JD 的 compare `net_profit` 不再为 `MISSING_MAPPING`；若 filing 季发生自然滚动，其 reason 必须有
