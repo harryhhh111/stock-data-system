@@ -200,7 +200,8 @@ CREATE TABLE us_financial_fact_version (
         period_kind,
         report_date,
         context_hash,
-        unit
+        unit,
+        standard_field
     )
 );
 
@@ -213,6 +214,11 @@ CREATE INDEX idx_us_fact_asof
 ```
 
 `context_hash` 由规范化 dimensions、entity/context 和 period 信息生成。不能只用 `(tag,end,fp)` 去重，因为这会合并不同 member、单位或 accession。
+
+唯一键的前 8 个字段识别原始 XBRL fact；`standard_field` 是解析分类，也属于**解析后事实
+版本身份**。映射规则纠错时，允许同一个原始 fact 的旧错误分类与新正确分类并存；旧行通过
+`us_financial_fact_exclusion` 排除，不能原地改写或删除。这一规则于 2026-08-13 的 JD
+`ProfitLoss` 受限映射修复中启用。
 
 若同一唯一键在不同 snapshot 中值发生变化，这是 SEC 聚合源异常或解析差异，应进入审计；同一个 accession 的事实原则上不可修改。
 

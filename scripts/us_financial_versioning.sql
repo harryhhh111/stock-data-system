@@ -143,7 +143,10 @@ CREATE TABLE IF NOT EXISTS us_financial_fact_version (
         period_kind,
         report_date,
         context_hash,
-        unit
+        unit,
+        -- 解析分类也是事实版本身份的一部分：同一 SEC 原始事实在映射纠错后
+        -- 可保留旧分类（由 exclusion 隐藏）并新增正确分类，维持不可变审计链。
+        standard_field
     )
 );
 

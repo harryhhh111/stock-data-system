@@ -644,6 +644,10 @@ cik, sic_code, fiscal_year_end, sec_filing_count
 | `us_fact_selection_run` | `run_id, selection_basis, as_of_date, selector_version, mapping_version, stock_scope, started_at, finished_at, status, selected_count, rejected_count, checksum_algorithm, result_checksum, manifest, error_message` |
 | `us_fact_selection_audit` | `selection_id, run_id, stock_code, statement, standard_field, period_kind, period_start, report_date, selection_basis, as_of_date, selected_fact_id, selected_accession, selected_filed_date, candidate_count, selection_reason, quality_flags, selector_version, selected_at, unit, sec_tag, context_hash, dimensions, economic_key_hash` |
 
+`us_financial_fact_version` 的唯一键为 `(stock_code, accession_no, taxonomy, sec_tag, period_kind,
+report_date, context_hash, unit, standard_field)`。前 8 项识别原始 XBRL fact，`standard_field` 识别
+解析分类；映射更正后的新分类可与被 technical exclusion 隐藏的旧错误分类共存。
+
 #### 回填、来源与例外审计
 
 | 表 | 实际字段 |
