@@ -194,6 +194,8 @@ class USFinancialFetcher(BaseFetcher):
         self._ticker_to_cik: dict[str, str] = {}
         self._cik_to_ticker: dict[str, str] = {}
         self._company_list_loaded = False
+        # scheduler 将此状态写入运行摘要；不能把 stale fallback 伪装成正常来源。
+        self._index_source_status: dict[str, dict[str, Any]] = {}
 
     # ── 公司列表 ──────────────────────────────────────────
 
@@ -376,15 +378,22 @@ class USFinancialFetcher(BaseFetcher):
     def fetch_russell1000_constituents(self) -> list[str]:
         """获取 Russell 1000 成分股 ticker 列表。
 
-        数据源：Wikipedia Russell 1000 页面。
-        本地缓存 7 天过期。
+        优先 Wikipedia 页面或 7 天内缓存。页面失效时可受控回退到本地
+        stale cache，但仅限 ``russell1000_stale_cache_max_days``（默认 30 天）
+        内的、可解析且至少 800 个 ticker 的快照。回退状态由
+        ``get_index_source_status`` 暴露给 scheduler；超过上限仍明确失败。
 
         Returns:
             ticker 字符串列表，如 ["AAPL", "MSFT", ...]
         """
         cache_file = CACHE_DIR / "russell1000_tickers.json"
         if self._load_cache(cache_file):
-            tickers = json.loads(cache_file.read_text())
+            tickers = self._load_russell1000_cache(cache_file)
+            self._index_source_status["RUSSELL1000"] = {
+                "mode": "fresh_cache",
+                "cache_age_days": self._cache_age_days(cache_file),
+                "ticker_count": len(tickers),
+            }
             logger.info("Russell 1000 从缓存加载: %d 只", len(tickers))
             return tickers
 
@@ -413,13 +422,71 @@ class USFinancialFetcher(BaseFetcher):
                 if len(tickers) >= 800:  # 合理的 Russell 1000 数量
                     tickers = list(dict.fromkeys(tickers))
                     self._save_cache(cache_file, json.dumps(tickers))
+                    self._index_source_status["RUSSELL1000"] = {
+                        "mode": "live_wikipedia",
+                        "cache_age_days": 0.0,
+                        "ticker_count": len(tickers),
+                    }
                     logger.info("Russell 1000 成分股获取完成 (Wikipedia): %d 只", len(tickers))
                     return tickers
             logger.warning("Wikipedia 表格解析未找到有效数据")
         except Exception as e:
             logger.error("获取 Russell 1000 失败: %s", e)
 
-        raise RuntimeError("Russell 1000 所有数据源均失败，请检查网络")
+        # Wikipedia 页面结构并不稳定。短期保留最近一次已审核的范围快照，
+        # 但将降级状态显式交给 scheduler；不能无限期使用陈旧名单。
+        try:
+            tickers = self._load_russell1000_cache(cache_file)
+            age_days = self._cache_age_days(cache_file)
+            max_age = config.sec.russell1000_stale_cache_max_days
+            if age_days <= max_age:
+                self._index_source_status["RUSSELL1000"] = {
+                    "mode": "stale_cache_fallback",
+                    "cache_age_days": age_days,
+                    "max_stale_cache_days": max_age,
+                    "ticker_count": len(tickers),
+                }
+                logger.warning(
+                    "Russell 1000 live source 不可用，使用 %.1f 天旧缓存(%d 只；上限 %d 天)",
+                    age_days, len(tickers), max_age,
+                )
+                return tickers
+            self._index_source_status["RUSSELL1000"] = {
+                "mode": "stale_cache_expired",
+                "cache_age_days": age_days,
+                "max_stale_cache_days": max_age,
+                "ticker_count": len(tickers),
+            }
+        except Exception as exc:
+            self._index_source_status["RUSSELL1000"] = {
+                "mode": "no_usable_cache",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        raise RuntimeError(
+            "Russell 1000 live source unavailable and no usable stale cache within "
+            f"{config.sec.russell1000_stale_cache_max_days} days"
+        )
+
+    @staticmethod
+    def _cache_age_days(cache_file: Path) -> float:
+        return round((time.time() - cache_file.stat().st_mtime) / 86400, 3)
+
+    @staticmethod
+    def _load_russell1000_cache(cache_file: Path) -> list[str]:
+        tickers = json.loads(cache_file.read_text())
+        if not isinstance(tickers, list):
+            raise ValueError("Russell 1000 cache is not a ticker list")
+        tickers = list(dict.fromkeys(
+            str(t).strip().upper().replace(".", "-") for t in tickers if str(t).strip()
+        ))
+        if len(tickers) < 800:
+            raise ValueError(f"Russell 1000 cache ticker count invalid: {len(tickers)}")
+        return tickers
+
+    def get_index_source_status(self, index_name: str) -> dict[str, Any]:
+        """返回最近一次 index constituent 获取的来源状态副本。"""
+        return dict(self._index_source_status.get(index_name.upper(), {}))
 
     def get_tickers_by_index(self, index_name: str) -> list[str]:
         """根据指数名称获取成分股 ticker 列表。

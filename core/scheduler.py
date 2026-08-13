@@ -335,6 +335,7 @@ def _sync_us() -> dict:
         "failures": [],       # ticker 级结构化失败(Phase C1)
         "index_errors": [],   # 指数级失败(公司列表/整指数异常)——一律 blocking
         "no_write": [],
+        "index_sources": {},  # 来源/缓存降级状态，写入 Phase C 运行摘要
         "index_tickers": set(),      # canonical 化后的同步 ticker(去重)
         "raw_index_tickers": set(),  # 原始指数 ticker(审计留痕,对账用)
     }
@@ -343,8 +344,10 @@ def _sync_us() -> dict:
     from core.fetchers.us_financial import USFinancialFetcher
     raw_index: set[str] = set()
     for index in indexes:
+        fetcher = USFinancialFetcher()
         try:
-            tickers = set(USFinancialFetcher().get_tickers_by_index(index))
+            tickers = set(fetcher.get_tickers_by_index(index))
+            total_result["index_sources"][index] = fetcher.get_index_source_status(index)
             if not tickers:
                 total_result["index_errors"].append(f"{index}: 指数成分解析为空")
                 logger.error("指数 %s 成分解析为空", index)
@@ -354,8 +357,15 @@ def _sync_us() -> dict:
         except Exception as exc:
             error_msg = f"{index}: {type(exc).__name__}: {exc}"
             logger.error("指数 %s 解析失败: %s", index, exc)
+            total_result["index_sources"][index] = fetcher.get_index_source_status(index)
             total_result["index_errors"].append(error_msg)
     total_result["raw_index_tickers"] = raw_index
+
+    # 指数级失败在已知时必须 fail fast，不能只靠补充清单继续同步少数 ticker 后
+    # 才阻断；避免本次 2026-08-13 观察到的 partial version-layer 写入。
+    if total_result["index_errors"]:
+        total_result["error"] = "index constituent resolution failed"
+        return total_result
 
     canonical_index = set(resolve_us_symbols_batch(raw_index).values())
     total_result["index_tickers"] = canonical_index
@@ -612,6 +622,7 @@ def _write_phase_c_summary(summary: dict) -> Path:
         f"{summary['reconciliation'].get('expected_skip_in_universe', 'n/a')}",
         f"- supplement: {summary['sync'].get('supplement_tickers', 'n/a')}",
         f"- supplement_now_in_index: {summary['sync'].get('supplement_now_in_index', 'n/a')}",
+        f"- index sources: {summary['sync'].get('index_sources', 'n/a')}",
         "",
         "## projection / compare",
         "",

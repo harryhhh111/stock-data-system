@@ -154,6 +154,9 @@ class SECConfig:
     sp500_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     nasdaq100_url: str = "https://en.wikipedia.org/wiki/NASDAQ-100"
     russell1000_url: str = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+    russell1000_stale_cache_max_days: int = field(
+        default_factory=lambda: _env("STOCK_RUSSELL1000_STALE_CACHE_MAX_DAYS", "30", cast=int)
+    )
 
 
 @dataclass

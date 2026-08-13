@@ -223,6 +223,25 @@ class TestOrchestration:
             sched._run_us_financial_orchestration(0.0)
         assert calls == []
 
+    def test_index_error_fails_before_any_ticker_sync(self, monkeypatch):
+        """指数范围无法解析时，不得只同步 supplement 后再在编排层阻断。"""
+        class BrokenFetcher:
+            def get_tickers_by_index(self, index):
+                raise RuntimeError("constituent source unavailable")
+
+            def get_index_source_status(self, index):
+                return {"mode": "stale_cache_expired"}
+
+        called = []
+        monkeypatch.setenv("STOCK_US_INDEXES", "RUSSELL1000")
+        monkeypatch.setattr("core.fetchers.us_financial.USFinancialFetcher", BrokenFetcher)
+        monkeypatch.setattr("core.sync.sync_us_market", lambda args: called.append(args))
+
+        out = sched._sync_us()
+        assert out["index_errors"]
+        assert out["index_sources"]["RUSSELL1000"]["mode"] == "stale_cache_expired"
+        assert called == []
+
     def test_unregistered_index_only_blocks(self, monkeypatch, tmp_path):
         """验收阻断项 4:未登记的 index-only ticker 阻断发布。"""
         calls = _orch_mocks(monkeypatch, tmp_path, {

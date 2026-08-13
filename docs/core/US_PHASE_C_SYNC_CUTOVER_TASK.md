@@ -201,6 +201,14 @@ us_cash_flow_statement           mv_us_fcf_yield
 
 本任务完成后，只能进入 Phase D 观察任务；不得直接删除数据库对象。
 
+### 6.1 运行可靠性收口（2026-08-13）
+
+Russell 1000 的 Wikipedia 成分页面不能作为唯一实时可用性假设。scheduler 现采用：7 天内
+正常 cache → live Wikipedia → 页面失败时最多 30 天的、至少 800 ticker 的 stale cache fallback。
+fallback 必须在运行摘要以 `index_sources.RUSSELL1000.mode=stale_cache_fallback` 可见，不能伪装
+成实时来源；缓存超过上限、损坏或范围对账出现 universe 缺口 / 未登记 index-only 时仍阻断发布。
+另外，指数解析失败必须在调用 ticker sync 前 fail fast，不能仅靠 supplement 继续写入部分版本事实。
+
 ## 7. 验收修复记录（2026-08-11 首轮验收后）
 
 首轮验收（5c2e5c0）发现 5 项阻断问题，修复如下，全部带回归测试：
