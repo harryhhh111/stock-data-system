@@ -66,7 +66,11 @@ def compute_context_hash(
 
 
 def fact_key(row: dict) -> tuple:
-    """由已重命名为 DB 列名的事实行生成唯一键元组。"""
+    """由已重命名为 DB 列名的事实行生成唯一键元组。
+
+    身份 = 原始 XBRL 事实(8 字段)+ standard_field(解析分类,2026-08-13 起)。
+    分类纠错允许"旧错误分类"与"新正确分类"两行并存,旧行由 exclusion 隐藏。
+    """
     return (
         row["stock_code"],
         row["accession_no"],
@@ -76,6 +80,7 @@ def fact_key(row: dict) -> tuple:
         row["report_date"],
         row["context_hash"],
         row["unit"],
+        row["standard_field"],
     )
 
 
@@ -208,6 +213,7 @@ def compute_conflict_dedup_key(row: dict) -> str:
             "accession_no": row.get("accession_no"),
             "taxonomy": row.get("taxonomy"),
             "sec_tag": row.get("sec_tag"),
+            "standard_field": row.get("standard_field"),
             "period_kind": row.get("period_kind"),
             "period_start": str(row.get("period_start") or ""),
             "report_date": str(row.get("report_date") or ""),
@@ -565,7 +571,8 @@ class USFactVersionWriter:
                     period_kind VARCHAR(10),
                     report_date DATE,
                     context_hash CHAR(64),
-                    unit VARCHAR(50)
+                    unit VARCHAR(50),
+                    standard_field VARCHAR(50)
                 ) ON COMMIT DROP
             """)
             cur.execute("TRUNCATE _tmp_fact_keys")
@@ -573,11 +580,12 @@ class USFactVersionWriter:
                 cur,
                 "INSERT INTO _tmp_fact_keys VALUES %s",
                 keys,
-                template="(%s, %s, %s, %s, %s, %s, %s, %s)",
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             )
             cur.execute("""
                 SELECT v.stock_code, v.accession_no, v.taxonomy, v.sec_tag,
                        v.period_kind, v.report_date::text, v.context_hash, v.unit,
+                       v.standard_field,
                        v.value_hash, v.value_numeric, v.value_text, v.fact_version_id
                 FROM us_financial_fact_version v
                 INNER JOIN _tmp_fact_keys k
@@ -589,17 +597,18 @@ class USFactVersionWriter:
                  AND v.report_date = k.report_date
                  AND v.context_hash = k.context_hash
                  AND v.unit = k.unit
+                 AND v.standard_field IS NOT DISTINCT FROM k.standard_field
             """)
             rows = cur.fetchall()
 
         result: dict[tuple, dict] = {}
         for row in rows:
-            key = tuple(row[:8])
+            key = tuple(row[:9])
             result[key] = {
-                "value_hash": row[8],
-                "value_numeric": row[9],
-                "value_text": row[10],
-                "fact_version_id": row[11],
+                "value_hash": row[9],
+                "value_numeric": row[10],
+                "value_text": row[11],
+                "fact_version_id": row[12],
             }
         return result
 

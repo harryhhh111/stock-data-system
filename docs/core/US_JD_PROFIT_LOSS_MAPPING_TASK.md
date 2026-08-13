@@ -1,6 +1,10 @@
 # JD：`ProfitLoss` 归属净利润的受限映射修复
 
-> 状态：**待审核，未经批准不得执行。**
+> 状态：**已执行（2026-08-13)。** 验收值全部达成：FY2025 selected net_income =
+> 3,309,000,000(ProfitLoss,0001193125-26-157870),operating_income = 397,000,000
+> (OperatingIncomeLoss),common 口径保持,TTM 原生 consolidated;compare
+> UNEXPLAINED=0、JD net_profit 不再是 MISSING_MAPPING。
+> 实施记录见文末 §7。
 > 
 > 前置：Phase C2 已上线；当前 US scheduler、版本层、projection 和 compare 均在运行。
 > 
@@ -166,4 +170,36 @@ version-only reparse 和 projection。不得删除不可变 version facts、修�
 - 不将 `ProfitLoss` 全局改为 `net_income`；
 - 不处理 PERIOD_MISMATCH、MISSING_COMPONENT、BXP、ROIV 或任何其他 issuer；
 - 不以注册 exception 掩盖 JD 的 mapping 错误；
-- 不修改数据库 schema、产品 universe、scheduler scope、selector restatement 规则或 Phase D 时钟。
+- 不新增业务字段、不改其他表结构、不修改产品 universe、scheduler scope、selector
+  restatement 规则或 Phase D 时钟。**schema 例外（2026-08-13 经项目所有者批准）**：
+  仅允许 `us_financial_fact_version` 唯一键扩展为"原始 8 字段 + standard_field"
+  （解析后事实版本身份）这一次受控迁移，见 §7。
+
+## 7. 实施记录（2026-08-13)
+
+1. **唯一键迁移（批准的例外）**：实施中发现 `uq_us_financial_fact_version` 不含
+   standard_field，更正事实无法与旧错误分类并存（reparse 被判 repeated 丢弃）。
+   经项目所有者决定：唯一键按"解析后事实版本身份"扩展为 8+1 字段——原始 XBRL
+   事实身份不变（8 字段）,standard_field 是解析分类；分类纠错允许双行并存。
+   迁移按可重放方式执行（`CREATE UNIQUE INDEX CONCURRENTLY` + 短事务换约束，
+   DDL 见 `scripts/us_fact_version_standard_field_key.sql`)；前置核查：全表
+   6,760,465 行 standard_field 非空、新键无重复。同步改造 `fact_key()`、批内
+   去重、已有事实查询临时表与 join（`core/us_financial_versioning.py`)。
+2. **override registry**:`core/us_financial_field_overrides.py`(JD 一条),
+   fetcher/reparse/backfill 三条提取路径全部接入;transformer 自 C1 起仅 legacy
+   脚本使用,保持不动并加注,避免与 legacy 历史口径分叉。
+3. **事实处置**:11 条 `ProfitLoss→operating_income` 旧事实（2015–2025）以
+   `PARSER_TECHNICAL_ERROR` 排除（batch `692b3aea`,evidence 见
+   `build/financial_comparison/jd_profit_loss/`);version-only reparse 自
+   `raw_snapshot_version` 7646 正式链路新增 net_income 事实（JD 的 reparse 路径
+   顺带修为版本链优先,旧 legacy raw_snapshot hash 匹配已不可靠)。
+4. **验收值**:FY2025 net_income=3,309,000,000(tag ProfitLoss,
+   accession 0001193125-26-157870);operating_income=397,000,000
+   (OperatingIncomeLoss);net_income_common=2,807,000,000 保持;
+   `net_income_common_fallback` 不再触发;TTM 为原生 consolidated;
+   历史年度(2021–2024)选择值同步修正（预期波及,compare 逐条归类为
+   EXPECTED_RESTATEMENT/OLD_DATA_QUALITY_DIRECT);全量 compare
+   UNEXPLAINED=0、MISSING_MAPPING=0。
+5. **全市场问题留痕**:795 家/126,412 条已登记为 USQ-005（台账）,禁止全局 remap。
+6. 回归测试：`tests/test_fact_version_identity.py`（同 raw fact 双分类并存、
+   同 field 同值仍 repeated)+ `tests/test_us_jd_profit_loss_override.py`(9 项)。

@@ -517,7 +517,7 @@ def _extract_source_records(
         ("balance", fetcher.BALANCE_TAGS),
         ("cashflow", fetcher.CASHFLOW_TAGS),
     ]:
-        records, stmt_invalid, stmt_fact_records = fetcher._extract_facts(raw_data, tags, statement=statement)
+        records, stmt_invalid, stmt_fact_records = fetcher._extract_facts(raw_data, tags, statement=statement, stock_code=source["stock_code"])
         fact_records.extend(stmt_fact_records)
         invalid_records.extend(stmt_invalid)
         statement_results[statement] = {
@@ -924,7 +924,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
                             ("cashflow", USFinancialFetcher().CASHFLOW_TAGS),
                         ]:
                             # 仅提取该 statement 的记录
-                            _, stmt_invalid, stmt_facts = USFinancialFetcher()._extract_facts(raw_data, tags, statement=statement)
+                            _, stmt_invalid, stmt_facts = USFinancialFetcher()._extract_facts(raw_data, tags, statement=statement, stock_code=stock_code)
                             if not stmt_facts and not stmt_invalid:
                                 continue
                             result = writer.write_facts(

@@ -119,6 +119,11 @@ INCOME_TAG_PRIORITY: dict[str, list[str]] = {
     "gross_profit": ["GrossProfit"],
     "operating_expenses": ["OperatingExpenses"],
     "operating_income": ["OperatingIncomeLoss",
+                          # 注(2026-08-13):ProfitLoss 对多数发行人是税后净利润。
+                          # 自 Phase C1 起本 transformer 只被 legacy 脚本使用;
+                          # 生产链路的发行人受限 override 在
+                          # core/us_financial_field_overrides.py(如 JD ProfitLoss→net_income)。
+                          # 此处保持不动,避免与 legacy 宽表历史口径分叉。
                           "ProfitLoss"],
     "selling_general_admin": ["SellingGeneralAndAdministrativeExpenses",
                                "SellingGeneralAndAdministrativeExpense"],

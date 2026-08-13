@@ -25,6 +25,7 @@
 | USQ-002 | 毛利率输入完全缺失时，annual `quality_flags` 目前不标原因（ADT 为例）。 | 现有契约只在成功使用 `revenues - COGS` 时写 `gross_profit_derived_from_cogs`；`gross_profit` 与 COGS 均缺时保持 NULL 且 flags 为空。 | 用户和校验器难以区分“公司未披露 / 扩展 tag 未映射 / selector 排除”。数值本身仍是安全的 NULL。 | 在 USQ-001 等 COGS 审计结论后，单独决定是否增加**仅观测性** flag（不得把它当作可计算值）。 | 待设计 |
 | USQ-003 | **PDD** 当前财务截止日仍为 2024-12-31，市场数据正常。 | 本地版本事实只到该期；2025 20-F 已公开，但没有进入本轮增量同步/投影。另有已登记的 CapEx/FCF NULL，二者不是同一个问题。 | 个股页显示财务 stale；筛选器对新一年财务不敏感。 | 立即可通过“定向 SEC sync → projection → freshness 验证”修复；长期由 Phase C 的同步覆盖、projection 接线与完成度改判保证。 | 待处理 |
 | USQ-004 | COGS 合并行选择的 #7 **批次 2**：约 90 个跨 accession 冲突组尚未做证据审核。 | 批次 1 已完成；跨 accession 情形涉及重述/比较数据，不能套用 revenue 的最大绝对值规则。 | 当前不阻塞已完成的 B1/B2/B3 读取者；未来新增/修复 COGS 映射前必须避免误选子项。 | 按 [`US_COGS_CONSOLIDATED_SELECTION_TASK.md`](./US_COGS_CONSOLIDATED_SELECTION_TASK.md) 的证据优先流程单独排期。 | 待排期 |
+| USQ-005 | 通用映射 `ProfitLoss → operating_income` 的全市场语义问题。 | 2026-08-12 测量：版本层 795 家、126,412 条 `ProfitLoss → operating_income` 事实；JD 案例证实该 tag 至少对部分发行人是税后 consolidated 净利润（20-F 算术链验证）。映射位置：`core/fetchers/us_financial.py:INCOME_TAGS`、`core/transformers/us_gaap.py:INCOME_TAG_PRIORITY`（后者 C1 后仅 legacy 用）。 | JD 已单点修复（override registry + 事实双分类并存）；其余 794 家未判定。任何全局 remap 都会把仍属正确的映射改错，风险全市场。 | 逐 issuer/tag/statement 的全市场语义审计，另立任务；**禁止全局 remap**。审计工具可复用 ADT/JD 的 filing 级证据流程。 | 待排期 |
 
 ## 已确认的保守 NULL / 决策记录（不是待修复 bug）
 

@@ -745,6 +745,7 @@ class USFinancialFetcher(BaseFetcher):
         facts: dict,
         tag_mapping: dict[str, str],
         statement: str | None = None,
+        stock_code: str | None = None,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """从 Company Facts 中提取原始 fact 记录。
 
@@ -753,6 +754,9 @@ class USFinancialFetcher(BaseFetcher):
             records: 用于构建宽表 DataFrame
             invalid_records: period invalid 被隔离的记录
             fact_records: 用于写入 us_financial_fact_version 的原始事实
+
+        stock_code: 提供时应用发行人受限字段 override
+        (core/us_financial_field_overrides.py,如 JD ProfitLoss→net_income)。
         """
         import re as _re
 
@@ -769,6 +773,9 @@ class USFinancialFetcher(BaseFetcher):
         invalid_records: list[dict] = []
 
         for tag, field_name in tag_mapping.items():
+            if stock_code:
+                from core.us_financial_field_overrides import override_field
+                field_name = override_field(stock_code, "us-gaap", tag) or field_name
             if tag not in usgaap:
                 continue
             for unit_name, entries in usgaap[tag].get("units", {}).items():
@@ -880,7 +887,8 @@ class USFinancialFetcher(BaseFetcher):
         ):
             try:
                 records, invalid_records, fact_records = self._extract_facts(
-                    facts, tags, statement=statement
+                    facts, tags, statement=statement,
+                    stock_code=context.stock_code,
                 )
                 if statement == "balance":
                     records, fact_records = self._supplement_total_liabilities_records(
@@ -910,7 +918,8 @@ class USFinancialFetcher(BaseFetcher):
         同时把原始 fact 写入不可变版本层（us_filing + us_financial_fact_version）。
         """
         records, invalid_records, fact_records = self._extract_facts(
-            facts, tag_mapping, statement=statement
+            facts, tag_mapping, statement=statement,
+            stock_code=context.stock_code if context else None,
         )
 
         if statement is None:

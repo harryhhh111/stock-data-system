@@ -346,29 +346,26 @@ def sync_us_market_reparse(args) -> dict:
         placeholders = ", ".join(["%s"] * len(tickers))
         sql = f"""
             SELECT DISTINCT stock_code
-            FROM raw_snapshot
+            FROM raw_snapshot_version
             WHERE stock_code IN ({placeholders})
               AND data_type = 'company_facts'
-              AND source = 'sec_edgar'
             ORDER BY stock_code
         """
         tickers_to_reparse = [r[0] for r in execute(sql, tickers, fetch=True)]
     elif args.force_reparse:
         sql = """
             SELECT DISTINCT stock_code
-            FROM raw_snapshot
+            FROM raw_snapshot_version
             WHERE data_type = 'company_facts'
-              AND source = 'sec_edgar'
             ORDER BY stock_code
         """
         tickers_to_reparse = [r[0] for r in execute(sql, fetch=True)]
     else:
         sql = """
             SELECT DISTINCT r.stock_code
-            FROM raw_snapshot r
+            FROM raw_snapshot_version r
             INNER JOIN stock_info s ON r.stock_code = s.stock_code
             WHERE r.data_type = 'company_facts'
-              AND r.source = 'sec_edgar'
               AND s.market = 'US'
             ORDER BY r.stock_code
         """
@@ -392,49 +389,74 @@ def sync_us_market_reparse(args) -> dict:
 
     for i, ticker in enumerate(tickers_to_reparse, 1):
         try:
-            raw_row = execute(
-                "SELECT raw_data FROM raw_snapshot "
-                "WHERE stock_code = %s AND data_type = 'company_facts' AND source = 'sec_edgar' "
-                "LIMIT 1",
+            # 优先使用版本链保护的 raw_snapshot_version(Phase C1 后这是权威 raw);
+            # 旧 raw_snapshot 表仅作兜底且必须能匹配到 version 快照,否则拒绝。
+            version_row = execute(
+                """
+                SELECT snapshot_id, content_hash, raw_data
+                FROM raw_snapshot_version
+                WHERE stock_code = %s AND data_type = 'company_facts'
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """,
                 (ticker,),
                 fetch=True,
             )
-            if not raw_row:
-                logger.warning("%s: raw_snapshot 中无数据，跳过", ticker)
-                continue
-
-            raw_data = raw_row[0][0]
-            if isinstance(raw_data, str):
-                facts = json.loads(raw_data)
-            else:
-                facts = raw_data
-
-            cik = str(facts.get("cik", "")).strip().zfill(10)
-            content_hash = hashlib.sha256(
-                json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
-            ).hexdigest()
-            snapshot_rows = execute(
-                """
-                SELECT snapshot_id FROM raw_snapshot_version
-                WHERE stock_code = %s AND data_type = 'company_facts'
-                  AND source = 'sec_edgar' AND content_hash = %s
-                LIMIT 1
-                """,
-                (ticker, content_hash),
-                fetch=True,
-            )
-            if snapshot_rows:
+            if version_row:
+                snapshot_id, content_hash, facts = version_row[0]
+                if isinstance(facts, str):
+                    facts = json.loads(facts)
+                cik = str(facts.get("cik", "")).strip().zfill(10)
                 ctx = FetchContext(
                     stock_code=ticker,
                     cik=cik,
-                    snapshot_id=snapshot_rows[0][0],
+                    snapshot_id=snapshot_id,
                     content_hash=content_hash,
                 )
             else:
-                # 无 raw_snapshot_version 链就无法写版本层(Phase C1 不允许退化为旧表写入)
-                raise RuntimeError(
-                    f"{ticker}: raw_snapshot_version 中未找到对应 snapshot,无法 version-only reparse"
+                raw_row = execute(
+                    "SELECT raw_data FROM raw_snapshot "
+                    "WHERE stock_code = %s AND data_type = 'company_facts' AND source = 'sec_edgar' "
+                    "LIMIT 1",
+                    (ticker,),
+                    fetch=True,
                 )
+                if not raw_row:
+                    logger.warning("%s: raw_snapshot 中无数据，跳过", ticker)
+                    continue
+
+                raw_data = raw_row[0][0]
+                if isinstance(raw_data, str):
+                    facts = json.loads(raw_data)
+                else:
+                    facts = raw_data
+
+                cik = str(facts.get("cik", "")).strip().zfill(10)
+                content_hash = hashlib.sha256(
+                    json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+                ).hexdigest()
+                snapshot_rows = execute(
+                    """
+                    SELECT snapshot_id FROM raw_snapshot_version
+                    WHERE stock_code = %s AND data_type = 'company_facts'
+                      AND source = 'sec_edgar' AND content_hash = %s
+                    LIMIT 1
+                    """,
+                    (ticker, content_hash),
+                    fetch=True,
+                )
+                if snapshot_rows:
+                    ctx = FetchContext(
+                        stock_code=ticker,
+                        cik=cik,
+                        snapshot_id=snapshot_rows[0][0],
+                        content_hash=content_hash,
+                    )
+                else:
+                    # 无 raw_snapshot_version 链就无法写版本层(Phase C1 不允许退化为旧表写入)
+                    raise RuntimeError(
+                        f"{ticker}: raw_snapshot_version 中未找到对应 snapshot,无法 version-only reparse"
+                    )
 
             tables_synced = _process_us_company_data(fetcher, facts, ctx)
 
