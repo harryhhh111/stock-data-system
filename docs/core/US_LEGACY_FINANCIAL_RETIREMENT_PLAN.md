@@ -3,8 +3,9 @@
 > 状态：Phase A、B1、B2、B3a、B3b、B4 已完成并全部启用；Phase C1（在线同步切换至
 > 版本层、停止旧宽表/旧 MV 在线写入）已于 2026-08-11 完成，C2（universe 补充清单)
 > 与 US universe 身份维护（CIK 优先 fetch、ticker 身份表、BLD/CWEN-A 退市处置）已于
-> 2026-08-12 完成验收（UNEXPLAINED=0、范围缺口 0)；下一项为 Phase D（14 天观察）
-> 更新日期：2026-08-06<br>
+> 2026-08-13 完成 Phase D 证据门槛（完整编排、20 份 filing 重放、零写入/静态扫描、产品 smoke）；
+> 下一项为 Phase E-0（归档与隔离恢复演练），不含删除。
+> 更新日期：2026-08-13<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -241,32 +242,31 @@ Phase A 可计入 explained 的 expected reason：
 
 停止写入后记录六个对象的最终行数和 checksum。
 
-### Phase D：短期观察
+### Phase D：证据门槛（已完成）
 
-个人项目不等待完整季度，采用：
+项目所有者确认不以日历等待替代可验证证据。以下四项均须完成，且任何无法解释差异或新 filing
+未进入 snapshot 都会停止退役：
 
-- 连续 14 天在线运行；
-- 至少覆盖一次正常 SEC scheduler 同步；
-- 主动重放最近 20 份 10-K/10-Q，验证新 filing 能进入快照；
-- 运行全市场 chain audit；
-- 检查 API、筛选器和 dashboard；
-- 确认旧六对象在观察期内无写入、无读取。
-- 确认全体 universe 股票均具有可解释的新鲜度状态：fresh、stale、out_of_sync_scope 或
-  selector_exception；不允许缺失状态。
+- 手动完整运行一次 `sync → projection → compare → validate`；
+- 主动重放最近 20 份 10-K/10-Q，验证新 filing 经版本链进入 current snapshot；
+- 确认旧六对象零写入，并对生产读取路径做静态扫描；
+- 检查 API、筛选器和 dashboard，并确认全体 active universe 股票的新鲜度状态可解释
+  （fresh、stale、out_of_sync_scope 或 selector_exception）。
 
-任何无法解释差异或新 filing 未进入快照，立即恢复旧写入/读取并停止退役。
+上述门槛已于 2026-08-13 完成。新 filing 的 `PERIOD_MISMATCH` / `MISSING_COMPONENT` 仍按
+运行摘要滚动队列透明报告；它们不是 `UNEXPLAINED`，不得被静默掩盖。
 
 ### Phase E：归档与删除
 
-1. 使用 `pg_dump --table` 单独导出三张旧宽表的 schema + data；
-2. 计算 SHA-256；
-3. 上传对象存储并做一次下载校验；
-4. 保存恢复命令；
-5. 先删除三个旧物化视图；
-6. 再删除三张旧宽表；
-7. 执行空间复核；是否 `VACUUM FULL` 另行决定，不能为回收约 357 MB 阻塞服务。
+分成两个须独立确认的小步骤：
 
-删除属于最终不可即时回退步骤。执行前必须由项目所有者明确确认一次。
+1. **E-0 归档与恢复演练**：导出三张旧宽表的 schema + data 和三个 MV 的定义；计算 SHA-256、
+   上传对象存储并做下载校验；在隔离数据库恢复并验证宽表基线和 MV refresh。详见
+   [US_PHASE_E_LEGACY_ARCHIVE_RESTORE_TASK.md](US_PHASE_E_LEGACY_ARCHIVE_RESTORE_TASK.md)。
+2. **E-1 删除**：仅在 E-0 验收且项目所有者再次明确确认后，先删除三个旧物化视图、再删除三张
+   旧宽表，并执行空间复核。是否 `VACUUM FULL` 另行决定，不能为回收约 357 MB 阻塞服务。
+
+删除属于最终不可即时回退步骤；E-0 完成不自动授权 E-1。
 
 ## 5. 回退
 
@@ -316,9 +316,11 @@ Phase B4b：PIT 回测引擎切换与策略影子验收
   ↓
 Phase C：停止旧写入
   ↓
-Phase D：14 天观察 + 最近 filing 重放
+Phase D：证据门槛（完整编排、最近 filing 重放、零写入/静态扫描、产品 smoke）
   ↓ 项目所有者最终确认
-Phase E：对象存储归档并删除旧对象
+Phase E-0：对象存储归档与隔离恢复演练
+  ↓ 项目所有者再次确认
+Phase E-1：删除旧对象
 ```
 
 Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与
