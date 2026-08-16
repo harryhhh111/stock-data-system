@@ -1,6 +1,41 @@
 # Phase E-0：美股旧财务对象归档与恢复演练
 
-> 状态：**待审核，未授权执行。**
+> 状态：**执行完成（2026-08-14），待项目所有者按 §6 验收；不授权 E-1 删除。**
+>
+> 实现：`scripts/archive_us_legacy_financials.py`（preflight/archive/restore 三子命令）+
+> `tests/test_archive_us_legacy_financials.py`。首次实库 `preflight --dry-run` 已通过：
+> 六对象 3 表 + 3 MV、MV 依赖闭包恰为「三宽表 + 两上游 MV + stock_info + daily_quote」、
+> refresh 拓扑序 `mv_us_financial_indicator → mv_us_indicator_ttm → mv_us_fcf_yield`、
+> Phase C 零写入基线通过；依赖数据集规模约 stock_info 1,003 行 + daily_quote 3,628,826 行。
+>
+> 对象存储（§2.3 四要素，2026-08-14 由项目所有者提供）：
+>
+> - 后端：腾讯云 COS 桶 `stock-data-1253228291`，经 cosfs（FUSE）挂载于本机 `/lhcos-data`，
+>   桶内挂载前缀 `/stock-data-backups`（即 `/lhcos-data` 根 = 该前缀；挂载参数：分块 10MB、
+>   并发 10）。写入/下载 URI 统一为 `file:///lhcos-data`（经 cosfs 落 COS，非本机磁盘）；
+> - 凭证方式：cosfs 挂载已配置，工具无需感知凭证；
+> - 保留期：**半年（至 2027-02-14，Phase E-1 验收后再评估）**；
+> - 注意：cosfs 挂载失效时写入会落到本机挂载点目录形成"假归档"。每次执行前必须确认
+>   `mountpoint /lhcos-data` 在线；归档后核对本机磁盘余量，上传不应造成本机盘额外减少。
+>
+> 执行记录（run id `e0_20260814`）：
+>
+> - 2026-08-14 archive 完成：三份归档 + manifest + SHA256SUMS 共约 121 MB 已上传至
+>   `/lhcos-data/e0_20260814/`，独立目录下载 SHA-256 精确比对通过；归档前后零写入检查通过。
+>   磁盘核对：df 余量减少 122 MB ≈ 本地 staging 目录 121 MB，无额外消耗，判定真归档。
+> - 恢复演练需要先决条件：`stock_user` 已被授予 `CREATEDB`
+>   （pg_hba 本地行为 md5，经 root 临时改 trust 完成授权后已恢复）。
+> - 2026-08-14 restore 演练**成功**：COS 下载副本校验 → 隔离库恢复 → 三宽表与归档前基线
+>   精确一致（行数 89,373 / 80,697 / 61,077，全行 hash 与最大时间戳逐项相等）→
+>   依赖数据集 1,003 + 3,628,826 行、非 US 行 0 → 三个 MV 归一化定义比对、唯一索引检查、
+>   按拓扑序 refresh 成功（行数 69,008 / 1,032 / 906）→
+>   生产零写入复查通过 → 隔离库按策略删除，manifest 已回写 `restore_verification.ok=true`。
+>   注：MV refresh 后行数恰与生产当前缓存一致，属依赖数据集同日导出的巧合而非判据；
+>   MV 是重新 refresh 的派生缓存，其行数与全行 hash 均**不应**作为验收标准（§4.3.5）。
+> - 演练中一次阻断已修复：restore 会重解析 MV 定义文本，解析器把 `ARRAY[...]::text[]`
+>   整体强转规范化成逐元素强转，与生产 `pg_get_viewdef` 文本逐字不等（语义相同）。
+>   工具改为生产定义在隔离库内重解析归一化后再比对。首次失败现场
+>   `/tmp/restore_e0_20260814_cegztczr/restore_failure.json` 保留。
 >
 > 前置：当前服务器 `STOCK_MARKETS=US`。Phase A–C 已完成；原定 Phase D 的日历等待已由
 > 项目所有者确认改为四项证据门槛，并已满足：一次完整 scheduler 编排、最近 20 份
@@ -116,7 +151,8 @@ principal dump 必须显式列出完整 schema-qualified 对象名，使用 cust
    不是幂等性测试；确认三个 view 均可查询、依赖对象完整，且不得把生产库用于 refresh。
 5. 使用与 `phase_c_baseline.py` 等价的全行稳定 hash、行数和适用的最大时间戳，验证恢复后三张宽表
    与 archive 前 baseline 精确一致。物化视图验证 relation definition、关键 unique index 存在，
-   并记录 refresh 后行数/checksum；不要求其缓存行数与历史生产缓存相同。
+   并记录 refresh 后行数/checksum 仅供追溯；**不得**要求 MV 的行数或全行 hash 与历史生产缓存
+   相同——MV 是重新 refresh 的派生缓存，缓存内容随 refresh 时点依赖数据变化，相同属巧合而非判据。
 6. 再运行生产库 `phase_c_baseline.py check`，确认演练全程零写入。成功时按策略删除隔离数据库；
    失败时保留并记录名称/原因，禁止清理证据。
 
