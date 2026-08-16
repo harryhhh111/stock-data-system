@@ -1,17 +1,19 @@
 import { useRef, useEffect, useState } from "react";
 import * as echarts from "echarts/core";
-import { BarChart, LineChart, PieChart } from "echarts/charts";
+import { BarChart, CandlestickChart, LineChart, PieChart } from "echarts/charts";
 import {
   TitleComponent,
   TooltipComponent,
   LegendComponent,
   GridComponent,
   DatasetComponent,
+  DataZoomComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([
   BarChart,
+  CandlestickChart,
   LineChart,
   PieChart,
   TitleComponent,
@@ -19,6 +21,7 @@ echarts.use([
   LegendComponent,
   GridComponent,
   DatasetComponent,
+  DataZoomComponent,
   CanvasRenderer,
 ]);
 

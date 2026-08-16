@@ -5,6 +5,7 @@ import { SyncPage } from "@/pages/sync-page";
 import { QualityPage } from "@/pages/quality-page";
 import { ScreenerPage } from "@/pages/screener-page";
 import { AnalyzerPage } from "@/pages/analyzer-page";
+import { StorylinePage } from "@/pages/storyline-page";
 import { BacktestPage } from "@/pages/backtest-page";
 import { PaperPage } from "@/pages/paper-page";
 import { PaperDetailPage } from "@/pages/paper-detail-page";
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="quality" element={<QualityPage />} />
         <Route path="screener" element={<ScreenerPage />} />
         <Route path="analyzer" element={<AnalyzerPage />} />
+        <Route path="storyline" element={<StorylinePage />} />
         <Route path="backtest" element={<BacktestPage />} />
         <Route path="paper" element={<PaperPage />} />
         <Route path="paper/:id" element={<PaperDetailPage />} />

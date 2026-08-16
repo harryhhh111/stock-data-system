@@ -264,6 +264,24 @@ export const paperApi = {
     ),
 };
 
+// ── Storyline ──
+export const storylineApi = {
+  timeline: (stockCode: string, market?: Market) => {
+    const params = new URLSearchParams({ stock_code: stockCode });
+    return apiFetch<import("@/lib/types/storyline").StorylineTimeline>(
+      `/storyline/timeline?${params}`,
+      { market },
+    );
+  },
+  kline: (stockCode: string, years: number, market?: Market) => {
+    const params = new URLSearchParams({ stock_code: stockCode, years: String(years) });
+    return apiFetch<import("@/lib/types/storyline").KlinePoint[]>(
+      `/storyline/kline?${params}`,
+      { market },
+    );
+  },
+};
+
 // ── FCF+ROE Strategy ──
 export const strategyApi = {
   runFcfRoe: (params: import("@/lib/types/strategy").FcfRoeParams) =>
