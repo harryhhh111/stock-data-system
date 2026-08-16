@@ -155,9 +155,10 @@ python -m core.sync --type daily --market US
 
 注意事项：
 
-- **挂载失效即"假归档"**：cosfs 掉线时写入会落到本机挂载点目录而非 COS。执行归档类
-  操作前必须确认 `mountpoint -q /lhcos-data` 在线；归档后核对本机磁盘余量不应因上传而
-  额外减少（Phase E-0 实测判据：df 余量变化 ≈ 本地 staging 目录大小）。
+- **挂载失效即"假归档"**：cosfs 掉线时写入会落到本机挂载点目录而非 COS。归档工具对
+  `file:///lhcos-data` 强制检查 `mountpoint -q /lhcos-data` 和文件系统类型 `fuse.cosfs`；
+  归档后仍应核对本机磁盘余量不因上传而额外减少（Phase E-0 实测判据：df 余量变化 ≈ 本地
+  staging 目录大小）。
 - 恢复演练需要数据库账号具备 `CREATEDB`（`stock_user` 已于 2026-08-14 授予；
   该实例 pg_hba 本地行为 md5，超级用户 postgres 无已知密码，需经 root 临时改 trust
   操作后恢复，操作过程见 Phase E-0 任务文档执行记录）。

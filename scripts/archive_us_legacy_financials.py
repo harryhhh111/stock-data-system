@@ -55,6 +55,7 @@ SHA256SUMS_NAME = "SHA256SUMS"
 ARTIFACT_NAMES = (WIDE_DUMP_NAME, MV_DUMP_NAME, DEPS_SQL_GZ_NAME)
 
 RESTORE_DB_PREFIX = "stock_data_legacy_restore_"
+COSFS_ARCHIVE_ROOT = Path("/lhcos-data")
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 
@@ -399,6 +400,37 @@ def verify_dependency_sql(text: str) -> None:
 # ── 对象存储 ───────────────────────────────────────────────
 
 
+def _assert_cosfs_mount(root: Path) -> str:
+    """拒绝把掉线后的 /lhcos-data 本地目录当作 COS 归档。"""
+    for tool in ("mountpoint", "findmnt"):
+        if not shutil.which(tool):
+            raise PreflightError(f"COS 归档挂载校验需要 {tool}，但当前未找到")
+
+    try:
+        mounted = subprocess.run(
+            ["mountpoint", "-q", str(root)], capture_output=True, text=True, check=False
+        )
+    except OSError as exc:
+        raise PreflightError(f"无法检查 COS 挂载点 {root}: {exc}") from exc
+    if mounted.returncode != 0:
+        raise PreflightError(f"COS 归档挂载点未在线: {root}")
+
+    try:
+        fstype_result = subprocess.run(
+            ["findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(root)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError as exc:
+        raise PreflightError(f"无法读取 COS 挂载类型 {root}: {exc}") from exc
+    fstype = fstype_result.stdout.strip()
+    if fstype_result.returncode != 0 or fstype != "fuse.cosfs":
+        observed = fstype or "<unknown>"
+        raise PreflightError(
+            f"COS 归档挂载类型错误: {root} 期望 fuse.cosfs，实际 {observed}"
+        )
+    return fstype
+
+
 class FileArchiveStore:
     """file:// URI：本地目录后端（演练/测试用）。"""
 
@@ -409,6 +441,10 @@ class FileArchiveStore:
         return self.root / run_id / name
 
     def probe(self, run_id: str) -> None:
+        # `file:///lhcos-data` 是生产 COS 挂载，而不是通用本地文件后端；必须防止挂载
+        # 掉线后把写入同名本地目录误报为远端归档。其他 file:// URI 保留给离线测试。
+        if self.root == COSFS_ARCHIVE_ROOT:
+            _assert_cosfs_mount(self.root)
         if not self.root.is_dir():
             raise PreflightError(f"archive URI 根目录不存在: {self.root}")
         probe = self.root / f".probe_{run_id}"

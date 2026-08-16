@@ -274,6 +274,55 @@ class TestUploadDownloadVerification:
             arch._download_verified(store, "run1", dest)
 
 
+class TestCosfsMountGuard:
+    def _cosfs_store(self, tmp_path, monkeypatch):
+        root = tmp_path / "lhcos-data"
+        root.mkdir()
+        monkeypatch.setattr(arch, "COSFS_ARCHIVE_ROOT", root.resolve())
+        return arch.FileArchiveStore(f"file://{root}")
+
+    def test_cosfs_archive_requires_online_cosfs_mount(self, tmp_path, monkeypatch):
+        store = self._cosfs_store(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "mountpoint":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="fuse.cosfs\n", stderr="")
+
+        monkeypatch.setattr(arch.shutil, "which", lambda _: "/usr/bin/tool")
+        monkeypatch.setattr(arch.subprocess, "run", fake_run)
+        store.probe("run1")
+        assert calls == [
+            ["mountpoint", "-q", str(store.root)],
+            ["findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(store.root)],
+        ]
+
+    def test_cosfs_archive_rejects_unmounted_local_directory(self, tmp_path, monkeypatch):
+        store = self._cosfs_store(tmp_path, monkeypatch)
+        monkeypatch.setattr(arch.shutil, "which", lambda _: "/usr/bin/tool")
+        monkeypatch.setattr(
+            arch.subprocess, "run",
+            lambda *args, **kwargs: MagicMock(returncode=1, stdout="", stderr=""),
+        )
+        with pytest.raises(arch.PreflightError, match="未在线"):
+            store.probe("run1")
+
+    def test_cosfs_archive_rejects_wrong_filesystem_type(self, tmp_path, monkeypatch):
+        store = self._cosfs_store(tmp_path, monkeypatch)
+
+        def fake_run(argv, **kwargs):
+            if argv[0] == "mountpoint":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="ext4\n", stderr="")
+
+        monkeypatch.setattr(arch.shutil, "which", lambda _: "/usr/bin/tool")
+        monkeypatch.setattr(arch.subprocess, "run", fake_run)
+        with pytest.raises(arch.PreflightError, match="类型错误"):
+            store.probe("run1")
+
+
 # ── 命名断言与静态禁扫（§5.6）───────────────────────────────
 
 class TestNamingAndStaticScan:
