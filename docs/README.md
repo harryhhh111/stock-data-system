@@ -103,6 +103,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-08-19 | 美股财务治理总览、旧宽表退役计划与 US scheduler 运维文档收口：Phase E-0 已验收，systemd 为唯一 scheduler 常驻入口，E-1 仍待自动编排验证与项目所有者确认 |
 | 2026-07-29 | 年度 revenue 历史未决审核关闭：301 个案例完成，selector 未决归零 |
 | 2026-07-29 | current-only 全市场对比通过：UNEXPLAINED 归零，准入 10 只个股分析 canary |
 | 2026-07-25 | Phase 2 Gate B 生产 canary 通过；明确个人所有者 + 多 agent 的轻量治理，下一步为 Gate C 20–50 只生产 shadow |

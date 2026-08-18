@@ -27,7 +27,7 @@ sudo apt install -y git
 ## 2. 部署代码
 
 ```bash
-cd /home/ubuntu
+cd /home/vinci
 git clone https://github.com/harryhhh111/stock-data-system.git projects/stock_data
 cd projects/stock_data
 python3 -m venv venv
@@ -82,7 +82,7 @@ STOCK_MARKETS=US
 ## 5. 初始化美股数据
 
 ```bash
-cd /home/ubuntu/projects/stock_data
+cd /home/vinci/projects/stock_data
 source venv/bin/activate
 
 # 导入 S&P 500 股票列表
@@ -103,20 +103,20 @@ python -m core.sync --type daily --market US
 ## 6. 定时任务
 
 ```bash
-cd /home/ubuntu/projects/stock_data
+cd /home/vinci/projects/stock_data
 
 # 创建 systemd 服务
 sudo tee /etc/systemd/system/stock-scheduler.service <<EOF
 [Unit]
-Description=Stock Data Scheduler
+Description=Stock Data Scheduler (US Market)
 After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/projects/stock_data
-EnvironmentFile=/home/ubuntu/projects/stock_data/.env
-ExecStart=/home/ubuntu/projects/stock_data/venv/bin/python -m core.scheduler
+User=vinci
+WorkingDirectory=/home/vinci/projects/stock_data
+EnvironmentFile=/home/vinci/projects/stock_data/.env
+ExecStart=/home/vinci/projects/stock_data/venv/bin/python -m core.scheduler
 Restart=on-failure
 RestartSec=60
 
@@ -129,6 +129,16 @@ sudo systemctl enable stock-scheduler
 sudo systemctl start stock-scheduler
 ```
 
+生产约束：只由 `stock-scheduler.service` 常驻运行 scheduler，禁止以 `nohup` / tmux 再启动第二个
+实例。`Restart=on-failure` 只处理异常退出；若服务被 `SIGTERM` 或 `systemctl stop` 正常停止，需由
+有 systemd 权限的操作者显式恢复：
+
+```bash
+sudo systemctl start stock-scheduler.service
+sudo systemctl status stock-scheduler.service --no-pager
+journalctl -u stock-scheduler.service -n 100 --no-pager
+```
+
 ## 7. 验证
 
 ```bash
@@ -136,7 +146,7 @@ sudo systemctl start stock-scheduler
 sudo systemctl status stock-scheduler
 
 # 手动跑一次同步测试
-cd /home/ubuntu/projects/stock_data
+cd /home/vinci/projects/stock_data
 source venv/bin/activate
 python -m core.sync --type daily --market US
 ```

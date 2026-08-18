@@ -1,6 +1,9 @@
 # Stock Data Scheduler — 定时调度设计
 
-> 最后更新：2026-05-06
+> 最后更新：2026-08-19
+>
+> 当前 US 生产事实：`stock-scheduler.service` 是唯一常驻入口；Phase C 后美股财务
+> 同步只写版本层，随后单次 projection → compare → validate，**不刷新**三个旧 US MV。
 
 ## 概述
 
@@ -17,7 +20,8 @@ systemd (stock-scheduler.service)
         │     ├── 行情同步 (daily_quote)：CN_A / CN_HK / US
         │     └── 财务同步 (financial)：CN_A / CN_HK / US
         ├── 交易日检查（非交易日自动跳过）
-        ├── 物化视图自动刷新（行情→mv_fcf_yield，财务→全刷新）
+        ├── CN_A/CN_HK：保留既有物化视图刷新
+        ├── US：版本层 sync → current snapshot projection → compare → validate
         ├── 数据校验自动触发（财务同步后）
         └── 日志输出到 journalctl
 ```
@@ -54,7 +58,7 @@ systemd (stock-scheduler.service)
 
 ## 执行流程
 
-每个任务执行时：
+CN_A / CN_HK 的每个任务执行时：
 
 1. **交易日检查** — 非交易日自动跳过（周末、节假日）
 2. **带重试的同步** — 指数退避重试（1s → 2s → 4s → 8s），默认 3 次
@@ -62,11 +66,22 @@ systemd (stock-scheduler.service)
 4. **数据校验** — 财务同步完成后自动运行 `validate.py`
 5. **通知** — 成功/失败通过日志 + webhook（可选）发送
 
+US financial 的 Phase C 编排则不同：
+
+1. 解析 index + supplement 范围并完成 expected-skip / index-only 分类；未登记失败或范围缺口会阻断；
+2. 仅写 `raw_snapshot`、`us_filing`、版本事实、conflict/staging；
+3. 零 legacy 写入检查通过后，**只执行一次** current snapshot projection；
+4. 运行 Phase A compare（`UNEXPLAINED=0`）和 US validate；失败时保留上一完整 snapshot；
+5. 输出 `phaseC_sync` 摘要，含范围对账、新 filing 队列和旧六对象零写入结果。
+
+US daily quote 不刷新 `mv_us_fcf_yield`；估值由已切换的 snapshot 读取者按行情计算。
+
 ## 关键环境变量
 
 ```env
 # 市场过滤（必填，否则 scheduler 启动后警告退出）
-STOCK_MARKETS=CN_A,CN_HK
+# 海外 US 服务器当前值：US；国内服务器：CN_A,CN_HK
+STOCK_MARKETS=US
 
 # 财务同步 cron（覆盖默认值）
 STOCK_CN_A_CRON=7 17 * * 1-5
@@ -104,15 +119,15 @@ STOCK_SEC_USER_AGENT=stock-data-system contact@example.com
 
 ```ini
 [Unit]
-Description=Stock Data Scheduler
+Description=Stock Data Scheduler (US Market)
 After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/projects/stock_data
-EnvironmentFile=/home/ubuntu/projects/stock_data/.env
-ExecStart=/home/ubuntu/projects/stock_data/venv/bin/python -m core.scheduler
+User=vinci
+WorkingDirectory=/home/vinci/projects/stock_data
+EnvironmentFile=/home/vinci/projects/stock_data/.env
+ExecStart=/home/vinci/projects/stock_data/venv/bin/python -m core.scheduler
 Restart=on-failure
 RestartSec=60
 StandardOutput=journal
@@ -154,6 +169,10 @@ python -m core.sync --type financial --market US --us-index SP500
 ## 失败处理
 
 - systemd `Restart=on-failure`：进程异常退出后 60 秒自动重启
+- `SIGTERM` / `systemctl stop` 属正常停止，systemd 不会按 `on-failure` 重启；恢复必须由有权限的
+  操作者显式执行 `sudo systemctl start stock-scheduler.service`。
+- 不使用 `nohup` 或临时 tmux 代替 systemd。若 unit 显示 `inactive (dead)`，先查
+  `journalctl -u stock-scheduler.service`，再启动 unit；不得并行启动第二个 scheduler。
 - 单任务失败自动指数退避重试（可配置次数和基数延迟）
 - core.sync 内置断点续传：已同步的股票不会重复拉取
 - 熔断器：连续失败超阈值暂停该数据源后续请求
@@ -161,7 +180,7 @@ python -m core.sync --type financial --market US --us-index SP500
 ## 增量同步机制
 
 **每日增量**（scheduler 自动执行）：
-- 财务同步：通过 `sync_progress.last_report_date` 增量判断，只拉有新报告的股票
+- US 财务同步：通过 `us_filing`、`us_ingest_run`、版本事实与 scope 对账判定完成度；不得依赖旧宽表
 - 行情同步：拉取当日行情快照（OHLCV + 市值 + PE/PB），upsert 入 daily_quote
 - 大部分交易日只有少量股票有新财报，几分钟完成
 
@@ -172,10 +191,11 @@ python -m core.sync --type financial --market US --us-index SP500
 ```
 行情同步后:  mv_fcf_yield（仅市值变了）
 财务同步后:  mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield
-美股财务后:  mv_us_financial_indicator → mv_us_indicator_ttm → mv_us_fcf_yield
+美股财务后:  不刷新旧 MV；运行 version-only sync → projection → compare → validate
 ```
 
-刷新失败只记 warning，不影响同步结果。
+CN/HK 的物化视图刷新失败按既有任务策略处理。US Phase C 中，版本层 ingest、scope 对账、projection、
+compare 或 validate 失败均使该 US financial job 失败，保留上一快照；不得仅记 warning 后报成功。
 
 ## 相关文档
 
@@ -183,4 +203,3 @@ python -m core.sync --type financial --market US --us-index SP500
 - [DEV_GUIDELINES.md](DEV_GUIDELINES.md) — 开发规范
 - [DATA_STATUS_CN.md](DATA_STATUS_CN.md) — A 股/港股数据现状
 - [DATA_STATUS_US.md](DATA_STATUS_US.md) — 美股数据现状
-

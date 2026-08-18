@@ -3,9 +3,10 @@
 > 状态：Phase A、B1、B2、B3a、B3b、B4 已完成并全部启用；Phase C1（在线同步切换至
 > 版本层、停止旧宽表/旧 MV 在线写入）已于 2026-08-11 完成，C2（universe 补充清单)
 > 与 US universe 身份维护（CIK 优先 fetch、ticker 身份表、BLD/CWEN-A 退市处置）已于
-> 2026-08-13 完成 Phase D 证据门槛（完整编排、20 份 filing 重放、零写入/静态扫描、产品 smoke）；
-> 下一项为 Phase E-0（归档与隔离恢复演练），不含删除。
-> 更新日期：2026-08-13<br>
+> 2026-08-13 完成 Phase D 证据门槛；2026-08-14 完成、2026-08-16 验收 Phase E-0（COS 归档与
+> 隔离恢复演练）。2026-08-18 systemd scheduler 已恢复常驻；须等待其下一次自动 US 编排成功，
+> 才可进入 E-1 删除讨论。
+> 更新日期：2026-08-19<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -48,17 +49,14 @@ mv_us_fcf_yield
 因此退役不会显著解决磁盘问题。事实版本层、关系层和 PostgreSQL 索引仍是数据库
 空间主体。
 
-### 2.2 仍在使用旧对象的生产路径
+### 2.2 已迁移的生产路径与允许保留的 legacy 引用
 
-- `quant/analyzer/query_us.py`：旧查询、异常回退和同行业统计；
-- `quant/screener/query.py`：美股筛选；
-- `quant/backtest/`：当前及历史财务输入；
-- `web/services/dashboard_service.py`：最新财报日期；
-- `core/incremental.py`、`core/sync/us_market.py`：旧宽表写入与完成度判断；
-- `core/scheduler.py`：旧物化视图刷新；
-- `core/validate.py`、`quant/checks/`：数据校验。
+个股分析、筛选器/行业中位数、dashboard、日常校验和 PIT 回测均已切换至版本层/快照；在线 US
+sync、incremental 完成度和 scheduler 不再写旧三张宽表或刷新旧三个 MV。
 
-历史修复脚本可以保留为归档代码，但退役后必须明确标记为不可直接执行。
+只允许以下非生产 legacy 引用保留到 E-1 后再处理：compare/audit 脚本、E-0 恢复工具、受控回退
+分支、文档和测试 fixture。它们必须不在 scheduler 调用图中；历史修复脚本必须标记为 legacy-only，
+不得直接执行。
 
 ## 3. 替代数据契约
 
@@ -290,7 +288,8 @@ Phase E 后：
 - 在线同步不再写旧三表；
 - 财务时点与估值时点分别可追溯，且每日行情更新不会改写财务时点；
 - 每只 universe 股票都有可解释的新鲜度状态；
-- 14 天观察及最近 filing 重放通过；
+- Phase D 的四项证据门槛（完整编排、最近 filing 重放、零写入/静态扫描、产品 smoke）通过；
+- Phase E-0 的 COS dump、下载 SHA-256 校验和隔离恢复演练通过；
 - 旧表 dump 已上传对象存储且恢复命令验证可用；
 - 六个旧对象已删除；
 - 文档、部署配置和测试不再把旧宽表称为生产数据源。
@@ -318,9 +317,9 @@ Phase C：停止旧写入
   ↓
 Phase D：证据门槛（完整编排、最近 filing 重放、零写入/静态扫描、产品 smoke）
   ↓ 项目所有者最终确认
-Phase E-0：对象存储归档与隔离恢复演练
-  ↓ 项目所有者再次确认
-Phase E-1：删除旧对象
+Phase E-0：对象存储归档与隔离恢复演练（已完成）
+  ↓ systemd 自动 US 编排成功 + 项目所有者再次确认
+Phase E-1：删除旧对象（未开始）
 ```
 
 Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与
