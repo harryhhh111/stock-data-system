@@ -6,6 +6,7 @@ import { StockSearch } from "@/components/analyzer/stock-search";
 import { FishboneAnnual } from "@/components/storyline/fishbone-annual";
 import { FishboneQuarterly } from "@/components/storyline/fishbone-quarterly";
 import { VerticalStory } from "@/components/storyline/vertical-story";
+import { SegmentPanel } from "@/components/storyline/segment-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -121,6 +122,9 @@ export function StorylinePage() {
               ))}
             </div>
           </div>
+
+          {/* 业务构成 */}
+          <SegmentPanel segments={timeline.segments} />
 
           {/* K 线图 */}
           {klineQuery.data && klineQuery.data.length > 0 && (

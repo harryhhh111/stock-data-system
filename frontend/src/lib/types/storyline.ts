@@ -42,6 +42,21 @@ export interface StorylineTimeline {
   events: StorylineEvent[];
   /** 每股分红：{年份: 当年合计每股分红} */
   dividends: Record<string, number>;
+  /** 分业务收入构成（最近若干期，倒序） */
+  segments: StorylinePeriodSegments[];
+}
+
+export interface StorylineSegment {
+  item_name: string;
+  revenue: number | null;
+  revenue_ratio: number | null;
+  gross_margin: number | null;
+}
+
+export interface StorylinePeriodSegments {
+  report_date: string;
+  source: string; // 'em_f10' | 'llm:*'
+  dimensions: Partial<Record<"product" | "industry" | "region", StorylineSegment[]>>;
 }
 
 export interface KlinePoint {

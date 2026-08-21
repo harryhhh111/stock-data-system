@@ -242,6 +242,46 @@ WHERE stock_code = %s AND ex_date IS NOT NULL AND dividend_per_share IS NOT NULL
 GROUP BY 1
 """
 
+_SEGMENTS_SQL = """
+SELECT report_date, dimension, item_name, revenue, revenue_ratio, gross_margin, source
+FROM stock_segment
+WHERE stock_code = %s
+ORDER BY report_date DESC, dimension, revenue_ratio DESC
+"""
+
+
+def _get_segments(stock_code: str, max_periods: int = 6) -> list[dict[str, Any]]:
+    """分业务收入构成：最近 max_periods 期，每期按 dimension 分组。"""
+    with Connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_SEGMENTS_SQL, (stock_code,))
+            cols = [desc[0] for desc in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    periods: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for r in rows:
+        key = _d(r["report_date"]) or ""
+        if key not in periods:
+            if len(order) >= max_periods:
+                continue
+            periods[key] = {"report_date": key, "source": r["source"], "dimensions": {}}
+            order.append(key)
+        p = periods[key]
+        # 同期多 source 时 em_f10 权威优先（v1 只有 em_f10，防御性保留）
+        if p["source"] != "em_f10" and r["source"] == "em_f10":
+            p["source"] = "em_f10"
+            p["dimensions"] = {}
+        if p["source"] == "em_f10" and r["source"] != "em_f10":
+            continue
+        p["dimensions"].setdefault(r["dimension"], []).append({
+            "item_name": r["item_name"],
+            "revenue": _f(r["revenue"]),
+            "revenue_ratio": _f(r["revenue_ratio"]),
+            "gross_margin": _f(r["gross_margin"]),
+        })
+    return [periods[k] for k in order]
+
 
 def _get_reports(stock_code: str, market: str) -> list[dict[str, Any]]:
     if market == "US":
@@ -419,4 +459,5 @@ def get_timeline(stock_code: str) -> dict[str, Any]:
         "reports": _get_reports(stock_code, stock["market"]),
         "events": _get_events(stock_code),
         "dividends": _get_dividends(stock_code),
+        "segments": _get_segments(stock_code),
     }
