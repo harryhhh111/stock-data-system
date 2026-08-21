@@ -23,7 +23,7 @@ from quant.backtest.common import (
     load_benchmark_prices,
     load_daily_quotes_for_codes,
 )
-from quant.backtest.portfolio import Portfolio
+from quant.backtest.portfolio import Portfolio, validate_cost_params
 from quant.backtest.types import BacktestResult, BenchmarkComparison, PerformanceMetrics, Snapshot
 
 logger = logging.getLogger(__name__)
@@ -142,13 +142,20 @@ class TurtleState:
 
 class TurtlePortfolio:
 
-    def __init__(self, initial_capital: float = 1_000_000):
+    def __init__(
+        self,
+        initial_capital: float = 1_000_000,
+        fee_rate: float = 0.0,
+        slippage_bps: float = 0.0,
+    ):
         self.cash = float(initial_capital)
         self.initial_capital = float(initial_capital)
         self.positions: dict[str, TurtleState] = {}
         self.history: list[Snapshot] = []
         self._total_trades = 0
         self.allow_entry = True
+        self._cost_rate = validate_cost_params(fee_rate, slippage_bps)
+        self.total_costs = 0.0  # 累计交易成本
 
     def _compute_entry_shares(self, price: float, atr: float) -> float:
         if atr <= 0 or price <= 0 or atr / price < 0.005:
@@ -184,7 +191,9 @@ class TurtlePortfolio:
                         exit_signal = True
 
             if exit_signal:
-                self.cash += pos.shares * price
+                gross = pos.shares * price
+                self.cash += gross * (1 - self._cost_rate)
+                self.total_costs += gross * self._cost_rate
                 del self.positions[code]
                 self._total_trades += 1
 
@@ -206,9 +215,11 @@ class TurtlePortfolio:
 
                 if price > entry:
                     shares = self._compute_entry_shares(price, atr)
-                    if shares > 0 and shares * price <= self.cash:
+                    gross = shares * price
+                    if shares > 0 and gross * (1 + self._cost_rate) <= self.cash:
                         self.positions[code] = TurtleState(code, 1, price, atr, shares)
-                        self.cash -= shares * price
+                        self.cash -= gross * (1 + self._cost_rate)
+                        self.total_costs += gross * self._cost_rate
                         self._total_trades += 1
 
         # 3. 快照
@@ -237,6 +248,8 @@ def run_turtle_backtest(
     initial_capital: float = 1_000_000,
     benchmark: str | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
+    fee_rate: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> BacktestResult:
     if end is None:
         end = date.today()
@@ -296,7 +309,7 @@ def run_turtle_backtest(
     # 6. 逐日模拟
     if progress_callback:
         progress_callback(38.0, "逐日模拟...")
-    pf = TurtlePortfolio(initial_capital)
+    pf = TurtlePortfolio(initial_capital, fee_rate=fee_rate, slippage_bps=slippage_bps)
     total = len(trading_dates)
 
     for i, td in enumerate(trading_dates):
@@ -364,4 +377,5 @@ def run_turtle_backtest(
         benchmark_comparison=bc,
         strategy_daily_nav=s_nav,
         benchmark_daily_nav=b_nav,
+        total_costs=pf.total_costs,
     )

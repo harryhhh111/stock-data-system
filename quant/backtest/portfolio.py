@@ -17,13 +17,34 @@ class Position:
     avg_cost: float  # 买入均价
 
 
+def validate_cost_params(fee_rate: float, slippage_bps: float) -> float:
+    """校验交易成本参数，返回合并费率 rate = fee_rate + slippage_bps / 10000。
+
+    参数必须为有限且非负的数，且 rate < 1；否则抛 ValueError。
+    """
+    for name, v in (("fee_rate", fee_rate), ("slippage_bps", slippage_bps)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+            raise ValueError(f"{name} 必须为有限且非负的数，收到: {v!r}")
+    rate = float(fee_rate) + float(slippage_bps) / 10000.0
+    if rate >= 1:
+        raise ValueError(f"总费率必须 < 100%，收到: {rate}")
+    return rate
+
+
 class Portfolio:
-    def __init__(self, initial_capital: float = 1_000_000) -> None:
+    def __init__(
+        self,
+        initial_capital: float = 1_000_000,
+        fee_rate: float = 0.0,
+        slippage_bps: float = 0.0,
+    ) -> None:
         self.initial_capital = initial_capital
         self.cash: float = initial_capital
         self.positions: dict[str, Position] = {}
         self.history: list[Snapshot] = []
         self._total_trades: int = 0
+        self._cost_rate: float = validate_cost_params(fee_rate, slippage_bps)
+        self.total_costs: float = 0.0  # 累计交易成本
 
     def nav(self, prices: dict[str, float]) -> float:
         """按给定价格计算当前组合总市值（不做调仓，不记录快照）。"""
@@ -31,6 +52,37 @@ class Portfolio:
             pos.shares * prices.get(code, pos.avg_cost)
             for code, pos in self.positions.items()
         )
+
+    def liquidate_proportionally(self, gross_amount: float, prices: dict[str, float]) -> float:
+        """按持仓市值比例卖出指定市值，返回净到账（成本计入 total_costs）。
+
+        用于复合策略资金迁出（rate > 0 路径）。不产生 Snapshot；交易计入
+        _total_trades / total_costs，由后续 rebalance 统一记录快照。
+        缺失价格用 avg_cost 兜底（与 nav() 口径一致）。
+        """
+        if gross_amount <= 0 or not self.positions:
+            return 0.0
+        rate = self._cost_rate
+        positions_value = sum(
+            pos.shares * prices.get(code, pos.avg_cost)
+            for code, pos in self.positions.items()
+        )
+        if positions_value <= 0:
+            return 0.0
+        fraction = min(gross_amount / positions_value, 1.0)
+        proceeds = 0.0
+        for code in list(self.positions):
+            pos = self.positions[code]
+            sell_shares = pos.shares * fraction
+            gross = sell_shares * prices.get(code, pos.avg_cost)
+            pos.shares -= sell_shares
+            self.cash += gross * (1 - rate)
+            self.total_costs += gross * rate
+            proceeds += gross * (1 - rate)
+            self._total_trades += 1
+            if fraction >= 1.0 or pos.shares < 1e-10:
+                del self.positions[code]
+        return proceeds
 
     def scale_positions(self, scale: float) -> None:
         """等比缩放所有持仓 + 现金（不产生交易记录，avg_cost 不变）。"""
@@ -54,6 +106,10 @@ class Portfolio:
             buy_prices: {code: close_price} — 调仓日买入价格
             sell_prices: {code: close_price | None} — 调仓日卖出价格，None 表示退市
         """
+        if self._cost_rate > 0:
+            self._rebalance_with_costs(rebal_date, target_codes, buy_prices, sell_prices)
+            return
+
         # 0. 调仓前总市值（用于换手率）
         prev_total_value = self.cash + sum(
             pos.shares * sell_prices.get(code, pos.avg_cost)
@@ -98,6 +154,136 @@ class Portfolio:
         total_value = self.cash + sum(
             pos.shares * buy_prices.get(code, pos.avg_cost)
             for code, pos in self.positions.items()
+        )
+        turnover = sold_value / prev_total_value if prev_total_value > 0 else 0.0
+        self.history.append(
+            Snapshot(
+                date=rebal_date,
+                total_value=total_value,
+                positions=list(self.positions.keys()),
+                turnover=turnover,
+                cash=self.cash,
+                holdings={c: p.shares for c, p in self.positions.items()},
+                costs={c: p.avg_cost for c, p in self.positions.items()},
+            )
+        )
+
+    def _rebalance_with_costs(
+        self,
+        rebal_date: date,
+        target_codes: list[str],
+        buy_prices: dict[str, float],
+        sell_prices: dict[str, float | None],
+    ) -> None:
+        """真实差额调仓（rate > 0 时使用）：只对净成交收费。
+
+        订单 = 目标股数 - 当前股数；继续持有且股数不变的仓位不产生交易、
+        换手或成本。等权目标以满足「交易后资产 = 调仓前资产 - 实际成本」
+        的每股目标市值 V 不动点迭代求解。
+        """
+        rate = self._cost_rate
+
+        def _trade_price(code: str) -> float:
+            """调仓日成交价：目标股用买入价，其余用卖出价；None 表示退市（0）。"""
+            if code in buy_prices and buy_prices[code] and buy_prices[code] > 0:
+                return buy_prices[code]
+            p = sell_prices.get(code)
+            return p if p else 0.0
+
+        # 调仓前总市值（退市持仓按 0 计）
+        prev_total_value = self.cash + sum(
+            pos.shares * _trade_price(code) for code, pos in self.positions.items()
+        )
+
+        valid_codes = [c for c in target_codes if buy_prices.get(c, 0) > 0]
+
+        # 不动点求解每股目标市值 V。约束：买入支出(含费) = 现金 + 卖出到账(含费)，
+        # 即 n*V*(1+rate) = cash + L*(1-rate) + H*(1+rate) - 2*rate*Sv(V)，
+        # 其中 L=整仓卖出市值，H=目标池内持仓市值，Sv(V)=目标池内需减仓的市值。
+        target_value = 0.0
+        if valid_codes:
+            n = len(valid_codes)
+            held_value = {
+                c: self.positions[c].shares * buy_prices[c]
+                for c in valid_codes
+                if c in self.positions
+            }
+            h_total = sum(held_value.values())
+            liquidate_value = sum(
+                pos.shares * _trade_price(code)
+                for code, pos in self.positions.items()
+                if code not in valid_codes
+            )
+            v = prev_total_value / n
+            for _ in range(100):
+                trim = sum(max(h - v, 0.0) for h in held_value.values())
+                new_v = (
+                    self.cash
+                    + liquidate_value * (1 - rate)
+                    + h_total * (1 + rate)
+                    - 2 * rate * trim
+                ) / (n * (1 + rate))
+                if abs(new_v - v) <= max(prev_total_value, 1.0) * 1e-12:
+                    v = new_v
+                    break
+                v = new_v
+            target_value = max(v, 0.0)
+
+        # 1. 卖出：移出目标池的整仓卖出 + 目标内的减仓
+        sold_value = 0.0
+        orders_buy: dict[str, float] = {}  # {code: 买入股数}
+        for code in list(self.positions):
+            pos = self.positions[code]
+            price = _trade_price(code)
+            if code not in valid_codes:
+                sell_shares = pos.shares
+            else:
+                target_shares = target_value / price if price > 0 else 0.0
+                diff = target_shares - pos.shares
+                if diff >= 0:
+                    orders_buy[code] = diff
+                    continue
+                sell_shares = -diff
+            gross = sell_shares * price
+            sold_value += gross
+            self.cash += gross * (1 - rate)
+            self.total_costs += gross * rate
+            self._total_trades += 1
+            if code not in valid_codes:
+                del self.positions[code]
+            else:
+                pos.shares -= sell_shares
+
+        # 2. 买入：新进目标 + 目标内的加仓（含成本的现金约束）
+        for code in valid_codes:
+            price = buy_prices[code]
+            target_shares = target_value / price
+            current = self.positions[code].shares if code in self.positions else 0.0
+            buy_shares = orders_buy.get(code, target_shares - current)
+            if buy_shares <= 0:
+                continue
+            gross = buy_shares * price
+            spend = gross * (1 + rate)
+            if spend > self.cash:
+                # 浮点残差保护：现金不足时缩量买入（确定性）
+                buy_shares = self.cash / (price * (1 + rate))
+                if buy_shares <= 0:
+                    continue
+                gross = buy_shares * price
+                spend = self.cash
+            self.cash -= spend
+            self.total_costs += gross * rate
+            self._total_trades += 1
+            if code in self.positions:
+                pos = self.positions[code]
+                pos.avg_cost = (pos.shares * pos.avg_cost + gross) / (pos.shares + buy_shares)
+                pos.shares += buy_shares
+            else:
+                self.positions[code] = Position(code, buy_shares, price)
+
+        # 3. 记录快照
+        total_value = self.cash + sum(
+            pos.shares * _trade_price(code) for code, pos in self.positions.items()
         )
         turnover = sold_value / prev_total_value if prev_total_value > 0 else 0.0
         self.history.append(

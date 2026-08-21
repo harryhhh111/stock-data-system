@@ -51,6 +51,7 @@ def _print_report(r: BacktestResult) -> None:
     print(f"  调仓次数:     {m.num_rebalances}")
     print(f"  平均持仓:     {m.avg_holding_count:.0f} 只")
     print(f"  总交易:       {m.total_trades} 笔")
+    print(f"  总成本:       {r.total_costs:,.2f}（占初始资金 {r.total_costs / r.initial_capital:.2%}）")
     print()
 
     if r.rebalance_history:
@@ -123,6 +124,7 @@ def _print_json(r: BacktestResult) -> None:
         "num_rebalances": m.num_rebalances,
         "avg_holding_count": m.avg_holding_count,
         "total_trades": m.total_trades,
+        "total_costs": r.total_costs,
         "final_holdings": r.final_holdings,
         "history": [
             {"date": str(s.date), "value": s.total_value, "positions": s.positions, "turnover": s.turnover}
@@ -163,6 +165,8 @@ def main() -> None:
     parser.add_argument("--benchmark", default=None,
                         help="基准 ticker（默认按市场自动选择；用 '' 禁用）")
     parser.add_argument("--timing", action="store_true", help="启用 200 日均线择时轮动（牛持基准，熊持策略）")
+    parser.add_argument("--fee", type=float, default=0.0, help="手续费率（如 0.0003，默认 0）")
+    parser.add_argument("--slippage", type=float, default=0.0, help="滑点（基点 bps，默认 0）")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     args = parser.parse_args()
@@ -181,6 +185,8 @@ def main() -> None:
             market=args.market,
             benchmark=args.benchmark,
             timing=args.timing,
+            fee_rate=args.fee,
+            slippage_bps=args.slippage,
         )
     except ValueError as e:
         print(f"错误: {e}", file=sys.stderr)

@@ -80,3 +80,4 @@ class BacktestResult:
     strategy_daily_nav: dict[date, float] = field(default_factory=dict)
     benchmark_daily_nav: dict[date, float] = field(default_factory=dict)
     composite_details: CompositeDetails | None = None
+    total_costs: float = 0.0  # 累计交易成本（默认 0，向后兼容）

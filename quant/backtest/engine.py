@@ -49,6 +49,8 @@ def run_backtest(
     benchmark: str | None = None,
     timing: bool = False,
     progress_callback: Callable[[float, str], None] | None = None,
+    fee_rate: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> BacktestResult:
     """运行因子策略回测。
 
@@ -62,6 +64,8 @@ def run_backtest(
         market: 市场代码（"US", "CN_A", "CN_HK"）
         benchmark: 基准 ticker（None=按市场自动选择，空字符串=禁用）
         timing: 启用 200 日均线择时轮动（牛持基准，熊持策略）
+        fee_rate: 手续费率（如 0.0003），默认 0（零摩擦，兼容旧行为）
+        slippage_bps: 滑点（基点），默认 0
 
     Returns:
         BacktestResult
@@ -79,6 +83,8 @@ def run_backtest(
             initial_capital=initial_capital,
             benchmark=benchmark,
             progress_callback=progress_callback,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
         )
 
     if preset_name not in PRESETS:
@@ -94,6 +100,8 @@ def run_backtest(
             initial_capital=initial_capital,
             benchmark=benchmark,
             progress_callback=progress_callback,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
         )
 
     preset = PRESETS[preset_name]
@@ -124,7 +132,7 @@ def run_backtest(
     if progress_callback:
         progress_callback(0.0, "数据预加载完成")
 
-    portfolio = Portfolio(initial_capital)
+    portfolio = Portfolio(initial_capital, fee_rate=fee_rate, slippage_bps=slippage_bps)
     roe_years = filters.get("roe_consecutive_years", 0)
     roe_min = filters.get("roe_min", 0)
 
@@ -321,4 +329,5 @@ def run_backtest(
         benchmark_comparison=bench_comparison,
         strategy_daily_nav=strategy_daily_nav,
         benchmark_daily_nav=benchmark_daily_nav,
+        total_costs=portfolio.total_costs,
     )

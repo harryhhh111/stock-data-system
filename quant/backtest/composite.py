@@ -39,7 +39,7 @@ from quant.backtest.types import (
 )
 from quant.backtest.universe import get_nearest_trade_date
 from quant.backtest.macro import commodity_signal, get_mapped_stocks
-from quant.backtest.portfolio import Portfolio
+from quant.backtest.portfolio import Portfolio, validate_cost_params
 from quant.backtest.types import PerformanceMetrics
 from quant.backtest.preloader import PITPreloader
 from quant.screener.filters import apply_hard_filters, filter_consecutive_roe
@@ -125,7 +125,12 @@ def _allocate(
 def _normalize_sub_portfolio(
     sub_pf: Portfolio, target_capital: float, current_prices: dict[str, float | None]
 ) -> None:
-    """将子组合 NAV 缩放到 target_capital，保持持仓比例不变。"""
+    """将子组合 NAV 缩放到 target_capital，保持持仓比例不变。
+
+    仅用于零成本（rate == 0）路径，保持既有行为逐位兼容。
+    rate > 0 时资金迁移由 _migrate_capital_pool() 以真实交易完成，
+    本函数不会被调用。
+    """
     # 缺失/停牌价格用持仓均价兜底，避免市值被低估导致过度缩放
     prices_clean = {
         code: (price if price is not None and price > 0 else sub_pf.positions[code].avg_cost)
@@ -139,6 +144,78 @@ def _normalize_sub_portfolio(
 
     scale = target_capital / current_nav
     sub_pf.scale_positions(scale)
+
+
+def _migrate_capital_pool(
+    cfg: CompositeConfig,
+    sub_portfolios: dict[str, Portfolio],
+    allocation: dict[str, float],
+    trade_date: date,
+    benchmark: str | None,
+    market: str,
+) -> dict[str, float]:
+    """组合级共享资金池迁移（rate > 0 路径），返回各子策略目标资金。
+
+    目标资金 = 当前组合总净值 × 权重（不按 initial_capital 补钱）。
+    缩减子策略真实卖出（`Portfolio.liquidate_proportionally`，计成本），
+    净到账转入资金池；增资子策略按需求比例从池中取现（池因迁移成本
+    小于总需求时等比缩放）。守恒：迁移后总净值 = 迁移前总净值 − 迁移成本。
+    资金池转账是组合内部记账，本身不是交易、不计成本。
+    """
+    names = [sub["name"] for sub in cfg["sub_strategies"]]
+
+    # 各子组合现价（缺失用 avg_cost 兜底，与 _normalize_sub_portfolio 口径一致）
+    prices: dict[str, dict[str, float]] = {}
+    navs: dict[str, float] = {}
+    for name in names:
+        pf = sub_portfolios[name]
+        codes = list(pf.positions.keys())
+        raw = get_sell_prices_mixed(trade_date, codes, benchmark, market) if codes else {}
+        prices[name] = {
+            c: (p if p is not None and p > 0 else pf.positions[c].avg_cost)
+            for c, p in raw.items()
+        }
+        navs[name] = pf.nav(prices[name])
+
+    total = sum(navs.values())
+    if total <= 0:
+        return {name: 0.0 for name in names}
+    targets = {name: total * allocation.get(name, 0.0) for name in names}
+
+    # 缩减子策略：真实卖出（现金足够抵减的部分无需卖出），净额入池
+    pool = 0.0
+    demands: dict[str, float] = {}
+    for name in names:
+        pf = sub_portfolios[name]
+        r = navs[name] - targets[name]
+        if r <= 0:
+            if r < 0:
+                demands[name] = -r
+            continue
+        need_sell = max(0.0, r - pf.cash)
+        if need_sell > 0:
+            pf.liquidate_proportionally(need_sell, prices[name])
+        out = pf.nav(prices[name]) - targets[name]
+        pf.cash -= out
+        pool += out
+
+    # 增资子策略：按需求比例从资金池取现
+    total_demand = sum(demands.values())
+    if total_demand > 0 and pool > 0:
+        ratio = min(1.0, pool / total_demand)
+        for name, d in demands.items():
+            sub_portfolios[name].cash += d * ratio
+        pool -= total_demand * ratio
+
+    # 权重合计 < 1 等情形下池内剩余：归 residual 子策略（否则归首个）
+    if pool > 1e-9:
+        residual_name = next(
+            (sub["name"] for sub in cfg["sub_strategies"] if sub.get("residual")),
+            names[0],
+        )
+        sub_portfolios[residual_name].cash += pool
+
+    return targets
 
 
 # ── 日频 NAV ────────────────────────────────────────────
@@ -382,6 +459,8 @@ def _init_sub_portfolios(
     initial_capital: float,
     rebalance_dates: list[date],
     market: str,
+    fee_rate: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> tuple[dict[str, Portfolio], dict[str, list[Snapshot]]]:
     """按初始信号分配资金，创建子 Portfolio。"""
     sub_portfolios: dict[str, Portfolio] = {}
@@ -393,7 +472,9 @@ def _init_sub_portfolios(
     for sub in cfg["sub_strategies"]:
         name = sub["name"]
         cap = initial_capital * initial_allocation.get(name, 0.0)
-        sub_portfolios[name] = Portfolio(max(cap, 0.0))
+        sub_portfolios[name] = Portfolio(
+            max(cap, 0.0), fee_rate=fee_rate, slippage_bps=slippage_bps
+        )
         valuation_snaps[name] = []
 
     return sub_portfolios, valuation_snaps
@@ -467,26 +548,30 @@ def _rebalance_sub_portfolio(
     signals: dict[str, str],
     valuation_snaps: dict[str, list[Snapshot]],
     exec_date: date | None = None,
+    pre_migrated: bool = False,
 ) -> None:
     """单个子策略在一个调仓日的完整流程：记录快照 → 归一化 → 选股 → 调仓。
 
     Args:
         rb_date: 信号日，用于基本面选股和估值快照。
         exec_date: 执行日，用于成交价格查询。为 None 时等于 rb_date。
+        pre_migrated: True 表示快照与资金迁移已由组合级资金池流程完成
+            （rate > 0 路径），本函数只选股和调仓。
     """
     trade_date = exec_date or rb_date
 
-    _record_sub_valuation_snapshot(sub_pf, name, rb_date, benchmark, market, valuation_snaps)
+    if not pre_migrated:
+        _record_sub_valuation_snapshot(sub_pf, name, rb_date, benchmark, market, valuation_snaps)
 
-    # 资金归一化（使用执行日价格）
-    current_codes = list(sub_pf.positions.keys())
-    current_prices = get_sell_prices_mixed(trade_date, current_codes, benchmark, market)
-    _normalize_sub_portfolio(sub_pf, target_capital, current_prices)
+        # 资金归一化（零成本路径；rate > 0 走 _migrate_capital_pool）
+        current_codes = list(sub_pf.positions.keys())
+        current_prices = get_sell_prices_mixed(trade_date, current_codes, benchmark, market)
+        _normalize_sub_portfolio(sub_pf, target_capital, current_prices)
 
     if target_capital <= 0:
         sell_codes = list(sub_pf.positions.keys())
         sell_p = get_sell_prices_mixed(trade_date, sell_codes, benchmark, market)
-        sub_pf.rebalance(rb_date, list(buy_prices.keys()), buy_prices, sell_p)
+        sub_pf.rebalance(rb_date, [], {}, sell_p)
         return
 
     # 选股使用信号日基本面，价格使用执行日行情
@@ -524,6 +609,7 @@ def _run_rebalance_loop(
     initial_capital: float,
     progress_callback: Callable[[float, str], None] | None,
     allocation_override: dict[str, float] | None = None,
+    cost_rate: float = 0.0,
 ) -> list[CompositeRebalanceRecord]:
     """复合策略主循环：信号 → 分配 → 各子策略独立调仓。
 
@@ -531,6 +617,9 @@ def _run_rebalance_loop(
 
     Args:
         allocation_override: 传入时固定使用此分配，跳过宏观信号。
+        cost_rate: 合并费率。> 0 时资金迁移走组合级共享资金池
+            （真实卖出 + 池内转账），目标资金 = 当前总净值 × 权重；
+            == 0 时保持既有固定切片 scale_positions 行为。
     """
     records: list[CompositeRebalanceRecord] = []
 
@@ -538,12 +627,30 @@ def _run_rebalance_loop(
         signals = _check_all_signals(cfg, market, rb_date)
         allocation = allocation_override or _allocate(cfg, signals)
 
+        if cost_rate > 0:
+            # 先记录各子组合迁移前估值快照（保持日频 NAV 口径一致），
+            # 再做组合级资金池迁移（真实交易，计成本）
+            for sub in cfg["sub_strategies"]:
+                name = sub["name"]
+                _record_sub_valuation_snapshot(
+                    sub_portfolios[name], name, rb_date, benchmark, market, valuation_snaps
+                )
+            pool_targets = _migrate_capital_pool(
+                cfg, sub_portfolios, allocation, rb_date, benchmark, market
+            )
+        else:
+            pool_targets = None
+
         for sub in cfg["sub_strategies"]:
             name = sub["name"]
-            target_capital = initial_capital * allocation.get(name, 0.0)
+            if pool_targets is not None:
+                target_capital = pool_targets[name]
+            else:
+                target_capital = initial_capital * allocation.get(name, 0.0)
             _rebalance_sub_portfolio(
                 sub, sub_portfolios[name], name, rb_date, target_capital,
                 benchmark, market, preloader, quote_by_date, signals, valuation_snaps,
+                pre_migrated=pool_targets is not None,
             )
 
         # 记录本次调仓的结构化数据
@@ -772,6 +879,8 @@ def run_composite_backtest(
     quote_by_date: dict[date, pd.DataFrame] | None = None,
     rebalance_months: int = 1,
     allocation_override: dict[str, float] | None = None,
+    fee_rate: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> BacktestResult:
     """运行复合策略回测。
 
@@ -805,13 +914,15 @@ def run_composite_backtest(
         progress_callback(0.0, "数据预加载完成")
 
     sub_portfolios, valuation_snaps = _init_sub_portfolios(
-        cfg, initial_capital, rebalance_dates, market
+        cfg, initial_capital, rebalance_dates, market,
+        fee_rate=fee_rate, slippage_bps=slippage_bps,
     )
 
     records = _run_rebalance_loop(
         cfg, market, benchmark, rebalance_dates, sub_portfolios, valuation_snaps,
         preloader, quote_by_date, initial_capital, progress_callback,
         allocation_override=allocation_override,
+        cost_rate=validate_cost_params(fee_rate, slippage_bps),
     )
 
     end_trade = _record_final_valuation(
@@ -861,6 +972,7 @@ def run_composite_backtest(
         strategy_daily_nav=strategy_daily_nav,
         benchmark_daily_nav=benchmark_daily_nav,
         composite_details=composite_details,
+        total_costs=sum(pf.total_costs for pf in sub_portfolios.values()),
     )
 
 
@@ -877,6 +989,8 @@ def run_staggered_composite_backtest(
     allocation: dict[str, float] | None = None,
     cohorts: int = 6,
     progress_callback: Callable[[float, str], None] | None = None,
+    fee_rate: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> dict:
     """六队列交错半年调仓复合策略回测。
 
@@ -944,6 +1058,8 @@ def run_staggered_composite_backtest(
                 preloader=preloader,
                 quote_by_date=quote_by_date,
                 allocation_override=allocation,
+                fee_rate=fee_rate,
+                slippage_bps=slippage_bps,
             )
         except Exception:
             logger.exception("%s 回测失败", label)
@@ -1018,6 +1134,7 @@ def run_staggered_composite_backtest(
             "num_rebalances": metrics.num_rebalances,
             "avg_holding_count": round(metrics.avg_holding_count, 1),
             "total_trades": metrics.total_trades,
+            "total_costs": sum(cr["result"].total_costs for cr in cohort_results),
         },
         "benchmark_comparison": {
             "ticker": benchmark,
