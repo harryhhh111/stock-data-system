@@ -25,10 +25,20 @@ def _copy_df(conn, sql: str, str_cols: tuple[str, ...] = ()) -> pd.DataFrame:
 class PITPreloader:
     """一次性加载财务 / TTM / 股本 / 信息到内存，pandas 做 PIT。"""
 
-    def __init__(self, market: str) -> None:
+    def __init__(
+        self,
+        market: str,
+        *,
+        pit_min_report_date: str = "2016-01-01",
+        pit_max_filed_date: str | None = None,
+        pit_streaming: bool = False,
+    ) -> None:
         if market not in ("CN_A", "CN_HK", "US"):
             raise ValueError(f"仅支持 CN_A / CN_HK / US，收到: {market}")
         self.market = market
+        self._pit_min_report_date = pit_min_report_date
+        self._pit_max_filed_date = pit_max_filed_date
+        self._pit_streaming = pit_streaming
 
     def load(self) -> None:
         """加载并预排序全部静态数据。"""
@@ -122,11 +132,23 @@ class PITPreloader:
         with Connection() as conn:
             if self._us_pit_enabled:
                 # Phase B4:版本事实层 as-of 数据源,替代旧三表
-                self._pit_facts = us_pit_source.load_fact_rows()
-                self._pit_exclusions = us_pit_source.load_exclusions()
-                max_id = max((f["fact_version_id"] for f in self._pit_facts), default=0)
+                if self._pit_streaming:
+                    self._pit_facts = None
+                    self._pit_exclusions = []
+                    max_id, fact_count = us_pit_source.pit_fact_watermark(
+                        min_report_date=self._pit_min_report_date,
+                        max_filed_date=self._pit_max_filed_date,
+                    )
+                else:
+                    self._pit_facts = us_pit_source.load_fact_rows(
+                        min_report_date=self._pit_min_report_date,
+                        max_filed_date=self._pit_max_filed_date,
+                    )
+                    self._pit_exclusions = us_pit_source.load_exclusions()
+                    max_id = max((f["fact_version_id"] for f in self._pit_facts), default=0)
+                    fact_count = len(self._pit_facts)
                 self._pit_watermark = (
-                    f"{USFactSelector.VERSION}_{max_id}_{len(self._pit_facts)}"
+                    f"{USFactSelector.VERSION}_{max_id}_{fact_count}"
                 )
             else:
                 self.us_fin = _copy_df(
@@ -294,9 +316,15 @@ class PITPreloader:
         from quant.backtest import us_pit_source
 
         if getattr(self, "_pit_sel_date", None) != as_of_date:
-            self._pit_sel = us_pit_source.select_as_of(
-                self._pit_facts, self._pit_exclusions, as_of_date
-            )
+            if self._pit_streaming:
+                self._pit_sel = us_pit_source.select_as_of_from_db(
+                    as_of_date,
+                    min_report_date=self._pit_min_report_date,
+                )
+            else:
+                self._pit_sel = us_pit_source.select_as_of(
+                    self._pit_facts, self._pit_exclusions, as_of_date
+                )
             self._pit_annual = us_pit_source._build_annual_df(
                 self._pit_sel, "pit", keep_years=3
             )

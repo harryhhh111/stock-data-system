@@ -51,6 +51,9 @@ def run_backtest(
     progress_callback: Callable[[float, str], None] | None = None,
     fee_rate: float = 0.0,
     slippage_bps: float = 0.0,
+    rebalance_dates: list[date] | None = None,
+    preloader: PITPreloader | None = None,
+    quote_by_date: dict[date, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     """运行因子策略回测。
 
@@ -66,6 +69,8 @@ def run_backtest(
         timing: 启用 200 日均线择时轮动（牛持基准，熊持策略）
         fee_rate: 手续费率（如 0.0003），默认 0（零摩擦，兼容旧行为）
         slippage_bps: 滑点（基点），默认 0
+        rebalance_dates: 预计算调仓日；供同一数据集的批量回测复用。
+        preloader / quote_by_date: 预加载 PIT 数据与调仓日行情；传入时不重复加载。
 
     Returns:
         BacktestResult
@@ -120,15 +125,19 @@ def run_backtest(
         benchmark = _DEFAULT_BENCHMARKS.get(market)
 
     # 生成调仓日期（每月末对齐到最后一个交易日）
-    rebalance_dates = generate_rebalance_dates(start, end, months, market=market)
+    if rebalance_dates is None:
+        rebalance_dates = generate_rebalance_dates(start, end, months, market=market)
     if not rebalance_dates:
         raise ValueError(f"在 {start} ~ {end} 之间无调仓日期")
 
-    # 预加载财报到内存，行情走批量查询
-    preloader = PITPreloader(market)
-    preloader.load()
-    with Connection() as conn:
-        quote_by_date = batch_query_quote(conn, rebalance_dates, market)
+    # 预加载财报到内存，行情走批量查询。批量情景回测可传入共享数据，
+    # 避免每个成本场景重复载入完整 PIT 事实。
+    if preloader is None:
+        preloader = PITPreloader(market)
+        preloader.load()
+    if quote_by_date is None:
+        with Connection() as conn:
+            quote_by_date = batch_query_quote(conn, rebalance_dates, market)
     if progress_callback:
         progress_callback(0.0, "数据预加载完成")
 

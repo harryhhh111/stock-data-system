@@ -56,6 +56,44 @@ CACHE_SCHEMA = "v3"
 _QUARTERLY_FORMS = {"10-Q", "10-Q/A", "10-QT", "10-QT/A"}
 
 
+# ``dict(zip(columns, row))`` for 1.5m+ facts alone takes several GiB.  The
+# selector only needs Mapping-like ``[]``/``get`` access, so retain the DB row
+# tuple and one shared column map instead.  This is deliberately private to
+# the backtest loader: production version facts and selector semantics remain
+# unchanged.
+_FACT_COLUMNS = (
+    "fact_version_id", "stock_code", "statement", "standard_field",
+    "period_kind", "period_start", "report_date", "unit", "value_hash",
+    "value_numeric", "value_text", "accession_no", "form", "filed_date",
+    "dimensions", "sec_tag", "context_hash", "fiscal_period_raw",
+)
+_FACT_COLUMN_INDEX = {name: index for index, name in enumerate(_FACT_COLUMNS)}
+
+
+class _CompactFactRow:
+    """Read-only mapping facade over one version-fact result tuple.
+
+    ``USFactSelector`` and the shared projection helpers use only ``get`` and
+    ``__getitem__``.  Slots plus a tuple avoid allocating a 18-key dictionary
+    for every historical fact during a PIT backtest.
+    """
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: tuple[Any, ...]) -> None:
+        self._values = values
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return self._values[_FACT_COLUMN_INDEX[key]]
+        except KeyError:
+            raise KeyError(key) from None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        index = _FACT_COLUMN_INDEX.get(key)
+        return default if index is None else self._values[index]
+
+
 def us_backtest_pit_enabled() -> bool:
     """Phase B4 独立开关:回测 US 数据源走版本事实层 as-of。默认关闭(legacy)。"""
     return os.getenv("US_BACKTEST_PIT_VERSION", "").lower() in {
@@ -68,8 +106,9 @@ def us_backtest_pit_enabled() -> bool:
 def load_fact_rows(
     min_filed_date: str = "2014-01-01",
     min_report_date: str = "2016-01-01",
+    max_filed_date: str | None = None,
     chunk_size: int = 200,
-) -> list[dict[str, Any]]:
+) -> list[Any]:
     """一次性加载回测所需字段的全部事实版本(含被后续重述覆盖的旧版本)。
 
     按 stock_code 分块查询以命中 idx_us_fact_period 索引(全表扫 5.5M 行过慢)。
@@ -98,14 +137,19 @@ def load_fact_rows(
           AND f.filed_date >= %s
           AND f.report_date >= %s
     """
-    rows: list[dict[str, Any]] = []
+    if max_filed_date is not None:
+        sql += " AND f.filed_date <= %s"
+
+    rows: list[Any] = []
     with Connection() as conn:
         cur = conn.cursor()
         for i in range(0, len(stocks), chunk_size):
             chunk = stocks[i:i + chunk_size]
-            cur.execute(sql, (chunk, *PIT_FIELDS, min_filed_date, min_report_date))
-            cols = [d[0] for d in cur.description]
-            rows.extend(dict(zip(cols, r)) for r in cur.fetchall())
+            params = (chunk, *PIT_FIELDS, min_filed_date, min_report_date)
+            if max_filed_date is not None:
+                params += (max_filed_date,)
+            cur.execute(sql, params)
+            rows.extend(_CompactFactRow(r) for r in cur.fetchall())
             logger.info(
                 "PIT facts chunk %d/%d loaded, cumulative %d rows",
                 i // chunk_size + 1, (len(stocks) + chunk_size - 1) // chunk_size, len(rows),
@@ -130,6 +174,130 @@ def load_exclusions() -> list[dict[str, Any]]:
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         cur.close()
     return rows
+
+
+def _fetch_fact_rows_for_stocks_as_of(
+    stock_codes: list[str],
+    as_of_date: date,
+    min_filed_date: str,
+    min_report_date: str,
+) -> list[Any]:
+    """Fetch one stock chunk with the selector's as-of exclusion semantics."""
+    placeholders = ", ".join(["%s"] * len(PIT_FIELDS))
+    sql = f"""
+        SELECT f.fact_version_id, f.stock_code, f.statement, f.standard_field,
+               f.period_kind, f.period_start, f.report_date, f.unit,
+               f.value_hash, f.value_numeric, f.value_text,
+               f.accession_no, f.form, f.filed_date, f.dimensions, f.sec_tag,
+               f.context_hash, f.fiscal_period_raw
+        FROM us_financial_fact_version f
+        LEFT JOIN us_financial_fact_exclusion e
+          ON e.fact_version_id = f.fact_version_id
+         AND e.status = 'active'
+         AND (
+             e.reason_code = ANY(%s)
+             OR (e.reason_code = ANY(%s) AND e.effective_from::date <= %s)
+         )
+        WHERE e.fact_version_id IS NULL
+          AND f.stock_code = ANY(%s)
+          AND f.standard_field IN ({placeholders})
+          AND f.filed_date >= %s
+          AND f.filed_date <= %s
+          AND f.report_date >= %s
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            sql,
+            (
+                list(TECHNICAL_REASON_CODES),
+                list(BUSINESS_REASON_CODES),
+                as_of_date,
+                stock_codes,
+                *PIT_FIELDS,
+                min_filed_date,
+                as_of_date,
+                min_report_date,
+            ),
+        )
+        rows = [_CompactFactRow(row) for row in cur.fetchall()]
+        cur.close()
+    return rows
+
+
+def select_as_of_from_db(
+    as_of_date: date,
+    *,
+    min_filed_date: str = "2014-01-01",
+    min_report_date: str = "2016-01-01",
+    chunk_size: int = 100,
+) -> list:
+    """Select PIT facts in bounded stock chunks instead of retaining all facts.
+
+    Economic fact keys never cross stock codes, so invoking the identical
+    selector per stock chunk is semantically equivalent to selecting the full
+    universe at once.  It bounds peak memory for small production hosts.
+    """
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT stock_code FROM stock_info WHERE market = 'US' ORDER BY stock_code"
+        )
+        stocks = [row[0] for row in cur.fetchall()]
+        cur.close()
+
+    selector = USFactSelector()
+    selected: list = []
+    for offset in range(0, len(stocks), chunk_size):
+        facts = _fetch_fact_rows_for_stocks_as_of(
+            stocks[offset:offset + chunk_size],
+            as_of_date,
+            min_filed_date,
+            min_report_date,
+        )
+        # Facts are already filtered by visibility and active exclusions above;
+        # use the shared selector for canonical-tag and restatement semantics.
+        selector._load_facts = lambda *args, _facts=facts, **kwargs: _facts
+        selected.extend(
+            selector.select(basis="as-of", as_of_date=as_of_date, fields=PIT_FIELDS)
+        )
+        logger.info(
+            "PIT as-of %s selected chunk %d/%d (%d facts, %d selected)",
+            as_of_date,
+            offset // chunk_size + 1,
+            (len(stocks) + chunk_size - 1) // chunk_size,
+            len(facts),
+            len(selected),
+        )
+    return selected
+
+
+def pit_fact_watermark(
+    *,
+    min_filed_date: str = "2014-01-01",
+    min_report_date: str = "2016-01-01",
+    max_filed_date: str | None = None,
+) -> tuple[int, int]:
+    """Return a cache watermark for the same source scope as a PIT preload."""
+    placeholders = ", ".join(["%s"] * len(PIT_FIELDS))
+    sql = f"""
+        SELECT COALESCE(MAX(f.fact_version_id), 0), COUNT(*)
+        FROM us_financial_fact_version f
+        JOIN stock_info s ON s.stock_code = f.stock_code AND s.market = 'US'
+        WHERE f.standard_field IN ({placeholders})
+          AND f.filed_date >= %s
+          AND f.report_date >= %s
+    """
+    params: tuple[Any, ...] = (*PIT_FIELDS, min_filed_date, min_report_date)
+    if max_filed_date is not None:
+        sql += " AND f.filed_date <= %s"
+        params += (max_filed_date,)
+    with Connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        max_id, count = cur.fetchone()
+        cur.close()
+    return int(max_id or 0), int(count or 0)
 
 
 def _apply_exclusions(
