@@ -1,12 +1,12 @@
 # 美股旧财务宽表退役计划
 
-> 状态：Phase A、B1、B2、B3a、B3b、B4 已完成并全部启用；Phase C1（在线同步切换至
+> 状态：**已完成（2026-08-21）**。Phase A、B1、B2、B3a、B3b、B4 已完成并全部启用；Phase C1（在线同步切换至
 > 版本层、停止旧宽表/旧 MV 在线写入）已于 2026-08-11 完成，C2（universe 补充清单)
 > 与 US universe 身份维护（CIK 优先 fetch、ticker 身份表、BLD/CWEN-A 退市处置）已于
 > 2026-08-13 完成 Phase D 证据门槛；2026-08-14 完成、2026-08-16 验收 Phase E-0（COS 归档与
-> 隔离恢复演练）。2026-08-18 systemd scheduler 已恢复常驻；须等待其下一次自动 US 编排成功，
-> 才可进入 E-1 删除讨论。
-> 更新日期：2026-08-19<br>
+> 隔离恢复演练）。2026-08-19 至 2026-08-21 连续三次 06:12 systemd 自动 US 编排成功；项目所有者
+> 于 2026-08-21 授权 E-1，三张旧宽表和三个旧 MV 已在单一事务内删除，未使用 `CASCADE`。
+> 更新日期：2026-08-21<br>
 > 原则：个人项目轻量迁移；以减少双轨逻辑为目标，不为约 357 MB 空间引入复杂基建。
 
 ## 1. 目标
@@ -254,15 +254,19 @@ Phase A 可计入 explained 的 expected reason：
 上述门槛已于 2026-08-13 完成。新 filing 的 `PERIOD_MISMATCH` / `MISSING_COMPONENT` 仍按
 运行摘要滚动队列透明报告；它们不是 `UNEXPLAINED`，不得被静默掩盖。
 
-### Phase E：归档与删除
+### Phase E：归档与删除（已完成）
 
 分成两个须独立确认的小步骤：
 
 1. **E-0 归档与恢复演练**：导出三张旧宽表的 schema + data 和三个 MV 的定义；计算 SHA-256、
    上传对象存储并做下载校验；在隔离数据库恢复并验证宽表基线和 MV refresh。详见
    [US_PHASE_E_LEGACY_ARCHIVE_RESTORE_TASK.md](US_PHASE_E_LEGACY_ARCHIVE_RESTORE_TASK.md)。
-2. **E-1 删除**：仅在 E-0 验收且项目所有者再次明确确认后，先删除三个旧物化视图、再删除三张
-   旧宽表，并执行空间复核。是否 `VACUUM FULL` 另行决定，不能为回收约 357 MB 阻塞服务。
+2. **E-1 删除**：已于 2026-08-21 完成。项目所有者再次确认后，在单一事务内依序删除
+   `mv_us_fcf_yield` → `mv_us_indicator_ttm` → `mv_us_financial_indicator` →
+   `us_income_statement` → `us_balance_sheet` → `us_cash_flow_statement`；不使用 `CASCADE`。
+   删除后 `pg_class` 核验六对象均不存在，snapshot smoke（annual 4,967 行 / TTM 1,000 行）和
+   退役相关测试通过。未执行 `VACUUM FULL`；约 357 MB 的物理回收由 PostgreSQL 后续正常维护处理，
+   不以空间回收阻塞服务。
 
 删除属于最终不可即时回退步骤；E-0 完成不自动授权 E-1。
 
@@ -318,8 +322,8 @@ Phase C：停止旧写入
 Phase D：证据门槛（完整编排、最近 filing 重放、零写入/静态扫描、产品 smoke）
   ↓ 项目所有者最终确认
 Phase E-0：对象存储归档与隔离恢复演练（已完成）
-  ↓ systemd 自动 US 编排成功 + 项目所有者再次确认
-Phase E-1：删除旧对象（未开始）
+  ↓ systemd 自动 US 编排成功 + 项目所有者再次确认（已满足）
+Phase E-1：删除旧对象（已完成，2026-08-21）
 ```
 
 Phase A 已于 2026-08-05 验收：17,000 行 current-only 对比的四类阻断项与

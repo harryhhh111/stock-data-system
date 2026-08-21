@@ -2,22 +2,23 @@
 
 统一返回 A股/港股/美股 三种市场的财报数据为同一 JSON 结构：
 - CN_A / CN_HK 走 income_statement / balance_sheet / cash_flow_statement
-- US 走 us_income_statement / us_balance_sheet / us_cash_flow_statement
+- US 走 us_financial_fact_version，经 latest-restated selector 选择
 
 同比（YoY）在 SQL 内自连接计算（含 annual，物化视图只算 quarterly/semi）：
 - CN：report_date - INTERVAL '1 year' 精确匹配同类型报告期
-- US：财季日期漂移，±30 天窗口取最近一期（复用 mv_us_financial_indicator 的模式）
+- US：财季日期漂移，±30 天窗口取最近一期；数据来自版本事实层，不能读取已退役宽表
 
 口径说明：利润表与现金流为累计（YTD）值，同比为与上年同期累计值比较。
 """
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
 from db import Connection
+from core.selectors.us_financial import USFactSelector
 
 logger = logging.getLogger(__name__)
 
@@ -102,53 +103,129 @@ WHERE i.stock_code = %s
 ORDER BY i.report_date
 """
 
-_US_REPORTS_SQL = """
-SELECT
-    i.report_date,
-    i.report_type,
-    i.filed_date                                         AS notice_date,
-    i.revenues                                           AS revenue,
-    (i.revenues - prev.revenues)
-        / NULLIF(ABS(prev.revenues), 0)                  AS revenue_yoy,
-    i.net_income                                         AS net_profit,
-    (i.net_income - prev.net_income)
-        / NULLIF(ABS(prev.net_income), 0)                AS net_profit_yoy,
-    i.gross_profit / NULLIF(i.revenues, 0)               AS gross_margin,
-    i.eps_basic,
-    NULL::numeric                                        AS net_profit_excl,
-    fi.roe,
-    b.total_assets,
-    b.total_liabilities                                  AS total_liab,
-    b.total_liabilities / NULLIF(b.total_assets, 0)      AS debt_ratio,
-    cf.net_cash_from_operations                          AS cfo_net
-FROM us_income_statement i
-LEFT JOIN us_balance_sheet b
-    ON i.stock_code = b.stock_code
-    AND i.report_date = b.report_date
-    AND i.report_type = b.report_type
-LEFT JOIN us_cash_flow_statement cf
-    ON i.stock_code = cf.stock_code
-    AND i.report_date = cf.report_date
-    AND i.report_type = cf.report_type
-LEFT JOIN mv_us_financial_indicator fi
-    ON i.stock_code = fi.stock_code
-    AND i.report_date = fi.report_date
-    AND i.report_type = fi.report_type
-LEFT JOIN LATERAL (
-    SELECT revenues, net_income
-    FROM us_income_statement p
-    WHERE p.stock_code = i.stock_code
-      AND p.report_type = i.report_type
-      AND p.report_date BETWEEN
-          i.report_date - INTERVAL '1 year' - INTERVAL '30 days'
-          AND i.report_date - INTERVAL '1 year' + INTERVAL '30 days'
-    ORDER BY ABS(EXTRACT(EPOCH FROM p.report_date - (i.report_date - INTERVAL '1 year')))
-    LIMIT 1
-) prev ON true
-WHERE i.stock_code = %s
-  AND i.report_type IN ('quarterly', 'semi', 'annual')
-ORDER BY i.report_date
-"""
+_US_TIMELINE_FIELDS = [
+    "revenues", "net_income", "gross_profit", "eps_basic",
+    "total_assets", "total_liabilities", "total_equity",
+    "net_cash_from_operations",
+]
+
+
+def _us_report_type(fiscal_period: str | None, period_start: date | None,
+                    report_date: date) -> str:
+    """将 SEC fiscal period/累计期间归一为故事线的 annual/semi/quarterly。"""
+    period = (fiscal_period or "").upper()
+    if period in {"FY", "FYI"}:
+        return "annual"
+    if period in {"Q2", "H1", "HY", "S1"}:
+        return "semi"
+    if period in {"Q1", "Q3"}:
+        return "quarterly"
+    days = (report_date - period_start).days + 1 if period_start else 0
+    if days >= 330:
+        return "annual"
+    if days >= 150:
+        return "semi"
+    return "quarterly"
+
+
+def _us_timeline_rows(stock_code: str) -> list[dict[str, Any]]:
+    """版本事实层 → 美股故事线期间行。
+
+    每个报告日只保留最长的 duration（即公司披露的累计值，Q2=H1、Q3=9M），
+    避免把同一 10-Q 中额外披露的单季比较列误当成第二个财报期。
+    """
+    facts = USFactSelector().select(
+        stock_codes=[stock_code], basis="latest-restated", fields=_US_TIMELINE_FIELDS,
+    )
+    duration_facts = [
+        f for f in facts
+        if f.period_kind == "duration" and f.period_start is not None
+        and f.standard_field in {"revenues", "net_income", "gross_profit", "eps_basic",
+                                 "net_cash_from_operations"}
+        and f.value_numeric is not None
+    ]
+    # 同报告日可能同时有累计与单季 duration；故事线沿用原宽表的累计口径。
+    longest_days: dict[date, int] = {}
+    for f in duration_facts:
+        days = (f.report_date - f.period_start).days + 1
+        longest_days[f.report_date] = max(longest_days.get(f.report_date, 0), days)
+
+    rows: dict[tuple[date, date], dict[str, Any]] = {}
+    for f in duration_facts:
+        days = (f.report_date - f.period_start).days + 1
+        if days != longest_days[f.report_date]:
+            continue
+        key = (f.report_date, f.period_start)
+        row = rows.setdefault(key, {
+            "report_date": f.report_date,
+            "period_start": f.period_start,
+            "period_days": days,
+            "report_type": _us_report_type(f.fiscal_period_raw, f.period_start, f.report_date),
+            "notice_date": f.filed_date,
+            "_field_dimless": {},
+        })
+        # 同一期间偶有维度事实；无维度 consolidated fact 优先。
+        existing_dimless = row["_field_dimless"].get(f.standard_field, False)
+        if f.standard_field not in row or (not f.dimensions and not existing_dimless):
+            row[f.standard_field] = f.value_numeric
+            row["_field_dimless"][f.standard_field] = not bool(f.dimensions)
+            row["notice_date"] = f.filed_date
+
+    instant: dict[date, dict[str, Any]] = {}
+    for f in facts:
+        if (f.period_kind != "instant" or f.value_numeric is None
+                or f.standard_field not in {"total_assets", "total_liabilities", "total_equity"}):
+            continue
+        row = instant.setdefault(f.report_date, {"_field_dimless": {}})
+        existing_dimless = row["_field_dimless"].get(f.standard_field, False)
+        if f.standard_field not in row or (not f.dimensions and not existing_dimless):
+            row[f.standard_field] = f.value_numeric
+            row["_field_dimless"][f.standard_field] = not bool(f.dimensions)
+
+    result = list(rows.values())
+    for row in result:
+        row.update({k: v for k, v in instant.get(row["report_date"], {}).items()
+                    if k != "_field_dimless"})
+    return sorted(result, key=lambda r: (r["report_date"], r["period_start"]))
+
+
+def _get_us_reports(stock_code: str) -> list[dict[str, Any]]:
+    rows = _us_timeline_rows(stock_code)
+    for row in rows:
+        prior_date = row["report_date"] - timedelta(days=365)
+        candidates = [
+            other for other in rows
+            if other["report_type"] == row["report_type"]
+            and abs((other["report_date"] - prior_date).days) <= 30
+            and abs(other["period_days"] - row["period_days"]) <= 7
+        ]
+        prev = min(candidates, key=lambda other: abs((other["report_date"] - prior_date).days), default=None)
+        revenue = row.get("revenues")
+        net_income = row.get("net_income")
+        gross_profit = row.get("gross_profit")
+        assets = row.get("total_assets")
+        liabilities = row.get("total_liabilities")
+        equity = row.get("total_equity")
+        if row["report_type"] == "annual":
+            roe_equity = equity
+        else:
+            roe_equity = ((equity + prev.get("total_equity")) / 2
+                          if prev and equity is not None and prev.get("total_equity") is not None
+                          else None)
+        row["revenue_yoy"] = ((revenue - prev.get("revenues")) / abs(prev["revenues"])
+                              if prev and revenue is not None and prev.get("revenues") not in (None, 0) else None)
+        row["net_profit_yoy"] = ((net_income - prev.get("net_income")) / abs(prev["net_income"])
+                                 if prev and net_income is not None and prev.get("net_income") not in (None, 0) else None)
+        row["gross_margin"] = gross_profit / revenue if gross_profit is not None and revenue not in (None, 0) else None
+        row["roe"] = net_income / roe_equity if net_income is not None and roe_equity not in (None, 0) else None
+        row["debt_ratio"] = liabilities / assets if liabilities is not None and assets not in (None, 0) else None
+        # 与 CN SQL 输出契约一致，供 _get_reports() 统一序列化。
+        row["revenue"] = revenue
+        row["net_profit"] = net_income
+        row["net_profit_excl"] = None
+        row["total_liab"] = liabilities
+        row["cfo_net"] = row.get("net_cash_from_operations")
+    return rows
 
 _EVENTS_SQL = """
 SELECT id, event_date, event_type, title, summary, source_url
@@ -167,30 +244,32 @@ GROUP BY 1
 
 
 def _get_reports(stock_code: str, market: str) -> list[dict[str, Any]]:
-    sql = _US_REPORTS_SQL if market == "US" else _CN_REPORTS_SQL
-    with Connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (stock_code,))
-            cols = [desc[0] for desc in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    if market == "US":
+        rows = _get_us_reports(stock_code)
+    else:
+        with Connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CN_REPORTS_SQL, (stock_code,))
+                cols = [desc[0] for desc in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     reports: list[dict[str, Any]] = []
     for r in rows:
         reports.append({
-            "report_date": _d(r["report_date"]),
-            "report_type": r["report_type"],
-            "notice_date": _d(r["notice_date"]),
-            "revenue": _f(r["revenue"]),
-            "revenue_yoy": _f(r["revenue_yoy"]),
-            "net_profit": _f(r["net_profit"]),
-            "net_profit_yoy": _f(r["net_profit_yoy"]),
-            "gross_margin": _f(r["gross_margin"]),
-            "eps_basic": _f(r["eps_basic"]),
-            "net_profit_excl": _f(r["net_profit_excl"]),
-            "roe": _f(r["roe"]),
-            "total_assets": _f(r["total_assets"]),
-            "total_liab": _f(r["total_liab"]),
-            "debt_ratio": _f(r["debt_ratio"]),
-            "cfo_net": _f(r["cfo_net"]),
+            "report_date": _d(r.get("report_date")),
+            "report_type": r.get("report_type"),
+            "notice_date": _d(r.get("notice_date")),
+            "revenue": _f(r.get("revenue")),
+            "revenue_yoy": _f(r.get("revenue_yoy")),
+            "net_profit": _f(r.get("net_profit")),
+            "net_profit_yoy": _f(r.get("net_profit_yoy")),
+            "gross_margin": _f(r.get("gross_margin")),
+            "eps_basic": _f(r.get("eps_basic")),
+            "net_profit_excl": _f(r.get("net_profit_excl")),
+            "roe": _f(r.get("roe")),
+            "total_assets": _f(r.get("total_assets")),
+            "total_liab": _f(r.get("total_liab")),
+            "debt_ratio": _f(r.get("debt_ratio")),
+            "cfo_net": _f(r.get("cfo_net")),
         })
     return reports
 

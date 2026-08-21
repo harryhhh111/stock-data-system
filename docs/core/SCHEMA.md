@@ -592,10 +592,9 @@ CREATE TABLE sync_log (
 - `scripts/us_financial_snapshots.sql`：current annual / TTM snapshots；
 - `scripts/us_tables.sql`：共享 `stock_info` 的 US metadata columns。
 
-### 退役边界
+### 已退役边界
 
-以下六个对象是 [旧宽表退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) 的删除目标，
-不再是生产读取契约，也不在本节维护其字段定义：
+以下六个对象已于 **2026-08-21** 从 US 生产库删除，不是生产读取契约，也不在本节维护其字段定义：
 
 ```text
 us_income_statement
@@ -606,7 +605,8 @@ mv_us_indicator_ttm
 mv_us_fcf_yield
 ```
 
-它们在 Phase C 停止旧写入、完成备份及观察期前仍会物理保留；“待退役”不表示现在可以直接删表。
+历史数据的唯一受控恢复来源是 COS 归档 `file:///lhcos-data/e0_20260814/`；恢复必须先进入隔离库，
+具体校验与命令见 [旧宽表退役计划](./US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md)。
 
 ### 仍在使用的共享表字段
 

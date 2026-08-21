@@ -1,6 +1,6 @@
 # Phase E-0：美股旧财务对象归档与恢复演练
 
-> 状态：**执行完成（2026-08-14），待项目所有者按 §6 验收；不授权 E-1 删除。**
+> 状态：**已验收（2026-08-16）；E-1 已于 2026-08-21 经项目所有者授权并完成。**
 >
 > 实现：`scripts/archive_us_legacy_financials.py`（preflight/archive/restore 三子命令）+
 > `tests/test_archive_us_legacy_financials.py`。首次实库 `preflight --dry-run` 已通过：
@@ -44,6 +44,10 @@
 >
 > 范围：只建立可验证的离线归档和恢复证据。**不删除、重命名、truncate 或锁定生产旧对象，
 > 不移除 legacy fallback，也不改 scheduler/读取者。**
+
+> 后续记录：本任务的范围约束已履行；E-1 在独立授权下执行。2026-08-21 删除前重新运行
+> `phase_c_baseline.py check` 与本工具 `preflight --dry-run`，均通过；删除后六对象不存在，
+> `tests/test_phase_c_cutover.py` 与 `tests/test_archive_us_legacy_financials.py` 共 76 项通过。
 
 ## 1. 目的
 

@@ -1,10 +1,11 @@
 # 美股财务数据治理进度总览
 
-> 最后更新：2026-08-19
+> 最后更新：2026-08-21
 > 当前状态：P0、版本层、全市场回填、current snapshot、全部五类读取者与 Phase C 在线编排均已完成；
 > 美股 active universe 为 1,001 只，scheduler 同步 scope 为 1,040（含 index-only 分类），current
-> snapshot 读取者不再依赖旧六对象。Phase E-0 已完成 COS 归档与隔离恢复演练；E-1 删除未授权。
-> 2026-08-18 已恢复 systemd scheduler 常驻，下一次自动 US 编排成功是进入 E-1 讨论的运行门槛。
+> snapshot 读取者不再依赖旧六对象。Phase E-0 已完成 COS 归档与隔离恢复演练；2026-08-19 至
+> 2026-08-21 的三次 systemd 自动 US 编排均成功后，项目所有者授权并完成 E-1 删除。旧六对象
+> 已不存在，恢复仅能经 COS 归档进入隔离库。
 > 项目组织：个人所有者 + 多个 agent，不按企业多人团队执行 DBA 分工或职责分离；数据库专用角色为可选加固。
 
 本文是美股财务数据治理工作的统一进度入口。设计细节仍以各专项方案为准：
@@ -28,8 +29,8 @@
 | Phase 1B 版本关系与选择审计 | ✅ 已关闭 | relation、selection run/audit、selector、5 只 canary 影子验证 | 保持回归测试 |
 | Phase 2 历史事实版本回填 | ✅ Gate D 已通过 | Gate A、Round 2/3 同源幂等、5 只生产 canary、100 只分层 shadow、777 只待重建股票专项回填、备份/manifest/post-verify、旧宽表 checksum 保护均通过；当前股票池 1,003 只中 1,000 只已有版本事实 | 消费者切换单独验收 |
 | Revenue 历史差异审核 | ✅ 已关闭 | 301 个年度 revenue 案例完成规则/人工复核；approved、rejected 与技术 exclusion 已落库；selector 未决为 0 | 新 filing 出现未决时按需运行 |
-| 当前读取者（分析/筛选/dashboard/校验） | ✅ 已切换 | current snapshot、latest-restated、独立财务/估值时点；全市场 compare `UNEXPLAINED=0` | 保留受控 legacy-only 回退/审计，至 E-1 后再清理 |
-| 旧财务宽表退役 | 🟡 E-1 待确认 | Phase A–D 完成；E-0 COS dump、SHA-256 下载校验、隔离库恢复和 MV refresh 已验收；旧六对象零写入 | 等 systemd 自动 US 编排成功，再由项目所有者确认是否执行 E-1 删除 |
+| 当前读取者（分析/筛选/dashboard/校验） | ✅ 已切换 | current snapshot、latest-restated、独立财务/估值时点；全市场 compare `UNEXPLAINED=0`；故事线 US 全历史也已迁至版本事实 selector | 清理仅供审计/恢复的 legacy 文本和测试 fixture 时不得重引生产读取 |
+| 旧财务宽表退役 | ✅ E-1 已完成 | Phase A–D 完成；E-0 COS dump、SHA-256 下载校验、隔离库恢复和 MV refresh 已验收；2026-08-21 六对象单事务删除、无 `CASCADE` | 保持 COS 归档至 2027-02-14；如需回退，只恢复至隔离库后再做受控路径恢复 |
 | 历史回测 PIT | ✅ 已切换（2026-08-09） | as-of selector、6 截面影子对比 `UNEXPLAINED=0`、3 persist manifest、冷/热缓存 smoke | 保持 PIT 回归；不读取 current snapshot 或旧宽表 |
 | ROIC | 🟡 MVP shadow 部分完成 | latest-restated 5 只 canary shadow、质量 flags 与测试已交付；PLTR/VZ/ONTO 因债务输入缺失为 INVALID | 补债务/租赁可信输入后重新验收；通过前不进入筛选、分析页面或回测 |
 
@@ -111,26 +112,18 @@ PB = latest market_cap / latest annual equity （仅权益 > 0）
 
 ## 5. 当前下一步
 
-1. 验证 `stock-scheduler.service` 恢复后的下一次自动 US financial run：必须完成版本层 sync →
-   projection → compare → validate，并保持 `UNEXPLAINED=0` 与旧六对象零写入；
-2. 仅在该运行门槛通过且项目所有者再次确认后，讨论 Phase E-1 删除旧三表与三个 MV；
+1. 保持 `stock-scheduler.service` 自动 US 编排；失败必须按版本层/快照链路排查，不得重建旧宽表。
+2. 归档保留至 2027-02-14；若需要恢复，先按 E-0 命令恢复到隔离库并校验 SHA-256，禁止直接覆盖生产库。
 3. 独立排期开放质量项：USQ-002（缺失毛利率的观测 flag）、USQ-004（COGS 跨 accession 审计）、
    USQ-005（`ProfitLoss` 全市场语义审计）。它们不得借 E-1 删除顺手扩大范围；
 4. ROIC 仍独立暂停，待债务/租赁输入治理完成后再恢复。
 
 ## 6. 旧宽表保留边界
 
-`us_income_statement`、`us_balance_sheet`、`us_cash_flow_statement` 及其物化视图
-当前不能删除。它们仍被以下路径使用：
-
-- 当前个股分析的异常回退和部分尚未由版本层覆盖的派生指标；
-- 美股筛选器与同行业统计；
-- 历史回测、数据校验、dashboard 与同步完成度判断；
-- 在线同步和物化视图刷新。
-
-当前阶段只完成“个股分析核心字段由版本层覆盖”，不是旧数据退役。删除旧表必须
-作为独立迁移任务：先替换上述消费者、关闭回退、停止旧表在线写入，观察一个完整
-财报周期并完成备份后，才可以讨论归档或删除。
+`us_income_statement`、`us_balance_sheet`、`us_cash_flow_statement` 及其三个 US MV 已于
+2026-08-21 删除，不再存在于生产库。当前生产读取者只能使用 current snapshot、版本事实 selector
+或 PIT 数据集；任何旧对象引用都应视为缺陷。历史对比/归档恢复工具可保留对象名称，但只能在 COS
+dump 或隔离恢复库内使用。
 
 ## 7. 阶段门槛
 
