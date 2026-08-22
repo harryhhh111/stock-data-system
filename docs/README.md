@@ -48,6 +48,7 @@
 | [quant/BACKTEST_DESIGN.md](quant/BACKTEST_DESIGN.md) | 因子策略回测系统设计（PIT、组合、基准对比） |
 | [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |
 | [quant/US_COMPOSITE_STRATEGY_SELECTION.md](quant/US_COMPOSITE_STRATEGY_SELECTION.md) | US 复合策略候选、回测依据、引擎改造与上线门槛 |
+| [quant/US_PIT_BACKTEST_BASELINE_TASK.md](quant/US_PIT_BACKTEST_BASELINE_TASK.md) | US PIT 单策略基线固化、证据指纹与复合策略评估前置任务 |
 | [quant/PAPER_TRADING_PLAN.md](quant/PAPER_TRADING_PLAN.md) | 模拟盘计划（复合策略前后端打通后的下一阶段） |
 | [quant/WEB_FRONTEND_PLAN.md](quant/WEB_FRONTEND_PLAN.md) | Web 前端仪表板设计方案 |
 | `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 5 个预设策略） |
@@ -103,6 +104,7 @@ deployment/     ←→   部署相关文档
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-08-23 | 新增 US PIT 回测基线固化任务：旧初筛表退役为历史记录，后续复合策略评估须引用可复现 PIT baseline run |
 | 2026-08-21 | 美股旧财务宽表退役 E-1 完成：连续自动编排验证后，经项目所有者授权删除三张旧 US 宽表与三个 MV；COS 归档与隔离恢复证据保留至 2027-02-14 |
 | 2026-08-19 | 美股财务治理总览、旧宽表退役计划与 US scheduler 运维文档收口：Phase E-0 已验收，systemd 为唯一 scheduler 常驻入口，E-1 仍待自动编排验证与项目所有者确认 |
 | 2026-07-29 | 年度 revenue 历史未决审核关闭：301 个案例完成，selector 未决归零 |
