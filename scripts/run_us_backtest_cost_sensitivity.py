@@ -231,6 +231,14 @@ def _write_baseline(
     write_summary(rows, output, args)
     records = rebalance_records(results)
     write_csv(output / "rebalance_records.csv", records)
+    scenario_rebalance_sha256 = {
+        f"{strategy}@{bps:g}bps": sha256_value([
+            record for record in records
+            if record["strategy"] == strategy and record["single_side_cost_bps"] == bps
+        ])
+        for strategy in args.strategies
+        for bps in args.bps
+    }
 
     parameters = {
         "market": "US",
@@ -266,6 +274,7 @@ def _write_baseline(
         "inputs": inputs,
         "comparison_key": comparison_key(parameters, inputs),
         "result_summary": rows,
+        "scenario_rebalance_sha256": scenario_rebalance_sha256,
         "output_hashes": output_hashes,
     }
     (output / "manifest.json").write_text(

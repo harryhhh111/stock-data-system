@@ -49,3 +49,4 @@ def test_rebalance_records_sort_holdings_and_carry_costs():
     assert record["single_side_cost_bps"] == 10.0
     assert record["cumulative_costs"] == 123.45
     assert record["holdings_json"] == '{"A":"1","B":"2"}'
+    assert record["holdings_sha256"] == sha256_value({"A": 1.0, "B": 2.0})
