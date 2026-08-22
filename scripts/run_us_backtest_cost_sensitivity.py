@@ -37,7 +37,9 @@ from quant.backtest.baseline_evidence import (
 )
 from quant.backtest.common import (
     batch_query_quote,
+    benchmark_market,
     generate_rebalance_dates,
+    load_benchmark_prices,
     load_daily_quotes_for_codes,
 )
 from quant.backtest.engine import run_backtest
@@ -143,6 +145,7 @@ def _input_fingerprints(
     results: list[tuple[float, Any]],
     start: date,
     end: date,
+    benchmark: str,
 ) -> dict[str, Any]:
     """Hash every input category that can move an historical result."""
     rebalance_rows = []
@@ -165,6 +168,8 @@ def _input_fingerprints(
         (stock, trade_date, close)
         for (stock, trade_date), close in sorted(daily_prices.items())
     )
+    benchmark_prices = load_benchmark_prices(benchmark, "US", start, end) if benchmark else {}
+    benchmark_hash, benchmark_count = sha256_rows(sorted(benchmark_prices.items()))
 
     with Connection() as conn:
         universe = _stream_query_fingerprint(
@@ -201,6 +206,12 @@ def _input_fingerprints(
         "daily_quote": {
             "rebalance_quotes": {"row_count": rebalance_quote_count, "sha256": rebalance_quote_hash},
             "valuation_quotes": {"row_count": price_count, "sha256": price_hash, "stock_count": len(held_codes)},
+            "benchmark_quotes": {
+                "ticker": benchmark,
+                "market": benchmark_market(benchmark, "US") if benchmark else None,
+                "row_count": benchmark_count,
+                "sha256": benchmark_hash,
+            },
         },
     }
 
@@ -238,7 +249,9 @@ def _write_baseline(
             for strategy in args.strategies
         },
     }
-    inputs = _input_fingerprints(preloader, quote_by_date, results, args.start, args.end)
+    inputs = _input_fingerprints(
+        preloader, quote_by_date, results, args.start, args.end, args.benchmark
+    )
     output_hashes = {
         name: sha256_file(output / name)
         for name in ("summary.csv", "summary.md", "run_metadata.json", "rebalance_records.csv")
