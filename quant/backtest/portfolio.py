@@ -48,9 +48,9 @@ class Portfolio:
 
     def nav(self, prices: dict[str, float]) -> float:
         """按给定价格计算当前组合总市值（不做调仓，不记录快照）。"""
-        return self.cash + sum(
+        return self.cash + math.fsum(
             pos.shares * prices.get(code, pos.avg_cost)
-            for code, pos in self.positions.items()
+            for code, pos in sorted(self.positions.items())
         )
 
     def liquidate_proportionally(self, gross_amount: float, prices: dict[str, float]) -> float:
@@ -63,15 +63,15 @@ class Portfolio:
         if gross_amount <= 0 or not self.positions:
             return 0.0
         rate = self._cost_rate
-        positions_value = sum(
+        positions_value = math.fsum(
             pos.shares * prices.get(code, pos.avg_cost)
-            for code, pos in self.positions.items()
+            for code, pos in sorted(self.positions.items())
         )
         if positions_value <= 0:
             return 0.0
         fraction = min(gross_amount / positions_value, 1.0)
         proceeds = 0.0
-        for code in list(self.positions):
+        for code in sorted(self.positions):
             pos = self.positions[code]
             sell_shares = pos.shares * fraction
             gross = sell_shares * prices.get(code, pos.avg_cost)
@@ -111,14 +111,14 @@ class Portfolio:
             return
 
         # 0. 调仓前总市值（用于换手率）
-        prev_total_value = self.cash + sum(
+        prev_total_value = self.cash + math.fsum(
             pos.shares * sell_prices.get(code, pos.avg_cost)
-            for code, pos in self.positions.items()
+            for code, pos in sorted(self.positions.items())
         )
 
         # 1. 卖出不在 target_codes 中的持仓
         sold_value = 0.0
-        for code in list(self.positions):
+        for code in sorted(self.positions):
             if code not in target_codes:
                 price = sell_prices.get(code)
                 if price is None:
@@ -130,30 +130,32 @@ class Portfolio:
                 self._total_trades += 1
 
         # 2. 等权重买入（先清空再统一买入，确保严格等权）
-        valid_codes = [c for c in target_codes if buy_prices.get(c, 0) > 0]
+        # 等权组合不依赖排名顺序。按代码稳定排序，避免不同数据读取顺序造成
+        # 浮点累加尾差，从而让同一 PIT 输入的证据 hash 可复现。
+        valid_codes = sorted(c for c in target_codes if buy_prices.get(c, 0) > 0)
         if valid_codes:
             # 把继续持有的也按当前价变现，统一重新分配
-            self.cash += sum(
+            self.cash += math.fsum(
                 pos.shares * buy_prices.get(code, pos.avg_cost)
-                for code, pos in self.positions.items()
+                for code, pos in sorted(self.positions.items())
                 if code in valid_codes
             )
             self.positions.clear()
 
             per_stock = self.cash / len(valid_codes)
-            spent = 0.0
             for code in valid_codes:
                 price = buy_prices[code]
                 shares = per_stock / price
                 self.positions[code] = Position(code, shares, price)
-                spent += shares * price
                 self._total_trades += 1
-            self.cash -= spent  # 浮点残差
+            # 每笔持仓均以同一个 per_stock 建仓；资金已完整部署，不能把因
+            # 加法顺序不同产生的亚分级残差带进下一次调仓。
+            self.cash = 0.0
 
         # 3. 记录快照
-        total_value = self.cash + sum(
+        total_value = self.cash + math.fsum(
             pos.shares * buy_prices.get(code, pos.avg_cost)
-            for code, pos in self.positions.items()
+            for code, pos in sorted(self.positions.items())
         )
         turnover = sold_value / prev_total_value if prev_total_value > 0 else 0.0
         self.history.append(
@@ -191,11 +193,11 @@ class Portfolio:
             return p if p else 0.0
 
         # 调仓前总市值（退市持仓按 0 计）
-        prev_total_value = self.cash + sum(
-            pos.shares * _trade_price(code) for code, pos in self.positions.items()
+        prev_total_value = self.cash + math.fsum(
+            pos.shares * _trade_price(code) for code, pos in sorted(self.positions.items())
         )
 
-        valid_codes = [c for c in target_codes if buy_prices.get(c, 0) > 0]
+        valid_codes = sorted(c for c in target_codes if buy_prices.get(c, 0) > 0)
 
         # 不动点求解每股目标市值 V。约束：买入支出(含费) = 现金 + 卖出到账(含费)，
         # 即 n*V*(1+rate) = cash + L*(1-rate) + H*(1+rate) - 2*rate*Sv(V)，
@@ -208,15 +210,15 @@ class Portfolio:
                 for c in valid_codes
                 if c in self.positions
             }
-            h_total = sum(held_value.values())
-            liquidate_value = sum(
+            h_total = math.fsum(held_value[c] for c in sorted(held_value))
+            liquidate_value = math.fsum(
                 pos.shares * _trade_price(code)
-                for code, pos in self.positions.items()
+                for code, pos in sorted(self.positions.items())
                 if code not in valid_codes
             )
             v = prev_total_value / n
             for _ in range(100):
-                trim = sum(max(h - v, 0.0) for h in held_value.values())
+                trim = math.fsum(max(held_value[c] - v, 0.0) for c in sorted(held_value))
                 new_v = (
                     self.cash
                     + liquidate_value * (1 - rate)
@@ -232,7 +234,7 @@ class Portfolio:
         # 1. 卖出：移出目标池的整仓卖出 + 目标内的减仓
         sold_value = 0.0
         orders_buy: dict[str, float] = {}  # {code: 买入股数}
-        for code in list(self.positions):
+        for code in sorted(self.positions):
             pos = self.positions[code]
             price = _trade_price(code)
             if code not in valid_codes:
@@ -282,8 +284,8 @@ class Portfolio:
                 self.positions[code] = Position(code, buy_shares, price)
 
         # 3. 记录快照
-        total_value = self.cash + sum(
-            pos.shares * _trade_price(code) for code, pos in self.positions.items()
+        total_value = self.cash + math.fsum(
+            pos.shares * _trade_price(code) for code, pos in sorted(self.positions.items())
         )
         turnover = sold_value / prev_total_value if prev_total_value > 0 else 0.0
         self.history.append(
@@ -302,9 +304,9 @@ class Portfolio:
         self, end_date: date, final_prices: dict[str, float | None]
     ) -> float:
         """用最终价格计算组合市值，记录最后一个快照。"""
-        total_value = self.cash + sum(
+        total_value = self.cash + math.fsum(
             pos.shares * (final_prices.get(code) or 0)
-            for code, pos in self.positions.items()
+            for code, pos in sorted(self.positions.items())
         )
         self.history.append(
             Snapshot(

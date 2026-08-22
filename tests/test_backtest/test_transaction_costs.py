@@ -46,6 +46,20 @@ def test_zero_cost_path_bit_compatible():
     assert p.total_costs == 0.0
 
 
+def test_zero_cost_equal_weight_is_independent_of_target_order():
+    """同一等权目标不应因上游行序不同而留下不同的现金尾差。"""
+    prices = {"A": 11.0, "B": 13.0, "C": 17.0}
+    first = Portfolio(1_000_000.0)
+    second = Portfolio(1_000_000.0)
+
+    first.rebalance(D1, ["C", "A", "B"], prices, {})
+    second.rebalance(D1, ["A", "B", "C"], prices, {})
+
+    assert first.cash == second.cash == 0.0
+    assert first.history[-1].holdings == second.history[-1].holdings
+    assert first.history[-1].total_value == second.history[-1].total_value
+
+
 # ── 2. 无变化不交易 ───────────────────────────────────────
 
 def test_no_change_no_trade_no_cost():
