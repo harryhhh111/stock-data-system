@@ -282,11 +282,18 @@ def _write_baseline(
     )
 
     evidence.mkdir(parents=True, exist_ok=False)
-    for name in ("manifest.json", "summary.csv", "summary.md"):
+    # 调仓明细只有策略 × 成本 × 调仓日的聚合记录，体积很小；与摘要一同
+    # 提交，确保证据目录可脱离 build/ 独立用 SHA256SUMS 校验。
+    for name in ("manifest.json", "summary.csv", "summary.md", "rebalance_records.csv"):
         (evidence / name).write_bytes((output / name).read_bytes())
     write_sha256sums(
         evidence / "SHA256SUMS",
-        [evidence / "manifest.json", evidence / "summary.csv", evidence / "summary.md", output / "rebalance_records.csv"],
+        [
+            evidence / "manifest.json",
+            evidence / "summary.csv",
+            evidence / "summary.md",
+            evidence / "rebalance_records.csv",
+        ],
     )
     return output
 

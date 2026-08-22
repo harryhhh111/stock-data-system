@@ -67,7 +67,8 @@ baseline 构建入口（可扩展该脚本或新增薄封装；不得复制回�
 - `manifest.json`；
 - `summary.csv`；
 - `summary.md`；
-- 每个调仓日/情景持仓文件的 SHA-256 清单。
+- `rebalance_records.csv`（每个调仓日/情景的持仓与指标）；
+- 上述文件的 SHA-256 清单。证据目录本身必须可脱离 `build/` 完成校验。
 
 更新 `docs/quant/US_COMPOSITE_STRATEGY_SELECTION.md`：
 
