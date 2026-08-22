@@ -1,6 +1,6 @@
 # US PIT 回测基线固化任务
 
-> 状态：待实施、待验收
+> 状态：实施完成，待验收
 > 日期：2026-08-23
 > 前置：版本事实 PIT 回测已启用；交易成本模型与单策略成本敏感性已验收
 > 范围：US 三个候选单策略的**可复现基线证据**。不配置复合策略、不调整权重、不改模拟盘。
@@ -117,3 +117,22 @@ baseline 不会永久不变；它必须诚实地区分“重复”与“新实�
 - 不增设 `us_quality_growth_balance` 或任何 US composite preset；
 - 不运行、创建或修改模拟盘账户；
 - 不将近期实验期外数据“回填”进已有 baseline。
+
+## 7. 实施记录（2026-08-23）
+
+正式 run：`us_pit_20260823_1c9e3c2`。
+
+- 代码版本：`1c9e3c2dab4d67c3d7cf740fd5c4d5b5ff6b8961`；完整产物位于
+  `build/quant_backtest/us_pit_baselines/us_pit_20260823_1c9e3c2/`，耐久证据位于
+  `docs/evidence/quant_us_pit_baselines/us_pit_20260823_1c9e3c2/`。
+- `comparison_key`：`e0546bf5f25d1bb3c38b61b43aee2c8e0f0a41874772be73b454d2d121f81bc6`。
+  manifest 记录了 PIT 水位、排除台账、universe、股本、调仓日/估值/基准行情的完整指纹。
+- 12 个预注册情景均完成；三条策略从 0 到 5、10、20 bps 的累计成本严格上升、年化收益严格下降。
+- 独立重跑 `fcf_roe_value@0bps` 的结果摘要与逐调仓记录 SHA-256 完全相同：
+  `9f27aa4c99e72dde21730984eb2585e8eddd5967722ea8eee703f2aaf2d5e08c`。
+- 耐久证据中的 `manifest.json`、`summary.csv`、`summary.md`、`rebalance_records.csv`
+  已通过目录内 `SHA256SUMS` 校验；`tests/test_backtest/` 为 66 passed。
+
+为消除等权调仓目标行序造成的亚分级浮点现金残差，本任务同步将等权建仓和持仓求和
+改为稳定排序/确定性结算，并增加了顺序无关的回归测试。该修复不改变选股、持仓权重、
+成本模型或数据库数据。
