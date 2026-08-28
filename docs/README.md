@@ -49,6 +49,7 @@
 | [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |
 | [quant/US_COMPOSITE_STRATEGY_SELECTION.md](quant/US_COMPOSITE_STRATEGY_SELECTION.md) | US 复合策略候选、回测依据、引擎改造与上线门槛 |
 | [quant/US_PIT_BACKTEST_BASELINE_TASK.md](quant/US_PIT_BACKTEST_BASELINE_TASK.md) | US PIT 单策略基线固化、证据指纹与复合策略评估前置任务 |
+| [quant/US_COMPOSITE_CANDIDATE_AB_BACKTEST_TASK.md](quant/US_COMPOSITE_CANDIDATE_AB_BACKTEST_TASK.md) | US 固定权重复合候选 A/B 的 PIT 回测、归因与证据任务 |
 | [quant/PAPER_TRADING_PLAN.md](quant/PAPER_TRADING_PLAN.md) | 模拟盘计划（复合策略前后端打通后的下一阶段） |
 | [quant/WEB_FRONTEND_PLAN.md](quant/WEB_FRONTEND_PLAN.md) | Web 前端仪表板设计方案 |
 | `quant/screener/` 代码 + 预设 | 选股筛选器实现（硬过滤 + 多因子打分 + 5 个预设策略） |
