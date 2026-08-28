@@ -419,7 +419,6 @@ _PHASE_C_SKIPS_CSV = Path("docs/core/US_PHASE_C_EXPECTED_SKIPS.csv")
 _PHASE_C_INDEX_ONLY_CSV = Path("docs/core/US_PHASE_C_INDEX_ONLY.csv")
 _PHASE_C_SUPPLEMENT_CSV = Path("docs/core/US_PHASE_C_UNIVERSE_SCOPE_SUPPLEMENT.csv")
 _PHASE_C_SUMMARY_DIR = Path("build/financial_comparison/phaseC_sync")
-_PHASE_C_BASELINE = _PHASE_C_SUMMARY_DIR / "baseline.json"
 
 
 def _load_expected_skips(today=None) -> dict[str, dict]:
@@ -579,15 +578,21 @@ def _reconcile_us_universe(
 
 
 def _check_zero_write_baseline() -> list[dict]:
-    """BXP 型硬护栏:六个旧对象相对切换前基线的任何写入(§3.5.2)。
+    """E-1(2026-08-21)后:六个旧对象已删除,本护栏改为退役断言(防复活)。
 
-    全行确定性 hash + 行数 + 最大时间戳三重比对。
+    E-1 前为 BXP 型零写入护栏:相对切换前基线的任何写入(§3.5.2)视为违规。
+    现在任何对象仍然存在即违规。
     """
-    if not _PHASE_C_BASELINE.exists():
-        return [{"object": "baseline", "error": f"基线缺失: {_PHASE_C_BASELINE}"}]
     import scripts.phase_c_baseline as baseline_mod
 
-    return baseline_mod.find_violations()
+    violations: list[dict] = []
+    for obj in baseline_mod.RETIRING_OBJECTS:
+        rows = execute("SELECT to_regclass(%s)", (obj,), fetch=True)
+        if rows and rows[0][0] is not None:
+            violations.append(
+                {"object": obj, "error": "已退役对象仍存在(E-1 后应已删除)"}
+            )
+    return violations
 
 
 def _write_phase_c_summary(summary: dict) -> Path:
@@ -714,14 +719,14 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         _write_phase_c_summary(summary)
         raise RuntimeError("US sync blocking: " + "; ".join(blocking_reasons))
 
-    # 2. BXP 型零写入护栏
+    # 2. 退役护栏(E-1 后:六对象必须不存在;此前为零写入护栏)
     violations = _check_zero_write_baseline()
     summary["zero_write"] = "pass" if not violations else violations
     if violations:
         summary["status"] = "blocked_zero_write"
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
         _write_phase_c_summary(summary)
-        raise RuntimeError(f"旧对象出现禁止的写入: {[v['object'] for v in violations]}")
+        raise RuntimeError(f"已退役对象仍存在: {[v['object'] for v in violations]}")
 
     # 3. projection(全部跳过且无成功写入 → no_new_filings,保留原 snapshot)
     if sync_result["success"] == 0 and not sync_result["no_write"]:
@@ -734,24 +739,9 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["projection"] = proj
         summary["status"] = "projected"
 
-    # 4. compare(运行摘要的 UNEXPLAINED 与滚动队列)
-    from scripts.compare_us_snapshot_vs_old import (
-        Reason, load_registered_exceptions, run_comparison,
-    )
-    compare_result = run_comparison(
-        exceptions=load_registered_exceptions("docs/core/US_PHASE_A_EXCEPTIONS.csv"))
-    stats = compare_result.stats_by_reason()
-    summary["compare"] = {
-        "UNEXPLAINED": stats.get(Reason.UNEXPLAINED, 0),
-        "rolling_queue": {
-            "PERIOD_MISMATCH": stats.get(Reason.PERIOD_MISMATCH, 0),
-            "MISSING_COMPONENT": stats.get(Reason.MISSING_COMPONENT, 0),
-            "REGISTERED_EXCEPTION": stats.get(Reason.REGISTERED_EXCEPTION, 0),
-        },
-        "by_reason": {str(k): v for k, v in stats.items()},
-    }
-
-    # 5. validate(仅 projection 后;Phase C1 修复 US 校验入口)
+    # 4. validate(仅 projection 后;Phase C1 修复 US 校验入口)
+    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结。
+    #  scripts/compare_us_snapshot_vs_old.py 保留为历史工具,不再进日常编排。)
     # validate 失败 = job 失败:不得把部分成功报成完整成功(snapshot 已投影,
     # 但 job 状态必须反映校验失败)
     if summary["projection"]:

@@ -171,18 +171,11 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
     monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
 
     import scripts.project_us_financial_snapshots as proj_mod
-    import scripts.compare_us_snapshot_vs_old as cmp_mod
 
     monkeypatch.setattr(
         proj_mod, "run_projection",
         lambda **kw: calls.append("projection") or {"projection_run_id": "r1"},
     )
-    monkeypatch.setattr(
-        cmp_mod, "run_comparison",
-        lambda **kw: calls.append("compare") or SimpleNamespace(
-            stats_by_reason=lambda: {cmp_mod.Reason.UNEXPLAINED: 0}),
-    )
-    monkeypatch.setattr(cmp_mod, "load_registered_exceptions", lambda p: {})
     import core.validate as validate_mod
     monkeypatch.setattr(
         validate_mod, "run_after_sync",
@@ -192,13 +185,14 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
 
 
 class TestOrchestration:
-    def test_success_order_projection_once_then_compare_then_validate(self, monkeypatch, tmp_path):
+    def test_success_order_projection_once_then_validate(self, monkeypatch, tmp_path):
         calls = _orch_mocks(monkeypatch, tmp_path, {
             "success": 21, "failed": 0, "skipped": 982, "no_write": [],
             "errors": [], "index_tickers": {"A", "B"},
         })
         result = sched._run_us_financial_orchestration(0.0)
-        assert calls == ["projection", "compare", "validate"]
+        # E-1 后 compare 步骤已摘除(旧对象已删除):projection → validate
+        assert calls == ["projection", "validate"]
         assert result["projection"] == {"projection_run_id": "r1"}
 
     def test_blocking_failure_stops_before_projection(self, monkeypatch, tmp_path):
@@ -210,7 +204,7 @@ class TestOrchestration:
         })
         with pytest.raises(RuntimeError, match="blocking"):
             sched._run_us_financial_orchestration(0.0)
-        assert calls == []  # projection/compare/validate 均未运行
+        assert calls == []  # projection/validate 均未运行
 
     def test_index_error_stops_before_projection(self, monkeypatch, tmp_path):
         """验收阻断项 2:指数级失败不得继续发布。"""
@@ -270,7 +264,7 @@ class TestOrchestration:
         )
         with pytest.raises(RuntimeError, match="validate"):
             sched._run_us_financial_orchestration(0.0)
-        assert calls == ["projection", "compare", "validate"]
+        assert calls == ["projection", "validate"]
 
     def test_zero_write_violation_stops(self, monkeypatch, tmp_path):
         calls = _orch_mocks(monkeypatch, tmp_path, {
@@ -278,8 +272,8 @@ class TestOrchestration:
             "errors": [], "index_tickers": {"A"},
         })
         monkeypatch.setattr(sched, "_check_zero_write_baseline",
-                            lambda: [{"object": "us_income_statement", "row_delta": 5}])
-        with pytest.raises(RuntimeError, match="禁止的写入"):
+                            lambda: [{"object": "us_income_statement", "error": "已退役对象仍存在"}])
+        with pytest.raises(RuntimeError, match="已退役对象仍存在"):
             sched._run_us_financial_orchestration(0.0)
         assert calls == []
 
@@ -395,10 +389,20 @@ class TestZeroWriteBaseline:
         violations = baseline_mod.find_violations()
         assert [v["object"] for v in violations] == ["mv_us_fcf_yield"]
 
-    def test_missing_baseline_is_violation(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(sched, "_PHASE_C_BASELINE", tmp_path / "nope.json")
+    def test_resurrected_object_is_violation(self, monkeypatch):
+        """E-1 后:任何已退役对象仍存在即违规(防复活)。"""
+
+        def fake_execute(sql, params=None, **kw):
+            exists = params and params[0] == "us_income_statement"
+            return [(params[0] if exists else None,)]
+
+        monkeypatch.setattr(sched, "execute", fake_execute)
         violations = sched._check_zero_write_baseline()
-        assert violations and violations[0]["object"] == "baseline"
+        assert [v["object"] for v in violations] == ["us_income_statement"]
+
+    def test_all_retired_passes(self, monkeypatch):
+        monkeypatch.setattr(sched, "execute", lambda sql, params=None, **kw: [(None,)])
+        assert sched._check_zero_write_baseline() == []
 
 
 # ── 10. compare 跨期与双日期列 ────────────────────────────────
