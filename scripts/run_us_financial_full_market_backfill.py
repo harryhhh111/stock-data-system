@@ -111,9 +111,16 @@ def _check_legacy_checksums(post: dict[str, Any] | None) -> list[str]:
         return ["post_verify.json 不存在"]
     legacy = post.get("checks", {}).get("legacy_baseline", {}).get("legacy_tables", {})
     for table, expected in EXPECTED_LEGACY_CHECKSUMS.items():
-        actual = legacy.get(table, {}).get("checksum")
-        if actual != expected:
-            errors.append(f"{table} checksum 变化: expected={expected} actual={actual}")
+        info = legacy.get(table, {})
+        if "exists" in info:
+            # E-1 后退役断言格式：旧表必须不存在
+            if info.get("exists"):
+                errors.append(f"{table} 已于 E-1 退役但仍存在")
+        elif info.get("checksum") != expected:
+            # E-1 前归档的 post_verify.json：checksum 比较
+            errors.append(
+                f"{table} checksum 变化: expected={expected} actual={info.get('checksum')}"
+            )
     return errors
 
 

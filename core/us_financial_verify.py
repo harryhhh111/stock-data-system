@@ -1,13 +1,12 @@
 """core/us_financial_verify.py — Phase 2 Gate A verify 共享逻辑。
 
-提供 baseline 保存/比较与完整批次校验，供 CLI 与独立脚本共用。
+提供完整批次校验，供 CLI 与独立脚本共用。
+E-1（2026-08-21）后：旧宽表已退役删除，原「checksum baseline 比较」
+改为「旧表必须不存在」的退役断言（存在即失败，防复活）。
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,114 +23,40 @@ LEGACY_TABLES = {
 }
 
 
-def _table_checksum(table: str, key_cols: list[str]) -> str:
-    """计算表主键/关键列的校验和。"""
-    rows = execute(
-        f"SELECT {', '.join(key_cols)} FROM {table} ORDER BY {', '.join(key_cols)}",
-        fetch=True,
-    ) or []
-
-    def _serialize(value: Any) -> Any:
-        if isinstance(value, (datetime, date)):
-            return value.isoformat()
-        return value
-
-    canonical = json.dumps(
-        [[_serialize(c) for c in r] for r in rows],
-        ensure_ascii=False,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _compute_legacy_checksums() -> dict[str, dict[str, Any]]:
-    """计算当前旧宽表 checksum，返回按表组织的结构。"""
-    result: dict[str, dict[str, Any]] = {}
-    for table, key_cols in LEGACY_TABLES.items():
-        try:
-            checksum = _table_checksum(table, key_cols)
-            result[table] = {"checksum": checksum, "key_cols": key_cols, "passed": True}
-        except Exception as exc:
-            result[table] = {"checksum": None, "key_cols": key_cols, "error": str(exc), "passed": False}
-    return result
-
-
-def _baseline_path(baseline_dir: Path, batch_id: str) -> Path:
-    return baseline_dir / batch_id / "baseline.json"
-
-
-def load_baseline(baseline_dir: Path, batch_id: str) -> dict[str, Any] | None:
-    """加载已保存的 baseline；不存在返回 None。"""
-    path = _baseline_path(baseline_dir, batch_id)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("无法读取 baseline %s: %s", path, exc)
-        return None
-
-
-def save_baseline(baseline_dir: Path, batch_id: str, checksums: dict[str, dict[str, Any]]) -> Path:
-    """保存 baseline 到磁盘。"""
-    path = _baseline_path(baseline_dir, batch_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "batch_id": batch_id,
-        "created_at": datetime.now().isoformat(),
-        "legacy_tables": checksums,
-    }
-    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    return path
-
-
-def _compare_with_baseline(
-    baseline: dict[str, Any] | None,
-    current: dict[str, dict[str, Any]],
-    baseline_dir: Path,
-    batch_id: str,
-) -> dict[str, Any]:
-    """比较当前 checksum 与 baseline；没有 baseline 时保存当前值。"""
-    if baseline is None:
-        path = save_baseline(baseline_dir, batch_id, current)
-        return {
-            "saved_baseline": True,
-            "baseline_path": str(path),
-            "legacy_tables": current,
-            "passed": all(t.get("passed", False) for t in current.values()),
-        }
-
-    baseline_tables = baseline.get("legacy_tables", {})
+def _check_legacy_tables_retired() -> dict[str, Any]:
+    """E-1 退役断言：三张旧宽表必须不存在；存在即失败（防复活）。"""
+    tables: dict[str, Any] = {}
     all_passed = True
-    details: dict[str, Any] = {}
-    for table, info in current.items():
-        if not info.get("passed", False):
+    for table, key_cols in LEGACY_TABLES.items():
+        rows = execute("SELECT to_regclass(%s)", (table,), fetch=True)
+        exists = bool(rows and rows[0][0] is not None)
+        if exists:
             all_passed = False
-            details[table] = {**info, "matches_baseline": False, "baseline_checksum": None}
-            continue
-
-        baseline_checksum = baseline_tables.get(table, {}).get("checksum")
-        current_checksum = info["checksum"]
-        matches = baseline_checksum == current_checksum
-        if not matches:
-            all_passed = False
-        details[table] = {
-            **info,
-            "matches_baseline": matches,
-            "baseline_checksum": baseline_checksum,
-        }
-
+            tables[table] = {
+                "exists": True,
+                "key_cols": key_cols,
+                "passed": False,
+                "error": "legacy 表已于 E-1 退役，不应存在",
+            }
+        else:
+            tables[table] = {
+                "exists": False,
+                "key_cols": key_cols,
+                "passed": True,
+                "note": "已退役（E-1 删除）",
+            }
     return {
-        "saved_baseline": False,
-        "baseline_path": str(_baseline_path(baseline_dir, batch_id)),
-        "legacy_tables": details,
+        "retired_assertion": True,
+        "legacy_tables": tables,
         "passed": all_passed,
     }
 
 
 def verify_batch(batch_id: str, baseline_dir: Path) -> dict[str, Any]:
-    """执行 Runbook 第 10 节参数化验证查询，并比较旧宽表 baseline。"""
+    """执行 Runbook 第 10 节参数化验证查询，并断言旧宽表已退役。
+
+    baseline_dir 为历史兼容参数（E-1 后不再读写 baseline 文件）。
+    """
     result: dict[str, Any] = {"batch_id": batch_id, "checks": {}, "passed": True}
 
     # 10.1 批次状态与计数
@@ -265,10 +190,8 @@ def verify_batch(batch_id: str, baseline_dir: Path) -> dict[str, Any]:
     if excluded_selected:
         result["passed"] = False
 
-    # 10.9 旧宽表 checksum 与 baseline 比较
-    current_checksums = _compute_legacy_checksums()
-    baseline = load_baseline(baseline_dir, batch_id)
-    baseline_check = _compare_with_baseline(baseline, current_checksums, baseline_dir, batch_id)
+    # 10.9 旧宽表退役断言（E-1 后：三表必须不存在，存在即失败）
+    baseline_check = _check_legacy_tables_retired()
     result["checks"]["legacy_baseline"] = baseline_check
     if not baseline_check["passed"]:
         result["passed"] = False

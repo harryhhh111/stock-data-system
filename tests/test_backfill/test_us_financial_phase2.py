@@ -173,3 +173,25 @@ def test_writer_builds_fact_rows_with_context_hash():
     rows = writer._build_fact_rows(recs, "balance", context, derive_filing_meta(recs), run_id=1)
     assert len(rows) == 1
     assert rows[0]["context_hash"] == compute_context_hash("instant", None, "2024-12-31", "CY2024Q4I", "FY", {})
+
+
+def test_legacy_tables_retired_assertion(monkeypatch):
+    """E-1 后：verify 的旧宽表检查必须断言表不存在（存在即失败，防复活）。"""
+    from core import us_financial_verify as v
+
+    # 全部不存在 → passed
+    monkeypatch.setattr(v, "execute", lambda sql, params=None, **kw: [(None,)])
+    result = v._check_legacy_tables_retired()
+    assert result["passed"] is True
+    assert all(t["passed"] for t in result["legacy_tables"].values())
+
+    # 任一表复活 → failed
+    def fake_execute(sql, params=None, **kw):
+        table = params[0]
+        return [(table if table == "us_income_statement" else None,)]
+
+    monkeypatch.setattr(v, "execute", fake_execute)
+    result = v._check_legacy_tables_retired()
+    assert result["passed"] is False
+    assert result["legacy_tables"]["us_income_statement"]["passed"] is False
+    assert result["legacy_tables"]["us_balance_sheet"]["passed"] is True
