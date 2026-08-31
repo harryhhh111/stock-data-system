@@ -1,0 +1,455 @@
+{
+  "schema_version": 1,
+  "run_id": "us_comp_ab_20260831_ebe3fb9",
+  "generated_at": "2026-08-31T13:08:18.744657+00:00",
+  "git_sha": "ebe3fb9deba8b7bead8cdec0a68c915bbb20204d",
+  "python": "3.11.6",
+  "parameters": {
+    "market": "US",
+    "start": "2021-06-01",
+    "end": "2026-07-16",
+    "rebalance_months": 6,
+    "rebalance_dates": [
+      "2021-06-30",
+      "2021-12-31",
+      "2022-06-30",
+      "2022-12-30",
+      "2023-06-30",
+      "2023-12-29",
+      "2024-06-28",
+      "2024-12-31",
+      "2025-06-30",
+      "2025-12-31",
+      "2026-06-30"
+    ],
+    "benchmark": "SPY",
+    "initial_capital": 1000000.0,
+    "candidates": {
+      "A": {
+        "quality": 0.5,
+        "growth": 0.5
+      },
+      "B": {
+        "quality": 0.5,
+        "growth": 0.35,
+        "momentum": 0.15
+      }
+    },
+    "candidate_config_sha256": {
+      "A": "0537e631d8952313c465bb6fd3601c79672d31c6f3223ed9a46dd16c30352c49",
+      "B": "8fe3696a1e2e30cef186b369042122ed9f06baf672f3539b01023f080c7a1686"
+    },
+    "single_side_cost_bps": [
+      0.0,
+      10.0,
+      20.0
+    ],
+    "cost_model": "fee_rate=0; slippage_bps=single_side_cost_bps; actual buys and sells charged",
+    "compounding_rebalance": true,
+    "pit_enabled": true,
+    "preset_sha256": {
+      "quality": "e448e2b4f8d60dfef38fcbca8482bb6382d5872c6903f8c595c052b5345d2fed",
+      "growth": "33b8d74536e3b4c271c0f2cbb2740e9f081c35d7555c04b4ad2ed0c697b296b9",
+      "momentum": "07c09040b1786d3a1823a988c16a2c01453477f15b3232b284a0f3cdfd79313a"
+    },
+    "parent_baseline": {
+      "run_id": "us_pit_20260823_1c9e3c2",
+      "comparison_key": "e0546bf5f25d1bb3c38b61b43aee2c8e0f0a41874772be73b454d2d121f81bc6"
+    },
+    "comparison_reference": {
+      "source": "contemporaneous_fcf_roe_value",
+      "strategy": "fcf_roe_value",
+      "single_side_cost_bps": [
+        0.0,
+        10.0,
+        20.0
+      ]
+    }
+  },
+  "inputs": {
+    "pit": {
+      "selector_version": "us_fact_selector_v2",
+      "watermark": "us_fact_selector_v2_6984946_1265734",
+      "min_report_date": "2018-01-01",
+      "max_filed_date": "2026-07-16",
+      "exclusion_policy_version": "us_fact_exclusion_v1",
+      "active_exclusions": {
+        "row_count": 47,
+        "sha256": "bcf95ad29dc916089a98cc87f0e98192bdd9628f0a0006d86f3667b06769eeb5"
+      }
+    },
+    "universe": {
+      "row_count": 1003,
+      "sha256": "0b55a0edfde079414fc854c1dd251536c26281af1748e7362f4f49f02b4606d0"
+    },
+    "stock_share": {
+      "row_count": 20476,
+      "sha256": "278e3be6f9c974ece6357240412a07884ba4ca99a933e8b4539cb856b685b942"
+    },
+    "daily_quote": {
+      "rebalance_quotes": {
+        "row_count": 10643,
+        "sha256": "587330572c6bd7181933756d0b087ca0c01e33762e8d1a7b7c9358909cc25f66"
+      },
+      "valuation_quotes": {
+        "row_count": 470309,
+        "sha256": "16f06b88ddd92b9bf9af43ae5fc130c6ce0fbb959e8d0f8d4510750802d8b8eb",
+        "stock_count": 373
+      },
+      "benchmark_quotes": {
+        "ticker": "SPY",
+        "market": "US",
+        "row_count": 1280,
+        "sha256": "adec07ff53fe4586e18b34a316f9df191297adb90e1d236b2c08803d73592d6c"
+      }
+    }
+  },
+  "parent_inputs": {
+    "pit": {
+      "selector_version": "us_fact_selector_v2",
+      "watermark": "us_fact_selector_v2_6964568_1265149",
+      "min_report_date": "2018-01-01",
+      "max_filed_date": "2026-07-16",
+      "exclusion_policy_version": "us_fact_exclusion_v1",
+      "active_exclusions": {
+        "row_count": 47,
+        "sha256": "bcf95ad29dc916089a98cc87f0e98192bdd9628f0a0006d86f3667b06769eeb5"
+      }
+    },
+    "universe": {
+      "row_count": 1003,
+      "sha256": "0b55a0edfde079414fc854c1dd251536c26281af1748e7362f4f49f02b4606d0"
+    },
+    "stock_share": {
+      "row_count": 20476,
+      "sha256": "278e3be6f9c974ece6357240412a07884ba4ca99a933e8b4539cb856b685b942"
+    },
+    "daily_quote": {
+      "rebalance_quotes": {
+        "row_count": 10643,
+        "sha256": "587330572c6bd7181933756d0b087ca0c01e33762e8d1a7b7c9358909cc25f66"
+      },
+      "valuation_quotes": {
+        "row_count": 470309,
+        "sha256": "16f06b88ddd92b9bf9af43ae5fc130c6ce0fbb959e8d0f8d4510750802d8b8eb",
+        "stock_count": 373
+      },
+      "benchmark_quotes": {
+        "ticker": "SPY",
+        "market": "US",
+        "row_count": 1280,
+        "sha256": "adec07ff53fe4586e18b34a316f9df191297adb90e1d236b2c08803d73592d6c"
+      }
+    }
+  },
+  "input_drift": {
+    "pit.watermark": {
+      "parent": "us_fact_selector_v2_6964568_1265149",
+      "ours": "us_fact_selector_v2_6984946_1265734"
+    }
+  },
+  "comparison_key": "cf5dd36cff1b7227a416be1fc9c120042bd9b4fdb1b4ffb98994d6fb8553aad8",
+  "result_summary": [
+    {
+      "candidate": "A",
+      "single_side_cost_bps": 0.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.16382622706994954,
+      "max_drawdown": 0.2530759801970094,
+      "sharpe_ratio": 0.8972087912992601,
+      "volatility": 0.19121448182189027,
+      "annualized_alpha": 0.04611282370558234,
+      "information_ratio": 0.33232157904514453,
+      "total_costs": 0.0,
+      "total_trades": 1081,
+      "final_sub_contributions": "{\"growth\": \"0.48913691021008238\", \"quality\": \"0.51086308978991768\"}",
+      "baseline_annualized_return": 0.1536660777379777,
+      "diff_annualized_return": 0.010160149331971846,
+      "diff_max_drawdown": -0.003522909057934731,
+      "diff_sharpe_ratio": 0.06901888251217414,
+      "diff_annualized_alpha": 0.010168134399807682
+    },
+    {
+      "candidate": "A",
+      "single_side_cost_bps": 10.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.1609110159768825,
+      "max_drawdown": 0.2542646200672223,
+      "sharpe_ratio": 0.8849751534557075,
+      "volatility": 0.190938232423445,
+      "annualized_alpha": 0.043195315245691646,
+      "information_ratio": 0.31392751388094586,
+      "total_costs": 17971.17808748722,
+      "total_trades": 1083,
+      "final_sub_contributions": "{\"growth\": \"0.48907098873522903\", \"quality\": \"0.51092901126477097\"}",
+      "baseline_annualized_return": 0.15109782234154423,
+      "diff_annualized_return": 0.00981319363533828,
+      "diff_max_drawdown": -0.002957602777139412,
+      "diff_sharpe_ratio": 0.06722300543892923,
+      "diff_annualized_alpha": 0.0098208900900838
+    },
+    {
+      "candidate": "A",
+      "single_side_cost_bps": 20.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.15800403171121502,
+      "max_drawdown": 0.25545165389639557,
+      "sharpe_ratio": 0.8726500177687432,
+      "volatility": 0.19067880935576426,
+      "annualized_alpha": 0.040286045093214096,
+      "information_ratio": 0.2953895435181995,
+      "total_costs": 35681.62020326741,
+      "total_trades": 1066,
+      "final_sub_contributions": "{\"growth\": \"0.4890052583302214\", \"quality\": \"0.51099474166977854\"}",
+      "baseline_annualized_return": 0.14853594693862493,
+      "diff_annualized_return": 0.00946808477259009,
+      "diff_max_drawdown": -0.002393055955054235,
+      "diff_sharpe_ratio": 0.06536462826003597,
+      "diff_annualized_alpha": 0.00947549519098212
+    },
+    {
+      "candidate": "B",
+      "single_side_cost_bps": 0.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.15652031402799937,
+      "max_drawdown": 0.2304777051658785,
+      "sharpe_ratio": 0.868121236555889,
+      "volatility": 0.19008017147419248,
+      "annualized_alpha": 0.038801162626271646,
+      "information_ratio": 0.3026922854334995,
+      "total_costs": 0.0,
+      "total_trades": 1804,
+      "final_sub_contributions": "{\"growth\": \"0.34710988791907144\", \"momentum\": \"0.13499354150198173\", \"quality\": \"0.51789657057894678\"}",
+      "baseline_annualized_return": 0.1536660777379777,
+      "diff_annualized_return": 0.0028542362900216833,
+      "diff_max_drawdown": -0.026121184089065608,
+      "diff_sharpe_ratio": 0.03993132776880304,
+      "diff_annualized_alpha": 0.0028564733204969883
+    },
+    {
+      "candidate": "B",
+      "single_side_cost_bps": 10.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.15348642456051143,
+      "max_drawdown": 0.23170402280935376,
+      "sharpe_ratio": 0.8551621052797804,
+      "volatility": 0.1897959232405991,
+      "annualized_alpha": 0.035764895485495884,
+      "information_ratio": 0.2820070375652296,
+      "total_costs": 18237.05674241741,
+      "total_trades": 1805,
+      "final_sub_contributions": "{\"growth\": \"0.34706355235370551\", \"momentum\": \"0.134972644971631\", \"quality\": \"0.51796380267466358\"}",
+      "baseline_annualized_return": 0.15109782234154423,
+      "diff_annualized_return": 0.002388602218967195,
+      "diff_max_drawdown": -0.025518200035007932,
+      "diff_sharpe_ratio": 0.037409957263002114,
+      "diff_annualized_alpha": 0.002390470329888039
+    },
+    {
+      "candidate": "B",
+      "single_side_cost_bps": 20.0,
+      "start_date": "2021-06-30",
+      "end_date": "2026-07-16",
+      "rebalance_months": 6,
+      "annualized_return": 0.15046136163630197,
+      "max_drawdown": 0.2329287341803381,
+      "sharpe_ratio": 0.8421050792272129,
+      "volatility": 0.1895299463887573,
+      "annualized_alpha": 0.03273746725137938,
+      "information_ratio": 0.26114054779012763,
+      "total_costs": 36198.22265987605,
+      "total_trades": 1806,
+      "final_sub_contributions": "{\"growth\": \"0.34701738213114436\", \"momentum\": \"0.13495172266961811\", \"quality\": \"0.51803089519923751\"}",
+      "baseline_annualized_return": 0.14853594693862493,
+      "diff_annualized_return": 0.0019254146976770414,
+      "diff_max_drawdown": -0.0249159756711117,
+      "diff_sharpe_ratio": 0.034819689718505686,
+      "diff_annualized_alpha": 0.0019269173491474056
+    }
+  ],
+  "sub_periods": {
+    "A@0bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.13277102051611522,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.23936822651527423
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.4319024284395565,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.10709237225368451
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.3396294854941453,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.055557235904654334
+      }
+    ],
+    "A@10bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.12908910284852104,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.23568630884768005
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.42506084245779885,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.11393395823544217
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.3334668499531266,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.04939460036363563
+      }
+    ],
+    "A@20bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.12542031873873438,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.2320175247378934
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.4182540276876181,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.12074077300562291
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.32733458638975543,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.04326233680026448
+      }
+    ],
+    "B@0bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.08151092508135149,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.1881081310805105
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.4672628062019313,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.07173199449130974
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.3235212413250923,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.039448991735601346
+      }
+    ],
+    "B@10bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.07783033576271481,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.18442754176187381
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.4599576825389349,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.07903711815430614
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.31711110566221756,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.03303885607272661
+      }
+    ],
+    "B@20bps": [
+      {
+        "period": "2021-06_2022-12",
+        "start_used": "2021-06-30",
+        "end_used": "2022-12-30",
+        "strategy_return": 0.0741635227158759,
+        "benchmark_return": -0.106597205999159,
+        "excess_return": 0.1807607287150349
+      },
+      {
+        "period": "2023-01_2024-12",
+        "start_used": "2023-01-03",
+        "end_used": "2024-12-31",
+        "strategy_return": 0.4526909049140033,
+        "benchmark_return": 0.538994800693241,
+        "excess_return": -0.0863038957792377
+      },
+      {
+        "period": "2025-01_2026-07",
+        "start_used": "2025-01-02",
+        "end_used": "2026-07-16",
+        "strategy_return": 0.31073369528644323,
+        "benchmark_return": 0.28407224958949095,
+        "excess_return": 0.02666144569695228
+      }
+    ]
+  },
+  "scenario_rebalance_sha256": {
+    "A@0bps": "358d083be7bf655324a62213d22751366d064b9304676fa3fec3aef262482172",
+    "A@10bps": "dea198ccf59f0c6b52218e76c9ad70c62f407dfeb71a4bc4615921b0e1ef47e6",
+    "A@20bps": "2a672a129fa1e21ef6ba1b11f603321df06d102e25af668568d7f353878d0fcb",
+    "B@0bps": "04f5f5632402b8fb59ff822b60718b2e4ab44916b3f725772065263aa861b972",
+    "B@10bps": "2a2c5d73c805fe16ad5d89c3a2ee30c1131bd9715e1630141e26914b46c238e4",
+    "B@20bps": "ab54a4b33022c6de07bd7c696c08a245cbaaced7ffcff86af23e724e6cfc322b"
+  },
+  "output_hashes": {
+    "summary.csv": "96fa86cc6f2c68798b463cc99a81e0fd9fe830129e412e6839bdced9e2eb8a98",
+    "summary.md": "2c5a60f227ff394bd4022064aed27c532e5d2070ee5fcf3659f6560d8bbdc0fe",
+    "rebalance_records.csv": "63d94ac1007aafeb6a7e1e99c91dcfc52050302216b5c08b3eec012adf5c289d",
+    "sub_strategy_records.csv": "2100cc10a5697a9a28970e48eb63371618a480763da25b5b8cbe0ad972810bb5",
+    "overlap_by_rebalance.csv": "048fcf61f49da9f432fc45efc1687d4e2835c7cae628aaf83074648230279403",
+    "fcf_roe_value_reference_summary.csv": "3e7d4ed42baeae046267fa36c4a0fb3aa5484daa3ada466318a7c454e55d09d3",
+    "fcf_roe_value_reference_rebalance_records.csv": "d7b22a13dd3cb0a4976d69db6c8ccad89d6da3b3a5cfcc36967936ebf1f8a55b"
+  }
+}

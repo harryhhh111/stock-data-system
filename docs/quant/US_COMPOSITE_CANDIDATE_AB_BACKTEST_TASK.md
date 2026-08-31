@@ -1,6 +1,9 @@
 # US 固定权重复合候选 A/B 回测任务
 
-> 状态：待审核、未实施
+> 状态：已完成（2026-08-31；run `us_comp_ab_20260831_ebe3fb9`，证据目录
+> `docs/evidence/quant_us_composite_candidates/us_comp_ab_20260831_ebe3fb9/`；
+> SHA256SUMS 自洽。检测到 `pit.watermark` 漂移后，已在同一已加载 PIT 输入下
+> 重跑 `fcf_roe_value` 0/10/20 bps 作为当次数值参照，未直接比较父归档基线。）
 > 日期：2026-08-28
 > 前置：`us_pit_20260823_1c9e3c2` 已作为 US 单策略正式 PIT baseline 归档
 > 范围：只研究两个固定权重候选的历史表现与归因；不创建可交易 preset、不创建模拟盘账户。
