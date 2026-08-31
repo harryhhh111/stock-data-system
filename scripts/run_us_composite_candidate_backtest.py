@@ -44,11 +44,13 @@ from quant.backtest.common import (
     load_benchmark_prices,
 )
 from quant.backtest.composite import run_composite_backtest
+from quant.backtest.engine import run_backtest
 from quant.backtest.preloader import PITPreloader
 from quant.screener.presets import PRESETS
 from scripts.run_us_backtest_cost_sensitivity import (
     _git_sha,
     _input_fingerprints,
+    row_for,
 )
 
 # ── 预注册候选（唯一权重来源） ──────────────────────────────
@@ -226,13 +228,13 @@ def _overlap_records(scenarios: dict[tuple[str, float], Any]) -> list[dict[str, 
 
 def _summary_rows(
     scenarios: dict[tuple[str, float], Any],
-    parent_rows: dict[tuple[str, float], dict[str, Any]],
+    reference_rows: dict[tuple[str, float], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for (cand, bps), result in scenarios.items():
         m = result.metrics
         bench = result.benchmark_comparison
-        base = parent_rows.get(("fcf_roe_value", bps))
+        base = reference_rows.get(("fcf_roe_value", bps))
         row: dict[str, Any] = {
             "candidate": cand,
             "single_side_cost_bps": bps,
@@ -277,6 +279,7 @@ def _write_summary_md(
     rows: list[dict[str, Any]],
     scenarios: dict[tuple[str, float], Any],
     drift: dict[str, Any],
+    reference_source: str = "parent_archived_baseline",
 ) -> None:
     lines = [
         "# US 固定权重复合候选 A/B 回测", "",
@@ -289,10 +292,20 @@ def _write_summary_md(
         "  不是机械的纯费率归因。", "",
     ]
     if drift:
-        lines += [f"- ⚠️ 与父 baseline 的输入指纹漂移: `{json.dumps(drift)}`", ""]
+        lines += [
+            f"- ⚠️ 与父 baseline 的输入指纹漂移: `{json.dumps(drift)}`",
+            "- 因此本报告的相对差值改用同一 PIT 预加载与同一调仓日行情重跑的"
+            " `fcf_roe_value` 当次参照基线；不能把它解读为相对父归档 run 的差值。",
+            "",
+        ]
 
+    reference_label = (
+        "同一输入当次 fcf_roe_value 单策略参照"
+        if reference_source == "contemporaneous_fcf_roe_value"
+        else "同成本 fcf_roe_value 单策略父 baseline"
+    )
     lines += [
-        "## 总览（差值 = 候选 − 同成本 fcf_roe_value 单策略 baseline）", "",
+        f"## 总览（差值 = 候选 − {reference_label}）", "",
         "| 候选 | 单边成本 | 年化收益 | Δ年化 | 最大回撤 | Δ回撤 | Sharpe | ΔSharpe | 波动率 | 年化Alpha | IR | 总成本 | 交易数 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -374,6 +387,27 @@ def _input_drift(ours: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]
     return drift
 
 
+def _reference_rows_for_run(
+    parent_rows: dict[tuple[str, float], dict[str, Any]],
+    drift: dict[str, Any],
+    contemporaneous_rows: dict[tuple[str, float], dict[str, Any]] | None,
+) -> tuple[dict[tuple[str, float], dict[str, Any]], str]:
+    """选择可以用于本次比较的 FCF+ROE 参照行。
+
+    父 baseline 的任何受追踪输入发生漂移后，历史数值只能作为审计锚点，
+    不能再参与候选差值计算；此时必须使用同一已加载 PIT 输入重跑的参照。
+    """
+    if not drift:
+        return parent_rows, "parent_archived_baseline"
+    if not contemporaneous_rows:
+        raise ValueError("父 baseline 输入漂移时必须提供当次 FCF+ROE 参照")
+    required = {("fcf_roe_value", bps) for bps in BPS_TIERS}
+    missing = sorted(required - set(contemporaneous_rows))
+    if missing:
+        raise ValueError(f"当次 FCF+ROE 参照缺少成本档: {missing}")
+    return contemporaneous_rows, "contemporaneous_fcf_roe_value"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", default=None,
@@ -442,21 +476,61 @@ def main() -> None:
 
     # ── 产物 ──────────────────────────────────────────────
     output.mkdir(parents=True, exist_ok=False)
-    rows = _summary_rows(scenarios, parent_rows)
-    write_csv(output / "summary.csv", rows)
-
     results_for_records = [(bps, scenarios[(cand, bps)])
                            for cand in CANDIDATES for bps in BPS_TIERS]
-    records = rebalance_records(results_for_records)
-    write_csv(output / "rebalance_records.csv", records)
-    write_csv(output / "sub_strategy_records.csv", _sub_strategy_records(scenarios))
-    write_csv(output / "overlap_by_rebalance.csv", _overlap_records(scenarios))
-
     inputs = _input_fingerprints(
         preloader, quote_by_date, results_for_records, start, end, benchmark
     )
     drift = _input_drift(inputs, parent_manifest["inputs"])
-    _write_summary_md(output / "summary.md", run_id, rows, scenarios, drift)
+
+    # 父 baseline 只在输入指纹完全一致时才可作为数值参照。若发生漂移，
+    # 使用同一已加载 PIT 数据与同一调仓日行情补跑 FCF+ROE，避免把不同
+    # as-of 事实集的收益差伪装成候选配置带来的差异。
+    contemporaneous_reference_results: list[tuple[float, Any]] = []
+    if drift:
+        print("父 baseline 输入漂移；重跑同输入 FCF+ROE 参照…", flush=True)
+        for bps in BPS_TIERS:
+            print(f"[reference] fcf_roe_value: {bps:g} bps", flush=True)
+            result = run_backtest(
+                preset_name="fcf_roe_value",
+                start=start,
+                end=end,
+                months=months,
+                market="US",
+                benchmark=benchmark,
+                slippage_bps=bps,
+                rebalance_dates=rebalance_dates,
+                preloader=preloader,
+                quote_by_date=quote_by_date,
+            )
+            contemporaneous_reference_results.append((bps, result))
+
+    contemporaneous_reference_rows = {
+        (result.preset_name, bps): row_for(result, bps)
+        for bps, result in contemporaneous_reference_results
+    }
+    reference_rows, reference_source = _reference_rows_for_run(
+        parent_rows, drift, contemporaneous_reference_rows or None
+    )
+    rows = _summary_rows(scenarios, reference_rows)
+    write_csv(output / "summary.csv", rows)
+
+    records = rebalance_records(results_for_records)
+    write_csv(output / "rebalance_records.csv", records)
+    write_csv(output / "sub_strategy_records.csv", _sub_strategy_records(scenarios))
+    write_csv(output / "overlap_by_rebalance.csv", _overlap_records(scenarios))
+    if contemporaneous_reference_results:
+        write_csv(
+            output / "fcf_roe_value_reference_summary.csv",
+            [row_for(result, bps) for bps, result in contemporaneous_reference_results],
+        )
+        write_csv(
+            output / "fcf_roe_value_reference_rebalance_records.csv",
+            rebalance_records(contemporaneous_reference_results),
+        )
+    _write_summary_md(
+        output / "summary.md", run_id, rows, scenarios, drift, reference_source
+    )
 
     parameters = {
         "market": "US",
@@ -481,6 +555,11 @@ def main() -> None:
             "run_id": PARENT_RUN_ID,
             "comparison_key": PARENT_COMPARISON_KEY,
         },
+        "comparison_reference": {
+            "source": reference_source,
+            "strategy": "fcf_roe_value",
+            "single_side_cost_bps": list(BPS_TIERS),
+        },
     }
     scenario_rebalance_sha256 = {
         f"{cand}@{bps:g}bps": sha256_value([
@@ -495,6 +574,14 @@ def main() -> None:
         for name in ("summary.csv", "summary.md", "rebalance_records.csv",
                      "sub_strategy_records.csv", "overlap_by_rebalance.csv")
     }
+    if contemporaneous_reference_results:
+        output_hashes.update({
+            name: sha256_file(output / name)
+            for name in (
+                "fcf_roe_value_reference_summary.csv",
+                "fcf_roe_value_reference_rebalance_records.csv",
+            )
+        })
     manifest = {
         "schema_version": 1,
         "run_id": run_id,
@@ -519,8 +606,13 @@ def main() -> None:
     )
 
     evidence.mkdir(parents=True, exist_ok=False)
-    names = ("manifest.json", "summary.csv", "summary.md", "rebalance_records.csv",
-             "sub_strategy_records.csv", "overlap_by_rebalance.csv")
+    names = ["manifest.json", "summary.csv", "summary.md", "rebalance_records.csv",
+             "sub_strategy_records.csv", "overlap_by_rebalance.csv"]
+    if contemporaneous_reference_results:
+        names.extend((
+            "fcf_roe_value_reference_summary.csv",
+            "fcf_roe_value_reference_rebalance_records.csv",
+        ))
     for name in names:
         (evidence / name).write_bytes((output / name).read_bytes())
     write_sha256sums(evidence / "SHA256SUMS", [evidence / name for name in names])

@@ -317,6 +317,27 @@ def test_script_reuses_shared_preload_for_six_scenarios(monkeypatch, tmp_path):
     assert manifest["parameters"]["parent_baseline"]["run_id"] == cand_mod.PARENT_RUN_ID
 
 
+def test_input_drift_requires_contemporaneous_fcf_reference():
+    """漂移后不得继续引用父归档数值；三档当次基线必须齐全。"""
+    parent = {("fcf_roe_value", bps): {"annualized_return": 0.1}
+              for bps in cand_mod.BPS_TIERS}
+    current = {("fcf_roe_value", bps): {"annualized_return": 0.2}
+               for bps in cand_mod.BPS_TIERS}
+
+    selected, source = cand_mod._reference_rows_for_run(
+        parent, {"pit.watermark": {"parent": "old", "ours": "new"}}, current
+    )
+    assert selected is current
+    assert source == "contemporaneous_fcf_roe_value"
+
+    with pytest.raises(ValueError, match="必须提供"):
+        cand_mod._reference_rows_for_run(parent, {"pit.watermark": {}}, None)
+    with pytest.raises(ValueError, match="缺少成本档"):
+        cand_mod._reference_rows_for_run(
+            parent, {"pit.watermark": {}}, {("fcf_roe_value", 0.0): {}}
+        )
+
+
 # ── 5.1.4 全成本档复利语义与守恒 ─────────────────────────────
 
 def test_zero_cost_compounding_targets_current_nav(monkeypatch):

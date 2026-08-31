@@ -61,6 +61,11 @@ Alpha 为负且回撤较高。现在需要用同一套 PIT 数据回答：
 只有父 baseline 与固定参数都相同的 A/B 结果才可直接相互比较。若 PIT、历史行情、股本、
 排除台账或 preset 影响了回测区间，必须生成新 run，不能覆盖本次证据。
 
+若检测到上述输入相对父 baseline 漂移，本次 run 不得继续把父归档数值用作“相对
+FCF+ROE”的差值基准。脚本必须复用本次已加载的 PIT 数据、调仓日和行情，重跑
+`fcf_roe_value` 的 0/10/20 bps 三档，产出当次参照明细；报告中的相对差值只能基于
+该当次参照。父 baseline 仍保留为审计锚点，但不参与数值比较。
+
 ## 4. 实现范围
 
 ### 4.1 研究专用候选，不注册生产策略
@@ -115,6 +120,9 @@ build/quant_backtest/us_composite_candidates/<run_id>/
 ├── sub_strategy_records.csv
 └── overlap_by_rebalance.csv
 ```
+
+若父 baseline 输入漂移，额外输出 `fcf_roe_value_reference_summary.csv` 与
+`fcf_roe_value_reference_rebalance_records.csv`，并一同进入耐久证据目录。
 
 耐久证据提交到：
 
