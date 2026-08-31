@@ -49,6 +49,111 @@ from quant.screener.scorer import rank_factors
 logger = logging.getLogger(__name__)
 
 
+# ── 研究用显式配置校验 ──────────────────────────────────────
+
+def validate_research_composite_config(cfg: CompositeConfig) -> None:
+    """校验显式传入的研究用复合配置（不读全局注册表）。
+
+    规则：子策略名称非空且唯一；weight_bull 非负；无 residual 时权重和为 1，
+    有 residual 时权重和不超过 1；非 residual 子策略引用的 preset 必须存在。
+    """
+    if cfg.get("type") != "composite":
+        raise ValueError(f"研究配置 type 必须为 composite，得到: {cfg.get('type')!r}")
+    subs = cfg.get("sub_strategies") or []
+    if not subs:
+        raise ValueError("研究配置必须包含至少一个子策略")
+
+    names = [sub.get("name") for sub in subs]
+    if any(not n for n in names):
+        raise ValueError(f"子策略名称不能为空: {names}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"子策略名称重复: {names}")
+
+    total = 0.0
+    has_residual = False
+    for sub in subs:
+        w = sub.get("weight_bull", 0.0)
+        if (
+            isinstance(w, bool)
+            or not isinstance(w, (int, float))
+            or not math.isfinite(float(w))
+            or w < 0
+        ):
+            raise ValueError(
+                f"子策略 {sub['name']} 权重必须为有限非负数: {w!r}"
+            )
+        if sub.get("residual"):
+            has_residual = True
+            continue
+        total += w
+        strategy = sub.get("strategy", "")
+        if strategy not in PRESETS:
+            raise ValueError(
+                f"子策略 {sub['name']} 引用未知 preset: {strategy!r}"
+            )
+
+    if has_residual:
+        if total > 1.0 + 1e-9:
+            raise ValueError(f"子策略权重合计 {total} > 1.0，请检查配置")
+    elif abs(total - 1.0) > 1e-9:
+        raise ValueError(f"子策略权重合计 {total} != 1.0，请检查配置")
+
+
+def _validate_allocation_override(
+    cfg: CompositeConfig, allocation_override: dict[str, float]
+) -> dict[str, float]:
+    """校验固定权重研究的唯一 allocation 来源并返回规范化副本。
+
+    显式 override 必须精确覆盖配置内全部子策略，且各权重为有限非负数、
+    合计为 1。否则初始切片与后续调仓会产生静默的不同权重口径。
+    """
+    names = [sub["name"] for sub in cfg["sub_strategies"]]
+    expected = set(names)
+    actual = set(allocation_override)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        raise ValueError(
+            "allocation_override 必须与子策略名称精确一致: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+    normalized: dict[str, float] = {}
+    for name in names:
+        value = allocation_override[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            raise ValueError(
+                f"allocation_override[{name!r}] 必须为有限非负数: {value!r}"
+            )
+        normalized[name] = float(value)
+
+    total = math.fsum(normalized.values())
+    if abs(total - 1.0) > 1e-9:
+        raise ValueError(
+            f"allocation_override 权重合计 {total} != 1.0，请检查配置"
+        )
+    return normalized
+
+
+def _signals_required(cfg: CompositeConfig) -> bool:
+    """配置是否需要宏观信号（商品 / 大盘 200MA / residual 选股）。
+
+    固定权重的研究候选不含这些元素，此时引擎完全不计算信号，
+    保证「不读取商品或 200MA 信号」是引擎行为而非配置巧合。
+    """
+    if cfg.get("benchmark"):
+        return True
+    return any(
+        sub.get("commodity") or sub.get("residual")
+        for sub in cfg["sub_strategies"]
+    )
+
+
 # ── 信号层 ──────────────────────────────────────────────
 
 def _check_all_signals(
@@ -461,13 +566,26 @@ def _init_sub_portfolios(
     market: str,
     fee_rate: float = 0.0,
     slippage_bps: float = 0.0,
+    allocation_override: dict[str, float] | None = None,
 ) -> tuple[dict[str, Portfolio], dict[str, list[Snapshot]]]:
-    """按初始信号分配资金，创建子 Portfolio。"""
+    """按初始分配切分资金，创建子 Portfolio。
+
+    allocation_override 传入时初始切片直接使用它（固定权重研究口径），
+    不再从 cfg 的 weight_bull 另行推导；配置无信号驱动元素时完全跳过
+    宏观信号计算。
+    """
     sub_portfolios: dict[str, Portfolio] = {}
     valuation_snaps: dict[str, list[Snapshot]] = {}
 
-    initial_signals = _check_all_signals(cfg, market, rebalance_dates[0])
-    initial_allocation = _allocate(cfg, initial_signals)
+    if allocation_override is not None:
+        initial_allocation = allocation_override
+    else:
+        initial_signals = (
+            _check_all_signals(cfg, market, rebalance_dates[0])
+            if _signals_required(cfg)
+            else {}
+        )
+        initial_allocation = _allocate(cfg, initial_signals)
 
     for sub in cfg["sub_strategies"]:
         name = sub["name"]
@@ -610,6 +728,7 @@ def _run_rebalance_loop(
     progress_callback: Callable[[float, str], None] | None,
     allocation_override: dict[str, float] | None = None,
     cost_rate: float = 0.0,
+    compounding: bool = False,
 ) -> list[CompositeRebalanceRecord]:
     """复合策略主循环：信号 → 分配 → 各子策略独立调仓。
 
@@ -620,14 +739,18 @@ def _run_rebalance_loop(
         cost_rate: 合并费率。> 0 时资金迁移走组合级共享资金池
             （真实卖出 + 池内转账），目标资金 = 当前总净值 × 权重；
             == 0 时保持既有固定切片 scale_positions 行为。
+        compounding: True 时所有成本档（含 0 费率）都走共享资金池迁移，
+            目标资金 = 当期组合总净值 × 权重（复利研究口径）；
+            False 保留旧策略的 0 费率固定初始切片行为。
     """
     records: list[CompositeRebalanceRecord] = []
+    skip_signals = allocation_override is not None and not _signals_required(cfg)
 
     for i, rb_date in enumerate(rebalance_dates):
-        signals = _check_all_signals(cfg, market, rb_date)
+        signals = {} if skip_signals else _check_all_signals(cfg, market, rb_date)
         allocation = allocation_override or _allocate(cfg, signals)
 
-        if cost_rate > 0:
+        if compounding or cost_rate > 0:
             # 先记录各子组合迁移前估值快照（保持日频 NAV 口径一致），
             # 再做组合级资金池迁移（真实交易，计成本）
             for sub in cfg["sub_strategies"]:
@@ -881,6 +1004,8 @@ def run_composite_backtest(
     allocation_override: dict[str, float] | None = None,
     fee_rate: float = 0.0,
     slippage_bps: float = 0.0,
+    config: CompositeConfig | None = None,
+    compounding_rebalance: bool = False,
 ) -> BacktestResult:
     """运行复合策略回测。
 
@@ -888,15 +1013,27 @@ def run_composite_backtest(
         rebalance_dates: 预计算调仓日期列表，传入时跳过日期生成。
         preloader / quote_by_date: 共享预加载数据，避免多 cohort 重复加载。
         rebalance_months: generate_rebalance_dates 的频率参数。
-        allocation_override: 覆盖宏观信号分配（如固定权重回测）。
+        allocation_override: 覆盖宏观信号分配（如固定权重回测）；传入时
+            同时驱动子组合的初始资金切片与每次调仓的目标权重。
+        config: 显式传入的研究用复合配置（只读，不查 COMPOSITE_PRESETS，
+            入参经 validate_research_composite_config 校验）。此时
+            preset_name 仅作为结果标签。
+        compounding_rebalance: True 时所有成本档（含 0 费率）统一按
+            「当期组合总净值 × 权重」经共享资金池复利再平衡；False 保留
+            旧策略的 0 费率固定初始切片行为。
     """
-    if preset_name not in COMPOSITE_PRESETS:
-        raise ValueError(
-            f"未知复合策略: {preset_name}，可选: {list(COMPOSITE_PRESETS.keys())}"
-        )
-
-    cfg = COMPOSITE_PRESETS[preset_name]
+    if config is not None:
+        validate_research_composite_config(config)
+        cfg = config
+    else:
+        if preset_name not in COMPOSITE_PRESETS:
+            raise ValueError(
+                f"未知复合策略: {preset_name}，可选: {list(COMPOSITE_PRESETS.keys())}"
+            )
+        cfg = COMPOSITE_PRESETS[preset_name]
     assert cfg.get("type") == "composite", f"{preset_name} type != composite"
+    if allocation_override is not None:
+        allocation_override = _validate_allocation_override(cfg, allocation_override)
 
     if end is None:
         end = date.today()
@@ -916,6 +1053,7 @@ def run_composite_backtest(
     sub_portfolios, valuation_snaps = _init_sub_portfolios(
         cfg, initial_capital, rebalance_dates, market,
         fee_rate=fee_rate, slippage_bps=slippage_bps,
+        allocation_override=allocation_override,
     )
 
     records = _run_rebalance_loop(
@@ -923,6 +1061,7 @@ def run_composite_backtest(
         preloader, quote_by_date, initial_capital, progress_callback,
         allocation_override=allocation_override,
         cost_rate=validate_cost_params(fee_rate, slippage_bps),
+        compounding=compounding_rebalance,
     )
 
     end_trade = _record_final_valuation(
@@ -962,7 +1101,7 @@ def run_composite_backtest(
         preset_name=preset_name,
         start_date=rebalance_dates[0],
         end_date=end_trade,
-        rebalance_months=1,
+        rebalance_months=rebalance_months,
         initial_capital=initial_capital,
         final_value=final_value,
         metrics=metrics,
