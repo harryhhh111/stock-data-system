@@ -7,7 +7,7 @@ scheduler.py — 定时任务调度器
 
 任务分两套：
   - 行情同步：A 股 16:37、港股 17:12，同步 daily_quote + 刷 mv_fcf_yield
-  - 财务同步：A 股 17:07、港股 17:37、美股 06:12，同步财务报表 + 刷全部物化视图
+  - 财务同步：A 股 17:07、港股 17:37 刷物化视图；美股 06:12 走版本层编排
 
 用法:
     python -m core.scheduler           # 启动调度器
@@ -68,8 +68,9 @@ def _is_us_trading_day(dt: datetime | None = None) -> bool:
     if dt is None:
         us_dt = datetime.now(us_tz)
     elif dt.tzinfo is None:
-        # 无时区的 dt 视为服务器本地时间，换算到美东
-        us_dt = dt.astimezone().astimezone(us_tz)
+        # scheduler 的 cron 明确固定 Asia/Shanghai，不能依赖测试机或容器的
+        # 系统时区；无时区输入按调度器时间解释后再换算美东。
+        us_dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(us_tz)
     else:
         us_dt = dt.astimezone(us_tz)
     return us_dt.weekday() < 5
@@ -975,9 +976,13 @@ def dry_run() -> None:
     print(f"  强制全量     : {'是' if config.scheduler.force_sync else '否'}")
     print(f"  通知 URL     : {config.scheduler.notify_url or '（未配置，仅日志）'}")
     print()
+    active_markets = set(config.scheduler.markets)
     print("  物化视图刷新策略:")
-    print("    行情同步后: mv_fcf_yield")
-    print("    财务同步后: mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield")
+    if active_markets - {"US"}:
+        print("    CN_A/CN_HK 行情后: mv_fcf_yield")
+        print("    CN_A/CN_HK 财务后: mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield")
+    if "US" in active_markets:
+        print("    US: 不刷新已退役的旧 MV；版本层 sync → projection → compare → validate")
     print()
     print("  注: cron 触发时还会二次检查是否为交易日，非交易日自动跳过")
     print("=" * 70)

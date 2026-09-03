@@ -37,8 +37,8 @@ class TestIsUsTradingDay:
         dt = datetime(2026, 8, 30, 5, 37, tzinfo=SHANGHAI)
         assert _is_us_trading_day(dt) is False
 
-    def test_naive_dt_treated_as_server_local(self):
-        """无时区的 dt 按服务器本地时间换算（北京时间周六早晨 → 交易日）。"""
+    def test_naive_dt_treated_as_scheduler_timezone(self):
+        """无时区的 dt 按 scheduler 固定的北京时间换算，不依赖宿主机时区。"""
         assert _is_us_trading_day(datetime(2026, 8, 29, 5, 37)) is True
 
     def test_us_saturday_is_not_trading_day(self):
