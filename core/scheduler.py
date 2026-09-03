@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
@@ -55,14 +56,23 @@ def _is_china_trading_day(dt: datetime | None = None) -> bool:
 
 
 def _is_us_trading_day(dt: datetime | None = None) -> bool:
-    """简单美股交易日判断。
+    """简单美股交易日判断（以美东时间为准）。
 
-    美股周末不开市。cron 表达式已配置为 1-6（周一到周六），
-    这里做二次检查。
+    美股周末不开市。cron 表达式已配置为周二~周六（北京时间早晨，
+    对应美东周一~周五收盘后），这里做二次检查。
+
+    注意必须用美东日期判断：北京时间周六早晨 = 美东周五收盘后，
+    若按服务器本地时间判 weekday，周五的行情/财务同步会被误杀。
     """
+    us_tz = ZoneInfo("America/New_York")
     if dt is None:
-        dt = datetime.now()
-    return dt.weekday() < 5
+        us_dt = datetime.now(us_tz)
+    elif dt.tzinfo is None:
+        # 无时区的 dt 视为服务器本地时间，换算到美东
+        us_dt = dt.astimezone().astimezone(us_tz)
+    else:
+        us_dt = dt.astimezone(us_tz)
+    return us_dt.weekday() < 5
 
 
 # ── 通知接口 ────────────────────────────────────────────────
