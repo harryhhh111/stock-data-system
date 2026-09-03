@@ -1,6 +1,6 @@
 # US 模拟盘 PaperPreloader 流式 PIT 切换任务
 
-> 状态：已完成（2026-09-03；US 模拟盘已切至流式版本事实 PIT）
+> 状态：代码与只读 smoke 已完成（2026-09-03）；待下一次 US daily-run 验证
 > 日期：2026-08-31
 > 适用环境：海外 US 服务器（`STOCK_MARKETS=US`）
 > 范围：修复 US 模拟盘 daily run 的财务 PIT 读取；不修改策略、账户、回测或旧表退役状态。
@@ -35,6 +35,7 @@ PaperTradingEngine
 - 实库只读 smoke（2026-08-28 as-of）：universe 1,001 行、三年 ROE 历史 2,997 行；
   `fcf_roe_value` 模拟盘选股 dry-run 返回 22 个目标，且 `quant/paper/` 已无旧三对象引用。
 - 验证：`tests/test_paper/ tests/test_scheduler_trading_day.py tests/test_backtest/` 共 117 项通过。
+  下一次由 cron 执行的 US daily-run 必须确认五个账户均越过选股阶段后，方可标记为生产验收完成。
 
 ## 2. 已核实的可行路径
 
