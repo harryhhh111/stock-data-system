@@ -64,6 +64,10 @@ def _get_pool() -> pool.ThreadedConnectionPool:
             dbname=config.db.dbname,
             user=config.db.user,
             password=config.db.password,
+            # 显式固定客户端编码：psycopg2 默认跟随进程 locale，
+            # 在 C/ASCII locale 下任何非 ASCII 参数（如中文 error_detail）
+            # 会在客户端编码阶段直接抛错（sync_log 写入失败的根因）。
+            options="-c client_encoding=utf8",
         )
     return _pool
 
