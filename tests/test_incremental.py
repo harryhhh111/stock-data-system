@@ -19,6 +19,25 @@ def _progress(stock_code, last_report_date, tables_synced=None):
     return {stock_code: (last_report_date, tables_synced)}
 
 
+def _most_recent_quarter_end() -> date:
+    """距今最近的一个已过季末。
+
+    该季末的下一期法定截止日（3/31→8/31、6/30→10/31、9/30→次年4/30、
+    12/31→次年4/30）必然在未来，适合作为"下一期未到、应跳过"的 RECENT 值。
+    固定写死的季末会随时间越过截止日而变成"应触发"，2026-09 起已炸过一次。
+    """
+    today = date.today()
+    ends = [
+        date(today.year, 3, 31),
+        date(today.year, 6, 30),
+        date(today.year, 9, 30),
+        date(today.year, 12, 31),
+    ]
+    if today.month < 3:
+        ends.append(date(today.year - 1, 12, 31))
+    return max(e for e in ends if e <= today)
+
+
 def _progress_multi(*args):
     """构造多只股票的 progress 字典。args 每项为 (code, date, tables)。"""
     result = {}
@@ -41,9 +60,9 @@ class TestDetermineStocksToSync:
         assert len(pending) == 3
         assert skipped == 0
 
-    RECENT = date(2026, 3, 31)       # Q1 2026，下一期 Q2(6/30) 截止 8/31，尚未到 → 不触发
-    Q3_2025 = date(2025, 9, 30)      # Q3 2025，下一期年报(12/31) 截止 4/30 → 已过 → 触发
-    Q4_2025 = date(2025, 12, 31)     # Q4 2025，下一期 Q1(3/31) 截止 4/30 → 已过 → 触发
+    RECENT = _most_recent_quarter_end()  # 最近已过季末，下一期截止日未到 → 不触发
+    Q3_2025 = date(2025, 9, 30)      # 足够旧，年报截止已过 → 恒触发
+    Q4_2025 = date(2025, 12, 31)     # 足够旧，Q1 截止已过 → 恒触发
     ALL_TABLES = ["income_statement", "balance_sheet", "cash_flow_statement"]
 
     def _p(self, report_date, tables=None):
