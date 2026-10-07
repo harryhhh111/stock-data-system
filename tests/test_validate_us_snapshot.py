@@ -597,35 +597,30 @@ class TestNoLegacyObjects:
 
 
 class TestSwitchDispatch:
-    def _patch_legacy_us_checks(self):
+    def _patch_common(self):
         return (
-            patch("core.validate.check_anomalies_us", return_value=10),
-            patch("core.validate.check_logic_us", return_value=20),
-            patch("core.validate.check_standalone_cross_validation_us", return_value=30),
             patch("core.validate.check_market_cap_jump", return_value=0),
             patch("core.validate.check_cross_source", return_value=0),
             patch("core.validate.save_results", return_value=0),
             patch("core.validate.ensure_table"),
         )
 
-    def test_flag_off_runs_legacy(self, monkeypatch):
+    def test_flag_off_raises_no_legacy_fallback(self, monkeypatch):
+        """legacy US 校验已随 E-1 退役：开关关闭时明确报错，不得回退。"""
         monkeypatch.delenv(FLAG, raising=False)
-        p = self._patch_legacy_us_checks()
-        with p[0] as m_anom, p[1] as m_logic, p[2] as m_std, p[3], p[4], p[5], p[6]:
+        p = self._patch_common()
+        with p[0], p[1], p[2], p[3]:
             with patch.object(vus, "run_us_snapshot_checks") as m_new:
                 from core.validate import run_validation
 
-                report = run_validation(market="US")
-        m_anom.assert_called_once()
-        m_logic.assert_called_once()
-        m_std.assert_called_once()
+                with pytest.raises(RuntimeError, match="legacy 校验路径已退役"):
+                    run_validation(market="US")
         m_new.assert_not_called()
-        assert report.total_rows_scanned == 60
 
     def test_flag_on_runs_snapshot(self, monkeypatch):
         monkeypatch.setenv(FLAG, "1")
-        p = self._patch_legacy_us_checks()
-        with p[0] as m_anom, p[1], p[2], p[3], p[4], p[5], p[6]:
+        p = self._patch_common()
+        with p[0], p[1], p[2], p[3]:
             with patch.object(
                 vus,
                 "run_us_snapshot_checks",
@@ -634,7 +629,6 @@ class TestSwitchDispatch:
                 from core.validate import run_validation
 
                 report = run_validation(market="US")
-        m_anom.assert_not_called()
         m_new.assert_called_once()
         assert report.total_rows_scanned == 6
 
@@ -754,70 +748,3 @@ class TestFcfRoeCheckDispatch:
                 fcf_roe_check.get_roe_history("CN_A", ["000001"])
         assert "mv_financial_indicator" in m_read.call_args[0][0]
 
-
-# ── 影子对比脚本 ──────────────────────────────────────────
-
-
-class TestShadowScript:
-    def _issue(self, check, code, rd, field, severity="error"):
-        return ValidationIssue(
-            stock_code=code, market="US", report_date=rd,
-            check_name=check, severity=severity, field_name=field,
-        )
-
-    def test_diff_categories(self):
-        from scripts.compare_us_validation_snapshot_vs_legacy import diff_issues
-
-        legacy = [
-            self._issue("balance_equation", "AAA", "2024-12-31", "f1"),
-            self._issue("debt_ratio_extreme", "BBB", "2024-12-31", "f2",
-                        severity="warning"),
-            self._issue("negative_total_assets", "CCC", "2024-12-31", "f3"),
-        ]
-        new = [
-            self._issue("balance_equation", "AAA", "2024-12-31", "f1"),
-            self._issue("debt_ratio_extreme", "BBB", "2024-12-31", "f2",
-                        severity="error"),  # 严重度不同
-            self._issue("net_income_exceeds_revenue", "DDD", "2024-12-31", "f4"),
-        ]
-        diffs = diff_issues(legacy, new)
-        assert len(diffs["both_same"]) == 1
-        assert len(diffs["severity_diff"]) == 1
-        assert len(diffs["legacy_only"]) == 1
-        assert len(diffs["new_only"]) == 1
-        assert diffs["legacy_only"][0][1].stock_code == "CCC"
-        assert diffs["new_only"][0][1].stock_code == "DDD"
-
-    def test_diff_dedups_same_key(self):
-        from scripts.compare_us_validation_snapshot_vs_legacy import diff_issues
-
-        new = [
-            self._issue("net_income_exceeds_revenue", "AAA", "2024-06-30", "f"),
-            self._issue("net_income_exceeds_revenue", "AAA", "2024-06-30", "f"),
-        ]
-        diffs = diff_issues([], new)
-        assert len(diffs["new_only"]) == 1
-        assert diffs["new_dup_keys"] == 1
-
-    def test_diff_empty_sets(self):
-        from scripts.compare_us_validation_snapshot_vs_legacy import diff_issues
-
-        diffs = diff_issues([], [])
-        assert all(len(diffs[k]) == 0 for k in
-                   ("both_same", "severity_diff", "legacy_only", "new_only"))
-
-    def test_explicit_error_path(self, monkeypatch, tmp_path):
-        """新路径出错必须显式失败（抛出/非零退出），不得静默回退。"""
-        import scripts.compare_us_validation_snapshot_vs_legacy as shadow
-
-        monkeypatch.setattr(
-            shadow, "run_legacy_checks", lambda: ([], {"anomalies": 0})
-        )
-
-        def _boom(*a, **kw):
-            raise RuntimeError("selector failed")
-
-        monkeypatch.setattr(shadow.snapshot_validate, "run_us_snapshot_checks", _boom)
-        monkeypatch.setattr(shadow, "OUTPUT_DIR", tmp_path)
-        with pytest.raises(RuntimeError, match="selector failed"):
-            shadow.main()

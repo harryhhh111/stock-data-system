@@ -751,8 +751,8 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["status"] = "projected"
 
     # 4. validate(仅 projection 后;Phase C1 修复 US 校验入口)
-    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结。
-    #  scripts/compare_us_snapshot_vs_old.py 保留为历史工具,不再进日常编排。)
+    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结,
+    #  scripts/compare_us_snapshot_vs_old.py 亦已随旧对象退役删除。)
     # validate 失败 = job 失败:不得把部分成功报成完整成功(snapshot 已投影,
     # 但 job 状态必须反映校验失败)
     if summary["projection"]:

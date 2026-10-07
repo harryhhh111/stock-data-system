@@ -91,16 +91,8 @@ MARKET_CONFIG: dict[str, dict] = {
         "fetch_kwargs_builder": lambda stock_code, fetcher: {"stock_code": stock_code},
     },
     "US": {
-        "fetcher_cls": "core.fetchers.us_financial.USFinancialFetcher",
-        "transformer_cls": "core.transformers.us_gaap.USGAAPTransformer",
-        "tables": ["us_income_statement", "us_balance_sheet", "us_cash_flow_statement"],
-        "conflict_keys": ["stock_code", "report_date", "report_type"],
-        "fetch_methods": ["fetch_income", "fetch_balance", "fetch_cashflow"],
-        "transform_methods": [
-            "transform_income",
-            "transform_balance",
-            "transform_cashflow",
-        ],
+        # US 走 sync_us_market 版本层专用路径（E-1 后旧三表已物理删除），
+        # 本条目仅保留 special 拒绝守卫，通用三大报表配置不再适用于 US。
         "special": "us",
     },
 }

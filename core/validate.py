@@ -284,119 +284,6 @@ def check_anomalies_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
 
 
 # ──────────────────────────────────────────────────────────
-#  1b. 异常值检测 — 美股
-# ──────────────────────────────────────────────────────────
-
-
-def check_anomalies_us(issues: list[ValidationIssue]) -> int:
-    """对美股做异常值检测。返回扫描行数。"""
-    sql = """
-    SELECT
-        ui.stock_code, ui.report_date, ui.report_type,
-        ui.revenues, ui.net_income,
-        ub.total_assets, ub.total_liabilities, ub.total_equity,
-        ub.total_current_assets, ub.cash_and_equivalents,
-        uc.net_cash_from_operations
-    FROM us_income_statement ui
-    JOIN us_balance_sheet ub
-        ON ui.stock_code = ub.stock_code
-        AND ui.report_date = ub.report_date
-        AND ui.report_type = ub.report_type
-    LEFT JOIN us_cash_flow_statement uc
-        ON ui.stock_code = uc.stock_code
-        AND ui.report_date = uc.report_date
-        AND ui.report_type = uc.report_type
-    ORDER BY ui.stock_code, ui.report_date
-    """
-    rows = db.execute(sql, fetch=True) or []
-    scanned = len(rows)
-
-    for r in rows:
-        stock_code, rdate, rtype = r[0], r[1], r[2]
-        revenues = _d(r[3])
-        net_income = _d(r[4])
-        total_assets = _d(r[5])
-        total_liabilities = _d(r[6])
-        total_equity = _d(r[7])
-        current_assets = _d(r[8])
-        cash_equiv = _d(r[9])
-        cfo = _d(r[10])
-
-        rd = str(rdate)
-
-        # 负资产
-        if total_assets is not None and total_assets < 0:
-            issues.append(
-                ValidationIssue(
-                    stock_code=stock_code,
-                    market="US",
-                    report_date=rd,
-                    check_name="negative_total_assets",
-                    severity="error",
-                    field_name="total_assets",
-                    actual_value=str(total_assets),
-                    message=f"Negative total assets: {total_assets:,.0f}",
-                    suggestion="Data entry error or going concern issue",
-                )
-            )
-
-        # 资产负债率 > 200%
-        if total_assets and total_liabilities:
-            ratio = total_liabilities / total_assets
-            if ratio > 2.0:
-                issues.append(
-                    ValidationIssue(
-                        stock_code=stock_code,
-                        market="US",
-                        report_date=rd,
-                        check_name="debt_ratio_extreme",
-                        severity="warning",
-                        field_name="total_liabilities/total_assets",
-                        actual_value=f"{ratio:.2%}",
-                        expected_value="< 200%",
-                        message=f"Debt ratio {ratio:.1%} exceeds 200%",
-                        suggestion="Possibly insolvent",
-                    )
-                )
-
-        # 净利润超过营收
-        if net_income is not None and revenues is not None:
-            if revenues > 0 and net_income > revenues * 1.5:
-                issues.append(
-                    ValidationIssue(
-                        stock_code=stock_code,
-                        market="US",
-                        report_date=rd,
-                        check_name="net_income_exceeds_revenue",
-                        severity="warning",
-                        field_name="net_income/revenues",
-                        actual_value=f"net_income={net_income:,.0f}, revenues={revenues:,.0f}",
-                        message=f"net_income ({net_income:,.0f}) far exceeds revenues ({revenues:,.0f})",
-                        suggestion="Possible large non-recurring gains",
-                    )
-                )
-
-        # CFO 与净利润背离
-        if cfo is not None and net_income is not None:
-            if net_income > 0 and cfo < 0:
-                issues.append(
-                    ValidationIssue(
-                        stock_code=stock_code,
-                        market="US",
-                        report_date=rd,
-                        check_name="cfo_negative_income_positive",
-                        severity="warning",
-                        field_name="net_cash_from_operations/net_income",
-                        actual_value=f"CFO={cfo:,.0f}, net_income={net_income:,.0f}",
-                        message="Positive net income but negative operating cash flow",
-                        suggestion="Earnings quality is questionable",
-                    )
-                )
-
-    return scanned
-
-
-# ──────────────────────────────────────────────────────────
 #  2. 逻辑一致性检查 — A 股 / 港股
 # ──────────────────────────────────────────────────────────
 
@@ -484,266 +371,6 @@ def check_logic_cn_hk(market: str, issues: list[ValidationIssue]) -> int:
                 )
 
     return scanned
-
-
-# ──────────────────────────────────────────────────────────
-#  2b. 逻辑一致性检查 — 美股
-# ──────────────────────────────────────────────────────────
-
-
-def check_logic_us(issues: list[ValidationIssue]) -> int:
-    """美股逻辑一致性检查。返回扫描行数。
-
-    同一 (stock_code, report_date) 可能存在 annual 和 quarterly 两行（来自 10-K
-    和 10-Q 两种 SEC filing），数据字段相同但 NCI 等明细可能不同。验证前先按
-    (stock_code, report_date) 合并，取非 NULL 值，避免因明细缺失误报。
-    """
-    sql = """
-    SELECT
-        stock_code, report_date,
-        MAX(total_assets) AS total_assets,
-        MAX(total_liabilities) AS total_liabilities,
-        MAX(total_equity) AS total_equity,
-        MAX(total_equity_including_nci) AS total_equity_including_nci,
-        MAX(total_current_assets) AS total_current_assets,
-        MAX(cash_and_equivalents) AS cash_and_equivalents
-    FROM us_balance_sheet
-    WHERE total_assets IS NOT NULL
-      AND total_liabilities IS NOT NULL
-      AND total_equity IS NOT NULL
-    GROUP BY stock_code, report_date
-    ORDER BY stock_code, report_date
-    """
-    rows = db.execute(sql, fetch=True) or []
-    scanned = len(rows)
-    tolerance_ratio = 0.01
-
-    for r in rows:
-        stock_code, rdate = r[0], r[1]
-        total_assets = _d(r[2])
-        total_liabilities = _d(r[3])
-        total_equity = _d(r[4])
-        total_equity_nci = _d(r[5])
-        current_assets = _d(r[6])
-        cash_equiv = _d(r[7])
-        rd = str(rdate)
-
-        # 会计等式
-        if total_assets and total_liabilities is not None and total_equity is not None:
-            rhs = total_liabilities + total_equity
-            if total_assets != 0:
-                diff_ratio = abs(total_assets - rhs) / abs(total_assets)
-                if diff_ratio > tolerance_ratio:
-                    # 尝试用 total_equity_including_nci
-                    if total_equity_nci is not None:
-                        rhs2 = total_liabilities + total_equity_nci
-                        diff2 = abs(total_assets - rhs2) / abs(total_assets)
-                        if diff2 <= tolerance_ratio:
-                            continue  # 用含 NCI 的权益就平了，跳过
-                    issues.append(
-                        ValidationIssue(
-                            stock_code=stock_code,
-                            market="US",
-                            report_date=rd,
-                            check_name="balance_equation",
-                            severity="error",
-                            field_name="total_assets vs total_liabilities + total_equity",
-                            actual_value=f"assets={total_assets:,.0f}, liab+equity={rhs:,.0f}, diff={diff_ratio:.2%}",
-                            expected_value="diff < 1%",
-                            message=f"Balance sheet equation off by {diff_ratio:.2%}",
-                            suggestion="Check if NCI (non-controlling interest) is recorded separately",
-                        )
-                    )
-
-        # 流动资产 >= 现金
-        if current_assets is not None and cash_equiv is not None:
-            if cash_equiv > current_assets and current_assets >= 0:
-                issues.append(
-                    ValidationIssue(
-                        stock_code=stock_code,
-                        market="US",
-                        report_date=rd,
-                        check_name="cash_exceeds_current_assets",
-                        severity="error",
-                        field_name="cash_and_equivalents vs total_current_assets",
-                        actual_value=f"cash={cash_equiv:,.0f}, current_assets={current_assets:,.0f}",
-                        expected_value="cash <= current_assets",
-                        message=f"Cash ({cash_equiv:,.0f}) > current assets ({current_assets:,.0f})",
-                        suggestion="Data may be incorrect",
-                    )
-                )
-
-    return scanned
-
-
-# ──────────────────────────────────────────────────────────
-#  3. 跨源比对（当前状态记录）
-# ──────────────────────────────────────────────────────────
-
-
-def check_standalone_cross_validation_us(issues: list[ValidationIssue]) -> int:
-    """Cross-quarter standalone summation validation for US stocks.
-
-    For each fiscal year, computes the running sum of standalone quarterly
-    revenues (Q1, Q1+Q2, Q1+Q2+Q3) and compares against the cumulative
-    revenue reported for Q2/Q3/Q4. Fiscal year boundaries are derived from
-    annual report dates since fiscal_year_end is not populated for US stocks.
-
-    Also performs basic row-level checks: negative standalone or cumulative revenue.
-
-    Returns scanned row count.
-    """
-    # ── Cross-quarter summation check ──
-    # Derive fiscal year end month from each stock's annual report dates,
-    # assign each quarter to a fiscal year, compute running standalone sum,
-    # and flag discrepancies > 1% or $10M.
-    cross_quarter_sql = """
-    WITH stock_fiscal_month AS (
-        -- Derive fiscal year end month from annual report dates
-        SELECT stock_code,
-               EXTRACT(MONTH FROM MAX(report_date))::int AS fy_end_month
-        FROM us_income_statement
-        WHERE report_type = 'annual'
-        GROUP BY stock_code
-    ),
-    quarterly_rows AS (
-        SELECT i.stock_code, i.report_date, i.revenues, i.revenues_standalone, i.frame,
-               m.fy_end_month
-        FROM us_income_statement i
-        JOIN stock_fiscal_month m ON i.stock_code = m.stock_code
-        WHERE i.report_type = 'quarterly'
-          AND i.revenues IS NOT NULL
-    ),
-    fy_assigned AS (
-        SELECT *,
-               CASE
-                 WHEN EXTRACT(MONTH FROM report_date)::int > fy_end_month
-                 THEN EXTRACT(YEAR FROM report_date)::int + 1
-                 ELSE EXTRACT(YEAR FROM report_date)::int
-               END AS fiscal_year
-        FROM quarterly_rows
-    ),
-    quarters_ordered AS (
-        SELECT *,
-               ROW_NUMBER() OVER (
-                   PARTITION BY stock_code, fiscal_year
-                   ORDER BY report_date
-               ) AS quarter_num
-        FROM fy_assigned
-    ),
-    -- Mark fiscal years that have proper cumulative data:
-    -- at least one quarter (Q2+) where cumulative > standalone.
-    -- This filters out old SEC data where only standalone versions exist.
-    fy_has_cumulative AS (
-        SELECT stock_code, fiscal_year,
-               BOOL_OR(revenues_standalone IS NOT NULL
-                       AND revenues > revenues_standalone * 1.001) AS has_cum_data
-        FROM quarters_ordered
-        GROUP BY stock_code, fiscal_year
-    ),
-    running_sums AS (
-        SELECT q.*,
-               SUM(q.revenues_standalone) OVER (
-                   PARTITION BY q.stock_code, q.fiscal_year
-                   ORDER BY q.report_date
-                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-               ) AS running_std_sum,
-               MAX(q.quarter_num) OVER (
-                   PARTITION BY q.stock_code, q.fiscal_year
-               ) AS max_quarter_num,
-               f.has_cum_data
-        FROM quarters_ordered q
-        JOIN fy_has_cumulative f ON q.stock_code = f.stock_code
-                                AND q.fiscal_year = f.fiscal_year
-    )
-    SELECT stock_code, report_date, fiscal_year, quarter_num,
-           revenues AS cumulative_rev,
-           running_std_sum,
-           ABS(revenues - running_std_sum) AS discrepancy,
-           revenues_standalone
-    FROM running_sums
-    WHERE revenues_standalone IS NOT NULL
-      AND has_cum_data = TRUE
-      AND running_std_sum > 0
-      -- Exclude Q4 (last quarter in fiscal year): its cumulative column
-      -- contains standalone value, not full-year cumulative (the annual
-      -- row with the same report_date holds the true full-year value).
-      AND quarter_num < max_quarter_num
-      AND ABS(revenues - running_std_sum) > GREATEST(ABS(revenues) * 0.01, 10000000)
-    ORDER BY stock_code, report_date;
-    """
-    cc_rows = db.execute(cross_quarter_sql, fetch=True) or []
-    scanned = len(cc_rows)
-
-    for r in cc_rows:
-        stock_code = r[0]
-        rdate = str(r[1])
-        fy = r[2]
-        qn = r[3]
-        cum_rev = _d(r[4])
-        running_sum = _d(r[5])
-        discrepancy = _d(r[6])
-
-        issues.append(ValidationIssue(
-            stock_code=stock_code, market="US",
-            report_date=rdate,
-            check_name="standalone_cross_quarter_sum",
-            severity="error",
-            field_name="revenues",
-            actual_value=f"cumulative={cum_rev:,.0f}, sum_standalone={running_sum:,.0f}",
-            expected_value=f"difference < 1% or $10M",
-            message=(
-                f"FY{fy} Q{qn}: cumulative revenue ({cum_rev:,.0f}) != "
-                f"sum of standalone Q1..Q{qn} ({running_sum:,.0f}), "
-                f"diff={discrepancy:,.0f}"
-                + (f" ({discrepancy/cum_rev*100:.1f}%)" if cum_rev and cum_rev != 0 else "")
-            ),
-            suggestion="Check raw SEC data for missing or misclassified quarters.",
-        ))
-
-    # ── Basic row-level checks ──
-    row_sql = """
-    SELECT i.stock_code, i.report_date, i.revenues, i.revenues_standalone
-    FROM us_income_statement i
-    WHERE i.report_type = 'quarterly'
-      AND i.revenues_standalone IS NOT NULL
-    ORDER BY i.stock_code, i.report_date
-    """
-    rows = db.execute(row_sql, fetch=True) or []
-    row_scanned = 0
-
-    for r in rows:
-        stock_code, rdate = r[0], str(r[1])
-        cum_rev, std_rev = _d(r[2]), _d(r[3])
-        row_scanned += 1
-
-        if std_rev is not None and std_rev < 0:
-            issues.append(ValidationIssue(
-                stock_code=stock_code, market="US",
-                report_date=rdate,
-                check_name="negative_standalone_revenue",
-                severity="warning",
-                field_name="revenues_standalone",
-                actual_value=str(std_rev),
-                expected_value="> 0",
-                message=f"Negative standalone revenue: {std_rev:,.0f}",
-                suggestion="Check raw SEC data: negative quarterly revenue is unusual.",
-            ))
-
-        if cum_rev is not None and cum_rev < 0:
-            issues.append(ValidationIssue(
-                stock_code=stock_code, market="US",
-                report_date=rdate,
-                check_name="negative_cumulative_revenue",
-                severity="warning",
-                field_name="revenues",
-                actual_value=str(cum_rev),
-                expected_value="> 0",
-                message=f"Negative cumulative revenue: {cum_rev:,.0f}",
-                suggestion="Check raw SEC data.",
-            ))
-
-    return scanned + row_scanned
 
 
 # ──────────────────────────────────────────────────────────
@@ -1051,53 +678,46 @@ def run_validation(market: str = "", output: str = "") -> ValidationReport:
             logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
 
         elif mkt == "US":
-            # Phase B3b：US_VALIDATION_SNAPSHOT_CURRENT=1 时走版本事实层路径，
-            # 默认关闭走 legacy 宽表路径（延迟 import 避免循环依赖）。
+            # US 校验只走版本事实层路径（US_VALIDATION_SNAPSHOT_CURRENT=1）；
+            # legacy 宽表校验函数已随 E-1 退役（旧表物理删除），开关关闭时
+            # 明确报错，不回退到已删除对象。
             from core.validate_us_snapshot import us_validation_snapshot_enabled
 
-            if us_validation_snapshot_enabled():
-                from core import validate_us_snapshot as vus
-
-                snapshot_stats: dict = {}
-                scanned_map = vus.run_us_snapshot_checks(
-                    report.issues, stats=snapshot_stats
+            if not us_validation_snapshot_enabled():
+                raise RuntimeError(
+                    "US legacy 校验路径已退役（E-1 已删除旧宽表/物化视图）；"
+                    "请启用 US_VALIDATION_SNAPSHOT_CURRENT=1 走版本事实层校验。"
                 )
-                scanned = scanned_map["anomalies"]
-                report.total_rows_scanned += scanned
-                logger.info("  异常值检测(snapshot): 扫描 %d 行", scanned)
+            from core import validate_us_snapshot as vus
 
-                scanned_logic = scanned_map["logic"]
-                report.total_rows_scanned += scanned_logic
-                logger.info("  逻辑一致性(snapshot): 扫描 %d 行", scanned_logic)
+            snapshot_stats: dict = {}
+            scanned_map = vus.run_us_snapshot_checks(
+                report.issues, stats=snapshot_stats
+            )
+            scanned = scanned_map["anomalies"]
+            report.total_rows_scanned += scanned
+            logger.info("  异常值检测(snapshot): 扫描 %d 行", scanned)
 
-                scanned_standalone = scanned_map["standalone"]
-                report.total_rows_scanned += scanned_standalone
-                logger.info(
-                    "  累计/独立交叉验证(snapshot): 扫描 %d 行, 跳过计数: %s",
-                    scanned_standalone,
-                    {
-                        k: snapshot_stats.get(k, 0)
-                        for k in (
-                            "missing_standalone",
-                            "missing_cumulative",
-                            "ambiguous_candidates",
-                            "undeterminable_fiscal_year",
-                            "q4_excluded",
-                        )
-                    },
-                )
-            else:
-                scanned = check_anomalies_us(report.issues)
-                report.total_rows_scanned += scanned
-                logger.info("  异常值检测: 扫描 %d 行", scanned)
+            scanned_logic = scanned_map["logic"]
+            report.total_rows_scanned += scanned_logic
+            logger.info("  逻辑一致性(snapshot): 扫描 %d 行", scanned_logic)
 
-                scanned_logic = check_logic_us(report.issues)
-                report.total_rows_scanned += scanned_logic
-                logger.info("  逻辑一致性: 扫描 %d 行", scanned_logic)
-
-                scanned_standalone = check_standalone_cross_validation_us(report.issues)
-                report.total_rows_scanned += scanned_standalone
-                logger.info("  累计/独立交叉验证: 扫描 %d 行", scanned_standalone)
+            scanned_standalone = scanned_map["standalone"]
+            report.total_rows_scanned += scanned_standalone
+            logger.info(
+                "  累计/独立交叉验证(snapshot): 扫描 %d 行, 跳过计数: %s",
+                scanned_standalone,
+                {
+                    k: snapshot_stats.get(k, 0)
+                    for k in (
+                        "missing_standalone",
+                        "missing_cumulative",
+                        "ambiguous_candidates",
+                        "undeterminable_fiscal_year",
+                        "q4_excluded",
+                    )
+                },
+            )
 
         # 跨源比对
         check_cross_source(mkt, report.issues)
