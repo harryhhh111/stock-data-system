@@ -1,16 +1,22 @@
 # Stock Data System — 文档导航
 
-> 项目分为两大模块：数据层 `core/` 和量化层 `quant/`
+> 当前主线是 US/HK 共用核心、分市场适配的 AI 事件驱动交易研究；价值/因子和模拟盘作为已落地的研究底座持续维护。
 
 ## 快速开始
 
 - **新用户/部署人员** → [../README.md](../README.md)（根目录快速开始）
-- **项目路线图** → [ROADMAP.md](ROADMAP.md)
+- **当前路线图** → [ROADMAP.md](ROADMAP.md)
+- **当前阶段任务（待审核）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
+- **历史路线图与已关闭任务** → [archive/README.md](archive/README.md)
 - **前端部署** → [deployment/](deployment/)（部署文档目录）
 
 ---
 
-## 数据层 `core/` — 数据收集与同步
+## 当前参考文档
+
+这些文档描述仍然有效的系统约束、数据事实或待维护事项；不等于当前主线。
+
+### 数据层 `core/` — 数据收集与同步
 
 面向数据工程师、运维人员。
 
@@ -26,14 +32,14 @@
 | [core/DATA_STATUS_CN.md](core/DATA_STATUS_CN.md) | A 股/港股数据现状（行数、覆盖率） |
 | [core/DATA_STATUS_US.md](core/DATA_STATUS_US.md) | 美股数据现状（行数、覆盖率、修复记录） |
 | [core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md](core/HISTORICAL_MARKET_CAP_BACKFILL_PLAN.md) | 历史市值 PIT 分批回算、审计、回滚与上线方案 |
-| [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案 |
+| [core/US_FINANCIAL_VERSIONING_PLAN.md](core/US_FINANCIAL_VERSIONING_PLAN.md) | 美股财报不可变快照、fact 版本及 latest-restated/PIT 双口径方案（历史实施记录） |
 | [core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md](core/WMT_TOTAL_LIABILITIES_MAPPING_TASK.md) | WMT 扩展 XBRL `total_liabilities` 精确映射小任务 |
 | [core/US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md](core/US_LEGACY_FINANCIAL_RETIREMENT_PLAN.md) | 美股旧财务宽表与物化视图的轻量退役计划 |
 | [archive/us_financial_versioning/README.md](archive/us_financial_versioning/README.md) | 已关闭的 Phase 0–2、Gate B–D、Revenue 审核和 current snapshot 验收归档 |
 
 ---
 
-## 量化层 `quant/` — 选股与分析
+### 量化层 `quant/` — 选股与分析
 
 面向策略研究员、投资者。
 
@@ -44,7 +50,7 @@
 | [quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md](quant/FINANCIAL_METRICS_DATA_PREREQUISITES.md) | ROE/ROIC 等财务指标的数据治理前置条件 |
 | [quant/ROIC_IMPLEMENTATION_PLAN.md](quant/ROIC_IMPLEMENTATION_PLAN.md) | 三市场 ROIC 计算与接入方案 |
 | [quant/ROIC_MVP_RUNBOOK.md](quant/ROIC_MVP_RUNBOOK.md) | 美股 5 只 canary 的 ROIC shadow 开发任务、边界与验收标准 |
-| [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 量化系统总体规划（选股、分析、回测） |
+| [quant/QUANT_SYSTEM_PLAN.md](quant/QUANT_SYSTEM_PLAN.md) | 原价值/量化主线的实施记录；当前优先级以根路线图为准 |
 | [quant/BACKTEST_DESIGN.md](quant/BACKTEST_DESIGN.md) | 因子策略回测系统设计（PIT、组合、基准对比） |
 | [quant/COMPOSITE_STRATEGY_DESIGN.md](quant/COMPOSITE_STRATEGY_DESIGN.md) | 复合策略引擎设计与当前落地状态 |
 | [quant/US_COMPOSITE_STRATEGY_SELECTION.md](quant/US_COMPOSITE_STRATEGY_SELECTION.md) | US 复合策略候选、回测依据、引擎改造与上线门槛 |
@@ -59,7 +65,7 @@
 
 ---
 
-## 部署文档 `deployment/` — 部署指南
+### 部署文档 `deployment/` — 部署指南
 
 面向部署人员、运维人员。
 
@@ -102,10 +108,17 @@ deployment/     ←→   部署相关文档
 
 ---
 
+## 文档整理规则
+
+- [ROADMAP.md](ROADMAP.md) 是唯一的当前优先级入口。
+- 已关闭任务优先放入 `archive/`；保留在 `core/` 或 `quant/` 的已完成任务文档仅作实现/审计记录。
+- 新功能先在当前路线图确认所属阶段，再为该阶段写一份独立、小范围的任务文档并等待审核。
+
 ## 文档更新日志
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-09-03 | 路线图切换为事件驱动交易研究；归档此前价值/量化路线图，并明确历史任务与当前维护待办的边界。 |
 | 2026-08-23 | US PIT 单策略正式基线已生成：12 个成本情景、数据指纹、逐调仓证据及独立复跑校验已归档；后续 US 复合策略评估须引用该 baseline run。 |
 | 2026-08-23 | 新增 US PIT 回测基线固化任务：旧初筛表退役为历史记录，后续复合策略评估须引用可复现 PIT baseline run |
 | 2026-08-21 | 美股旧财务宽表退役 E-1 完成：连续自动编排验证后，经项目所有者授权删除三张旧 US 宽表与三个 MV；COS 归档与隔离恢复证据保留至 2027-02-14 |

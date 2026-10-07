@@ -401,7 +401,7 @@ FCF Yield > 5%
 
 ### 当前开发阶段
 
-Phase 4（日线行情+估值）进行中，Phase 5（价值投资选股系统）进行中。详细进度见 [ROADMAP.md](../ROADMAP.md)。
+Phase 1–5 的数据、估值和价值/因子研究能力已构成当前系统底座；其历史里程碑见 [archive/ROADMAP_VALUE_QUANT_20260423_20260903.md](../archive/ROADMAP_VALUE_QUANT_20260423_20260903.md)。2026-09-03 起的当前产品主线为事件驱动交易研究，进度见 [ROADMAP.md](../ROADMAP.md)。
 
 ### 重要架构变更记录
 
