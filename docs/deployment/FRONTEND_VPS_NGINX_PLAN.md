@@ -10,7 +10,13 @@
 - 验收：公网 5173 200（title "Stock Dashboard"）、SPA fallback 200、资产 200、
   `/api/cn/api/v1/health` 经代理 200；dev server 已停止；
 - 坑：/home/ubuntu 为 750 导致 www-data stat() 500，已 `chmod o+x /home/ubuntu`；
-- dist 更新流程：`cd frontend && npm run build`（无需 reload）。
+- **坑（2026-10-08 修复）：生产构建必须带 API 前缀环境变量**——client.ts 在 DEV 模式用
+  `/api/cn`、`/api/us`（vite proxy），生产模式读 `VITE_CN_API_URL`/`VITE_US_API_URL`，
+  缺省为空串导致浏览器直调裸 `/api/v1/*`，落入 SPA fallback 拿到 HTML（200），
+  前端报"无法连接 API 服务器"。正确构建：
+  `VITE_CN_API_URL=/api/cn VITE_US_API_URL=/api/us npm run build`；
+- nginx 加防御性 `location /api/` → JSON 404，未知 API 路径不再被 SPA fallback 吞成 HTML；
+- dist 更新流程：`cd frontend && VITE_CN_API_URL=/api/cn VITE_US_API_URL=/api/us npm run build`（无需 reload）。
 
 ## 1. 背景与目标
 

@@ -320,6 +320,8 @@ sudo ufw allow 443/tcp
 - 守护：`nginx.service` drop-in `Restart=always`（`/etc/systemd/system/nginx.service.d/restart.conf`）
 - 更新流程：`cd frontend && npm run build`（静态文件即改即生效，无需 reload）
 - 注意：`/home/ubuntu` 需 `o+x` 权限供 www-data 穿越（已配置）
+- **构建必须带环境变量**：`VITE_CN_API_URL=/api/cn VITE_US_API_URL=/api/us npm run build`
+  （生产构建缺省 API 前缀为空串，浏览器会直调裸 `/api/v1/*` 落入 SPA fallback，详见 FRONTEND_VPS_NGINX_PLAN.md 实施记录）
 - 方案与实施记录：`docs/deployment/FRONTEND_VPS_NGINX_PLAN.md`
 
 ---
