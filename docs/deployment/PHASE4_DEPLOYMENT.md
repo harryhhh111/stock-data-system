@@ -309,6 +309,21 @@ sudo ufw allow 443/tcp
 
 ---
 
+## 附录：国内服务器 VPS 直连路径（2026-10-08 起）
+
+除 Cloudflare Pages 正式通道外，国内服务器直接对外提供前端访问：
+`http://134.175.237.24:5173/`。该路径 2026-10-08 前是手工启动的 Vite dev server
+（无守护，2026-09 中旬死亡 15 天后才被发现）；现改为 **Nginx 托管静态 dist + systemd 守护**。
+
+- 站点配置：`/etc/nginx/sites-available/stock-frontend`（5173；SPA fallback；
+  `/api/cn/` → 127.0.0.1:8000 去前缀代理；`/api/us/` → 海外后端）
+- 守护：`nginx.service` drop-in `Restart=always`（`/etc/systemd/system/nginx.service.d/restart.conf`）
+- 更新流程：`cd frontend && npm run build`（静态文件即改即生效，无需 reload）
+- 注意：`/home/ubuntu` 需 `o+x` 权限供 www-data 穿越（已配置）
+- 方案与实施记录：`docs/deployment/FRONTEND_VPS_NGINX_PLAN.md`
+
+---
+
 ## 参考文档
 
 - [Nginx 官方文档](https://nginx.org/en/docs/)
