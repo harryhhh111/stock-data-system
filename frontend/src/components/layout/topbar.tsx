@@ -6,7 +6,8 @@ import { useUiStore } from "@/lib/store/ui-store";
 import { useQueryClient } from "@tanstack/react-query";
 
 const titles: Record<string, string> = {
-  "/dashboard": "仪表板",
+  "/watchlist": "关注股",
+  "/dashboard": "数据运维",
   "/sync": "同步状态",
   "/quality": "数据质量",
   "/screener": "选股筛选",
@@ -39,7 +40,7 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
           </Button>
         )}
         <nav className="flex items-center gap-1.5 text-sm">
-          <Link to="/dashboard" className="text-muted-foreground hover:text-foreground transition-colors">
+          <Link to="/watchlist" className="text-muted-foreground hover:text-foreground transition-colors">
             Stock Data
           </Link>
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />

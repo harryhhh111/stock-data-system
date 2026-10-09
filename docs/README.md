@@ -1,12 +1,15 @@
 # Stock Data System — 文档导航
 
-> 当前主线是 US/HK 共用核心、分市场适配的 AI 事件驱动交易研究；价值/因子和模拟盘作为已落地的研究底座持续维护。
+> 当前主线是研究部门与前台协作的投资工作台；MVP 为关注股看板，后续功能按使用反馈规划。
 
 ## 快速开始
 
 - **新用户/部署人员** → [../README.md](../README.md)（根目录快速开始）
 - **当前路线图** → [ROADMAP.md](ROADMAP.md)
-- **当前阶段任务（待审核）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
+- **当前 MVP 方案与验收记录** → [WATCHLIST_DASHBOARD_MVP_PLAN.md](WATCHLIST_DASHBOARD_MVP_PLAN.md)
+- **关注股看板启用/API 说明** → [deployment/WATCHLIST_MVP.md](deployment/WATCHLIST_MVP.md)
+- **研究索引与卡片方案（暂缓）** → [RESEARCH_WORKBENCH_R1_PLAN.md](RESEARCH_WORKBENCH_R1_PLAN.md)
+- **原事件采集方案（暂缓）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
 - **历史路线图与已关闭任务** → [archive/README.md](archive/README.md)
 - **前端部署** → [deployment/](deployment/)（部署文档目录）
 

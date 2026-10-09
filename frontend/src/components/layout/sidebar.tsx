@@ -5,13 +5,14 @@ import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, Trending
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const nav = [
+  { to: "/watchlist", label: "关注股", icon: Target },
   { to: "/screener", label: "选股筛选", icon: BarChart3 },
   { to: "/strategy/fcf-roe", label: "FCF+ROE 价值", icon: Target },
   { to: "/backtest", label: "策略回测", icon: TrendingUp },
   { to: "/paper", label: "模拟盘", icon: Wallet },
   { to: "/analyzer", label: "个股分析", icon: LineChart },
   { to: "/storyline", label: "故事线", icon: Milestone },
-  { to: "/dashboard", label: "仪表板", icon: LayoutDashboard },
+  { to: "/dashboard", label: "数据运维", icon: LayoutDashboard },
   { to: "/sync", label: "同步状态", icon: RefreshCw },
   { to: "/quality", label: "数据质量", icon: ShieldCheck },
 ];

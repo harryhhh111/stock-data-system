@@ -53,6 +53,26 @@ export async function apiFetch<T>(
 }
 
 // ── Dashboard ──
+export const watchlistApi = {
+  list: () => apiFetch<import('@/lib/types/watchlist').WatchItem[]>('/watchlist', { market: 'US' }),
+  save: (item: Partial<import('@/lib/types/watchlist').WatchItem>, token: string, id?: number) =>
+    apiFetch<{ id: number }>(`/watchlist${id == null ? '' : `/${id}`}`, {
+      market: 'US', method: id == null ? 'POST' : 'PATCH',
+      headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(item),
+    }),
+  remove: (id: number, token: string) => apiFetch(`/watchlist/${id}`, {
+    market: 'US', method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+  }),
+  quotes: async (market: Market, codes: string[]) => {
+    const batches = await Promise.all(Array.from({ length: Math.ceil(codes.length / 200) }, (_, i) =>
+      apiFetch<import('@/lib/types/watchlist').QuoteBatch>('/watchlist/quotes', {
+        market, method: 'POST', body: JSON.stringify({ market, codes: codes.slice(i * 200, (i + 1) * 200) }),
+      })));
+    if (!batches.length) throw new Error('没有待查询股票');
+    return { ...batches[0], quotes: batches.flatMap(batch => batch.quotes) };
+  },
+};
+
 export const dashboardApi = {
   stats: (market?: Market) =>
     apiFetch<import("@/lib/types/dashboard").DashboardStats>("/dashboard/stats", { market }),
