@@ -11,7 +11,7 @@
 
 首版产品以“关注股看板”为中心：用户选择关注公司，查看分组、关注理由、最新日线行情与走势，并打开已有研究。先让看板可用，后续功能根据实际使用反馈逐项规划。
 
-**当前仅实施 MVP：关注股看板**，方案见 [WATCHLIST_DASHBOARD_MVP_PLAN.md](WATCHLIST_DASHBOARD_MVP_PLAN.md)，代码、数据库迁移及针对性验证已完成，待配置编辑凭据、发布及浏览器验收。本机 `.env` 为 `STOCK_MARKETS=US`，首批验证美股；港股继续遵循分市场后端访问边界。
+**当前仅实施 MVP：关注股看板**，方案见 [WATCHLIST_DASHBOARD_MVP_PLAN.md](WATCHLIST_DASHBOARD_MVP_PLAN.md)，代码、数据库迁移及针对性验证已完成，US 后端已上线；前端已推送 main，待确认实际部署网址与浏览器验收。本机 `.env` 为 `STOCK_MARKETS=US`，首批验证美股；港股继续遵循分市场后端访问边界。
 
 研究索引与卡片方案 [R1](RESEARCH_WORKBENCH_R1_PLAN.md) 暂缓；下文 P1–P5 保留为原事件系统方向记录，暂缓执行。看板验收后再确定下一步，不自动开启研究索引或整条事件路线。
 
