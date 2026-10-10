@@ -7,7 +7,7 @@ scheduler.py — 定时任务调度器
 
 任务分两套：
   - 行情同步：A 股 16:37、港股 17:12，同步 daily_quote + 刷 mv_fcf_yield
-  - 财务同步：A 股 17:07、港股 17:37、美股 06:12，同步财务报表 + 刷全部物化视图
+  - 财务同步：A 股 17:07、港股 17:37 刷物化视图；美股 06:12 走版本层编排
 
 用法:
     python -m core.scheduler           # 启动调度器
@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
@@ -55,14 +56,24 @@ def _is_china_trading_day(dt: datetime | None = None) -> bool:
 
 
 def _is_us_trading_day(dt: datetime | None = None) -> bool:
-    """简单美股交易日判断。
+    """简单美股交易日判断（以美东时间为准）。
 
-    美股周末不开市。cron 表达式已配置为 1-6（周一到周六），
-    这里做二次检查。
+    美股周末不开市。cron 表达式已配置为周二~周六（北京时间早晨，
+    对应美东周一~周五收盘后），这里做二次检查。
+
+    注意必须用美东日期判断：北京时间周六早晨 = 美东周五收盘后，
+    若按服务器本地时间判 weekday，周五的行情/财务同步会被误杀。
     """
+    us_tz = ZoneInfo("America/New_York")
     if dt is None:
-        dt = datetime.now()
-    return dt.weekday() < 5
+        us_dt = datetime.now(us_tz)
+    elif dt.tzinfo is None:
+        # scheduler 的 cron 明确固定 Asia/Shanghai，不能依赖测试机或容器的
+        # 系统时区；无时区输入按调度器时间解释后再换算美东。
+        us_dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(us_tz)
+    else:
+        us_dt = dt.astimezone(us_tz)
+    return us_dt.weekday() < 5
 
 
 # ── 通知接口 ────────────────────────────────────────────────
@@ -740,8 +751,8 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["status"] = "projected"
 
     # 4. validate(仅 projection 后;Phase C1 修复 US 校验入口)
-    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结。
-    #  scripts/compare_us_snapshot_vs_old.py 保留为历史工具,不再进日常编排。)
+    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结,
+    #  scripts/compare_us_snapshot_vs_old.py 亦已随旧对象退役删除。)
     # validate 失败 = job 失败:不得把部分成功报成完整成功(snapshot 已投影,
     # 但 job 状态必须反映校验失败)
     if summary["projection"]:
@@ -965,9 +976,13 @@ def dry_run() -> None:
     print(f"  强制全量     : {'是' if config.scheduler.force_sync else '否'}")
     print(f"  通知 URL     : {config.scheduler.notify_url or '（未配置，仅日志）'}")
     print()
+    active_markets = set(config.scheduler.markets)
     print("  物化视图刷新策略:")
-    print("    行情同步后: mv_fcf_yield")
-    print("    财务同步后: mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield")
+    if active_markets - {"US"}:
+        print("    CN_A/CN_HK 行情后: mv_fcf_yield")
+        print("    CN_A/CN_HK 财务后: mv_financial_indicator → mv_indicator_ttm → mv_fcf_yield")
+    if "US" in active_markets:
+        print("    US: 不刷新已退役的旧 MV；版本层 sync → projection → compare → validate")
     print()
     print("  注: cron 触发时还会二次检查是否为交易日，非交易日自动跳过")
     print("=" * 70)

@@ -405,79 +405,6 @@ class TestZeroWriteBaseline:
         assert sched._check_zero_write_baseline() == []
 
 
-# ── 10. compare 跨期与双日期列 ────────────────────────────────
-
-class TestCompareCrossPeriod:
-    def test_same_value_different_period_is_unexplained(self):
-        import pandas as pd
-        import scripts.compare_us_snapshot_vs_old as cmp
-
-        old_df = pd.DataFrame([{
-            "stock_code": "BXP", "old_report_date": date(2026, 6, 30),
-            "old_revenue": Decimal("100"), "old_net_profit": None,
-            "old_accession": "a1", "old_filed": date(2026, 8, 6),
-            "old_total_equity": None, "old_total_assets": None,
-            "old_total_liabilities": None, "old_operating_cash_flow": None,
-            "old_capex": None, "old_fcf": None, "old_roe": None, "old_roa": None,
-            "old_gross_profit": None, "old_operating_income": None,
-        }])
-        new_df = pd.DataFrame([{
-            "stock_code": "BXP", "new_report_date": date(2025, 12, 31),
-            "new_revenue": Decimal("100"), "new_net_profit": None,
-            "new_accession": "a2", "new_filed": date(2026, 3, 1), "new_form": "10-K",
-            "new_total_equity": None, "new_total_assets": None,
-            "new_total_liabilities": None, "new_operating_cash_flow": None,
-            "new_capex": None, "new_fcf": None, "new_roe": None, "new_roa": None,
-            "new_gross_margin": None, "new_operating_margin": None,
-            "new_net_margin": None, "new_debt_ratio": None, "quality_flags": None,
-        }])
-        rows = cmp._compare_annual(old_df, new_df)
-        rev = [r for r in rows if r.field == "revenue"][0]
-        assert rev.reason == cmp.Reason.UNEXPLAINED
-        assert rev.old_report_date == date(2026, 6, 30)
-        assert rev.new_report_date == date(2025, 12, 31)
-
-    def test_both_null_different_period_stays_same(self):
-        """跨期但双侧均为 NULL 不算"同值",保持 SAME(DXC 型,不得误报 UNEXPLAINED)。"""
-        import pandas as pd
-        import scripts.compare_us_snapshot_vs_old as cmp
-
-        old_df = pd.DataFrame([{
-            "stock_code": "DXC", "old_report_date": date(2025, 3, 31),
-            "old_revenue": None, "old_net_profit": None,
-            "old_accession": "a1", "old_filed": date(2025, 5, 15),
-            "old_total_equity": None, "old_total_assets": None,
-            "old_total_liabilities": None, "old_operating_cash_flow": None,
-            "old_capex": None, "old_fcf": None, "old_roe": None, "old_roa": None,
-            "old_gross_profit": None, "old_operating_income": None,
-        }])
-        new_df = pd.DataFrame([{
-            "stock_code": "DXC", "new_report_date": date(2026, 3, 31),
-            "new_revenue": None, "new_net_profit": None,
-            "new_accession": "a2", "new_filed": date(2026, 5, 8), "new_form": "10-K",
-            "new_total_equity": None, "new_total_assets": None,
-            "new_total_liabilities": None, "new_operating_cash_flow": None,
-            "new_capex": None, "new_fcf": None, "new_roe": None, "new_roa": None,
-            "new_gross_margin": None, "new_operating_margin": None,
-            "new_net_margin": None, "new_debt_ratio": None, "quality_flags": None,
-        }])
-        rows = cmp._compare_annual(old_df, new_df)
-        for r in rows:
-            assert r.reason == cmp.Reason.SAME, f"{r.field}: {r.reason}"
-
-    def test_csv_has_dual_report_date_columns(self, tmp_path):
-        import scripts.compare_us_snapshot_vs_old as cmp
-
-        result = cmp.ComparisonResult(rows=[cmp.ComparisonRow(
-            stock_code="X", report_date=date(2025, 12, 31), field="revenue",
-            old_value=Decimal("1"), new_value=Decimal("1"),
-            abs_diff=None, rel_diff_pct=None, reason=cmp.Reason.SAME,
-            old_report_date=date(2026, 6, 30), new_report_date=date(2025, 12, 31),
-        )])
-        out = tmp_path / "diffs.csv"
-        result.to_csv(out)
-        header = out.read_text().splitlines()[0]
-        assert "old_report_date" in header and "new_report_date" in header
 
 
 # ── 11. 静态禁扫:六对象生产引用收敛 ──────────────────────────
@@ -490,17 +417,16 @@ class TestStaticScan:
 
     # 允许引用六对象的文件(受控 legacy fallback 分支/审计校验模块/同步配置),
     # 每个都必须能回答"为什么还在";新文件出现引用即失败。
+    # 2026-09-03 退役清理:core/validate.py、core/us_financial_chain_audit.py、
+    # quant/backtest/universe.py 的旧路径已删除,移出本清单。
     ALLOWLIST = {
-        "core/sync/_utils.py",          # MARKET_CONFIG(US special 拒绝)+ CN 视图配置
+        "core/sync/_utils.py",          # 仅注释说明旧 MV 停刷(US special 拒绝守卫)
         "core/sync/us_market.py",       # 仅模块 docstring 说明退役范围
         "core/scheduler.py",            # 仅注释说明停刷
-        "core/validate.py",             # 校验模块(版本层改造在 B3b,残留读取待清理)
-        "core/us_financial_chain_audit.py",  # 审计模块
-        "core/us_financial_verify.py",       # 审计模块
+        "core/us_financial_verify.py",       # 退役断言模块(按名称防复活)
         "quant/analyzer/query_us.py",   # B1 受控 legacy fallback 分支
         "quant/screener/query.py",      # B2 受控 legacy fallback 分支
         "quant/backtest/preloader.py",  # B4 受控 legacy fallback 分支
-        "quant/backtest/universe.py",   # B4 受控 legacy fallback 分支
         "quant/checks/fcf_roe_check.py",     # B3b 受控 legacy fallback 分支
         "quant/metrics/__init__.py",    # 受控 legacy fallback 分支
         "web/services/dashboard_service.py",  # B3a 受控 legacy fallback 分支

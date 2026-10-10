@@ -1,6 +1,6 @@
 # Stock Data Scheduler — 定时调度设计
 
-> 最后更新：2026-08-19
+> 最后更新：2026-09-03
 >
 > 当前 US 生产事实：`stock-scheduler.service` 是唯一常驻入口；Phase C 后美股财务
 > 同步只写版本层，随后单次 projection → compare → validate，**不刷新**三个旧 US MV。
@@ -46,6 +46,8 @@ systemd (stock-scheduler.service)
 
 > cron 时间为 **Asia/Shanghai (GMT+8)**。所有 cron 可通过环境变量覆盖，见下方配置表。
 > 美股交易日为周一至周五（美东），北京时间周二至周六凌晨。财务同步周一到周六执行（周一检查是否有新 SEC filing），行情同步周二到周六执行。
+> US 的交易日二次检查也固定按 `America/New_York` 换算：北京时间周六清晨仍是美东周五，
+> 必须执行同步；不得按服务器本地 weekday 误跳过。
 
 ## 按市场过滤
 

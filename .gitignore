@@ -55,4 +55,7 @@ data/raw_snapshots/*.json
 
 # Archive & old files
 archive/
+!docs/archive/
+!docs/archive/README.md
+!docs/archive/ROADMAP_VALUE_QUANT_20260423_20260903.md
 sync.py.old

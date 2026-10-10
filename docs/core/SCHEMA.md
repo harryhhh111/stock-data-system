@@ -12,6 +12,16 @@
 
 ## 数据分层
 
+### 关注池元数据（2026-10-09）
+
+增量迁移 `scripts/watchlist_tables.sql` 新增独立表 `watchlist_item`。
+`id` 为 BIGSERIAL 主键，`(market, stock_code)` 唯一，`market` 限定 US/CN_HK/CN_A。
+`stock_name`、`group_name`、`note`、`research_url` 为字符串；`sort_order` 默认 0；
+`created_at` / `updated_at` 为 TIMESTAMPTZ。
+无本机 stock_info 外键，允许 US 元数据实例保存港股关注项；报价仍访问各市场实例，不跨库。
+只保存用户选择，不代表持仓。管理员凭据控制写入，读取沿用现有公开 API 边界。
+
+
 | Layer | 用途 | 更新方式 |
 |-------|------|----------|
 | Layer 0: raw_snapshot | API 原始响应存档 | Append-only |

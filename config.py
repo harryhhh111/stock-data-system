@@ -153,7 +153,8 @@ class SECConfig:
     ticker_url: str = "https://www.sec.gov/files/company_tickers.json"
     sp500_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     nasdaq100_url: str = "https://en.wikipedia.org/wiki/NASDAQ-100"
-    russell1000_url: str = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+    # 成分股列表已移至独立条目（Russell_1000_Index 正文不再含成分表，2026-09 起）
+    russell1000_url: str = "https://en.wikipedia.org/wiki/List_of_Russell_1000_companies"
     russell1000_stale_cache_max_days: int = field(
         default_factory=lambda: _env("STOCK_RUSSELL1000_STALE_CACHE_MAX_DAYS", "30", cast=int)
     )

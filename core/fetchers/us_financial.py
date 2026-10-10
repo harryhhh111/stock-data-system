@@ -64,6 +64,12 @@ class FetchContext:
 CACHE_DIR = config.DATA_DIR / "sec_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+# Russell 1000 内置策展快照（live 源与缓存全部不可用时的终端兜底；
+# 每年 6 月重构 / 季度 IPO 增补后需人工更新）
+RUSSELL1000_BUILTIN_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "russell1000_tickers.json"
+)
+
 # User-Agent 必须设置，否则 SEC 拒绝请求
 HEADERS = {
     "User-Agent": config.sec.user_agent,
@@ -378,10 +384,17 @@ class USFinancialFetcher(BaseFetcher):
     def fetch_russell1000_constituents(self) -> list[str]:
         """获取 Russell 1000 成分股 ticker 列表。
 
-        优先 Wikipedia 页面或 7 天内缓存。页面失效时可受控回退到本地
-        stale cache，但仅限 ``russell1000_stale_cache_max_days``（默认 30 天）
-        内的、可解析且至少 800 个 ticker 的快照。回退状态由
-        ``get_index_source_status`` 暴露给 scheduler；超过上限仍明确失败。
+        来源优先级：
+        1. 7 天内本地缓存
+        2. Wikipedia live 页面（名单须通过健全性校验：数量在
+           [900, 1100] 且与内置快照重叠 ≥85%，防止页面被改坏后
+           静默收缩同步范围——2026-08 列表页迁移时曾丢失成员）
+        3. 30 天内有界 stale cache（``russell1000_stale_cache_max_days``）
+        4. 内置策展快照 ``data/russell1000_tickers.json``
+           （NASDAQ-100 内置 fallback 同款模式； Russell 每年 6 月重构、
+           每季度 IPO 增补后需人工更新该文件）
+
+        回退状态由 ``get_index_source_status`` 暴露给 scheduler。
 
         Returns:
             ticker 字符串列表，如 ["AAPL", "MSFT", ...]
@@ -398,6 +411,11 @@ class USFinancialFetcher(BaseFetcher):
             return tickers
 
         logger.info("获取 Russell 1000 成分股...")
+
+        try:
+            builtin = self._load_russell1000_builtin()
+        except Exception:
+            builtin = []
 
         try:
             resp = requests.get(config.sec.russell1000_url, headers=HEADERS, timeout=30)
@@ -419,17 +437,28 @@ class USFinancialFetcher(BaseFetcher):
                     .str.replace(r"\.", "-", regex=True)
                     .tolist()
                 )
-                if len(tickers) >= 800:  # 合理的 Russell 1000 数量
-                    tickers = list(dict.fromkeys(tickers))
-                    self._save_cache(cache_file, json.dumps(tickers))
+                if len(tickers) < 800:  # 合理的 Russell 1000 数量
+                    continue
+                tickers = list(dict.fromkeys(tickers))
+                ok, reason = self._validate_russell1000_live(tickers, builtin)
+                if not ok:
+                    logger.warning("Wikipedia Russell 1000 名单未通过校验(%s)，拒绝使用", reason)
                     self._index_source_status["RUSSELL1000"] = {
-                        "mode": "live_wikipedia",
-                        "cache_age_days": 0.0,
+                        "mode": "live_rejected",
+                        "reason": reason,
                         "ticker_count": len(tickers),
                     }
-                    logger.info("Russell 1000 成分股获取完成 (Wikipedia): %d 只", len(tickers))
-                    return tickers
-            logger.warning("Wikipedia 表格解析未找到有效数据")
+                    break
+                self._save_cache(cache_file, json.dumps(tickers))
+                self._index_source_status["RUSSELL1000"] = {
+                    "mode": "live_wikipedia",
+                    "cache_age_days": 0.0,
+                    "ticker_count": len(tickers),
+                }
+                logger.info("Russell 1000 成分股获取完成 (Wikipedia): %d 只", len(tickers))
+                return tickers
+            else:
+                logger.warning("Wikipedia 表格解析未找到有效数据")
         except Exception as e:
             logger.error("获取 Russell 1000 失败: %s", e)
 
@@ -463,9 +492,30 @@ class USFinancialFetcher(BaseFetcher):
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
+        # 终端兜底：内置策展快照。live 源与缓存全部不可用时，
+        # 以人工维护的名单维持同步，状态显式暴露给 scheduler。
+        try:
+            tickers = self._load_russell1000_builtin()
+            self._index_source_status["RUSSELL1000"] = {
+                "mode": "builtin_snapshot",
+                "snapshot_age_days": self._cache_age_days(RUSSELL1000_BUILTIN_PATH),
+                "ticker_count": len(tickers),
+            }
+            logger.warning(
+                "Russell 1000 live source 与缓存均不可用，使用内置策展快照(%d 只；"
+                "请注意按季度维护 data/russell1000_tickers.json)",
+                len(tickers),
+            )
+            return tickers
+        except Exception as exc:
+            self._index_source_status["RUSSELL1000"] = {
+                "mode": "no_usable_source",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
         raise RuntimeError(
             "Russell 1000 live source unavailable and no usable stale cache within "
-            f"{config.sec.russell1000_stale_cache_max_days} days"
+            f"{config.sec.russell1000_stale_cache_max_days} days and no builtin snapshot"
         )
 
     @staticmethod
@@ -483,6 +533,32 @@ class USFinancialFetcher(BaseFetcher):
         if len(tickers) < 800:
             raise ValueError(f"Russell 1000 cache ticker count invalid: {len(tickers)}")
         return tickers
+
+    @classmethod
+    def _load_russell1000_builtin(cls) -> list[str]:
+        """加载内置策展快照（与缓存同一格式与下限校验）。"""
+        return cls._load_russell1000_cache(RUSSELL1000_BUILTIN_PATH)
+
+    @staticmethod
+    def _validate_russell1000_live(
+        tickers: list[str], builtin: list[str]
+    ) -> tuple[bool, str]:
+        """校验 live Wikipedia 名单是否可信。
+
+        2026-08 列表页迁移事件表明该名单可能被改坏（成员大面积丢失），
+        此处以数量区间 + 与内置快照的最小重叠率做 sanity check；
+        校验失败拒绝使用 live 名单，走缓存/快照兜底。
+        """
+        n = len(tickers)
+        if not 900 <= n <= 1100:
+            return False, f"ticker count {n} outside [900, 1100]"
+        if builtin:
+            overlap = len(set(tickers) & set(builtin)) / len(builtin)
+            if overlap < 0.85:
+                return False, (
+                    f"overlap with builtin snapshot only {overlap:.1%} (< 85%)"
+                )
+        return True, ""
 
     def get_index_source_status(self, index_name: str) -> dict[str, Any]:
         """返回最近一次 index constituent 获取的来源状态副本。"""

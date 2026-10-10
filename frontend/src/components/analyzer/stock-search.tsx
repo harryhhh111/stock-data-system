@@ -11,9 +11,10 @@ import type { StockSearchResult } from "@/lib/types/analyzer";
 interface Props {
   market: Market | "all";
   onSelect: (stock: StockSearchResult) => void;
+  inline?: boolean;
 }
 
-export function StockSearch({ market, onSelect }: Props) {
+export function StockSearch({ market, onSelect, inline = false }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -82,6 +83,7 @@ export function StockSearch({ market, onSelect }: Props) {
     <div className="relative">
       {/* Trigger */}
       <button
+        type="button"
         className="flex items-center gap-2 w-full max-w-md px-3 py-2 rounded-md border bg-card text-sm text-muted-foreground hover:border-ring transition-colors"
         onClick={() => setOpen(true)}
       >
@@ -94,8 +96,8 @@ export function StockSearch({ market, onSelect }: Props) {
 
       {/* Command palette overlay */}
       {open && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setOpen(false)} />
+        <div className={inline ? "relative mt-2" : "fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"}>
+          {!inline && <div className="fixed inset-0 bg-black/50" onClick={() => setOpen(false)} />}
           <Command
             className="relative z-50 w-full max-w-lg rounded-lg border bg-popover shadow-lg overflow-hidden"
             shouldFilter={false}
@@ -110,7 +112,7 @@ export function StockSearch({ market, onSelect }: Props) {
                 autoFocus
               />
               {query && (
-                <button className="text-muted-foreground hover:text-foreground" onClick={() => setQuery("")}>
+                <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setQuery("")}>
                   <X className="h-4 w-4" />
                 </button>
               )}
@@ -122,6 +124,7 @@ export function StockSearch({ market, onSelect }: Props) {
                   <div className="flex items-center justify-between px-2 py-1">
                     <span className="text-xs text-muted-foreground" />
                     <button
+                      type="button"
                       className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
                       onClick={(e) => { e.stopPropagation(); clearHistory(); }}
                     >
@@ -170,7 +173,10 @@ export function StockSearch({ market, onSelect }: Props) {
               )}
 
               {/* Empty state */}
-              {debouncedQuery.length >= 2 && results && results.length === 0 && (
+              {searchResults.some(result => result.isError) && (
+                <p role="alert" className="p-3 text-sm text-destructive">股票搜索服务不可用，请检查对应市场的连接后重试。</p>
+              )}
+              {debouncedQuery.length >= 2 && !searchResults.some(result => result.isFetching || result.isError) && results && results.length === 0 && (
                 <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
                   未找到匹配的股票
                 </Command.Empty>

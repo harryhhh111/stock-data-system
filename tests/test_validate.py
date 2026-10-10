@@ -198,52 +198,6 @@ class TestCheckAnomaliesCNHK:
         assert len(issues) == 0  # NULL 不应触发异常
 
 
-# ── Anomaly Detection: US ──────────────────────────────
-
-class TestCheckAnomaliesUS:
-    def _mock_row(self, **overrides):
-        defaults = (
-            "AAPL", date(2024, 9, 30), "quarterly",
-            Decimal("94928000000"),   # revenues
-            Decimal("23636000000"),   # net_income
-            Decimal("350000000000"),  # total_assets
-            Decimal("290000000000"),  # total_liabilities
-            Decimal("60000000000"),   # total_equity
-            Decimal("100000000000"),  # total_current_assets
-            Decimal("30000000000"),   # cash_and_equivalents
-            Decimal("25000000000"),   # net_cash_from_operations
-        )
-        row = list(defaults)
-        keys = [
-            "stock_code", "report_date", "report_type",
-            "revenues", "net_income",
-            "total_assets", "total_liabilities", "total_equity",
-            "total_current_assets", "cash_and_equivalents",
-            "net_cash_from_operations",
-        ]
-        for k, v in overrides.items():
-            if k in keys:
-                idx = keys.index(k)
-                row[idx] = v
-        return tuple(row)
-
-    @patch("core.validate.db.execute")
-    def test_negative_assets_us(self, mock_exec):
-        from core.validate import check_anomalies_us
-        mock_exec.return_value = [self._mock_row(total_assets=Decimal("-1000"))]
-        issues = []
-        check_anomalies_us(issues)
-        assert any(i.check_name == "negative_total_assets" for i in issues)
-
-    @patch("core.validate.db.execute")
-    def test_normal_us_data(self, mock_exec):
-        from core.validate import check_anomalies_us
-        mock_exec.return_value = [self._mock_row()]
-        issues = []
-        check_anomalies_us(issues)
-        assert len(issues) == 0
-
-
 # ── Logic Consistency: CN/HK ───────────────────────────
 
 class TestCheckLogicCNHK:
@@ -318,54 +272,6 @@ class TestCheckLogicCNHK:
         cash_issues = [i for i in issues if i.check_name == "cash_exceeds_current_assets"]
         assert len(cash_issues) == 1
         assert cash_issues[0].severity == "error"
-
-
-# ── Logic Consistency: US ──────────────────────────────
-
-class TestCheckLogicUS:
-    def _mock_row(self, **overrides):
-        defaults = (
-            "AAPL", date(2024, 9, 30),
-            Decimal("350000000000"),   # total_assets
-            Decimal("290000000000"),   # total_liabilities
-            Decimal("60000000000"),    # total_equity
-            Decimal("62000000000"),    # total_equity_including_nci
-            Decimal("100000000000"),   # total_current_assets
-            Decimal("30000000000"),    # cash_and_equivalents
-        )
-        row = list(defaults)
-        keys = [
-            "stock_code", "report_date",
-            "total_assets", "total_liabilities", "total_equity",
-            "total_equity_including_nci", "total_current_assets",
-            "cash_and_equivalents",
-        ]
-        for k, v in overrides.items():
-            if k in keys:
-                idx = keys.index(k)
-                row[idx] = v
-        return tuple(row)
-
-    @patch("core.validate.db.execute")
-    def test_balance_equation_us_ok(self, mock_exec):
-        from core.validate import check_logic_us
-        # 350 = 290 + 60 ✓
-        mock_exec.return_value = [self._mock_row()]
-        issues = []
-        check_logic_us(issues)
-        assert not any(i.check_name == "balance_equation" for i in issues)
-
-    @patch("core.validate.db.execute")
-    def test_balance_equation_us_nci_fix(self, mock_exec):
-        from core.validate import check_logic_us
-        # 350 = 290 + 58, but 350 = 290 + 60(NCI) → should pass
-        mock_exec.return_value = [self._mock_row(
-            total_equity=Decimal("58000000000"),
-            total_equity_including_nci=Decimal("60000000000"),
-        )]
-        issues = []
-        check_logic_us(issues)
-        assert not any(i.check_name == "balance_equation" for i in issues)
 
 
 # ── Cross Source ────────────────────────────────────────
@@ -467,23 +373,19 @@ class TestSaveResults:
 class TestRunValidation:
     @patch("core.validate.save_results")
     @patch("core.validate.check_market_cap_jump")
-    @patch("core.validate.check_standalone_cross_validation_us")
     @patch("core.validate.check_cross_source")
-    @patch("core.validate.check_logic_us")
     @patch("core.validate.check_logic_cn_hk")
-    @patch("core.validate.check_anomalies_us")
     @patch("core.validate.check_anomalies_cn_hk")
     @patch("core.validate.ensure_table")
-    def test_run_validation_market_a(self, mock_ensure, mock_anomalies, mock_anomalies_us,
-                                      mock_logic, mock_logic_us, mock_cross,
-                                      mock_standalone_us, mock_mcap_jump, mock_save):
+    def test_run_validation_market_a(self, mock_ensure, mock_anomalies,
+                                     mock_logic, mock_cross,
+                                     mock_mcap_jump, mock_save):
         from core.validate import run_validation, ValidationIssue
 
         mock_anomalies.return_value = 100
         mock_logic.return_value = 100
         mock_cross.return_value = 0
         mock_save.return_value = 0
-        mock_standalone_us.return_value = 0
         mock_mcap_jump.return_value = 0
 
         report = run_validation(market="A")
@@ -491,42 +393,23 @@ class TestRunValidation:
         assert report.total_rows_scanned == 200  # 100 + 100
         mock_anomalies.assert_called_once()
         mock_logic.assert_called_once()
-        mock_anomalies_us.assert_not_called()
-        mock_standalone_us.assert_not_called()
         mock_mcap_jump.assert_called_once()
         assert mock_mcap_jump.call_args[1]["market"] == "A"
 
     @patch("core.validate.save_results")
     @patch("core.validate.check_market_cap_jump")
     @patch("core.validate.check_cross_source")
-    @patch("core.validate.check_standalone_cross_validation_us")
-    @patch("core.validate.check_logic_us")
-    @patch("core.validate.check_anomalies_us")
     @patch("core.validate.ensure_table")
-    def test_run_validation_market_us(self, mock_ensure, mock_anomalies_us, mock_logic_us,
-                                       mock_standalone_us, mock_cross, mock_mcap_jump, mock_save,
-                                       monkeypatch):
+    def test_run_validation_market_us_legacy_flag_off_raises(
+            self, mock_ensure, mock_cross, mock_mcap_jump, mock_save, monkeypatch):
+        """US legacy 校验已随 E-1 退役：开关关闭时必须明确报错，不得回退。"""
         from core.validate import run_validation
 
-        # Phase B3b：与 US_VALIDATION_SNAPSHOT_CURRENT 环境隔离，固定走 legacy 分支
         monkeypatch.delenv("US_VALIDATION_SNAPSHOT_CURRENT", raising=False)
 
-        mock_anomalies_us.return_value = 50
-        mock_logic_us.return_value = 50
-        mock_cross.return_value = 0
-        mock_save.return_value = 0
-        mock_standalone_us.return_value = 0
-        mock_mcap_jump.return_value = 0
-
-        report = run_validation(market="US")
-        assert report.market == "US"
-        assert report.total_rows_scanned == 100  # 50 + 50
-        mock_anomalies_us.assert_called_once()
-        mock_logic_us.assert_called_once()
-        mock_standalone_us.assert_called_once()
-        mock_mcap_jump.assert_called_once()
-        assert mock_mcap_jump.call_args[1]["market"] == "US"
-
+        import pytest
+        with pytest.raises(RuntimeError, match="legacy 校验路径已退役"):
+            run_validation(market="US")
 
 # ── Market Cap Jump ──────────────────────────────────────
 
