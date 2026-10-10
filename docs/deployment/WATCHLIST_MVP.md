@@ -22,7 +22,14 @@
 | PATCH | `/watchlist/{id}` | 替换分组、理由、研究链接；不改变证券身份 |
 | DELETE | `/watchlist/{id}` | 移除关注项，不删除行情和研究 |
 | POST | `/watchlist/quotes` | 按市场读取日线；body 为 market、codes（最多 200 个），前端自动拆批 |
-| POST | `/watchlist/suggest` | AI 起草分组与关注理由；需管理员凭据；依赖本机 mmx CLI 与研究文档仓库 |
+| POST | `/watchlist/suggest` | AI 起草分组与关注理由；需登录态；依赖本机 mmx CLI 与研究文档仓库 |
+| POST | `/watchlist/login` | body `{token}`；验证管理凭据并签发 HttpOnly 会话 Cookie（30 天） |
+| POST | `/watchlist/logout` | 清除会话 Cookie |
+| GET | `/watchlist/session` | 查询当前会话是否已登录 |
+
+## 登录方式
+
+页面右上角「管理员登录」输入一次凭据即可，30 天内免输；会话为 HttpOnly Cookie（JS 不可读），写操作同时兼容 `Authorization: Bearer`（脚本/API 调用用）。注意：当前前端为 HTTP 明文访问，Cookie 与凭据在传输中均可被同网络监听者看到——生产化需上 HTTPS 后再放宽访问面。
 
 ## AI 生成建议依赖
 

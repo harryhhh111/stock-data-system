@@ -96,7 +96,7 @@ def test_read_and_write_auth(client, monkeypatch):
 def test_unicode_wrong_token_is_rejected():
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
-        watchlist.require_admin('Bearer 中文')
+        watchlist.require_admin('Bearer 中文', None)
     assert exc.value.status_code in (401, 503)
 
 
@@ -195,3 +195,25 @@ def test_suggest_failure_maps_to_503(client, monkeypatch, tmp_path):
     monkeypatch.setattr(service, '_run_mmx', MagicMock(side_effect=RuntimeError('mmx 调用失败: timeout')))
     assert client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD,
                        headers=SUGGEST_HEADERS).status_code == 503
+
+
+def test_login_session_logout_cookie_flow(client, monkeypatch):
+    assert client.get('/api/v1/watchlist/session').json()['data']['authenticated'] is False
+    assert client.post('/api/v1/watchlist/login', json={'token': 'wrong'}).status_code == 401
+
+    resp = client.post('/api/v1/watchlist/login', json={'token': 'test-token-for-watchlist-123456'})
+    assert resp.status_code == 200
+    assert client.get('/api/v1/watchlist/session').json()['data']['authenticated'] is True
+
+    saver = MagicMock(return_value={'id': 1})
+    monkeypatch.setattr(service, 'save_item', saver)
+    assert client.post('/api/v1/watchlist', json=SUGGEST_PAYLOAD).status_code == 200  # 免 header
+    assert saver.called
+
+    client.cookies.set('watchlist_admin', '999999999.forged-signature')
+    assert client.post('/api/v1/watchlist', json=SUGGEST_PAYLOAD).status_code == 401
+
+    assert client.post('/api/v1/watchlist/login', json={'token': 'test-token-for-watchlist-123456'}).status_code == 200
+    assert client.post('/api/v1/watchlist/logout').status_code == 200
+    assert client.get('/api/v1/watchlist/session').json()['data']['authenticated'] is False
+    assert client.post('/api/v1/watchlist', json=SUGGEST_PAYLOAD).status_code == 401

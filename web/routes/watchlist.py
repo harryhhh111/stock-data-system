@@ -1,11 +1,14 @@
 """Read APIs plus fail-closed admin-authenticated watchlist writes."""
+import hashlib
+import hmac
 import logging
 import os
 import secrets
+import time
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 
 from web import ok
@@ -15,14 +18,50 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 Market = Literal['US', 'CN_HK', 'CN_A']
 
+SESSION_COOKIE = 'watchlist_admin'
+SESSION_MAX_AGE = 30 * 86400
 
-def require_admin(authorization: str | None = Header(default=None)):
-    token = os.environ.get('STOCK_WATCHLIST_ADMIN_TOKEN', '')
+
+def _admin_token() -> str:
+    return os.environ.get('STOCK_WATCHLIST_ADMIN_TOKEN', '')
+
+
+def _session_value(token: str) -> str:
+    ts = str(int(time.time()))
+    sig = hmac.new(token.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return f'{ts}.{sig}'
+
+
+def _session_valid(value: str | None, token: str) -> bool:
+    if not value or '.' not in value:
+        return False
+    ts, sig = value.rsplit('.', 1)
+    try:
+        age = int(time.time()) - int(ts)
+    except ValueError:
+        return False
+    if age < 0 or age > SESSION_MAX_AGE:
+        return False
+    expect = hmac.new(token.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expect)
+
+
+def require_admin(authorization: str | None = Header(default=None),
+                  watchlist_admin: str | None = Cookie(default=None)):
+    token = _admin_token()
     if len(token) < 24:
         raise HTTPException(503, '请配置至少24字符的 STOCK_WATCHLIST_ADMIN_TOKEN 后启用关注列表编辑')
     supplied = authorization.removeprefix('Bearer ') if authorization else ''
-    if not authorization or not authorization.startswith('Bearer ') or not secrets.compare_digest(supplied.encode(), token.encode()):
-        raise HTTPException(401, '编辑凭据无效')
+    if authorization and authorization.startswith('Bearer ') \
+            and secrets.compare_digest(supplied.encode(), token.encode()):
+        return
+    if _session_valid(watchlist_admin, token):
+        return
+    raise HTTPException(401, '未登录或凭据无效')
+
+
+class LoginRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
 
 
 class ItemDetails(BaseModel):
@@ -119,3 +158,28 @@ def quotes(request: QuoteRequest):
 @router.post('/watchlist/suggest', dependencies=[Depends(require_admin)])
 def suggest(request: SuggestRequest):
     return call(service.suggest_fields, request.market, request.stock_code, request.stock_name)
+
+
+@router.post('/watchlist/login')
+def login(payload: LoginRequest, response: Response):
+    token = _admin_token()
+    if len(token) < 24:
+        raise HTTPException(503, '请配置至少24字符的 STOCK_WATCHLIST_ADMIN_TOKEN 后启用关注列表编辑')
+    if not secrets.compare_digest(payload.token.encode(), token.encode()):
+        raise HTTPException(401, '凭据无效')
+    response.set_cookie(SESSION_COOKIE, _session_value(token), max_age=SESSION_MAX_AGE,
+                        httponly=True, samesite='lax', path='/')
+    return ok({'authenticated': True})
+
+
+@router.post('/watchlist/logout')
+def logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path='/')
+    return ok({'authenticated': False})
+
+
+@router.get('/watchlist/session')
+def session(watchlist_admin: str | None = Cookie(default=None)):
+    token = _admin_token()
+    authenticated = _session_valid(watchlist_admin, token) if len(token) >= 24 else False
+    return ok({'authenticated': authenticated})

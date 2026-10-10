@@ -29,6 +29,7 @@ export async function apiFetch<T>(
   const base = getBaseUrl(init?.market);
   const { market, ...fetchInit } = init ?? {};
   const res = await fetch(`${base}/api/v1${path}`, {
+    credentials: "include",
     ...fetchInit,
     headers: {
       "Content-Type": "application/json",
@@ -54,19 +55,25 @@ export async function apiFetch<T>(
 
 // ── Dashboard ──
 export const watchlistApi = {
+  session: () => apiFetch<{ authenticated: boolean }>('/watchlist/session', { market: 'US' }),
+  login: (token: string) => apiFetch<{ authenticated: boolean }>('/watchlist/login', {
+    market: 'US', method: 'POST', body: JSON.stringify({ token }),
+  }),
+  logout: () => apiFetch<{ authenticated: boolean }>('/watchlist/logout', {
+    market: 'US', method: 'POST',
+  }),
   list: () => apiFetch<import('@/lib/types/watchlist').WatchItem[]>('/watchlist', { market: 'US' }),
-  save: (item: Partial<import('@/lib/types/watchlist').WatchItem>, token: string, id?: number) =>
+  save: (item: Partial<import('@/lib/types/watchlist').WatchItem>, id?: number) =>
     apiFetch<{ id: number }>(`/watchlist${id == null ? '' : `/${id}`}`, {
       market: 'US', method: id == null ? 'POST' : 'PATCH',
-      headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(item),
+      body: JSON.stringify(item),
     }),
-  remove: (id: number, token: string) => apiFetch(`/watchlist/${id}`, {
-    market: 'US', method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+  remove: (id: number) => apiFetch(`/watchlist/${id}`, {
+    market: 'US', method: 'DELETE',
   }),
-  suggest: (item: { market: Market; stock_code: string; stock_name: string }, token: string) =>
+  suggest: (item: { market: Market; stock_code: string; stock_name: string }) =>
     apiFetch<{ group: string; note: string; source: 'research_doc' | 'generic'; docs: string[] }>('/watchlist/suggest', {
-      market: 'US', method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(item),
+      market: 'US', method: 'POST', body: JSON.stringify(item),
     }),
   quotes: async (market: Market, codes: string[]) => {
     const batches = await Promise.all(Array.from({ length: Math.ceil(codes.length / 200) }, (_, i) =>
