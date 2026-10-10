@@ -141,3 +141,57 @@ def test_mutations_commit_returning_rows(monkeypatch):
     with pytest.raises(LookupError):
         service.delete_item(42)
     assert connection.commit.call_count == 3
+
+
+SUGGEST_HEADERS = {'Authorization': 'Bearer test-token-for-watchlist-123456'}
+SUGGEST_PAYLOAD = {'market': 'US', 'stock_code': 'ORCL', 'stock_name': 'Oracle'}
+
+
+def test_suggest_requires_admin(client):
+    assert client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD).status_code == 401
+    assert client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD,
+                       headers={'Authorization': 'Bearer wrong'}).status_code == 401
+
+
+def test_suggest_prefers_research_doc_and_falls_back_to_generic(client, monkeypatch, tmp_path):
+    repo = tmp_path / 'stock-research'
+    (repo / 'ORCL').mkdir(parents=True)
+    (repo / 'ORCL' / '主文档.md').write_text('我的论点：OCI 增速与 RPO 是核心变量，待验证电力约束。')
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', repo)
+    monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[{'industry': '软件'}]))
+    seen_prompts = []
+
+    def fake_mmx(system, user):
+        seen_prompts.append(user)
+        return '{"group": "AI 云", "note": "OCI 增速与 RPO 是核心变量"}'
+
+    monkeypatch.setattr(service, '_run_mmx', fake_mmx)
+    ok = client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD, headers=SUGGEST_HEADERS)
+    assert ok.status_code == 200
+    data = ok.json()['data']
+    assert data['source'] == 'research_doc'
+    assert data['docs'] == ['ORCL/主文档.md']
+    assert 'OCI 增速' in seen_prompts[0] and '软件' in seen_prompts[0]
+
+    generic = client.post('/api/v1/watchlist/suggest',
+                          json={'market': 'US', 'stock_code': 'NBIS', 'stock_name': 'Nebius'},
+                          headers=SUGGEST_HEADERS)
+    assert generic.json()['data']['source'] == 'generic'
+    assert '（无）' in seen_prompts[1]
+
+
+def test_suggest_parses_fenced_json(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', tmp_path / 'empty')
+    monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[]))
+    monkeypatch.setattr(service, '_run_mmx',
+                        lambda s, u: '```json\n{"group": "AI 云", "note": "[通用草稿] 测试"}\n```')
+    resp = client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD, headers=SUGGEST_HEADERS)
+    assert resp.json()['data']['group'] == 'AI 云'
+
+
+def test_suggest_failure_maps_to_503(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', tmp_path / 'empty')
+    monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[]))
+    monkeypatch.setattr(service, '_run_mmx', MagicMock(side_effect=RuntimeError('mmx 调用失败: timeout')))
+    assert client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD,
+                       headers=SUGGEST_HEADERS).status_code == 503

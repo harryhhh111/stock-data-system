@@ -72,6 +72,12 @@ class QuoteRequest(BaseModel):
         return list(dict.fromkeys(codes))
 
 
+class SuggestRequest(BaseModel):
+    market: Market
+    stock_code: str = Field(min_length=1, max_length=20, pattern=r'^[A-Za-z0-9.\-]+$')
+    stock_name: str = Field(min_length=1, max_length=200)
+
+
 def call(operation, *args):
     try:
         return ok(operation(*args))
@@ -108,3 +114,8 @@ def remove_item(item_id: int):
 @router.post('/watchlist/quotes')
 def quotes(request: QuoteRequest):
     return call(service.quote_batch, request.market, request.codes)
+
+
+@router.post('/watchlist/suggest', dependencies=[Depends(require_admin)])
+def suggest(request: SuggestRequest):
+    return call(service.suggest_fields, request.market, request.stock_code, request.stock_name)

@@ -22,6 +22,13 @@
 | PATCH | `/watchlist/{id}` | 替换分组、理由、研究链接；不改变证券身份 |
 | DELETE | `/watchlist/{id}` | 移除关注项，不删除行情和研究 |
 | POST | `/watchlist/quotes` | 按市场读取日线；body 为 market、codes（最多 200 个），前端自动拆批 |
+| POST | `/watchlist/suggest` | AI 起草分组与关注理由；需管理员凭据；依赖本机 mmx CLI 与研究文档仓库 |
+
+## AI 生成建议依赖
+
+- 后端以 subprocess 调用本机 `mmx` CLI（MiniMax）：需 `npm i -g mmx-cli` 并完成 `mmx auth login`；密钥由 mmx 管理，本仓库不接触。可用 `STOCK_WATCHLIST_MMX_BIN` 指定路径。
+- 关注理由优先基于研究仓库中 TICKER 同名文件夹的顶层 Markdown（只读），默认路径为仓库旁 `../stock-research`，可用 `STOCK_RESEARCH_REPO_PATH` 覆盖。
+- 生成内容为未确认的草稿：前端填入可编辑字段，由用户修改后随保存入库；接口失败不影响手动填写。
 
 元数据写入要求 `Authorization: Bearer <token>`。重复返回 409，项不存在返回 404，参数非法返回 422，数据库不可用返回 503。
 报价只允许服务器 `STOCK_MARKETS` 配置的市场；对应市场未发布新接口时，页面明确显示行情请求错误。

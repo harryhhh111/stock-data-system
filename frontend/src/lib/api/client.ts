@@ -63,6 +63,11 @@ export const watchlistApi = {
   remove: (id: number, token: string) => apiFetch(`/watchlist/${id}`, {
     market: 'US', method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
   }),
+  suggest: (item: { market: Market; stock_code: string; stock_name: string }, token: string) =>
+    apiFetch<{ group: string; note: string; source: 'research_doc' | 'generic'; docs: string[] }>('/watchlist/suggest', {
+      market: 'US', method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(item),
+    }),
   quotes: async (market: Market, codes: string[]) => {
     const batches = await Promise.all(Array.from({ length: Math.ceil(codes.length / 200) }, (_, i) =>
       apiFetch<import('@/lib/types/watchlist').QuoteBatch>('/watchlist/quotes', {
