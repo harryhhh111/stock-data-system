@@ -227,6 +227,21 @@ class SchedulerConfig:
             cast=lambda v: v.lower() in ("1", "true", "yes"))
     )
 
+    # ── 港股 capex NULL 自动兜底（方案 docs/core/HK_CAPEX_SYNC_AUTO_FALLBACK_PLAN.md）──
+    # 港股财务同步后自动检测最新年报/中报 capex NULL → T1 腾讯即时补 + T2 披露易 PDF 夜间排队
+    hk_capex_fallback_auto: bool = field(
+        default_factory=lambda: _env("STOCK_HK_CAPEX_FALLBACK_AUTO", "true",
+            cast=lambda v: v.lower() in ("1", "true", "yes"))
+    )
+    # T2 PDF 队列夜间排空 cron（非交易时段带宽空闲；不需要交易日检查）
+    hk_capex_pdf_cron: str = field(
+        default_factory=lambda: _env("STOCK_HK_CAPEX_PDF_CRON", "47 23 * * *")
+    )
+    # 单次最多排空条数（披露易 ≥3s 间隔 + 境外 ~230KB/s 带宽约束，80 条约 1-2 小时）
+    hk_capex_pdf_nightly_limit: int = field(
+        default_factory=lambda: _env("STOCK_HK_CAPEX_PDF_NIGHTLY_LIMIT", "80", cast=int)
+    )
+
     # 重试配置
     max_retries: int = field(
         default_factory=lambda: _env("STOCK_SCHEDULER_MAX_RETRIES", "3", cast=int)
