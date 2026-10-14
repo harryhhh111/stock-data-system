@@ -202,6 +202,24 @@ def _run_sync_job(market: str, job_type: str = "financial") -> dict:
                 started_at=datetime.fromtimestamp(t0),
             )
 
+            # 港股财务同步后：capex NULL 自动兜底（T1 腾讯即时补 + T2 披露易 PDF 夜间排队）。
+            # 挂在视图刷新之前，T1 写入可顺带被本次刷新带进 mv_* 视图；兜底失败不影响同步主流程。
+            if (
+                job_type == "financial"
+                and market == "CN_HK"
+                and config.scheduler.hk_capex_fallback_auto
+            ):
+                try:
+                    from core.sync.hk_fallback import run_hk_capex_fallback
+
+                    fb = run_hk_capex_fallback(dry_run=False)
+                    logger.info(
+                        "[CN_HK] capex 自动兜底: 候选=%d 只, T1 写入=%d 条, T2 入队=%d 条",
+                        fb["candidate_stocks"], fb["t1_written"], fb["queued"],
+                    )
+                except Exception as fb_err:
+                    logger.error("[CN_HK] capex 自动兜底失败（不影响同步结果）: %s", fb_err)
+
             # 同步完成后刷新物化视图
             _refresh_materialized_views(job_type, market)
 
@@ -317,6 +335,42 @@ def _sync_financial(market: str) -> dict:
         force=config.scheduler.force_sync,
     )
     return manager.sync_financial(market)
+
+
+def _run_hk_pdf_queue_job() -> None:
+    """夜间排空港股 capex PDF 队列（T2 兜底慢链，与同步窗口解耦）。
+
+    由调度器按 hk_capex_pdf_cron 触发；队列为空时快速返回。
+    有写入时刷新港股 mv_* 视图，让 FCF 收益率次日可见。
+    """
+    from core.sync.hk_fallback import drain_pdf_queue
+
+    try:
+        result = drain_pdf_queue(
+            limit=config.scheduler.hk_capex_pdf_nightly_limit, dry_run=False
+        )
+    except Exception as exc:
+        logger.error("[HK_capex_pdf] 队列排空失败: %s", exc)
+        _notify(f"港股 capex PDF 队列排空失败: {exc}", level="error")
+        return
+
+    if result["queue_before"] == 0:
+        logger.info("[HK_capex_pdf] 队列为空，跳过")
+        return
+
+    t2 = result.get("t2_stats") or {}
+    logger.info(
+        "[HK_capex_pdf] 排空完成: 处理=%d, 写入=%d, 人工队列=%d, 升级耗尽=%d, 失败=%d, 剩余=%d, 耗时=%.0fs",
+        result["processed"], result["written"],
+        t2.get("review_queue", 0), t2.get("escalate_exhausted", 0), t2.get("failed", 0),
+        result["remaining"], result["elapsed"],
+    )
+    _notify(
+        f"HK_capex_pdf 排空: 处理={result['processed']}, 写入={result['written']}, "
+        f"剩余={result['remaining']}"
+    )
+    if result["written"] > 0:
+        _refresh_materialized_views("financial", "CN_HK")
 
 
 def _sync_us() -> dict:
@@ -959,6 +1013,19 @@ def dry_run() -> None:
     if not any(jd["job_type"] == "financial" for jd in active_jobs.values()):
         print(f"  （无匹配的财务同步任务）")
 
+    # ── 港股 capex NULL 自动兜底 ──
+    print(f"\n  {'─' * 66}")
+    print(f"  港股 capex NULL 自动兜底")
+    print(f"  {'─' * 66}")
+    if "CN_HK" in config.scheduler.markets and config.scheduler.hk_capex_fallback_auto:
+        print(f"  同步后 T1 腾讯即时兜底 : 开启")
+        print(
+            f"  T2 披露易 PDF 夜间排空 : cron={config.scheduler.hk_capex_pdf_cron}"
+            f"（单次上限 {config.scheduler.hk_capex_pdf_nightly_limit} 只）"
+        )
+    else:
+        print(f"  （未开启：市场不含 CN_HK 或 hk_capex_fallback_auto=false）")
+
     # ── 配置概要 ──
     print(f"\n  {'─' * 66}")
     print(f"  配置概要")
@@ -1048,6 +1115,21 @@ def run_scheduler(once: bool = False) -> None:
             job_def["description"],
             job_def["job_type"],
         )
+
+    # ── 港股 capex PDF 队列夜间排空（独立于同步任务，非交易日也跑）──
+    if "CN_HK" in markets and config.scheduler.hk_capex_fallback_auto:
+        cron_expr = config.scheduler.hk_capex_pdf_cron
+        trigger = CronTrigger(
+            **_get_cron_parts(cron_expr), timezone="Asia/Shanghai"
+        )
+        sched.add_job(
+            _run_hk_pdf_queue_job,
+            trigger=trigger,
+            id="hk_capex_pdf_drain",
+            name="港股capex PDF队列排空",
+            replace_existing=True,
+        )
+        logger.info("注册任务: HK_capex_pdf → cron=%s", cron_expr)
 
     if once:
         # 立即执行一次，按正确顺序：
