@@ -37,6 +37,12 @@ export function WatchlistPage() {
   const [sort, setSort] = useState('default');
   const [editor, setEditor] = useState<Partial<WatchItem> | null>(null);
   const [actionError, setActionError] = useState('');
+  const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
+  const toggleNote = (id: number) => setExpandedNotes(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   const itemsQuery = useQuery({ queryKey: ['watchlist'], queryFn: watchlistApi.list });
   const items = itemsQuery.data ?? [];
   const sessionQuery = useQuery({ queryKey: ['watchlist-session'], queryFn: watchlistApi.session, staleTime: 60_000, retry: false });
@@ -89,7 +95,12 @@ export function WatchlistPage() {
         <TableCell className={quote?.change_pct != null && quote.change_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}>{quote?.change_pct == null ? '—' : `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%`}</TableCell>
         <TableCell><Sparkline quote={quote} /></TableCell>
         <TableCell className="min-w-40"><div>{quote?.quote_date || '—'}</div><div className="text-xs text-muted-foreground max-w-52">{response?.error ? errorText(response.error) : response?.isPending ? '读取行情中…' : quote?.status !== 'ok' ? quote?.warning : ''}{quote?.stale && ' · 行情滞后'}</div></TableCell>
-        <TableCell className="min-w-48 max-w-72 whitespace-pre-wrap">{item.note || <span className="text-muted-foreground">补充关注理由</span>}</TableCell>
+        <TableCell className="min-w-48 max-w-72">{item.note
+          ? <button type="button" onClick={() => toggleNote(item.id)} className="text-left w-full group" aria-expanded={expandedNotes.has(item.id)} aria-label={`展开或收起${item.stock_code}的关注理由`}>
+              <span className={`whitespace-pre-wrap block ${expandedNotes.has(item.id) ? '' : 'line-clamp-3'}`}>{item.note}</span>
+              <span className="text-xs text-muted-foreground group-hover:text-foreground">{expandedNotes.has(item.id) ? '收起 ▲' : '展开 ▼'}</span>
+            </button>
+          : <span className="text-muted-foreground">补充关注理由</span>}</TableCell>
         <TableCell><div className="flex gap-1">{item.research_url && <Button asChild variant="ghost" size="icon"><a href={item.research_url} target="_blank" rel="noopener noreferrer" aria-label="打开研究"><ExternalLink className="w-4 h-4" /></a></Button>}<Button variant="ghost" size="icon" aria-label={`编辑${item.stock_code}`} onClick={() => { setActionError(''); setEditor(item); }}><Pencil className="w-4 h-4" /></Button><Button variant="ghost" size="icon" disabled={remove.isPending || !canEdit} aria-label={`移除${item.stock_code}`} onClick={() => { if (window.confirm(`从关注列表移除 ${item.stock_name}？`)) remove.mutate(item.id); }}><Trash2 className="w-4 h-4" /></Button></div></TableCell>
       </TableRow>;
     })}</TableBody></Table>{!visible.length && <p className="p-8 text-center text-muted-foreground">该筛选条件下没有关注股</p>}</div>}
