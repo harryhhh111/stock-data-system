@@ -96,8 +96,8 @@ export function WatchlistPage() {
         <TableCell><Sparkline quote={quote} /></TableCell>
         <TableCell className="min-w-40"><div>{quote?.quote_date || '—'}</div><div className="text-xs text-muted-foreground max-w-52">{response?.error ? errorText(response.error) : response?.isPending ? '读取行情中…' : quote?.status !== 'ok' ? quote?.warning : ''}{quote?.stale && ' · 行情滞后'}</div></TableCell>
         <TableCell className="min-w-48 max-w-72">{item.note
-          ? <button type="button" onClick={() => toggleNote(item.id)} className="text-left w-full group" aria-expanded={expandedNotes.has(item.id)} aria-label={`展开或收起${item.stock_code}的关注理由`}>
-              <span className={`block ${expandedNotes.has(item.id) ? 'whitespace-pre-wrap' : 'line-clamp-3'}`}>{item.note}</span>
+          ? <button type="button" onClick={() => toggleNote(item.id)} className="text-left w-full max-w-72 group" aria-expanded={expandedNotes.has(item.id)} aria-label={`展开或收起${item.stock_code}的关注理由`}>
+              <span className={expandedNotes.has(item.id) ? 'block whitespace-pre-wrap' : 'line-clamp-3'}>{item.note}</span>
               <span className="text-xs text-muted-foreground group-hover:text-foreground">{expandedNotes.has(item.id) ? '收起 ▲' : '展开 ▼'}</span>
             </button>
           : <span className="text-muted-foreground">补充关注理由</span>}</TableCell>
