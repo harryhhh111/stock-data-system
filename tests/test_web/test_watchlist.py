@@ -153,11 +153,10 @@ def test_suggest_requires_admin(client):
                        headers={'Authorization': 'Bearer wrong'}).status_code == 401
 
 
-def test_suggest_prefers_research_doc_and_falls_back_to_generic(client, monkeypatch, tmp_path):
-    repo = tmp_path / 'stock-research'
-    (repo / 'ORCL').mkdir(parents=True)
-    (repo / 'ORCL' / '主文档.md').write_text('我的论点：OCI 增速与 RPO 是核心变量，待验证电力约束。')
-    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', repo)
+def test_suggest_prefers_research_doc_and_falls_back_to_generic(client, monkeypatch, research_repo):
+    research_repo.entry()
+    sha = research_repo.commit()
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', research_repo.root)
     monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[{'industry': '软件'}]))
     seen_prompts = []
 
@@ -171,17 +170,23 @@ def test_suggest_prefers_research_doc_and_falls_back_to_generic(client, monkeypa
     data = ok.json()['data']
     assert data['source'] == 'research_doc'
     assert data['docs'] == ['ORCL/主文档.md']
+    assert data['research']['commit_sha'] == sha
+    assert data['research']['missing_sections'] == ['risks', 'metrics', 'open_questions']
     assert 'OCI 增速' in seen_prompts[0] and '软件' in seen_prompts[0]
+    assert '简介不是观点' not in seen_prompts[0]
+    assert sha in seen_prompts[0]
 
     generic = client.post('/api/v1/watchlist/suggest',
                           json={'market': 'US', 'stock_code': 'NBIS', 'stock_name': 'Nebius'},
                           headers=SUGGEST_HEADERS)
     assert generic.json()['data']['source'] == 'generic'
+    assert generic.json()['data']['note'].startswith('[通用草稿]')
     assert '（无）' in seen_prompts[1]
 
 
-def test_suggest_parses_fenced_json(client, monkeypatch, tmp_path):
-    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', tmp_path / 'empty')
+def test_suggest_parses_fenced_json(client, monkeypatch, research_repo):
+    research_repo.commit()
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', research_repo.root)
     monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[]))
     monkeypatch.setattr(service, '_run_mmx',
                         lambda s, u: '```json\n{"group": "AI 云", "note": "[通用草稿] 测试"}\n```')
@@ -189,12 +194,30 @@ def test_suggest_parses_fenced_json(client, monkeypatch, tmp_path):
     assert resp.json()['data']['group'] == 'AI 云'
 
 
-def test_suggest_failure_maps_to_503(client, monkeypatch, tmp_path):
-    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', tmp_path / 'empty')
+def test_suggest_failure_maps_to_503(client, monkeypatch, research_repo):
+    research_repo.commit()
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', research_repo.root)
     monkeypatch.setattr(service, 'read_rows', MagicMock(return_value=[]))
     monkeypatch.setattr(service, '_run_mmx', MagicMock(side_effect=RuntimeError('mmx 调用失败: timeout')))
     assert client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD,
                        headers=SUGGEST_HEADERS).status_code == 503
+
+
+@pytest.mark.parametrize('broken_entry', [False, True])
+def test_research_failure_is_visible_and_never_calls_model(client, monkeypatch, research_repo, broken_entry):
+    if broken_entry:
+        research_repo.write('ORCL/research.yaml', 'schema_version: 999')
+        research_repo.commit()
+        root = research_repo.root
+    else:
+        root = research_repo.root / 'missing'
+    monkeypatch.setattr(service, 'RESEARCH_REPO_PATH', root)
+    model = MagicMock()
+    monkeypatch.setattr(service, '_run_mmx', model)
+    response = client.post('/api/v1/watchlist/suggest', json=SUGGEST_PAYLOAD, headers=SUGGEST_HEADERS)
+    assert response.status_code == 503
+    assert '研究读取失败' in response.json()['detail']
+    model.assert_not_called()
 
 
 def test_login_session_logout_cookie_flow(client, monkeypatch):

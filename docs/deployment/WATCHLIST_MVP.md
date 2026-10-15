@@ -34,7 +34,10 @@
 ## AI 生成建议依赖
 
 - 后端以 subprocess 调用本机 `mmx` CLI（MiniMax）：需 `npm i -g mmx-cli` 并完成 `mmx auth login`；密钥由 mmx 管理，本仓库不接触。可用 `STOCK_WATCHLIST_MMX_BIN` 指定路径。
-- 关注理由优先基于研究仓库中 TICKER 同名文件夹的顶层 Markdown（只读），默认路径为仓库旁 `../stock-research`，可用 `STOCK_RESEARCH_REPO_PATH` 覆盖。
+- 关注理由按 `research.yaml` 版本 2 的市场和证券代码匹配，读取指定的观点、风险、指标和待验证问题章节；不再猜测目录名或截取正文开头。默认研究路径为仓库旁 `../stock-research`，可用 `STOCK_RESEARCH_REPO_PATH` 覆盖；该路径必须是 Git 仓库根目录，后端运行环境需要 Git 与 PyYAML。
+- 每次生成固定一个 Git HEAD SHA，只读取该提交中受跟踪的 YAML/Markdown；本地未提交修改不生效，请先审核并提交研究。后端不自动 pull、不执行研究脚本。模型输入仍会发送给 MiniMax，请勿将不适合发送的敏感内容纳入研究生成。
+- `/watchlist/suggest` 保留原字段，追加 `research`：status（matched/no_entry）、entity_id、commit_sha、sections（kind/path/line/heading_path/truncated/total_chars）、missing_sections。每类摘录正文最多 1500 字符，共最多 6000；版本号不等于研究数据截止日。页面提示缺失及截断，不宣称已完成事实核验。
+- 仓库和入口有效但证券未配置入口时，生成标明 `[通用草稿]` 的内容。仓库缺失、版本不支持、入口损坏、路径越界、已配置标题不存在或证券有歧义时返回带“研究读取失败”详情的 503，不调用模型，也不伪装成没有研究。null 章节允许缺省，但命中主体后必须至少有一个可用观点章节。
 - 生成内容为未确认的草稿：前端填入可编辑字段，由用户修改后随保存入库；接口失败不影响手动填写。
 
 元数据写入要求 `Authorization: Bearer <token>`。重复返回 409，项不存在返回 404，参数非法返回 422，数据库不可用返回 503。
@@ -54,7 +57,7 @@
 
 `venv/bin/python -m pip install -r requirements-dev.txt`
 
-`venv/bin/python -m pytest tests/test_web/test_watchlist.py -q`
+`venv/bin/python -m pytest tests/test_web/test_research_reader.py tests/test_web/test_watchlist.py -q`
 
 `cd frontend && npm run build`
 

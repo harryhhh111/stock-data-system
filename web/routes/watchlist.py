@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from web import ok
 from web.services import watchlist_service as service
+from web.services.research_reader import ResearchReadError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -120,6 +121,9 @@ class SuggestRequest(BaseModel):
 def call(operation, *args):
     try:
         return ok(operation(*args))
+    except ResearchReadError as exc:
+        logger.warning('research read failed: %s', exc)
+        raise HTTPException(503, f'研究读取失败：{exc}') from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     except LookupError as exc:

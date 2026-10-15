@@ -1,4 +1,13 @@
 import type { Market } from './common';
+export interface ResearchDiagnostic {
+  status: 'matched' | 'no_entry'; commit_sha: string; entity_id: string | null;
+  missing_sections: string[];
+  sections: { kind: string; path: string; line: number; heading_path: string[]; truncated: boolean; total_chars: number }[];
+}
+export interface WatchSuggestion {
+  group: string; note: string; source: 'research_doc' | 'generic'; docs: string[];
+  research?: ResearchDiagnostic;
+}
 export interface WatchItem {
   id: number; market: Market; stock_code: string; stock_name: string;
   group_name: string; note: string; research_url: string; sort_order: number;

@@ -72,7 +72,7 @@ export const watchlistApi = {
     market: 'US', method: 'DELETE',
   }),
   suggest: (item: { market: Market; stock_code: string; stock_name: string }) =>
-    apiFetch<{ group: string; note: string; source: 'research_doc' | 'generic'; docs: string[] }>('/watchlist/suggest', {
+    apiFetch<import('@/lib/types/watchlist').WatchSuggestion>('/watchlist/suggest', {
       market: 'US', method: 'POST', body: JSON.stringify(item),
     }),
   quotes: async (market: Market, codes: string[]) => {

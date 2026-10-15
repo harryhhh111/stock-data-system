@@ -11,11 +11,22 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { Market } from '@/lib/types/common';
-import type { WatchItem, WatchQuote } from '@/lib/types/watchlist';
+import type { WatchItem, WatchQuote, WatchSuggestion } from '@/lib/types/watchlist';
 
 const markets: Market[] = ['US', 'CN_HK', 'CN_A'];
 const currency = { US: 'USD', CN_HK: 'HKD', CN_A: 'CNY' };
 const errorText = (error: unknown) => error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : '请求失败';
+
+function ResearchHint({ suggestion }: { suggestion: WatchSuggestion }) {
+  const research = suggestion.research;
+  const names: Record<string, string> = { thesis: '核心判断', risks: '风险', metrics: '跟踪指标', open_questions: '待验证问题' };
+  return <span className="text-xs text-muted-foreground">
+    {suggestion.source === 'research_doc' ? `基于研究：${suggestion.docs.join('、')}（草稿可修改）` : '该证券未配置研究入口，已生成通用草稿（可修改）'}
+    {research && <><span className="block">来源版本 {research.commit_sha.slice(0, 8)}；不代表研究数据已更新</span>
+      {research.missing_sections.length > 0 && <span className="block">未配置：{research.missing_sections.map(key => names[key] || key).join('、')}</span>}
+      {research.sections.some(section => section.truncated) && <span className="block">部分章节已截断，仅使用摘录</span>}</>}
+  </span>;
+}
 
 function Sparkline({ quote }: { quote: WatchQuote | undefined }) {
   if (!quote || quote.trend.length < 2) return <span className="text-muted-foreground">历史不足</span>;
@@ -64,7 +75,8 @@ export function WatchlistPage() {
   });
   const save = useMutation({ mutationFn: (item: Partial<WatchItem>) => watchlistApi.save(item, item.id), onSuccess: () => { setEditor(null); setActionError(''); qc.invalidateQueries({ queryKey: ['watchlist'] }); }, onError: e => setActionError(errorText(e)) });
   const remove = useMutation({ mutationFn: (id: number) => watchlistApi.remove(id), onSuccess: () => { setActionError(''); qc.invalidateQueries({ queryKey: ['watchlist'] }); }, onError: e => setActionError(errorText(e)) });
-  const suggest = useMutation({ mutationFn: (v: { market: Market; stock_code: string; stock_name: string }) => watchlistApi.suggest(v), onSuccess: r => { setActionError(''); setEditor(prev => prev ? { ...prev, group_name: r.group || prev.group_name, note: r.note || prev.note } : prev); }, onError: e => setActionError(errorText(e)) });
+  const suggest = useMutation({ mutationFn: (v: { market: Market; stock_code: string; stock_name: string }) => watchlistApi.suggest(v), onSuccess: (r, v) => { setActionError(''); setEditor(prev => prev && prev.stock_code === v.stock_code && (prev.market || 'US') === v.market ? { ...prev, group_name: r.group || prev.group_name, note: r.note || prev.note } : prev); }, onError: e => setActionError(errorText(e)) });
+  const activeSuggestion = suggest.variables?.stock_code === editor?.stock_code && suggest.variables?.market === (editor?.market || 'US') ? suggest.data : undefined;
   const login = useMutation({ mutationFn: (t: string) => watchlistApi.login(t), onSuccess: () => { setLoginToken(''); setActionError(''); qc.invalidateQueries({ queryKey: ['watchlist-session'] }); }, onError: e => setActionError(errorText(e)) });
   const logout = useMutation({ mutationFn: () => watchlistApi.logout(), onSuccess: () => { qc.invalidateQueries({ queryKey: ['watchlist-session'] }); }, onError: e => setActionError(errorText(e)) });
   const selectStyle = 'h-9 rounded-md border bg-background px-3 text-sm';
@@ -111,7 +123,7 @@ export function WatchlistPage() {
       {editor.stock_code && editor.stock_name?.trim() && <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" disabled={!canEdit || suggest.isPending} onClick={() => { setActionError(''); suggest.mutate({ market: editor.market || 'US', stock_code: editor.stock_code!, stock_name: editor.stock_name!.trim() }); }}>{suggest.isPending ? '生成中…' : 'AI 生成建议'}</Button>
         {!canEdit && <span className="text-xs text-muted-foreground">需要先点页面右上角「管理员登录」</span>}
-        {suggest.data && <span className="text-xs text-muted-foreground">{suggest.data.source === 'research_doc' ? `已基于研究文档生成：${suggest.data.docs[0] ?? ''}（可修改）` : '未找到研究文档，已生成通用草稿（可修改）'}</span>}
+        {activeSuggestion && <ResearchHint suggestion={activeSuggestion} />}
         {suggest.error && <span className="text-xs text-destructive">{errorText(suggest.error)}</span>}
       </div>}
       <label className="block text-sm">分组<Input className="mt-1" maxLength={80} value={editor.group_name || ''} onChange={e => setEditor({ ...editor, group_name: e.target.value })} placeholder="例如 AI 云、存储、消费" /></label>
