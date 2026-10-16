@@ -16,6 +16,7 @@ export interface WatchItem {
 export interface WatchQuote {
   stock_code: string; close: number | null; change_pct: number | null;
   quote_date: string | null; status: string; warning: string; stale: boolean;
+  previous_quote_date?: string | null;
   trend: { date: string; close: number | null }[];
 }
 export interface QuoteBatch { market: Market; currency: string; fetched_at: string; quotes: WatchQuote[] }

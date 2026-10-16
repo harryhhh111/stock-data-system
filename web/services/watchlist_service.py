@@ -90,7 +90,7 @@ def number(value):
 def summarize_quote(code, rows, market_date):
     """Keep missing sessions in the series; never jump over an invalid latest close."""
     rows = sorted(rows, key=lambda r: r['trade_date'])
-    base = dict(stock_code=code, close=None, change_pct=None, quote_date=None,
+    base = dict(stock_code=code, close=None, change_pct=None, quote_date=None, previous_quote_date=None,
                 status='missing', warning='没有日线行情', trend=[], stale=False,
                 price_basis='raw_unadjusted')
     if not rows:
@@ -100,6 +100,7 @@ def summarize_quote(code, rows, market_date):
     previous = number(rows[-2]['close']) if len(rows) > 1 else None
     quote_date = latest['trade_date']
     base.update(close=close, quote_date=quote_date.isoformat(),
+                previous_quote_date=rows[-2]['trade_date'].isoformat() if len(rows) > 1 else None,
                 stale=(market_date - quote_date).days > 4,
                 trend=[{'date': r['trade_date'].isoformat(), 'close': number(r['close'])}
                        for r in rows[-20:]])

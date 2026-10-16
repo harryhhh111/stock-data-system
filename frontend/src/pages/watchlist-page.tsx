@@ -29,16 +29,20 @@ function ResearchHint({ suggestion }: { suggestion: WatchSuggestion }) {
 }
 
 function Sparkline({ quote }: { quote: WatchQuote | undefined }) {
-  if (!quote || quote.trend.length < 2) return <span className="text-muted-foreground">历史不足</span>;
+  if (quote?.status === 'review_price_basis') return <span className="text-muted-foreground">价格口径待核对</span>;
+  if (!quote || quote.trend.length === 0) return <span className="text-muted-foreground">暂无走势数据</span>;
+  if (quote.trend.length < 2) return <span className="text-muted-foreground">仅有 {quote.trend.length} 日记录，历史不足</span>;
   const values = quote.trend.map(p => p.close);
   const valid = values.filter((p): p is number => p != null);
-  if (valid.length < 2) return <span className="text-muted-foreground">历史不足</span>;
+  if (valid.length < 2) return <span className="text-muted-foreground">共 {values.length} 条日线，有效收盘不足 2 条</span>;
   const min = Math.min(...valid), max = Math.max(...valid);
   const segments: string[][] = [[]];
   values.forEach((v, i) => { if (v == null) segments.push([]); else segments[segments.length - 1].push(`${i * 110 / (values.length - 1)},${30 - (v - min) / (max - min || 1) * 26}`); });
-  return <svg viewBox="0 0 112 34" className="w-28 h-9 text-primary" role="img" aria-label={`${quote.trend.length}个交易日原始收盘走势`}>
+  const window = `${quote.trend[0].date} 至 ${quote.trend[quote.trend.length - 1].date}`;
+  return <div><svg viewBox="0 0 112 34" className="w-28 h-9 text-primary" role="img" aria-label={`${quote.trend.length}条交易日线，${window}，未复权收盘价走势`}>
+    <title>{window}；{quote.trend.length} 条入库日线，非实时行情</title>
     {segments.map((s, i) => <polyline key={i} points={s.join(' ')} fill="none" stroke="currentColor" strokeWidth="1.8" />)}
-  </svg>;
+  </svg><div className="text-xs text-muted-foreground whitespace-nowrap">{quote.trend.length}/20 日记录{valid.length < values.length && ` · 有效 ${valid.length} 日`}</div><div className="text-xs text-muted-foreground whitespace-nowrap">{quote.trend[0].date}<br />至 {quote.trend[quote.trend.length - 1].date}</div></div>;
 }
 
 export function WatchlistPage() {
@@ -93,18 +97,18 @@ export function WatchlistPage() {
         : <div className="mt-2 flex items-center gap-2"><Input className="w-56" type="password" autoComplete="off" aria-label="管理员凭据" value={loginToken} onChange={e => setLoginToken(e.target.value)} placeholder="输入编辑凭据登录" /><Button variant="outline" size="sm" disabled={!loginToken || login.isPending} onClick={() => login.mutate(loginToken)}>{login.isPending ? '登录中…' : '登录'}</Button>{login.error && <span className="text-xs text-destructive">{errorText(login.error)}</span>}</div>}
       </details>
     </div>
-    <p className="text-xs text-muted-foreground">最新已入库收盘行情，每5分钟刷新读取。原始日线未校验拆股/除权；超过4个自然日未更新会提示滞后。</p>
+    <div className="space-y-1 text-xs text-muted-foreground"><p>行情口径：未复权日线收盘价，非盘中实时行情；每 5 分钟刷新读取数据库，不触发同步。</p><p>涨跌幅 =（最新收盘价 ÷ 前一条入库日线收盘价 − 1）× 100%，比较日期见每行；不是 20 日累计涨跌幅。走势最多展示近 20 条交易日线，缺失日期不补齐。</p><p>原始价格未校验拆股/除权；超过 4 个自然日未更新会提示滞后。</p></div>
     {itemsQuery.isPending && <p>正在读取关注列表…</p>}
     {itemsQuery.error && <div role="alert" className="text-destructive">{errorText(itemsQuery.error)}</div>}
     {actionError && !editor && <div role="alert" className="text-destructive">{actionError}</div>}
     {itemsQuery.isSuccess && !items.length && <Card><CardContent className="py-16 text-center"><Star className="w-9 h-9 mx-auto mb-4 text-muted-foreground" /><h3 className="text-lg font-medium">从第一只关注股开始</h3><p className="text-muted-foreground mt-2">添加你正在研究的公司，记录为什么关注它。</p></CardContent></Card>}
-    {items.length > 0 && <div className="border rounded-lg bg-card overflow-x-auto"><Table><TableHeader><TableRow>{['股票', '分组', '最近收盘', '涨跌幅', '近期走势', '行情日期', '关注理由', '操作'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{visible.map(item => {
+    {items.length > 0 && <div className="border rounded-lg bg-card overflow-x-auto"><Table><TableHeader><TableRow>{['股票', '分组', '最新收盘价', '涨跌幅（较前次收盘）', '近 20 个交易日走势', '最新行情日期', '关注理由', '操作'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{visible.map(item => {
       const quote = quotes.get(`${item.market}:${item.stock_code}`), response = quoteQueries[markets.indexOf(item.market)];
       return <TableRow key={item.id}>
         <TableCell><Link className="font-medium hover:text-primary" to={`/analyzer?${new URLSearchParams({ code: item.stock_code, market: item.market })}`}>{item.stock_name}</Link><div className="text-xs text-muted-foreground">{item.stock_code} · {item.market}</div></TableCell>
         <TableCell>{item.group_name || '未分组'}</TableCell>
         <TableCell className="font-mono whitespace-nowrap">{quote?.close?.toLocaleString('en-US', { maximumFractionDigits: 4 }) ?? '—'} <span className="text-xs text-muted-foreground">{currency[item.market]}</span></TableCell>
-        <TableCell className={quote?.change_pct != null && quote.change_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}>{quote?.change_pct == null ? '—' : `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%`}</TableCell>
+        <TableCell className="min-w-44"><div className={quote?.change_pct == null ? 'text-muted-foreground' : quote.change_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}>{quote?.change_pct == null ? '—' : `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%`}</div><div className="text-xs text-muted-foreground whitespace-nowrap">{quote?.status === 'review_price_basis' ? '价格口径待核对' : quote?.change_pct == null ? '暂无可比收盘价' : quote.previous_quote_date && quote.quote_date ? `${quote.previous_quote_date} → ${quote.quote_date}` : '比较日期未提供'}</div></TableCell>
         <TableCell><Sparkline quote={quote} /></TableCell>
         <TableCell className="min-w-40"><div>{quote?.quote_date || '—'}</div><div className="text-xs text-muted-foreground max-w-52">{response?.error ? errorText(response.error) : response?.isPending ? '读取行情中…' : quote?.status !== 'ok' ? quote?.warning : ''}{quote?.stale && ' · 行情滞后'}</div></TableCell>
         <TableCell className="min-w-48 max-w-72">{item.note

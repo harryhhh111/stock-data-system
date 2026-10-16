@@ -20,6 +20,7 @@ def test_daily_change_and_series():
     assert result['change_pct'] == pytest.approx(2)
     assert result['close'] == 102
     assert result['quote_date'] == '2026-10-02'
+    assert result['previous_quote_date'] == '2026-10-01'
     assert result['price_basis'] == 'raw_unadjusted'
     assert len(result['trend']) == 2
     assert not result['stale']
@@ -38,6 +39,23 @@ def test_missing_previous_does_not_jump_over_gap():
     result = service.summarize_quote('ORCL', quotes(100, None, 102), date(2026, 10, 3))
     assert result['status'] == 'missing_previous'
     assert result['change_pct'] is None
+    assert result['previous_quote_date'] == '2026-10-02'
+
+
+def test_comparison_dates_report_actual_stored_sessions():
+    rows = [{'trade_date': date(2026, 10, 1), 'close': 100},
+            {'trade_date': date(2026, 10, 8), 'close': 102}]
+    result = service.summarize_quote('ORCL', rows, date(2026, 10, 8))
+    assert result['previous_quote_date'] == '2026-10-01'
+    assert result['quote_date'] == '2026-10-08'
+    assert result['change_pct'] == pytest.approx(2)
+
+
+def test_comparison_date_is_absent_without_previous_record():
+    for rows in [[], quotes(100)]:
+        result = service.summarize_quote('ORCL', rows, date(2026, 10, 2))
+        assert result['previous_quote_date'] is None
+        assert result['change_pct'] is None
 
 
 def test_split_like_jump_is_not_normal_change():
