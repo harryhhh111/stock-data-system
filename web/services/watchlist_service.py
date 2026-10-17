@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -43,12 +44,34 @@ def list_items():
     return rows
 
 
+def canonical_code(market: str, code: str) -> str:
+    """把券商/Yahoo 式输入规范化为库内标准代码。
+
+    US: 大写（aapl → AAPL）。CN_HK: 去 .HK 后缀、数字左补零到 5 位
+    （2020.HK/2020 → 02020）。CN_A: 去 .SH/.SZ/.SS 后缀的 6 位数字
+    （600519.SH → 600519）。不匹配市场规则时原样返回（由调用方决定语义）。
+    """
+    c = code.strip().upper()
+    if market == 'CN_HK':
+        m = re.fullmatch(r'(\d{1,5})(?:\.HK)?', c)
+        if m:
+            return m.group(1).zfill(5)
+    elif market == 'CN_A':
+        m = re.fullmatch(r'(\d{6})(?:\.(?:SH|SZ|SS))?', c)
+        if m:
+            return m.group(1)
+    return c
+
+
 def save_item(data, item_id=None):
     """Explicit transaction: db.execute(fetch=True) does not commit RETURNING."""
     with Connection() as conn:
         with conn.cursor() as cur:
             try:
                 if item_id is None:
+                    # 规范化为库内标准代码（如 2020.HK → 02020），保证 quotes/分析链路可查
+                    data = {**data,
+                            'stock_code': canonical_code(data['market'], data['stock_code'])}
                     cur.execute(
                         '''INSERT INTO watchlist_item
                         (market,stock_code,stock_name,group_name,note,research_url)
@@ -127,22 +150,26 @@ def summarize_quote(code, rows, market_date):
 def quote_batch(market, codes):
     if market not in config.scheduler.markets:
         raise ValueError(f'本服务器不支持 {market} 行情')
+    # 查询用规范化代码（兼容池里存量的 2020.HK 等非标准格式），
+    # 但响应键仍用请求原码，前端按池内代码合并不会错位
+    canonical = {c: canonical_code(market, c) for c in codes}
+    lookup = list(dict.fromkeys(canonical.values()))
     rows = read_rows('''SELECT requested.stock_code, q.trade_date, q.close
         FROM unnest(%s::text[]) AS requested(stock_code)
         CROSS JOIN LATERAL (
             SELECT trade_date,close FROM daily_quote
             WHERE stock_code=requested.stock_code AND market=%s
             ORDER BY trade_date DESC LIMIT 20
-        ) q''', (codes, market))
+        ) q''', (lookup, market))
     from zoneinfo import ZoneInfo
     zones = {'US': 'America/New_York', 'CN_HK': 'Asia/Hong_Kong', 'CN_A': 'Asia/Shanghai'}
     today = datetime.now(ZoneInfo(zones[market])).date()
-    groups = {code: [] for code in codes}
+    groups = {code: [] for code in lookup}
     for row in rows:
         groups[row['stock_code']].append(row)
     return {'market': market, 'currency': {'US':'USD','CN_HK':'HKD','CN_A':'CNY'}[market],
             'fetched_at': datetime.now(timezone.utc).isoformat(),
-            'quotes': [summarize_quote(code, groups[code], today) for code in codes]}
+            'quotes': [summarize_quote(code, groups[canonical[code]], today) for code in codes]}
 
 
 def _run_mmx(system: str, user: str) -> str:
@@ -172,6 +199,7 @@ def _extract_json(text: str) -> dict:
 
 def suggest_fields(market: str, code: str, name: str) -> dict:
     """用 mmx 起草分组与关注理由；有研究文档时优先总结用户自己的论点。"""
+    code = canonical_code(market, code)
     docs, excerpts, research = read_research(RESEARCH_REPO_PATH, market, code)
     industry = ''
     rows = read_rows('SELECT industry FROM stock_info WHERE market=%s AND stock_code=%s',
