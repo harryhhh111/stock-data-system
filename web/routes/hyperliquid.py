@@ -4,10 +4,27 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from web import ok
+from web.services import hyperliquid_pairs_service as pairs_service
 from web.services import hyperliquid_service as service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/hyperliquid/pairs")
+def hyperliquid_pairs():
+    try:
+        revision, pairs = pairs_service.load_pairs()
+        return ok({
+            "schema_version": pairs_service.SCHEMA_VERSION,
+            "config_revision": revision,
+            "pairs": pairs,
+        })
+    except pairs_service.PairsConfigError as exc:
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid pairs config invalid: %s", exc)
+        raise HTTPException(503, "Hyperliquid 多 pair 配置不可用") from exc
 
 
 @router.get("/hyperliquid/dashboard")
