@@ -27,6 +27,46 @@ def hyperliquid_pairs():
         raise HTTPException(503, "Hyperliquid 多 pair 配置不可用") from exc
 
 
+@router.get("/hyperliquid/pairs/{pair_id}/dashboard")
+def pair_dashboard(pair_id: str):
+    try:
+        return ok(pairs_service.get_pair_dashboard(pair_id))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except pairs_service.PairsConfigError as exc:
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid pairs config invalid: %s", exc)
+        raise HTTPException(503, "Hyperliquid 多 pair 配置不可用") from exc
+    except service.HyperliquidUnavailable as exc:
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid pair dashboard unavailable: %s", exc)
+        raise HTTPException(503, "Hyperliquid pair 看板暂不可用") from exc
+    except Exception:
+        logger.exception("hyperliquid pair dashboard failed")
+        raise HTTPException(503, "Hyperliquid pair 看板暂不可用")
+
+
+@router.get("/hyperliquid/announcements")
+def hyperliquid_announcements():
+    try:
+        return ok(pairs_service.get_announcements())
+    except pairs_service.PairsConfigError as exc:
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid pairs config invalid: %s", exc)
+        raise HTTPException(503, "Hyperliquid 多 pair 配置不可用") from exc
+    except service.HyperliquidUnavailable as exc:
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid announcements unavailable: %s", exc)
+        raise HTTPException(503, "Hyperliquid 公告暂不可用") from exc
+    except Exception:
+        logger.exception("hyperliquid announcements failed")
+        raise HTTPException(503, "Hyperliquid 公告暂不可用")
+
+
 @router.get("/hyperliquid/dashboard")
 def hyperliquid_dashboard():
     try:

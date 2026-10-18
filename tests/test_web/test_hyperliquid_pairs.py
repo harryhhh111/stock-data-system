@@ -28,10 +28,12 @@ def client(monkeypatch, tmp_path):
     config_file = tmp_path / 'hl-pairs.json'
     monkeypatch.setenv('STOCK_HL_PAIRS_CONFIG', str(config_file))
     pairs.clear_cache()
+    pairs.clear_runtime_cache()
     app = FastAPI()
     app.include_router(hyperliquid.router, prefix='/api/v1')
     yield TestClient(app), config_file
     pairs.clear_cache()
+    pairs.clear_runtime_cache()
 
 
 def write_config(client, data=None, raw=None):
@@ -158,3 +160,214 @@ def test_v1_dashboard_untouched_by_pairs_config(client, monkeypatch):
     response = client[0].get('/api/v1/hyperliquid/dashboard')
     assert response.status_code == 200
     assert runner_called == [('/bin/hl', '/etc/hl.toml')]
+
+
+# ── Stage B：v2 快照与公告 ────────────────────────────────
+
+TS = "2026-10-19T08:00:00Z"
+
+
+def v2_block(data, status="ok", diags=None):
+    return {"status": status, "queried_at": TS,
+            "source_queries": {"market": {"status": "ok", "queried_at": TS}},
+            "diagnostics": diags or [], **data}
+
+
+def descriptor_of(client, pair_id):
+    _revision, descriptors = pairs.load_pairs()
+    return next(d for d in descriptors if d["id"] == pair_id)
+
+
+def v2_snapshot(descriptor, revision, mutate=None):
+    coins = descriptor["coins"]
+    snapshot = {
+        "schema_version": 2, "config_revision": revision, "queried_at": TS,
+        "pair": {k: descriptor[k] for k in ("id", "label", "network", "dex", "coins", "account_address")},
+        "blocks": {
+            "account": v2_block({"account_mode": "default", "equity": "1000.5", "equity_scope": "perp_dex"}),
+            "positions": v2_block({"items": [], "position_state": "flat", "unrealized_pnl": "0",
+                                   "notional_ratio": None, "ratio_drift_pct": None, "open_orders": 0}),
+            "funding": v2_block({"hourly_rates": {c: "0.00001" for c in coins},
+                                 "annualized_pct": {c: "8.76" for c in coins},
+                                 "daily_estimate": None,
+                                 "window_start": "2026-10-17T08:00:00Z",
+                                 "window_end": "2026-10-19T08:00:00Z",
+                                 "window_complete": True, "actual_48h_net": "0",
+                                 "recent_payments": []}),
+            "ratio": v2_block({"live": "0.0005", "latest_close": "0.00049", "ma30": "0.0005",
+                               "vs_ma30_pct": "-2.0", "as_of_date": "2026-10-18", "points": []}),
+            "unlocks": None if not descriptor["unlocks_enabled"] else v2_block({"anchors": [], "note": "n"}),
+        },
+    }
+    if mutate:
+        mutate(snapshot)
+    return snapshot
+
+
+@pytest.fixture
+def runner(monkeypatch):
+    calls = []
+
+    def install(func):
+        def fake(collect_argv):
+            calls.append(list(collect_argv))
+            return func(collect_argv)
+        monkeypatch.setattr(pairs, '_run_dashboard', fake)
+        return calls
+    return install
+
+
+def test_pair_dashboard_happy_path_and_cache(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+    calls = runner(lambda argv: v2_snapshot(nbis, revision))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+
+    first = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    assert first.status_code == 200
+    body = first.json()['data']
+    assert body['schema_version'] == 2
+    assert calls == [["--pair", "nbis-crwv"]]
+
+    second = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    assert second.status_code == 200
+    assert len(calls) == 1  # 缓存命中，不再起子进程
+
+
+def test_unknown_or_disabled_pair_is_404(client, runner, monkeypatch):
+    write_config(client)
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    revision, _ = pairs.load_pairs()
+
+    def respond(argv):
+        return v2_snapshot(descriptor_of(client, argv[1]), revision)
+    calls = runner(respond)
+    assert client[0].get('/api/v1/hyperliquid/pairs/nope/dashboard').status_code == 404
+    assert client[0].get('/api/v1/hyperliquid/pairs/hype-btc/dashboard').status_code == 200
+    assert calls == [["--pair", "hype-btc"]]
+    data = json.loads(json.dumps(VALID))
+    data['pairs'][1]['enabled'] = False
+    write_config(client, data)
+    assert client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').status_code == 404
+
+
+@pytest.mark.parametrize('mutate,expect_detail', [
+    (lambda s: s.update(schema_version=1), '快照版本不受支持'),
+    (lambda s: s.update(config_revision='0' * 64), '配置已变更，请重试'),
+    (lambda s: s['pair'].update(account_address='0x' + '9' * 40), '快照身份与配置不符'),
+    (lambda s: s['pair'].update(network='testnet'), '快照身份与配置不符'),
+])
+def test_identity_and_revision_mismatch_is_503(client, monkeypatch, runner, mutate, expect_detail):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+    calls = runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    response = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    assert response.status_code == 503
+    assert response.json()['detail'] == expect_detail
+    assert calls == [["--pair", "nbis-crwv"]]  # 失败不进缓存，但本次确实发起了采集
+
+
+def test_failed_validation_not_cached(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+    calls = runner(lambda argv: v2_snapshot(nbis, '9' * 64))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    assert client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').status_code == 503
+    calls.clear()
+    runner(lambda argv: v2_snapshot(nbis, revision))
+    assert client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').status_code == 200
+
+
+def test_bad_decimal_block_becomes_unavailable(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+
+    def mutate(s):
+        s['blocks']['funding']['hourly_rates']['xyz:NBIS'] = 'NaN'
+    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
+    funding = body['blocks']['funding']
+    assert funding['status'] == 'unavailable'
+    assert funding['diagnostics']
+    assert body['blocks']['ratio']['status'] == 'ok'
+
+
+def test_null_items_preserved_not_coerced(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+    runner(lambda argv: v2_snapshot(nbis, revision, lambda s: s['blocks']['positions'].__setitem__('items', None)))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    positions = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']['blocks']['positions']
+    assert positions['status'] == 'ok'
+    assert positions['items'] is None
+
+
+def test_all_applicable_unavailable_is_503(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+
+    def mutate(s):
+        for name in ('account', 'positions', 'funding', 'ratio'):
+            s['blocks'][name] = {"status": "unavailable", "queried_at": TS,
+                                 "source_queries": {}, "diagnostics": ["x"] * 4}
+    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    response = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    assert response.status_code == 503
+    assert response.json()['detail'] == '看板数据暂不可用'
+
+
+def test_unlocks_block_semantics(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+
+    def respond(argv):
+        descriptor = descriptor_of(client, argv[1])
+        snap = v2_snapshot(descriptor, revision)
+        if descriptor['unlocks_enabled']:
+            snap['blocks']['unlocks'] = None  # 启用时返回 null：契约违反，规范为 unavailable
+        return snap
+
+    runner(respond)
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    hype_body = client[0].get('/api/v1/hyperliquid/pairs/hype-btc/dashboard').json()['data']
+    assert hype_body['blocks']['unlocks']['status'] == 'unavailable'  # null 被规范化
+    nbis_body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
+    assert nbis_body['blocks']['unlocks'] is None  # 未启用解锁时保持 null
+
+
+def test_announcements_endpoint(client, monkeypatch, runner):
+    write_config(client)
+    payload = {
+        "schema_version": 2, "queried_at": TS,
+        "block": v2_block({"items": None}),
+    }
+    calls = runner(lambda argv: payload)
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    response = client[0].get('/api/v1/hyperliquid/announcements')
+    assert response.status_code == 200
+    body = response.json()['data']
+    assert body['block']['items'] is None  # null 不伪装成空数组
+    assert calls == [["--announcements"]]
+
+
+def test_internal_error_not_exposed(client, monkeypatch, runner):
+    write_config(client)
+
+    def boom(argv):
+        from web.services.hyperliquid_service import HyperliquidUnavailable
+        raise HyperliquidUnavailable('internal /home/vinci/secret detail')
+    runner(boom)
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    response = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    assert response.status_code == 503
+    assert 'secret' not in response.json()['detail']
+    assert response.json()['detail'] == 'Hyperliquid pair 看板暂不可用'

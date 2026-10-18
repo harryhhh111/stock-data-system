@@ -1,12 +1,22 @@
-"""v2 多 pair 看板：服务端 JSON 配置校验、目录与配置修订号。"""
+"""v2 多 pair 看板：服务端 JSON 配置校验、目录、快照采集与隔离缓存。"""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
+import subprocess
 import threading
+import time
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from web.services.hyperliquid_service import (  # 共享有界子进程捕获与安全异常
+    PROC_TIMEOUT_SECONDS,
+    HyperliquidUnavailable,
+    _communicate_bounded,
+)
 
 CONFIG_VERSION = 1
 SCHEMA_VERSION = 2
@@ -155,8 +165,7 @@ def _validate(raw: bytes) -> list[tuple[dict, bool]]:
     return [_validate_pair(entry, seen_ids) for entry in data["pairs"]]
 
 
-def load_pairs() -> tuple[str, list[dict]]:
-    """返回 (config_revision, 启用 pair 目录)。配置按内容 SHA-256 缓存。"""
+def _read_config() -> tuple[bytes, str]:
     path = os.environ.get("STOCK_HL_PAIRS_CONFIG", "").strip()
     if not path:
         message = "未配置 STOCK_HL_PAIRS_CONFIG"
@@ -165,7 +174,12 @@ def load_pairs() -> tuple[str, list[dict]]:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise PairsConfigError(f"读取 pair 配置失败: {exc}") from exc
-    revision = hashlib.sha256(raw).hexdigest()
+    return raw, hashlib.sha256(raw).hexdigest()
+
+
+def load_pairs() -> tuple[str, list[dict]]:
+    """返回 (config_revision, 启用 pair 目录)。配置按内容 SHA-256 缓存。"""
+    raw, revision = _read_config()
     with _lock:
         if _cache["revision"] == revision:
             return revision, _cache["pairs"]
@@ -180,3 +194,380 @@ def clear_cache() -> None:
     with _lock:
         _cache["revision"] = None
         _cache["pairs"] = None
+
+
+# ─── v2 快照采集（Stage B） ───────────────────────────────
+
+SNAPSHOT_CACHE_TTL_SECONDS = 30
+MAX_COLLECTOR_PROCESSES = 2
+BLOCK_NAMES = ("account", "positions", "funding", "ratio", "unlocks")
+
+STATUS_VALUES = ("ok", "partial", "unavailable")
+POSITION_STATES = ("flat", "single_leg", "opposite", "same_direction", "unknown")
+SIDES = ("long", "short")
+MARGIN_MODES = ("cross", "isolated")
+EQUITY_SCOPES = ("perp_dex", "account", "unavailable")
+DIRECTIONS = ("receive", "pay", "flat")
+
+_collector_sem = threading.Semaphore(MAX_COLLECTOR_PROCESSES)
+_key_locks: dict = {}
+_key_locks_guard = threading.Lock()
+_snapshot_cache: dict = {}
+_announcements_cache: dict = {}
+
+
+def _decimal_string(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        number = Decimal(value)
+    except InvalidOperation:
+        return False
+    return number.is_finite()
+
+
+def _non_negative_decimal(value) -> bool:
+    return _decimal_string(value) and Decimal(value) >= 0
+
+
+def _timestamp(value) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _date_string(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _key_lock(key: str) -> threading.Lock:
+    with _key_locks_guard:
+        if key not in _key_locks:
+            _key_locks[key] = threading.Lock()
+        return _key_locks[key]
+
+
+def clear_runtime_cache() -> None:
+    _snapshot_cache.clear()
+    _announcements_cache.clear()
+
+
+def _run_dashboard(collect_argv: list[str]) -> dict:
+    """执行 hl-trader dashboard 子命令并返回解析后的 JSON。调用前后核对配置修订号。"""
+    bin_path = os.environ.get("STOCK_HL_TRADER_BIN", "").strip()
+    config_path = os.environ.get("STOCK_HL_PAIRS_CONFIG", "").strip()
+    if not bin_path:
+        raise HyperliquidUnavailable(
+            "未配置 STOCK_HL_TRADER_BIN", public="未配置 STOCK_HL_TRADER_BIN",
+        )
+    _raw, revision_before = _read_config()
+    argv = [bin_path, "--config", config_path, "dashboard", *collect_argv, "--json"]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError:
+        raise HyperliquidUnavailable(f"无法执行 hl-trader: argv={argv!r}")
+    try:
+        stdout, _stderr = _communicate_bounded(proc, PROC_TIMEOUT_SECONDS)
+        proc.wait(timeout=5)
+    except HyperliquidUnavailable:
+        raise
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        proc.wait()
+        raise HyperliquidUnavailable("hl-trader 输出结束后不退出", public="hl-trader 运行失败") from exc
+    if proc.returncode != 0:
+        raise HyperliquidUnavailable(f"hl-trader 退出码 {proc.returncode}: {_stderr.strip()[:200]}")
+    try:
+        snapshot = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise HyperliquidUnavailable("hl-trader 输出不是合法 JSON", public="hl-trader 快照不是合法 JSON")
+    if not isinstance(snapshot, dict):
+        raise HyperliquidUnavailable("hl-trader 输出不是 JSON 对象", public="hl-trader 快照不是合法 JSON")
+    _raw_after, revision_after = _read_config()
+    if revision_after != revision_before:
+        raise HyperliquidUnavailable(
+            "pair 配置在调用中途被替换", public="配置已变更，请重试",
+        )
+    return snapshot
+
+
+# ── 契约校验 ──────────────────────────────────────────────
+
+
+def _unavailable_block(reason: str, fallback_queried_at: str) -> dict:
+    return {
+        "status": "unavailable",
+        "queried_at": fallback_queried_at,
+        "source_queries": {},
+        "diagnostics": [reason],
+    }
+
+
+def _valid_block_wrapper(block, fallback_queried_at: str) -> bool:
+    if not isinstance(block, dict):
+        return False
+    if block.get("status") not in STATUS_VALUES:
+        return False
+    if not _timestamp(block.get("queried_at")):
+        return False
+    sources = block.get("source_queries")
+    if not isinstance(sources, dict):
+        return False
+    for query in sources.values():
+        if not isinstance(query, dict):
+            return False
+        if query.get("status") not in ("ok", "unavailable"):
+            return False
+        when = query.get("queried_at")
+        if when is not None and not _timestamp(when):
+            return False
+    if not isinstance(block.get("diagnostics"), list):
+        return False
+    return True
+
+
+def _valid_position(item, coins: set) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("coin") not in coins or item.get("side") not in SIDES:
+        return False
+    if not _non_negative_decimal(item.get("size")):
+        return False
+    for key in ("entry_px", "mark_px", "unrealized_pnl", "margin_used", "liquidation_px"):
+        if item.get(key) is not None and not _decimal_string(item[key]):
+            return False
+    if item.get("notional") is not None and not _non_negative_decimal(item["notional"]):
+        return False
+    if item.get("margin_mode") is not None and item.get("margin_mode") not in MARGIN_MODES:
+        return False
+    return True
+
+
+def _validate_block_data(name: str, data, coins: tuple) -> str | None:
+    """返回失败原因；None 表示通过。"""
+    if not isinstance(data, dict):
+        return f"{name} 数据不是对象"
+    if name == "account":
+        if data.get("account_mode") is not None and not isinstance(data["account_mode"], str):
+            return "account_mode 类型错误"
+        if data.get("equity") is not None and not _decimal_string(data["equity"]):
+            return "equity 不是有限十进制字符串"
+        if data.get("equity_scope") not in EQUITY_SCOPES:
+            return "equity_scope 枚举非法"
+    elif name == "positions":
+        items = data.get("items")
+        if items is not None:
+            if not isinstance(items, list) or any(not _valid_position(i, set(coins)) for i in items):
+                return "持仓条目非法"
+        if data.get("position_state") not in POSITION_STATES:
+            return "position_state 枚举非法"
+        for key in ("unrealized_pnl", "notional_ratio", "ratio_drift_pct"):
+            if data.get(key) is not None and not _decimal_string(data[key]):
+                return f"{key} 不是有限十进制字符串"
+        if data.get("open_orders") is not None and (
+                type(data["open_orders"]) is not int or data["open_orders"] < 0):
+            return "open_orders 非法"
+    elif name == "funding":
+        coin_set = set(coins)
+        for key in ("hourly_rates", "annualized_pct"):
+            rates = data.get(key)
+            if (not isinstance(rates, dict) or set(rates) != coin_set
+                    or any(v is not None and not _decimal_string(v) for v in rates.values())):
+                return f"{key} 必须恰好覆盖配置两腿且为有限十进制或 null"
+        estimate = data.get("daily_estimate")
+        if estimate is not None:
+            if (not isinstance(estimate, dict)
+                    or estimate.get("direction") not in DIRECTIONS
+                    or not _non_negative_decimal(estimate.get("amount"))):
+                return "daily_estimate 非法"
+        if not _timestamp(data.get("window_start")) or not _timestamp(data.get("window_end")):
+            return "资金费窗口起止必须是 UTC 时间"
+        if type(data.get("window_complete")) is not bool:
+            return "window_complete 必须是布尔值"
+        if data.get("actual_48h_net") is not None and not _decimal_string(data["actual_48h_net"]):
+            return "actual_48h_net 不是有限十进制字符串"
+        payments = data.get("recent_payments")
+        if payments is not None:
+            if (not isinstance(payments, list) or len(payments) > 3
+                    or any(not isinstance(p, dict)
+                           or p.get("coin") not in coin_set
+                           or not _timestamp(p.get("time"))
+                           or not _decimal_string(p.get("usdc"))
+                           or not _decimal_string(p.get("rate"))
+                           for p in payments)):
+                return "recent_payments 非法"
+    elif name == "ratio":
+        for key in ("live", "latest_close", "ma30", "vs_ma30_pct"):
+            if data.get(key) is not None and not _decimal_string(data[key]):
+                return f"{key} 不是有限十进制字符串"
+        if data.get("as_of_date") is not None and not _date_string(data["as_of_date"]):
+            return "as_of_date 不是合法日期"
+        points = data.get("points")
+        if points is not None:
+            for point in points:
+                if (not isinstance(point, dict)
+                        or not _date_string(point.get("date"))
+                        or any(point.get(k) is not None and not _decimal_string(point[k])
+                               for k in ("first_close", "second_close", "ratio", "ma30"))):
+                    return "比价序列点非法"
+    elif name == "unlocks":
+        anchors = data.get("anchors")
+        if not isinstance(anchors, list):
+            return "anchors 必须是数组"
+        for anchor in anchors:
+            if (not isinstance(anchor, dict)
+                    or not _date_string(anchor.get("date"))
+                    or type(anchor.get("days_ahead")) is not int or anchor["days_ahead"] < 0
+                    or not isinstance(anchor.get("label"), str)
+                    or not isinstance(anchor.get("source_url"), str)
+                    or not _date_string(anchor.get("verified_utc"))):
+                return "解锁锚点非法"
+        if not isinstance(data.get("note"), str):
+            return "note 必须是字符串"
+    return None
+
+
+def _validate_v2_snapshot(snapshot: dict, descriptor: dict, revision: str) -> dict:
+    if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] != 2:
+        raise HyperliquidUnavailable(
+            f"schema_version 不是 2: {snapshot.get('schema_version')!r}",
+            public="快照版本不受支持",
+        )
+    if snapshot.get("config_revision") != revision:
+        raise HyperliquidUnavailable(
+            "快照 config_revision 与当前配置不一致", public="配置已变更，请重试",
+        )
+    if not _timestamp(snapshot.get("queried_at")):
+        raise HyperliquidUnavailable("快照缺少 queried_at", public="快照缺少 queried_at")
+
+    pair = snapshot.get("pair")
+    expected_account = (descriptor["account_address"] or "").lower()
+    if (not isinstance(pair, dict)
+            or pair.get("id") != descriptor["id"]
+            or pair.get("network") != descriptor["network"]
+            or pair.get("dex") != descriptor["dex"]
+            or pair.get("coins") != list(descriptor["coins"])
+            or str(pair.get("account_address") or "").lower() != expected_account):
+        raise HyperliquidUnavailable(
+            "快照 pair 身份与目录不符", public="快照身份与配置不符",
+        )
+
+    blocks = snapshot.get("blocks")
+    if not isinstance(blocks, dict):
+        raise HyperliquidUnavailable("快照缺少 blocks", public="快照结构非法")
+    for name in BLOCK_NAMES:
+        if name not in blocks:
+            blocks[name] = _unavailable_block(f"快照缺少 {name} 区块", snapshot["queried_at"])
+
+    coins = tuple(descriptor["coins"])
+    applicable_unavailable = 0
+    for name in BLOCK_NAMES:
+        block = blocks[name]
+        if name == "unlocks" and not descriptor["unlocks_enabled"]:
+            if block is not None:
+                blocks[name] = _unavailable_block("该 pair 未启用解锁锚点", snapshot["queried_at"])
+            continue
+        if block is None:
+            block = _unavailable_block(f"{name} 区块为 null", snapshot["queried_at"])
+        elif not _valid_block_wrapper(block, snapshot["queried_at"]):
+            block = _unavailable_block(f"{name} 区块结构非法", snapshot["queried_at"])
+        else:
+            data = {k: v for k, v in block.items()
+                    if k not in ("status", "queried_at", "source_queries", "diagnostics")}
+            reason = _validate_block_data(name, data, coins)
+            if reason:
+                block = _unavailable_block(reason, snapshot["queried_at"])
+        blocks[name] = block
+        if name != "unlocks" and block["status"] == "unavailable":
+            applicable_unavailable += 1
+    if applicable_unavailable == len(BLOCK_NAMES) - 1:
+        raise HyperliquidUnavailable("全部适用区块不可用", public="看板数据暂不可用")
+    return snapshot
+
+
+def _validate_announcements(payload: dict, revision: str) -> dict:
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 2:
+        raise HyperliquidUnavailable("公告 schema_version 不是 2", public="快照版本不受支持")
+    if not _timestamp(payload.get("queried_at")):
+        raise HyperliquidUnavailable("公告缺少 queried_at", public="快照缺少 queried_at")
+    block = payload.get("block")
+    if not _valid_block_wrapper(block, payload["queried_at"]):
+        raise HyperliquidUnavailable("公告区块结构非法", public="快照结构非法")
+    items = block.get("items")
+    if items is not None:
+        for item in items:
+            if (not isinstance(item, dict)
+                    or item.get("kind") not in ("general", "api")
+                    or not isinstance(item.get("text"), str)
+                    or (item.get("published_at") is not None and not _timestamp(item["published_at"]))
+                    or not isinstance(item.get("url"), str)
+                    or not isinstance(item.get("source"), str)):
+                raise HyperliquidUnavailable("公告条目非法", public="快照结构非法")
+    return payload
+
+
+# ── 缓存与入口 ────────────────────────────────────────────
+
+
+def _cache_key(kind: str, revision: str, descriptor: dict | None) -> str:
+    if descriptor is None:
+        return f"announcements:{revision}"
+    account = descriptor["account_address"] or "null"
+    return ":".join([kind, revision, descriptor["network"], account,
+                     descriptor["dex"], ",".join(descriptor["coins"]), descriptor["id"]])
+
+
+def _cached(cache: dict, key: str):
+    entry = cache.get(key)
+    if entry and time.monotonic() < entry["expires_at"]:
+        return entry["snapshot"]
+    return None
+
+
+def get_pair_dashboard(pair_id: str) -> dict:
+    revision, pairs = load_pairs()
+    descriptor = next((p for p in pairs if p["id"] == pair_id), None)
+    if descriptor is None:
+        raise LookupError(f"未知或停用的 pair: {pair_id}")
+    key = _cache_key("pair", revision, descriptor)
+    lock = _key_lock(key)
+    with lock:
+        hit = _cached(_snapshot_cache, key)
+        if hit is not None:
+            return hit
+        with _collector_sem:
+            snapshot = _run_dashboard(["--pair", pair_id])
+            snapshot = _validate_v2_snapshot(snapshot, descriptor, revision)
+            _snapshot_cache[key] = {
+                "snapshot": snapshot,
+                "expires_at": time.monotonic() + SNAPSHOT_CACHE_TTL_SECONDS,
+            }
+            return snapshot
+
+
+def get_announcements() -> dict:
+    revision, _pairs = load_pairs()
+    key = _cache_key("announcements", revision, None)
+    lock = _key_lock(key)
+    with lock:
+        hit = _cached(_announcements_cache, key)
+        if hit is not None:
+            return hit
+        with _collector_sem:
+            payload = _run_dashboard(["--announcements"])
+            payload = _validate_announcements(payload, revision)
+            _announcements_cache[key] = {
+                "snapshot": payload,
+                "expires_at": time.monotonic() + SNAPSHOT_CACHE_TTL_SECONDS,
+            }
+            return payload
