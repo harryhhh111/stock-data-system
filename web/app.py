@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest, paper, strategy, storyline
-from web.routes import watchlist
+from web.routes import watchlist, hyperliquid
 
 
 def create_app() -> FastAPI:
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(strategy.router, prefix="/api/v1", tags=["strategy"])
     app.include_router(storyline.router, prefix="/api/v1", tags=["storyline"])
     app.include_router(watchlist.router, prefix="/api/v1", tags=["watchlist"])
+    app.include_router(hyperliquid.router, prefix="/api/v1", tags=["hyperliquid"])
 
     return app
 
