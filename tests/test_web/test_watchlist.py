@@ -86,6 +86,63 @@ def test_batch_market_boundary_and_missing(monkeypatch):
     assert reader.call_count == 1
 
 
+def test_canonical_code_formats():
+    c = service.canonical_code
+    assert c('US', 'aapl') == 'AAPL'
+    assert c('CN_HK', '2020.HK') == '02020'
+    assert c('CN_HK', '2020') == '02020'
+    assert c('CN_HK', ' 0700 ') == '00700'
+    assert c('CN_A', '600519.SH') == '600519'
+    assert c('CN_A', '000001.SZ') == '000001'
+    # 不匹配市场规则时原样返回（仅大写）
+    assert c('CN_HK', 'BRK.B') == 'BRK.B'
+    assert c('CN_HK', '20201') == '20201'
+
+
+def test_quote_batch_normalizes_lookup_but_keys_by_request(monkeypatch):
+    monkeypatch.setattr(service.config.scheduler, 'markets', ['CN_HK'])
+    seen = {}
+    def reader(sql, params=()):
+        seen['params'] = params
+        return [{'stock_code': '02020', **row} for row in quotes(75.45, 77.95)]
+    monkeypatch.setattr(service, 'read_rows', reader)
+    result = service.quote_batch('CN_HK', ['2020.HK'])
+    # 查询用规范化代码，响应键仍是请求原码（前端按池内代码合并不错位）
+    assert seen['params'][0] == ['02020']
+    assert result['quotes'][0]['stock_code'] == '2020.HK'
+    assert result['quotes'][0]['close'] == 77.95
+    assert result['quotes'][0]['status'] == 'ok'
+
+
+def test_save_item_normalizes_stock_code(monkeypatch):
+    captured = {}
+    class FakeCursor:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def execute(self, sql, params):
+            captured['params'] = params
+        def fetchone(self):
+            return (42,)
+    class FakeConn:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def cursor(self):
+            return FakeCursor()
+        def commit(self):
+            pass
+    monkeypatch.setattr(service, 'Connection', FakeConn)
+    data = {'market': 'CN_HK', 'stock_code': '2020.HK', 'stock_name': '安踏体育',
+            'group_name': '', 'note': '', 'research_url': ''}
+    assert service.save_item(data) == {'id': 42}
+    assert captured['params'][1] == '02020'
+    # 调用方的 dict 不被就地改动
+    assert data['stock_code'] == '2020.HK'
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv('STOCK_WATCHLIST_ADMIN_TOKEN', 'test-token-for-watchlist-123456')
