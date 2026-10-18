@@ -1,4 +1,5 @@
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flame, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -9,24 +10,33 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import {
   accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
+import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import { hyperliquidPairsApi, ApiError } from '@/lib/api/client';
 import type { HlAnnouncementsBlock, HlPairDescriptor } from '@/lib/types/hyperliquid';
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : '请求失败';
 
 function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revision: string }) {
+  const qc = useQueryClient();
   const query = useQuery({
     queryKey: ['hl-pair', revision, descriptor.id],
     queryFn: () => hyperliquidPairsApi.pairDashboard(descriptor.id),
     staleTime: 30_000,
     retry: false,
-    placeholderData: keepPreviousData,
     refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
   const snap = query.data;
-  const positions = snap?.blocks.positions;
-  const funding = snap?.blocks.funding;
-  const ratio = snap?.blocks.ratio;
+  // R2：身份检查通过前不渲染任何快照数据；不匹配时刷新目录一次（受控，不循环）
+  const identityOk = snap != null && snapshotIdentityMatches(snap, revision, descriptor);
+  useEffect(() => {
+    if (snap != null && !identityOk) {
+      qc.invalidateQueries({ queryKey: ['hl-directory'] });
+    }
+  }, [snap, identityOk, qc]);
+  const positions = identityOk ? snap?.blocks.positions : undefined;
+  const funding = identityOk ? snap?.blocks.funding : undefined;
+  const ratio = identityOk ? snap?.blocks.ratio : undefined;
 
   const legNotional = (coin: string) => {
     if (!positions || positions.items == null) return '—';
@@ -58,7 +68,8 @@ function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revi
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {query.isError && !snap && <p className="text-rose-600" role="alert">{errorText(query.error)}</p>}
-        {snap && (
+        {snap && !identityOk && <p className="text-sm text-muted-foreground">目录身份更新中…</p>}
+        {snap && identityOk && (
           <>
             {query.isError && (
               <p className="text-amber-600">刷新失败（{errorText(query.error)}），显示上次读数（{formatTime(snap.queried_at)}）。</p>
@@ -99,6 +110,7 @@ function AnnouncementsSection() {
     staleTime: 30_000,
     retry: false,
     refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
   const block: HlAnnouncementsBlock | undefined = query.data?.block;
   return (
@@ -142,12 +154,13 @@ export function HyperliquidPage() {
     staleTime: 30_000,
     retry: false,
     refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
   const qc = useQueryClient();
-  const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['hl-directory'] });
-    qc.invalidateQueries({ queryKey: ['hl-pair'] });
-    qc.invalidateQueries({ queryKey: ['hl-announcements'] });
+  const refresh = async () => {
+    await qc.invalidateQueries({ queryKey: ['hl-directory'] });
+    await qc.invalidateQueries({ queryKey: ['hl-pair'] });
+    await qc.invalidateQueries({ queryKey: ['hl-announcements'] });
   };
 
   return (

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flame, RefreshCw } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -9,6 +9,7 @@ import {
   accountShort, dash, dexLabel, formatTime, NETWORK_LABEL, pctFromFraction, pctFromNumber,
   POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
+import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -170,7 +171,7 @@ function DetailBody({ snapshot }: { snapshot: HlPairSnapshot }) {
         <div>
           <p>{funding.window_complete ? '过去 48 小时实际净收付' : '已获取部分净收付（窗口不完整）'}：
             <span className="font-mono">{signed(funding.actual_48h_net)} USDC</span></p>
-          <p className="text-xs text-muted-foreground">窗口 {funding.window_start} → {funding.window_end}</p>
+          <p className="text-xs text-muted-foreground">窗口 {dash(funding.window_start)} → {dash(funding.window_end)}</p>
           {funding.recent_payments != null && funding.recent_payments.length > 0 && (
             <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
               {funding.recent_payments.map((p, i) => (
@@ -219,12 +220,15 @@ function DetailBody({ snapshot }: { snapshot: HlPairSnapshot }) {
 export function HyperliquidPairPage() {
   const { pairId = '' } = useParams();
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const retryRef = useRef(0);
   const directory = useQuery({
     queryKey: ['hl-directory'],
     queryFn: hyperliquidPairsApi.directory,
     staleTime: 30_000,
     retry: false,
     refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
   const descriptor: HlPairDescriptor | undefined = directory.data?.pairs.find((p) => p.id === pairId);
   const snapshotQuery = useQuery({
@@ -233,11 +237,22 @@ export function HyperliquidPairPage() {
     staleTime: 30_000,
     retry: false,
     refetchInterval: false,
-    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
     enabled: descriptor != null,
   });
   const snapshot = snapshotQuery.data;
-  const qc = useQueryClient();
+  // R2：完整身份检查；不匹配时刷新目录一次，持续不匹配明确报错，不渲染旧身份数据
+  const identityOk = snapshot != null && descriptor != null && directory.data != null
+    && snapshotIdentityMatches(snapshot, directory.data.config_revision, descriptor);
+  useEffect(() => {
+    if (snapshot != null && !identityOk && retryRef.current === 0) {
+      retryRef.current += 1;
+      qc.invalidateQueries({ queryKey: ['hl-directory'] });
+    }
+  }, [snapshot, identityOk, qc]);
+  useEffect(() => {
+    if (identityOk) retryRef.current = 0;
+  }, [identityOk, pairId]);
 
   return (
     <div className="space-y-4">
@@ -248,9 +263,9 @@ export function HyperliquidPairPage() {
             value={pairId} onChange={(e) => navigate(`/hyperliquid/pairs/${e.target.value}`)}>
             {(directory.data?.pairs ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
-          <Button variant="outline" onClick={() => {
-            qc.invalidateQueries({ queryKey: ['hl-directory'] });
-            qc.invalidateQueries({ queryKey: ['hl-pair'] });
+          <Button variant="outline" onClick={async () => {
+            await qc.invalidateQueries({ queryKey: ['hl-directory'] });
+            await qc.invalidateQueries({ queryKey: ['hl-pair'] });
           }} disabled={snapshotQuery.isFetching}>
             <RefreshCw className={`w-4 h-4 mr-2 ${snapshotQuery.isFetching ? 'animate-spin' : ''}`} />
             {snapshotQuery.isFetching ? '刷新中…' : '刷新'}
@@ -274,7 +289,7 @@ export function HyperliquidPairPage() {
             {descriptor.account_address == null
               ? <Badge variant="secondary" className="bg-amber-500/10 text-amber-600">账户未配置，仅公开行情</Badge>
               : <span>账户 <span className="font-mono" title={descriptor.account_address}>{accountShort(descriptor.account_address)}</span></span>}
-            {snapshot && <span>查询时间 <span className="font-mono">{formatTime(snapshot.queried_at)}</span></span>}
+            {identityOk && <span>查询时间 <span className="font-mono">{formatTime(snapshot!.queried_at)}</span></span>}
           </div>
 
           {snapshotQuery.isPending && <p className="text-muted-foreground">读取快照…</p>}
@@ -283,10 +298,17 @@ export function HyperliquidPairPage() {
               快照加载失败:{errorText(snapshotQuery.error)}
             </CardContent></Card>
           )}
-          {snapshot && snapshot.pair.account_address === descriptor.account_address && (
+          {snapshot && !identityOk && (
+            retryRef.current === 0
+              ? <p className="text-muted-foreground">正在核对数据身份…</p>
+              : <Card><CardContent className="py-10 text-center text-rose-600" role="alert">
+                  快照身份（配置修订、账户、网络或合约）与当前目录持续不一致，已停止展示旧数据。
+                </CardContent></Card>
+          )}
+          {snapshot && identityOk && (
             <>
               {snapshotQuery.isError && (
-                <p className="text-sm text-amber-600" role="alert">刷新失败（{errorText(snapshotQuery.error)}），显示上次读数。</p>
+                <p className="text-sm text-amber-600" role="alert">刷新失败（{errorText(snapshotQuery.error)}），显示上次读数（{formatTime(snapshot.queried_at)}）。</p>
               )}
               <DetailBody snapshot={snapshot} />
             </>
