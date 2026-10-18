@@ -17,7 +17,7 @@ export interface HlPosition {
 
 export interface HlPositionsBlock extends HlBlock {
   equity: string | null;
-  positions: HlPosition[];
+  positions: HlPosition[] | null;
   notional_ratio: string | null;
   ratio_drift: string | null;
   action_state: string | null;
@@ -34,7 +34,7 @@ export interface HlFundingBlock extends HlBlock {
   window_end: string | null;
   window_complete: boolean | null;
   actual_48h_net: string | null;
-  recent_payments: HlFundingPayment[];
+  recent_payments: HlFundingPayment[] | null;
 }
 
 export interface HlRatioBlock extends HlBlock {
@@ -53,7 +53,7 @@ export interface HlUnlockAnchor {
 }
 
 export interface HlUnlocksBlock extends HlBlock {
-  anchors: HlUnlockAnchor[];
+  anchors: HlUnlockAnchor[] | null;
   note: string;
 }
 
@@ -66,7 +66,7 @@ export interface HlAnnouncement {
 }
 
 export interface HlAnnouncementsBlock extends HlBlock {
-  items: HlAnnouncement[];
+  items: HlAnnouncement[] | null;
 }
 
 export interface HlSnapshot {

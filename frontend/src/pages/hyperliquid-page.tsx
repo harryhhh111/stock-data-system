@@ -45,10 +45,11 @@ function BlockHeader({ title, block, hint }: { title: string; block: HlBlock; hi
 }
 
 function Diagnostics({ block }: { block: HlBlock }) {
-  if (!block.diagnostics.length) return null;
+  const diagnostics = block.diagnostics ?? [];
+  if (!diagnostics.length) return null;
   return (
     <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-      {block.diagnostics.map((d, i) => <li key={i}>· {d}</li>)}
+      {diagnostics.map((d, i) => <li key={i}>· {d}</li>)}
     </ul>
   );
 }
@@ -66,7 +67,9 @@ function PositionsCard({ block }: { block: HlPositionsBlock }) {
           <span>动作状态 <span className="font-mono">{dash(block.action_state)}</span></span>
           <span>挂单数 <span className="font-mono">{block.open_orders ?? '—'}</span></span>
         </div>
-        {block.positions.length > 0 && (
+        {block.positions == null
+          ? <p className="text-muted-foreground">持仓不可用</p>
+          : block.positions.length > 0 && (
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-muted-foreground">
               <th className="py-1">币种</th><th>方向</th><th>数量</th><th>标记价</th>
@@ -85,7 +88,7 @@ function PositionsCard({ block }: { block: HlPositionsBlock }) {
               </tr>
             ))}</tbody>
           </table>
-        )}
+          )}
         <Diagnostics block={block} />
       </CardContent>
     </Card>
@@ -93,7 +96,7 @@ function PositionsCard({ block }: { block: HlPositionsBlock }) {
 }
 
 function FundingCard({ block }: { block: HlFundingBlock }) {
-  const coins = Object.keys(block.hourly_rates);
+  const coins = Object.keys(block.hourly_rates ?? {});
   return (
     <Card>
       <BlockHeader title="资金费" block={block} hint="市场费率、日净收付估算与实际收付分别标注。" />
@@ -119,7 +122,7 @@ function FundingCard({ block }: { block: HlFundingBlock }) {
           {(block.window_start && block.window_end) && (
             <p className="text-xs text-muted-foreground">窗口 {block.window_start} → {block.window_end}</p>
           )}
-          {block.recent_payments.length > 0 && (
+          {block.recent_payments != null && block.recent_payments.length > 0 && (
             <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
               {block.recent_payments.map((p, i) => (
                 <li key={i} className="font-mono">
@@ -160,7 +163,9 @@ function UnlocksCard({ block }: { block: HlUnlocksBlock }) {
     <Card>
       <BlockHeader title="解锁锚点" block={block} hint="人工配置并核实的未来 7 天锚点。" />
       <CardContent className="space-y-2 text-sm">
-        {block.anchors.length > 0 ? (
+        {block.anchors == null
+          ? <p className="text-muted-foreground">解锁锚点不可用</p>
+          : block.anchors.length > 0 ? (
           <ul className="space-y-1.5">
             {block.anchors.map((a, i) => (
               <li key={i}>
@@ -183,7 +188,9 @@ function AnnouncementsCard({ block }: { block: HlAnnouncementsBlock }) {
     <Card>
       <BlockHeader title="官方动态" block={block} hint="Telegram 公开预览，仅最近可见消息，非完整历史。" />
       <CardContent className="space-y-2 text-sm">
-        {block.items.length > 0 ? (
+        {block.items == null
+          ? <p className="text-muted-foreground">公告不可用</p>
+          : block.items.length > 0 ? (
           <ul className="space-y-2">
             {block.items.map((a, i) => (
               <li key={i}>

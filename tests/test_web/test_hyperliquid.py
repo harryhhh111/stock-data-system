@@ -123,10 +123,26 @@ def test_invalid_block_status_becomes_unavailable(client, monkeypatch):
 
 
 def test_runner_failure_is_503(client, monkeypatch):
-    mock_runner(monkeypatch, error=service.HyperliquidUnavailable('hl-trader 超时（>30s）'))
+    mock_runner(monkeypatch, error=service.HyperliquidUnavailable('hl-trader 超时（>30s）', public='hl-trader 超时'))
     response = client.get('/api/v1/hyperliquid/dashboard')
     assert response.status_code == 503
     assert '超时' in response.json()['detail']
+
+
+def test_internal_error_detail_not_exposed(client, monkeypatch):
+    secret = 'internal /home/vinci/secret-path detail'
+    mock_runner(monkeypatch, error=service.HyperliquidUnavailable(secret))
+    response = client.get('/api/v1/hyperliquid/dashboard')
+    assert response.status_code == 503
+    detail = response.json()['detail']
+    assert secret not in detail
+    assert detail == 'Hyperliquid 看板服务暂不可用'
+
+
+def test_public_reason_exposed_when_marked(client, monkeypatch):
+    mock_runner(monkeypatch, error=service.HyperliquidUnavailable('internal noise', public='hl-trader 快照不是合法 JSON'))
+    response = client.get('/api/v1/hyperliquid/dashboard')
+    assert response.json()['detail'] == 'hl-trader 快照不是合法 JSON'
 
 
 def test_missing_env_config_is_503(client, monkeypatch):
@@ -151,32 +167,47 @@ def test_cache_expires(monkeypatch, client):
     assert runner.call_count == 2
 
 
-def test_run_hl_trader_rejects_nonzero_exit(client, monkeypatch):
-    proc = MagicMock(returncode=3, stderr='boom', stdout='{}')
-    monkeypatch.setattr(service.subprocess, 'run', MagicMock(return_value=proc))
-    with pytest.raises(service.HyperliquidUnavailable, match='退出码 3'):
-        service._run_hl_trader(BIN, CFG)
+@pytest.fixture
+def fake_bin(tmp_path):
+    def make(body: str) -> str:
+        path = tmp_path / 'hl-fake'
+        path.write_text('#!/bin/sh\n' + body + '\n', encoding='utf-8')
+        path.chmod(0o755)
+        return str(path)
+    return make
 
 
-def test_run_hl_trader_rejects_non_json_stdout(client, monkeypatch):
-    proc = MagicMock(returncode=0, stderr='', stdout='<html>not json</html>')
-    monkeypatch.setattr(service.subprocess, 'run', MagicMock(return_value=proc))
+def test_run_hl_trader_rejects_nonzero_exit(client, fake_bin):
+    bin_path = fake_bin('echo "internal /home/vinci/secret-path detail" >&2; exit 3')
+    with pytest.raises(service.HyperliquidUnavailable, match='退出码 3') as err:
+        service._run_hl_trader(bin_path, CFG)
+    assert 'secret-path' in str(err.value)  # 内部日志可含细节
+
+
+def test_run_hl_trader_rejects_non_json_stdout(client, fake_bin):
+    bin_path = fake_bin('echo not-json')
     with pytest.raises(service.HyperliquidUnavailable, match='不是合法 JSON'):
-        service._run_hl_trader(BIN, CFG)
+        service._run_hl_trader(bin_path, CFG)
 
 
-def test_run_hl_trader_rejects_oversized_stdout(client, monkeypatch):
-    proc = MagicMock(returncode=0, stderr='', stdout='{"pad":"' + 'x' * service.STDOUT_LIMIT_BYTES + '"}')
-    monkeypatch.setattr(service.subprocess, 'run', MagicMock(return_value=proc))
+def test_run_hl_trader_rejects_oversized_stdout(client, fake_bin):
+    bin_path = fake_bin('head -c 2097152 /dev/zero | tr "\\0" x; echo')
     with pytest.raises(service.HyperliquidUnavailable, match='1 MiB'):
-        service._run_hl_trader(BIN, CFG)
+        service._run_hl_trader(bin_path, CFG)
 
 
-def test_run_hl_trader_passes_args_without_shell(client, monkeypatch):
-    run = MagicMock(return_value=MagicMock(returncode=0, stderr='', stdout=json.dumps(full_snapshot())))
-    monkeypatch.setattr(service.subprocess, 'run', run)
-    snapshot = service._run_hl_trader(BIN, CFG)
-    args, kwargs = run.call_args
-    assert args[0] == [BIN, '--config', CFG, 'status', '--json']
-    assert 'shell' not in kwargs
-    assert snapshot['schema_version'] == 1
+def test_run_hl_trader_passes_snapshot_through(client, fake_bin, tmp_path):
+    snap_file = tmp_path / 'snap.json'
+    snap_file.write_text(json.dumps(full_snapshot(), ensure_ascii=False), encoding='utf-8')
+    bin_path = fake_bin(f'cat {snap_file}')
+    result = service._run_hl_trader(bin_path, CFG)
+    assert result['schema_version'] == 1
+    assert result['blocks']['funding']['window_complete'] is True
+
+
+def test_run_hl_trader_uses_argv_without_shell(client, fake_bin, tmp_path):
+    argv_log = tmp_path / 'argv.log'
+    bin_path = fake_bin(f'printf \'%s\\n\' "$@" > {argv_log}\necho "{{}}"')
+    result = service._run_hl_trader(bin_path, CFG)
+    assert result == {}
+    assert argv_log.read_text().splitlines() == ['--config', CFG, 'status', '--json']

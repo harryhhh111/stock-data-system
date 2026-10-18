@@ -15,7 +15,10 @@ def hyperliquid_dashboard():
     try:
         return ok(service.get_dashboard())
     except service.HyperliquidUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
+        if exc.public:
+            raise HTTPException(503, exc.public) from exc
+        logger.warning("hyperliquid dashboard unavailable: %s", exc)
+        raise HTTPException(503, "Hyperliquid 看板服务暂不可用") from exc
     except Exception:
         logger.exception("hyperliquid dashboard failed")
-        raise HTTPException(503, "Hyperliquid 看板服务不可用")
+        raise HTTPException(503, "Hyperliquid 看板服务暂不可用")
