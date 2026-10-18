@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flame, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -11,6 +11,9 @@ import {
   accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
+import {
+  hlDirectoryQueryOptions, hlPairQueryOptions, refreshHyperliquid,
+} from '@/components/hyperliquid/queries';
 import { hyperliquidPairsApi, ApiError } from '@/lib/api/client';
 import type { HlAnnouncementsBlock, HlPairDescriptor } from '@/lib/types/hyperliquid';
 
@@ -18,21 +21,17 @@ const errorText = (error: unknown) => error instanceof ApiError ? error.detail |
 
 function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revision: string }) {
   const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: ['hl-pair', revision, descriptor.id],
-    queryFn: () => hyperliquidPairsApi.pairDashboard(descriptor.id),
-    staleTime: 30_000,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-  });
+  const retryRef = useRef(0);
+  const query = useQuery(hlPairQueryOptions(revision, descriptor.id));
   const snap = query.data;
-  // R2：身份检查通过前不渲染任何快照数据；不匹配时刷新目录一次（受控，不循环）
+  // R2：身份检查通过前不渲染任何快照数据；持续不匹配时停止而不是循环刷新。
   const identityOk = snap != null && snapshotIdentityMatches(snap, revision, descriptor);
   useEffect(() => {
-    if (snap != null && !identityOk) {
-      qc.invalidateQueries({ queryKey: ['hl-directory'] });
+    if (snap != null && !identityOk && retryRef.current === 0) {
+      retryRef.current = 1;
+      void qc.invalidateQueries({ queryKey: ['hl-directory'] });
     }
+    if (identityOk) retryRef.current = 0;
   }, [snap, identityOk, qc]);
   const positions = identityOk ? snap?.blocks.positions : undefined;
   const funding = identityOk ? snap?.blocks.funding : undefined;
@@ -68,7 +67,9 @@ function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revi
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {query.isError && !snap && <p className="text-rose-600" role="alert">{errorText(query.error)}</p>}
-        {snap && !identityOk && <p className="text-sm text-muted-foreground">目录身份更新中…</p>}
+        {snap && !identityOk && (retryRef.current === 0
+          ? <p className="text-sm text-muted-foreground">目录身份更新中…</p>
+          : <p className="text-sm text-rose-600" role="alert">快照身份与当前目录持续不一致，已停止展示旧数据。</p>)}
         {snap && identityOk && (
           <>
             {query.isError && (
@@ -148,26 +149,16 @@ function AnnouncementsSection() {
 }
 
 export function HyperliquidPage() {
-  const directory = useQuery({
-    queryKey: ['hl-directory'],
-    queryFn: hyperliquidPairsApi.directory,
-    staleTime: 30_000,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-  });
+  const directory = useQuery(hlDirectoryQueryOptions());
   const qc = useQueryClient();
-  const refresh = async () => {
-    await qc.invalidateQueries({ queryKey: ['hl-directory'] });
-    await qc.invalidateQueries({ queryKey: ['hl-pair'] });
-    await qc.invalidateQueries({ queryKey: ['hl-announcements'] });
-  };
 
   return (
     <div className="space-y-4">
       <PageHeader icon={Flame} title="Hyperliquid"
         description="多 pair 主网只读看板。各卡片独立加载，互不阻塞；不设置跨 pair 总权益/总收益。">
-        <Button variant="outline" onClick={refresh} disabled={directory.isFetching}>
+        <Button variant="outline" onClick={() => {
+          void refreshHyperliquid(qc).catch(() => undefined);
+        }} disabled={directory.isFetching}>
           <RefreshCw className={`w-4 h-4 mr-2 ${directory.isFetching ? 'animate-spin' : ''}`} />
           {directory.isFetching ? '刷新中…' : '刷新'}
         </Button>

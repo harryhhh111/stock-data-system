@@ -10,10 +10,13 @@ import {
   POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
+import {
+  hlDirectoryQueryOptions, hlPairQueryOptions, refreshHyperliquid,
+} from '@/components/hyperliquid/queries';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { hyperliquidPairsApi, ApiError } from '@/lib/api/client';
+import { ApiError } from '@/lib/api/client';
 import type { HlPairSnapshot, HlPairDescriptor, HlRatioPoint } from '@/lib/types/hyperliquid';
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : '请求失败';
@@ -184,7 +187,9 @@ function DetailBody({ snapshot }: { snapshot: HlPairSnapshot }) {
 
       {unlocks ? (
         <BlockFrame title="解锁锚点" block={unlocks} hint="人工配置并核实；日历不等于实际申领。">
-          {unlocks.anchors.length > 0 ? (
+          {unlocks.status === 'unavailable' || !Array.isArray(unlocks.anchors) ? (
+            <p className="text-muted-foreground">解锁锚点不可用</p>
+          ) : unlocks.anchors.length > 0 ? (
             <ul className="space-y-1.5">
               {unlocks.anchors.map((a, i) => (
                 <li key={i}>
@@ -222,22 +227,10 @@ export function HyperliquidPairPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const retryRef = useRef(0);
-  const directory = useQuery({
-    queryKey: ['hl-directory'],
-    queryFn: hyperliquidPairsApi.directory,
-    staleTime: 30_000,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-  });
+  const directory = useQuery(hlDirectoryQueryOptions());
   const descriptor: HlPairDescriptor | undefined = directory.data?.pairs.find((p) => p.id === pairId);
   const snapshotQuery = useQuery({
-    queryKey: ['hl-pair', directory.data?.config_revision ?? 'no-revision', pairId],
-    queryFn: () => hyperliquidPairsApi.pairDashboard(pairId),
-    staleTime: 30_000,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
+    ...hlPairQueryOptions(directory.data?.config_revision ?? 'no-revision', pairId),
     enabled: descriptor != null,
   });
   const snapshot = snapshotQuery.data;
@@ -245,14 +238,17 @@ export function HyperliquidPairPage() {
   const identityOk = snapshot != null && descriptor != null && directory.data != null
     && snapshotIdentityMatches(snapshot, directory.data.config_revision, descriptor);
   useEffect(() => {
+    retryRef.current = 0;
+  }, [pairId]);
+  useEffect(() => {
     if (snapshot != null && !identityOk && retryRef.current === 0) {
-      retryRef.current += 1;
-      qc.invalidateQueries({ queryKey: ['hl-directory'] });
+      retryRef.current = 1;
+      void qc.invalidateQueries({ queryKey: ['hl-directory'] });
     }
   }, [snapshot, identityOk, qc]);
   useEffect(() => {
     if (identityOk) retryRef.current = 0;
-  }, [identityOk, pairId]);
+  }, [identityOk]);
 
   return (
     <div className="space-y-4">
@@ -263,9 +259,8 @@ export function HyperliquidPairPage() {
             value={pairId} onChange={(e) => navigate(`/hyperliquid/pairs/${e.target.value}`)}>
             {(directory.data?.pairs ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
-          <Button variant="outline" onClick={async () => {
-            await qc.invalidateQueries({ queryKey: ['hl-directory'] });
-            await qc.invalidateQueries({ queryKey: ['hl-pair'] });
+          <Button variant="outline" onClick={() => {
+            void refreshHyperliquid(qc, pairId).catch(() => undefined);
           }} disabled={snapshotQuery.isFetching}>
             <RefreshCw className={`w-4 h-4 mr-2 ${snapshotQuery.isFetching ? 'animate-spin' : ''}`} />
             {snapshotQuery.isFetching ? '刷新中…' : '刷新'}

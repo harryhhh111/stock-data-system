@@ -84,8 +84,8 @@ curl -s http://127.0.0.1:8000/api/v1/hyperliquid/announcements | head -c 400; ec
 ```sh
 # 后端（含真实子进程与共享 fixture 契约测试，全部离线）
 venv/bin/python -m pytest tests/test_web/test_hyperliquid.py tests/test_web/test_hyperliquid_pairs.py tests/test_web/test_hyperliquid_fixtures.py -q
-# 前端身份检查单测
-cd frontend && npm run test:hl-identity
+# 前端身份、QueryObserver/刷新顺序与页面渲染回归（复用同一共享 fixture）
+cd frontend && npm run test:hl
 # 生产构建
 cd frontend && VITE_CN_API_URL=/api/cn VITE_US_API_URL=/api/us npm run build
 ```
