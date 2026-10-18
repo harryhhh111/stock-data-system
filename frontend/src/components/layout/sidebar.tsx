@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils/cn";
 import { useUiStore } from "@/lib/store/ui-store";
-import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, Wallet, Target, Milestone, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, Wallet, Target, Milestone, ChevronsLeft, ChevronsRight, Flame } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const nav = [
@@ -10,6 +10,7 @@ const nav = [
   { to: "/strategy/fcf-roe", label: "FCF+ROE 价值", icon: Target },
   { to: "/backtest", label: "策略回测", icon: TrendingUp },
   { to: "/paper", label: "模拟盘", icon: Wallet },
+  { to: "/hyperliquid", label: "Hyperliquid", icon: Flame },
   { to: "/analyzer", label: "个股分析", icon: LineChart },
   { to: "/storyline", label: "故事线", icon: Milestone },
   { to: "/dashboard", label: "数据运维", icon: LayoutDashboard },

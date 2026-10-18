@@ -53,6 +53,11 @@ export async function apiFetch<T>(
   return json.data as T;
 }
 
+// ── Hyperliquid ──
+export const hyperliquidApi = {
+  dashboard: () => apiFetch<import('@/lib/types/hyperliquid').HlSnapshot>('/hyperliquid/dashboard', { market: 'US' }),
+};
+
 // ── Dashboard ──
 export const watchlistApi = {
   session: () => apiFetch<{ authenticated: boolean }>('/watchlist/session', { market: 'US' }),
