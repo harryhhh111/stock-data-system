@@ -1,5 +1,9 @@
 """Hyperliquid dashboard contract; mock runner, no live hl-trader or exchange."""
 import json
+import os
+import subprocess
+import time
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -211,3 +215,93 @@ def test_run_hl_trader_uses_argv_without_shell(client, fake_bin, tmp_path):
     result = service._run_hl_trader(bin_path, CFG)
     assert result == {}
     assert argv_log.read_text().splitlines() == ['--config', CFG, 'status', '--json']
+
+
+# ── 整改 B2（R5）：真实子进程的非阻塞双管道读取 ──────────────
+
+
+def run_child(script: str, timeout: int):
+    proc = subprocess.Popen(
+        [sys.executable, '-c', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    try:
+        out, err = service._communicate_bounded(proc, timeout)
+        return proc, out, err, time.monotonic() - started
+    except Exception:
+        proc.wait()
+        raise
+
+
+def test_both_pipes_drained_under_pressure():
+    """双管道交替大输出：阻塞式读取会死锁至超时，非阻塞必须快速完成。"""
+    script = (
+        "import sys,time\n"
+        "for i in range(200):\n"
+        "    sys.stdout.write('o'*2048); sys.stdout.flush()\n"
+        "    sys.stderr.write('e'*2048); sys.stderr.flush()\n"
+    )
+    proc, out, err, elapsed = run_child(script, 15)
+    assert proc.returncode == 0
+    assert len(out) == 200 * 2048 and len(err) == 200 * 2048
+    assert elapsed < 10
+
+
+def test_multibyte_chars_split_across_chunks():
+    script = (
+        "import sys,time\n"
+        "data='比价中文字符'*2000\n"
+        "for i in range(0,len(data),7):\n"
+        "    sys.stdout.write(data[i:i+7]); sys.stdout.flush(); time.sleep(0.001)\n"
+    )
+    proc, out, _err, _elapsed = run_child(script, 20)
+    assert proc.returncode == 0
+    assert '比价中文字符' in out and len(out) == len('比价中文字符' * 2000)
+
+
+def test_no_output_child():
+    proc, out, err, _e = run_child("pass", 10)
+    assert proc.returncode == 0 and out == '' and err == ''
+
+
+def test_oversized_output_kills_child(tmp_path):
+    pid_file = tmp_path / 'child.pid'
+    script = (
+        f"import os,pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "print('x' * (2 * 1024 * 1024))\n"
+    )
+    with pytest.raises(service.HyperliquidUnavailable, match='1 MiB'):
+        run_child(script, 15)
+    pid = int(pid_file.read_text())
+    with pytest.raises(OSError):
+        os.kill(pid, 0)  # 进程已被回收
+
+
+def test_child_closing_output_but_not_exiting_is_killed(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, 'PROC_TIMEOUT_SECONDS', 1)
+    pid_file = tmp_path / 'child2.pid'
+    script = (
+        f"import os,pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "os.close(1); os.close(2)\n"
+        "import time; time.sleep(60)\n"
+    )
+    with pytest.raises(service.HyperliquidUnavailable, match='超时'):
+        run_child(script, 1)
+    pid = int(pid_file.read_text())
+    with pytest.raises(OSError):
+        os.kill(pid, 0)
+
+
+def test_silent_child_timeout_reaps(tmp_path):
+    pid_file = tmp_path / 'child3.pid'
+    script = (
+        f"import os,pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "import time; time.sleep(60)\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(service.HyperliquidUnavailable, match='超时'):
+        run_child(script, 1)
+    assert time.monotonic() - started < 5
+    pid = int(pid_file.read_text())
+    with pytest.raises(OSError):
+        os.kill(pid, 0)

@@ -44,55 +44,84 @@ def _config() -> tuple[str, str, str]:
     return bin_path, config_path, expected
 
 
+def _reap_process(proc: subprocess.Popen) -> None:
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _communicate_bounded(proc: subprocess.Popen, timeout: int) -> tuple[str, str]:
-    """同时读 stdout/stderr，各自最多 STDOUT_LIMIT_BYTES；超时或超限即杀进程。"""
+    """二进制非阻塞双管道读取：selector 就绪后用 os.read 按字节累计限额。
+
+    读取与等待退出共用同一个 monotonic deadline；UTF-8 在完整收集后解码，
+    不会分块误切多字节字符。超时/超限/读异常均终止并回收子进程。
+    """
     sel = selectors.DefaultSelector()
-    buffers: dict[str, list[str]] = {}
-    for name, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr)):
-        if pipe is not None:
-            sel.register(pipe, selectors.EVENT_READ, name)
-            buffers[name] = []
-    sizes = {name: 0 for name in buffers}
-    deadline = time.monotonic() + timeout
-    while sel.get_map():
+    pipes = []
+    try:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                os.set_blocking(pipe.fileno(), False)
+                sel.register(pipe, selectors.EVENT_READ)
+                pipes.append(pipe)
+        buffers: dict = {pipe: bytearray() for pipe in pipes}
+        deadline = time.monotonic() + timeout
+        while sel.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _reap_process(proc)
+                raise HyperliquidUnavailable(f"hl-trader 超时（>{timeout}s）", public="hl-trader 超时")
+            for key, _ in sel.select(remaining):
+                pipe = key.fileobj
+                try:
+                    chunk = os.read(pipe.fileno(), 65536)
+                except BlockingIOError:
+                    continue
+                except OSError as exc:
+                    sel.unregister(pipe)
+                    continue
+                if not chunk:
+                    sel.unregister(pipe)
+                    continue
+                buffers[pipe] += chunk
+                if len(buffers[pipe]) > STDOUT_LIMIT_BYTES:
+                    which = "stdout" if pipe is proc.stdout else "stderr"
+                    _reap_process(proc)
+                    raise HyperliquidUnavailable(
+                        f"hl-trader {which} 超过 1 MiB 上限", public="hl-trader 输出超限",
+                    )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            proc.kill()
-            proc.wait()
+            _reap_process(proc)
             raise HyperliquidUnavailable(f"hl-trader 超时（>{timeout}s）", public="hl-trader 超时")
-        for key, _ in sel.select(remaining):
-            chunk = key.fileobj.read(65536)
-            if not chunk:
-                sel.unregister(key.fileobj)
-                continue
-            buffers[key.data].append(chunk)
-            sizes[key.data] += len(chunk.encode("utf-8", "ignore"))
-            if sizes[key.data] > STDOUT_LIMIT_BYTES:
-                proc.kill()
-                proc.wait()
-                raise HyperliquidUnavailable(
-                    f"hl-trader {key.data} 超过 1 MiB 上限", public="hl-trader 输出超限"
-                )
-    return "".join(buffers.get("stdout", [])), "".join(buffers.get("stderr", []))
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            _reap_process(proc)
+            raise HyperliquidUnavailable(f"hl-trader 超时（>{timeout}s）", public="hl-trader 超时") from exc
+        return (bytes(buffers.get(proc.stdout, b"")).decode("utf-8", "replace"),
+                bytes(buffers.get(proc.stderr, b"")).decode("utf-8", "replace"))
+    finally:
+        sel.close()
+        for pipe in pipes:
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
 
 def _run_hl_trader(bin_path: str, config_path: str) -> dict:
     argv = [bin_path, "--config", config_path, "status", "--json"]
     try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         raise HyperliquidUnavailable(f"无法执行 hl-trader: {exc}") from exc
-    try:
-        stdout, _stderr = _communicate_bounded(proc, PROC_TIMEOUT_SECONDS)
-        proc.wait(timeout=5)
-    except HyperliquidUnavailable:
-        raise
-    except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        raise HyperliquidUnavailable("hl-trader 输出结束后不退出", public="hl-trader 运行失败") from exc
+    stdout, _stderr = _communicate_bounded(proc, PROC_TIMEOUT_SECONDS)
     if proc.returncode != 0:
         raise HyperliquidUnavailable(
             f"hl-trader 退出码 {proc.returncode}: {_stderr.strip()[:200]}"

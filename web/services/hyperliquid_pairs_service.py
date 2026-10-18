@@ -273,18 +273,10 @@ def _run_dashboard(collect_argv: list[str]) -> dict:
     _raw, revision_before = _read_config()
     argv = [bin_path, "--config", config_path, "dashboard", *collect_argv, "--json"]
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError:
         raise HyperliquidUnavailable(f"无法执行 hl-trader: argv={argv!r}")
-    try:
-        stdout, _stderr = _communicate_bounded(proc, PROC_TIMEOUT_SECONDS)
-        proc.wait(timeout=5)
-    except HyperliquidUnavailable:
-        raise
-    except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        raise HyperliquidUnavailable("hl-trader 输出结束后不退出", public="hl-trader 运行失败") from exc
+    stdout, _stderr = _communicate_bounded(proc, PROC_TIMEOUT_SECONDS)
     if proc.returncode != 0:
         raise HyperliquidUnavailable(f"hl-trader 退出码 {proc.returncode}: {_stderr.strip()[:200]}")
     try:
@@ -303,17 +295,42 @@ def _run_dashboard(collect_argv: list[str]) -> dict:
 
 # ── 契约校验 ──────────────────────────────────────────────
 
+BLOCK_SOURCE_KEYS = {
+    "account": ("mode", "balances"),
+    "positions": ("positions", "orders", "market"),
+    "funding": ("positions", "market", "user_funding"),
+    "ratio": ("market", "candles_first", "candles_second"),
+    "unlocks": ("config",),
+    "announcements": ("general", "api"),
+}
 
-def _unavailable_block(reason: str, fallback_queried_at: str) -> dict:
-    return {
-        "status": "unavailable",
-        "queried_at": fallback_queried_at,
-        "source_queries": {},
-        "diagnostics": [reason],
-    }
+
+def _degraded_block(name: str, reason: str, fallback_queried_at: str, coins: tuple = ()) -> dict:
+    """按 block 类型的完整降级 DTO：字段齐全、未知值为 null、固定 source keys 保留。
+
+    不允许保留未验证的原始值；与 unlocks_enabled=false 时的 unlocks=null 语义区分。
+    """
+    sources = {key: {"status": "unavailable", "queried_at": None}
+               for key in BLOCK_SOURCE_KEYS[name]}
+    data = {
+        "account": {"account_mode": None, "equity": None, "equity_scope": "unavailable"},
+        "positions": {"items": None, "position_state": "unknown", "unrealized_pnl": None,
+                      "notional_ratio": None, "ratio_drift_pct": None, "open_orders": None},
+        "funding": {"hourly_rates": {coin: None for coin in coins},
+                    "annualized_pct": {coin: None for coin in coins},
+                    "daily_estimate": None, "window_start": None, "window_end": None,
+                    "window_complete": False, "actual_48h_net": None, "recent_payments": None},
+        "ratio": {"live": None, "latest_close": None, "as_of_date": None, "ma30": None,
+                  "vs_ma30_pct": None, "points": None},
+        "unlocks": {"anchors": [], "note": "日历预告不等于实际申领已发生"},
+    }[name]
+    block = {"status": "unavailable", "queried_at": fallback_queried_at,
+             "source_queries": sources, "diagnostics": [reason]}
+    block.update(data)
+    return block
 
 
-def _valid_block_wrapper(block, fallback_queried_at: str) -> bool:
+def _valid_block_wrapper(block, fallback_queried_at: str, name: str) -> bool:
     if not isinstance(block, dict):
         return False
     if block.get("status") not in STATUS_VALUES:
@@ -321,7 +338,7 @@ def _valid_block_wrapper(block, fallback_queried_at: str) -> bool:
     if not _timestamp(block.get("queried_at")):
         return False
     sources = block.get("source_queries")
-    if not isinstance(sources, dict):
+    if not isinstance(sources, dict) or set(sources) != set(BLOCK_SOURCE_KEYS[name]):
         return False
     for query in sources.values():
         if not isinstance(query, dict):
@@ -331,7 +348,10 @@ def _valid_block_wrapper(block, fallback_queried_at: str) -> bool:
         when = query.get("queried_at")
         if when is not None and not _timestamp(when):
             return False
-    if not isinstance(block.get("diagnostics"), list):
+    diagnostics = block.get("diagnostics")
+    if not isinstance(diagnostics, list) or not all(isinstance(d, str) for d in diagnostics):
+        return False
+    if block["status"] == "ok" and diagnostics:
         return False
     return True
 
@@ -390,22 +410,38 @@ def _validate_block_data(name: str, data, coins: tuple) -> str | None:
                     or estimate.get("direction") not in DIRECTIONS
                     or not _non_negative_decimal(estimate.get("amount"))):
                 return "daily_estimate 非法"
-        if not _timestamp(data.get("window_start")) or not _timestamp(data.get("window_end")):
+        start, end = data.get("window_start"), data.get("window_end")
+        if not _timestamp(start) or not _timestamp(end):
             return "资金费窗口起止必须是 UTC 时间"
+        start_dt = datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ")
+        end_dt = datetime.strptime(end, "%Y-%m-%dT%H:%M:%SZ")
+        if not start_dt < end_dt:
+            return "资金费窗口起止反向"
+        if (end_dt - start_dt).total_seconds() != 48 * 3600:
+            return "资金费窗口不是恰好 48 小时"
         if type(data.get("window_complete")) is not bool:
             return "window_complete 必须是布尔值"
         if data.get("actual_48h_net") is not None and not _decimal_string(data["actual_48h_net"]):
             return "actual_48h_net 不是有限十进制字符串"
         payments = data.get("recent_payments")
         if payments is not None:
-            if (not isinstance(payments, list) or len(payments) > 3
-                    or any(not isinstance(p, dict)
-                           or p.get("coin") not in coin_set
-                           or not _timestamp(p.get("time"))
-                           or not _decimal_string(p.get("usdc"))
-                           or not _decimal_string(p.get("rate"))
-                           for p in payments)):
+            if not isinstance(payments, list):
                 return "recent_payments 非法"
+            if len(payments) > 3:
+                return "recent_payments 最多 3 条"
+            parsed_times = []
+            for p in payments:
+                if (not isinstance(p, dict)
+                        or p.get("coin") not in coin_set
+                        or not _timestamp(p.get("time"))
+                        or not _decimal_string(p.get("usdc"))
+                        or not _decimal_string(p.get("rate"))):
+                    return "recent_payments 非法"
+                parsed_times.append(datetime.strptime(p["time"], "%Y-%m-%dT%H:%M:%SZ"))
+            if any(not (start_dt <= t < end_dt) for t in parsed_times):
+                return "收付明细时间不在窗口内"
+            if any(parsed_times[i] < parsed_times[i + 1] for i in range(len(parsed_times) - 1)):
+                return "收付明细必须按时间倒序"
     elif name == "ratio":
         for key in ("live", "latest_close", "ma30", "vs_ma30_pct"):
             if data.get(key) is not None and not _decimal_string(data[key]):
@@ -467,27 +503,31 @@ def _validate_v2_snapshot(snapshot: dict, descriptor: dict, revision: str) -> di
         raise HyperliquidUnavailable("快照缺少 blocks", public="快照结构非法")
     for name in BLOCK_NAMES:
         if name not in blocks:
-            blocks[name] = _unavailable_block(f"快照缺少 {name} 区块", snapshot["queried_at"])
+            blocks[name] = _degraded_block(
+                name, f"快照缺少 {name} 区块", snapshot["queried_at"], tuple(descriptor["coins"]))
 
     coins = tuple(descriptor["coins"])
     applicable_unavailable = 0
     for name in BLOCK_NAMES:
         block = blocks[name]
         if name == "unlocks" and not descriptor["unlocks_enabled"]:
-            if block is not None:
-                blocks[name] = _unavailable_block("该 pair 未启用解锁锚点", snapshot["queried_at"])
+            blocks[name] = None  # 不适用始终为 null，不用错误对象替代
             continue
+        reason = None
         if block is None:
-            block = _unavailable_block(f"{name} 区块为 null", snapshot["queried_at"])
-        elif not _valid_block_wrapper(block, snapshot["queried_at"]):
-            block = _unavailable_block(f"{name} 区块结构非法", snapshot["queried_at"])
+            reason = f"{name} 区块为 null"
+        elif not _valid_block_wrapper(block, snapshot["queried_at"], name):
+            reason = f"{name} 区块结构非法"
         else:
             data = {k: v for k, v in block.items()
                     if k not in ("status", "queried_at", "source_queries", "diagnostics")}
             reason = _validate_block_data(name, data, coins)
-            if reason:
-                block = _unavailable_block(reason, snapshot["queried_at"])
-        blocks[name] = block
+            if (name == "funding" and reason is None
+                    and data.get("window_complete") is False and block["status"] == "ok"):
+                reason = "窗口不完整时资金费区块不能为 ok"
+        if reason:
+            block = _degraded_block(name, reason, snapshot["queried_at"], coins)
+            blocks[name] = block
         if name != "unlocks" and block["status"] == "unavailable":
             applicable_unavailable += 1
     if applicable_unavailable == len(BLOCK_NAMES) - 1:
@@ -501,7 +541,7 @@ def _validate_announcements(payload: dict, revision: str) -> dict:
     if not _timestamp(payload.get("queried_at")):
         raise HyperliquidUnavailable("公告缺少 queried_at", public="快照缺少 queried_at")
     block = payload.get("block")
-    if not _valid_block_wrapper(block, payload["queried_at"]):
+    if not _valid_block_wrapper(block, payload["queried_at"], "announcements"):
         raise HyperliquidUnavailable("公告区块结构非法", public="快照结构非法")
     items = block.get("items")
     if items is not None:

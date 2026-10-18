@@ -167,9 +167,10 @@ def test_v1_dashboard_untouched_by_pairs_config(client, monkeypatch):
 TS = "2026-10-19T08:00:00Z"
 
 
-def v2_block(data, status="ok", diags=None):
+def v2_block(name, data, status="ok", diags=None):
+    sources = {key: {"status": "ok", "queried_at": TS} for key in pairs.BLOCK_SOURCE_KEYS[name]}
     return {"status": status, "queried_at": TS,
-            "source_queries": {"market": {"status": "ok", "queried_at": TS}},
+            "source_queries": sources,
             "diagnostics": diags or [], **data}
 
 
@@ -184,19 +185,19 @@ def v2_snapshot(descriptor, revision, mutate=None):
         "schema_version": 2, "config_revision": revision, "queried_at": TS,
         "pair": {k: descriptor[k] for k in ("id", "label", "network", "dex", "coins", "account_address")},
         "blocks": {
-            "account": v2_block({"account_mode": "default", "equity": "1000.5", "equity_scope": "perp_dex"}),
-            "positions": v2_block({"items": [], "position_state": "flat", "unrealized_pnl": "0",
-                                   "notional_ratio": None, "ratio_drift_pct": None, "open_orders": 0}),
-            "funding": v2_block({"hourly_rates": {c: "0.00001" for c in coins},
-                                 "annualized_pct": {c: "8.76" for c in coins},
-                                 "daily_estimate": None,
-                                 "window_start": "2026-10-17T08:00:00Z",
-                                 "window_end": "2026-10-19T08:00:00Z",
-                                 "window_complete": True, "actual_48h_net": "0",
-                                 "recent_payments": []}),
-            "ratio": v2_block({"live": "0.0005", "latest_close": "0.00049", "ma30": "0.0005",
-                               "vs_ma30_pct": "-2.0", "as_of_date": "2026-10-18", "points": []}),
-            "unlocks": None if not descriptor["unlocks_enabled"] else v2_block({"anchors": [], "note": "n"}),
+            "account": v2_block("account", {"account_mode": "default", "equity": "1000.5", "equity_scope": "perp_dex"}),
+            "positions": v2_block("positions", {"items": [], "position_state": "flat", "unrealized_pnl": "0",
+                                                "notional_ratio": None, "ratio_drift_pct": None, "open_orders": 0}),
+            "funding": v2_block("funding", {"hourly_rates": {c: "0.00001" for c in coins},
+                                            "annualized_pct": {c: "8.76" for c in coins},
+                                            "daily_estimate": None,
+                                            "window_start": "2026-10-17T08:00:00Z",
+                                            "window_end": "2026-10-19T08:00:00Z",
+                                            "window_complete": True, "actual_48h_net": "0",
+                                            "recent_payments": []}),
+            "ratio": v2_block("ratio", {"live": "0.0005", "latest_close": "0.00049", "ma30": "0.0005",
+                                        "vs_ma30_pct": "-2.0", "as_of_date": "2026-10-18", "points": []}),
+            "unlocks": None if not descriptor["unlocks_enabled"] else v2_block("unlocks", {"anchors": [], "note": "n"}),
         },
     }
     if mutate:
@@ -316,8 +317,9 @@ def test_all_applicable_unavailable_is_503(client, monkeypatch, runner):
 
     def mutate(s):
         for name in ('account', 'positions', 'funding', 'ratio'):
-            s['blocks'][name] = {"status": "unavailable", "queried_at": TS,
-                                 "source_queries": {}, "diagnostics": ["x"] * 4}
+            s['blocks'][name] = v2_block(name, {
+                "items" if name == 'positions' else "equity": None,
+            }, status="unavailable", diags=["源不可用"])
     runner(lambda argv: v2_snapshot(nbis, revision, mutate))
     monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
     response = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
@@ -348,7 +350,7 @@ def test_announcements_endpoint(client, monkeypatch, runner):
     write_config(client)
     payload = {
         "schema_version": 2, "queried_at": TS,
-        "block": v2_block({"items": None}),
+        "block": v2_block("announcements", {"items": None}),
     }
     calls = runner(lambda argv: payload)
     monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
@@ -371,3 +373,68 @@ def test_internal_error_not_exposed(client, monkeypatch, runner):
     assert response.status_code == 503
     assert 'secret' not in response.json()['detail']
     assert response.json()['detail'] == 'Hyperliquid pair 看板暂不可用'
+
+
+# ── 整改 B1（R4/R9）：降级 DTO 完整性与语义校验 ──────────────
+
+def test_degraded_block_has_full_dto_and_fixed_sources(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+
+    def mutate(s):
+        del s['blocks']['funding']  # 缺整块：必须降级为完整 DTO
+    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    funding = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']['blocks']['funding']
+    assert funding['status'] == 'unavailable'
+    assert set(funding['source_queries']) == {'positions', 'market', 'user_funding'}
+    assert all(q == {'status': 'unavailable', 'queried_at': None} for q in funding['source_queries'].values())
+    assert funding['hourly_rates'] == {'xyz:NBIS': None, 'xyz:CRWV': None}
+    assert funding['annualized_pct'] == {'xyz:NBIS': None, 'xyz:CRWV': None}
+    assert funding['window_start'] is None and funding['window_end'] is None
+    assert funding['window_complete'] is False
+    assert funding['recent_payments'] is None and funding['actual_48h_net'] is None
+    positions = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']['blocks']['positions']
+    assert positions['status'] == 'ok'  # 其他块不受影响
+
+
+@pytest.mark.parametrize('block_name,mutate,reason_part', [
+    ('account', lambda s: s['blocks']['account'].__setitem__('diagnostics', ['失败但状态 ok']), '结构非法'),
+    ('account', lambda s: s['blocks']['account'].__setitem__('diagnostics', [42]), '结构非法'),
+    ('ratio', lambda s: s['blocks']['ratio'].__setitem__('source_queries',
+                                                        {'market': {'status': 'ok', 'queried_at': TS}}), '结构非法'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('window_start', '2026-10-19T09:00:00Z'), '反向'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('window_end', '2026-10-18T09:00:00Z'), '恰好 48 小时'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('window_complete', False), '不能为 ok'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('recent_payments', [
+        {'time': '2026-10-16T07:59:59Z', 'coin': 'xyz:NBIS', 'usdc': '1', 'rate': '0.1'}]), '不在窗口内'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('recent_payments', [
+        {'time': '2026-10-18T04:00:00Z', 'coin': 'xyz:NBIS', 'usdc': '1', 'rate': '0.1'},
+        {'time': '2026-10-18T08:00:00Z', 'coin': 'xyz:NBIS', 'usdc': '2', 'rate': '0.1'}]), '倒序'),
+])
+def test_invalid_block_semantics_degraded(client, monkeypatch, runner, block_name, mutate, reason_part):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
+    block = body['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+    assert any(reason_part in d for d in block['diagnostics'])
+
+
+def test_disabled_pair_forces_unlocks_null_even_when_rust_sends_block(client, monkeypatch, runner):
+    write_config(client)
+    revision, _ = pairs.load_pairs()
+    nbis = descriptor_of(client, 'nbis-crwv')
+
+    def mutate(s):
+        s['blocks']['unlocks'] = v2_block('unlocks', {'anchors': [{'date': '2026-10-20', 'days_ahead': 1,
+                                                                  'label': 'x', 'source_url': 'https://a',
+                                                                  'verified_utc': '2026-10-18'}], 'note': 'n'})
+    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
+    assert body['blocks']['unlocks'] is None  # unlocks_enabled=false 不用错误对象替代
