@@ -8,6 +8,7 @@
 - **当前路线图** → [ROADMAP.md](ROADMAP.md)
 - **当前 MVP 方案与验收记录** → [WATCHLIST_DASHBOARD_MVP_PLAN.md](WATCHLIST_DASHBOARD_MVP_PLAN.md)
 - **关注股看板启用/API 说明** → [deployment/WATCHLIST_MVP.md](deployment/WATCHLIST_MVP.md)
+- **Hyperliquid 只读子页面方案（待审核）** → [HYPERLIQUID_DASHBOARD_MVP_PLAN.md](HYPERLIQUID_DASHBOARD_MVP_PLAN.md)
 - **研究索引与卡片方案（暂缓）** → [RESEARCH_WORKBENCH_R1_PLAN.md](RESEARCH_WORKBENCH_R1_PLAN.md)
 - **原事件采集方案（暂缓）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
 - **历史路线图与已关闭任务** → [archive/README.md](archive/README.md)
