@@ -58,6 +58,14 @@ export const hyperliquidApi = {
   dashboard: () => apiFetch<import('@/lib/types/hyperliquid').HlSnapshot>('/hyperliquid/dashboard', { market: 'US' }),
 };
 
+// ── Hyperliquid v2 多 pair ──
+export const hyperliquidPairsApi = {
+  directory: () => apiFetch<import('@/lib/types/hyperliquid').HlPairDirectory>('/hyperliquid/pairs', { market: 'US' }),
+  pairDashboard: (pairId: string) =>
+    apiFetch<import('@/lib/types/hyperliquid').HlPairSnapshot>(`/hyperliquid/pairs/${encodeURIComponent(pairId)}/dashboard`, { market: 'US' }),
+  announcements: () => apiFetch<import('@/lib/types/hyperliquid').HlV2Announcements>('/hyperliquid/announcements', { market: 'US' }),
+};
+
 // ── Dashboard ──
 export const watchlistApi = {
   session: () => apiFetch<{ authenticated: boolean }>('/watchlist/session', { market: 'US' }),

@@ -12,6 +12,7 @@ import { PaperPage } from "@/pages/paper-page";
 import { PaperDetailPage } from "@/pages/paper-detail-page";
 import { FcfRoeStrategyPage } from "@/pages/fcf-roe-strategy-page";
 import { HyperliquidPage } from "@/pages/hyperliquid-page";
+import { HyperliquidPairPage } from "@/pages/hyperliquid-pair-page";
 import { Button } from "@/components/ui/button";
 import { FileQuestion } from "lucide-react";
 
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="paper/:id" element={<PaperDetailPage />} />
         <Route path="strategy/fcf-roe" element={<FcfRoeStrategyPage />} />
         <Route path="hyperliquid" element={<HyperliquidPage />} />
+        <Route path="hyperliquid/pairs/:pairId" element={<HyperliquidPairPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
