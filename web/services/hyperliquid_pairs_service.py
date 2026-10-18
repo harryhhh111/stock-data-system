@@ -304,6 +304,16 @@ BLOCK_SOURCE_KEYS = {
     "announcements": ("general", "api"),
 }
 
+BLOCK_DATA_KEYS = {
+    "account": ("account_mode", "equity", "equity_scope"),
+    "positions": ("items", "position_state", "unrealized_pnl", "notional_ratio",
+                  "ratio_drift_pct", "open_orders"),
+    "funding": ("hourly_rates", "annualized_pct", "daily_estimate", "window_start",
+                "window_end", "window_complete", "actual_48h_net", "recent_payments"),
+    "ratio": ("live", "latest_close", "as_of_date", "ma30", "vs_ma30_pct", "points"),
+    "unlocks": ("anchors", "note"),
+}
+
 
 def _degraded_block(name: str, reason: str, fallback_queried_at: str, coins: tuple = ()) -> dict:
     """按 block 类型的完整降级 DTO：字段齐全、未知值为 null、固定 source keys 保留。
@@ -341,12 +351,14 @@ def _valid_block_wrapper(block, fallback_queried_at: str, name: str) -> bool:
     if not isinstance(sources, dict) or set(sources) != set(BLOCK_SOURCE_KEYS[name]):
         return False
     for query in sources.values():
-        if not isinstance(query, dict):
+        if not isinstance(query, dict) or set(query) != {"status", "queried_at"}:
             return False
         if query.get("status") not in ("ok", "unavailable"):
             return False
         when = query.get("queried_at")
         if when is not None and not _timestamp(when):
+            return False
+        if query["status"] == "ok" and when is None:
             return False
     diagnostics = block.get("diagnostics")
     if not isinstance(diagnostics, list) or not all(isinstance(d, str) for d in diagnostics):
@@ -377,6 +389,9 @@ def _validate_block_data(name: str, data, coins: tuple) -> str | None:
     """返回失败原因；None 表示通过。"""
     if not isinstance(data, dict):
         return f"{name} 数据不是对象"
+    missing = set(BLOCK_DATA_KEYS[name]) - set(data)
+    if missing:
+        return f"{name} 数据缺少字段: {sorted(missing)}"
     if name == "account":
         if data.get("account_mode") is not None and not isinstance(data["account_mode"], str):
             return "account_mode 类型错误"
@@ -421,9 +436,14 @@ def _validate_block_data(name: str, data, coins: tuple) -> str | None:
             return "资金费窗口不是恰好 48 小时"
         if type(data.get("window_complete")) is not bool:
             return "window_complete 必须是布尔值"
-        if data.get("actual_48h_net") is not None and not _decimal_string(data["actual_48h_net"]):
+        actual = data.get("actual_48h_net")
+        if actual is not None and not _decimal_string(actual):
             return "actual_48h_net 不是有限十进制字符串"
         payments = data.get("recent_payments")
+        if (actual is None) != (payments is None):
+            return "实际净收付与最近收付必须同时已知或同时未知"
+        if data["window_complete"] and actual is None:
+            return "完整资金费历史不能把未知收付伪装为空值"
         if payments is not None:
             if not isinstance(payments, list):
                 return "recent_payments 非法"
@@ -450,6 +470,8 @@ def _validate_block_data(name: str, data, coins: tuple) -> str | None:
             return "as_of_date 不是合法日期"
         points = data.get("points")
         if points is not None:
+            if not isinstance(points, list):
+                return "比价序列必须是数组或 null"
             for point in points:
                 if (not isinstance(point, dict)
                         or not _date_string(point.get("date"))
@@ -545,6 +567,8 @@ def _validate_announcements(payload: dict, revision: str) -> dict:
         raise HyperliquidUnavailable("公告区块结构非法", public="快照结构非法")
     items = block.get("items")
     if items is not None:
+        if not isinstance(items, list):
+            raise HyperliquidUnavailable("公告条目必须是数组或 null", public="快照结构非法")
         for item in items:
             if (not isinstance(item, dict)
                     or item.get("kind") not in ("general", "api")

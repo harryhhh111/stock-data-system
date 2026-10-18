@@ -305,3 +305,65 @@ def test_silent_child_timeout_reaps(tmp_path):
     pid = int(pid_file.read_text())
     with pytest.raises(OSError):
         os.kill(pid, 0)
+
+
+# ── 复验整改：v1 块级严格校验（旧接口仍注册，非法数据不得标 ok） ──
+
+def test_v1_nan_notional_degrades_positions(client, monkeypatch):
+    snap = full_snapshot()
+    snap['blocks']['positions']['positions'] = [
+        {"coin": "HYPE", "side": "long", "size": "1", "mark_px": "30", "unrealized_pnl": "NaN",
+         "notional": "30"},
+    ]
+    mock_runner(monkeypatch, snap)
+    body = client.get('/api/v1/hyperliquid/dashboard').json()['data']
+    block = body['blocks']['positions']
+    assert block['status'] == 'unavailable'
+    assert block['positions'] is None and block['equity'] is None
+    assert body['blocks']['ratio']['status'] == 'ok'  # 其他块不受影响
+
+
+@pytest.mark.parametrize('mutate,block_name,reason_part', [
+    (lambda s: s['blocks']['funding'].__setitem__('window_start', 'not-a-time'), 'funding', 'UTC 时间'),
+    (lambda s: s['blocks']['funding'].__setitem__('hourly_rates', {"HYPE": "0.1"}), 'funding', 'HYPE/BTC'),
+    (lambda s: s['blocks']['ratio'].__setitem__('vs_ma30_pct', 12), 'ratio', '十进制字符串'),
+    (lambda s: s['blocks']['unlocks'].__setitem__('anchors', {}), 'unlocks', '数组'),
+    (lambda s: s['blocks']['announcements'].__setitem__('items', {}), 'announcements', '数组或 null'),
+    (lambda s: s['blocks']['positions'].__setitem__('diagnostics', ['源失败']), 'positions', '不允许携带诊断'),
+    (lambda s: s['blocks']['positions']['positions'].__setitem__(0, {"coin": "HYPE", "side": "long",
+                                                                      "size": "-1"}), 'positions', '持仓条目非法'),
+])
+def test_v1_invalid_block_data_degraded(client, monkeypatch, mutate, block_name, reason_part):
+    snap = full_snapshot()
+    snap['blocks']['positions']['positions'] = [
+        {"coin": "HYPE", "side": "long", "size": "1", "mark_px": "30", "unrealized_pnl": "0",
+         "notional": "30"},
+    ]
+    mutate(snap)
+    mock_runner(monkeypatch, snap)
+    body = client.get('/api/v1/hyperliquid/dashboard').json()['data']
+    block = body['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+    assert any(reason_part in d for d in block['diagnostics'])
+
+
+def test_v1_valid_snapshot_still_ok(client, monkeypatch):
+    mock_runner(monkeypatch, full_snapshot())
+    body = client.get('/api/v1/hyperliquid/dashboard').json()['data']
+    assert all(body['blocks'][n]['status'] == 'ok' for n in ('positions', 'funding', 'ratio', 'unlocks'))
+
+
+def test_flushed_output_then_sleep_obeys_deadline(tmp_path):
+    """已有少量可读输出时也不能卡在定长读取，整体 deadline 仍然有效。"""
+    pid_file = tmp_path / 'flushed-child.pid'
+    script = (
+        f"import os,pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "import time; print('partial-output', flush=True); time.sleep(60)\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(service.HyperliquidUnavailable, match='超时'):
+        run_child(script, 0.3)
+    assert time.monotonic() - started < 3
+    pid = int(pid_file.read_text())
+    with pytest.raises(OSError):
+        os.kill(pid, 0)

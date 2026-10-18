@@ -402,24 +402,34 @@ def test_degraded_block_has_full_dto_and_fixed_sources(client, monkeypatch, runn
 @pytest.mark.parametrize('block_name,mutate,reason_part', [
     ('account', lambda s: s['blocks']['account'].__setitem__('diagnostics', ['失败但状态 ok']), '结构非法'),
     ('account', lambda s: s['blocks']['account'].__setitem__('diagnostics', [42]), '结构非法'),
+    ('account', lambda s: s['blocks']['account'].pop('equity'), '缺少字段'),
+    ('account', lambda s: s['blocks']['account']['source_queries']['mode'].__setitem__(
+        'queried_at', None), '结构非法'),
+    ('positions', lambda s: s['blocks']['positions'].pop('items'), '缺少字段'),
     ('ratio', lambda s: s['blocks']['ratio'].__setitem__('source_queries',
                                                         {'market': {'status': 'ok', 'queried_at': TS}}), '结构非法'),
+    ('ratio', lambda s: s['blocks']['ratio'].__setitem__('points', {}), '必须是数组'),
     ('funding', lambda s: s['blocks']['funding'].__setitem__('window_start', '2026-10-19T09:00:00Z'), '反向'),
     ('funding', lambda s: s['blocks']['funding'].__setitem__('window_end', '2026-10-18T09:00:00Z'), '恰好 48 小时'),
     ('funding', lambda s: s['blocks']['funding'].__setitem__('window_complete', False), '不能为 ok'),
+    ('funding', lambda s: (s['blocks']['funding'].__setitem__('actual_48h_net', None),
+                           s['blocks']['funding'].__setitem__('recent_payments', None)), '完整资金费历史'),
+    ('funding', lambda s: s['blocks']['funding'].__setitem__('recent_payments', None), '同时已知'),
     ('funding', lambda s: s['blocks']['funding'].__setitem__('recent_payments', [
         {'time': '2026-10-16T07:59:59Z', 'coin': 'xyz:NBIS', 'usdc': '1', 'rate': '0.1'}]), '不在窗口内'),
     ('funding', lambda s: s['blocks']['funding'].__setitem__('recent_payments', [
         {'time': '2026-10-18T04:00:00Z', 'coin': 'xyz:NBIS', 'usdc': '1', 'rate': '0.1'},
         {'time': '2026-10-18T08:00:00Z', 'coin': 'xyz:NBIS', 'usdc': '2', 'rate': '0.1'}]), '倒序'),
+    ('unlocks', lambda s: s['blocks']['unlocks'].__setitem__('anchors', {}), '必须是数组'),
 ])
 def test_invalid_block_semantics_degraded(client, monkeypatch, runner, block_name, mutate, reason_part):
     write_config(client)
     revision, _ = pairs.load_pairs()
-    nbis = descriptor_of(client, 'nbis-crwv')
-    runner(lambda argv: v2_snapshot(nbis, revision, mutate))
+    pair_id = 'hype-btc' if block_name == 'unlocks' else 'nbis-crwv'
+    descriptor = descriptor_of(client, pair_id)
+    runner(lambda argv: v2_snapshot(descriptor, revision, mutate))
     monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
-    body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
+    body = client[0].get(f'/api/v1/hyperliquid/pairs/{pair_id}/dashboard').json()['data']
     block = body['blocks'][block_name]
     assert block['status'] == 'unavailable'
     assert any(reason_part in d for d in block['diagnostics'])
@@ -438,3 +448,16 @@ def test_disabled_pair_forces_unlocks_null_even_when_rust_sends_block(client, mo
     monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
     body = client[0].get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard').json()['data']
     assert body['blocks']['unlocks'] is None  # unlocks_enabled=false 不用错误对象替代
+
+
+def test_announcements_rejects_object_items(client, monkeypatch, runner):
+    write_config(client)
+    payload = {
+        "schema_version": 2, "queried_at": TS,
+        "block": v2_block("announcements", {"items": {}}),
+    }
+    runner(lambda argv: payload)
+    monkeypatch.setenv('STOCK_HL_TRADER_BIN', '/bin/hl')
+    response = client[0].get('/api/v1/hyperliquid/announcements')
+    assert response.status_code == 503
+    assert response.json()['detail'] == '快照结构非法'
