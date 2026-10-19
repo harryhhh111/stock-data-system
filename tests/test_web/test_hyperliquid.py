@@ -347,6 +347,24 @@ def test_v1_invalid_block_data_degraded(client, monkeypatch, mutate, block_name,
     assert any(reason_part in d for d in block['diagnostics'])
 
 
+@pytest.mark.parametrize('diagnostics', [1, True, {}, [42]])
+def test_v1_invalid_diagnostics_degrades_only_affected_block_over_http(
+        client, monkeypatch, diagnostics):
+    snap = full_snapshot()
+    snap['blocks']['positions']['diagnostics'] = diagnostics
+    expected_other = {name: block for name, block in snap['blocks'].items() if name != 'positions'}
+    mock_runner(monkeypatch, snap)
+    response = client.get('/api/v1/hyperliquid/dashboard')
+    assert response.status_code == 200, response.text
+    body = response.json()['data']
+    block = body['blocks']['positions']
+    assert block['status'] == 'unavailable'
+    assert service.V1_DATA_KEYS['positions'] <= block.keys()
+    assert block['queried_at'] == snap['queried_at']
+    assert block['diagnostics'] == ['positions 区块 diagnostics 非法']
+    assert {name: body['blocks'][name] for name in expected_other} == expected_other
+
+
 def test_v1_valid_snapshot_still_ok(client, monkeypatch):
     mock_runner(monkeypatch, full_snapshot())
     body = client.get('/api/v1/hyperliquid/dashboard').json()['data']

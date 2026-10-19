@@ -371,7 +371,8 @@ def _valid_block_wrapper(block, fallback_queried_at: str, name: str) -> bool:
 def _valid_position(item, coins: set) -> bool:
     if not isinstance(item, dict):
         return False
-    if item.get("coin") not in coins or item.get("side") not in SIDES:
+    coin = item.get("coin")
+    if not isinstance(coin, str) or coin not in coins or item.get("side") not in SIDES:
         return False
     if not _non_negative_decimal(item.get("size")):
         return False
@@ -452,6 +453,7 @@ def _validate_block_data(name: str, data, coins: tuple) -> str | None:
             parsed_times = []
             for p in payments:
                 if (not isinstance(p, dict)
+                        or not isinstance(p.get("coin"), str)
                         or p.get("coin") not in coin_set
                         or not _timestamp(p.get("time"))
                         or not _decimal_string(p.get("usdc"))

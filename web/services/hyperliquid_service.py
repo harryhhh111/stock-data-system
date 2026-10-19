@@ -180,8 +180,9 @@ def _normalize_blocks(snapshot: dict) -> dict:
             block["diagnostics"] = [f"{name} 区块 status 非法"]
         diagnostics = block.get("diagnostics")
         if not isinstance(diagnostics, list) or not all(isinstance(d, str) for d in diagnostics):
-            block["diagnostics"] = [str(d) for d in diagnostics] if diagnostics else []
-        reason = _validate_v1_block(name, block)
+            reason = f"{name} 区块 diagnostics 非法"
+        else:
+            reason = _validate_v1_block(name, block)
         if reason:
             block = _degraded_v1_block(name, reason, snapshot["queried_at"])
         blocks[name] = block

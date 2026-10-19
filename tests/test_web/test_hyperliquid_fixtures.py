@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from web.routes import hyperliquid
 from web.services import hyperliquid_pairs_service as pairs
 from web.services.hyperliquid_service import HyperliquidUnavailable
 
@@ -50,6 +53,38 @@ def test_rust_fixture_announcements_passes_contract():
     payload = load_fixture('v2_announcements.json')
     result = pairs._validate_announcements(copy.deepcopy(payload), '')
     assert result['block']['status'] in ('ok', 'partial', 'unavailable')
+
+
+@pytest.mark.parametrize('block_name,rows_key,reason', [
+    ('positions', 'items', '持仓条目非法'),
+    ('funding', 'recent_payments', 'recent_payments 非法'),
+])
+def test_bad_coin_degrades_only_affected_block_over_http(
+        monkeypatch, block_name, rows_key, reason):
+    snap = load_fixture('v2_snapshot_nbis_crwv.json')
+    snap['blocks'][block_name][rows_key][0]['coin'] = []
+    expected_other = copy.deepcopy({
+        name: block for name, block in snap['blocks'].items() if name != block_name
+    })
+    monkeypatch.setattr(pairs, 'load_pairs', lambda: (snap['config_revision'], [descriptor_for(snap)]))
+    monkeypatch.setattr(pairs, '_run_dashboard', lambda _args: copy.deepcopy(snap))
+    pairs.clear_runtime_cache()
+    app = FastAPI()
+    app.include_router(hyperliquid.router, prefix='/api/v1')
+    try:
+        with TestClient(app) as client:
+            response = client.get('/api/v1/hyperliquid/pairs/nbis-crwv/dashboard')
+    finally:
+        pairs.clear_runtime_cache()
+    assert response.status_code == 200, response.text
+    body = response.json()['data']
+    block = body['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+    assert set(pairs.BLOCK_DATA_KEYS[block_name]) <= block.keys()
+    assert set(block['source_queries']) == set(pairs.BLOCK_SOURCE_KEYS[block_name])
+    assert block['queried_at'] == snap['queried_at']
+    assert block['diagnostics'] == [reason]
+    assert {name: body['blocks'][name] for name in expected_other} == expected_other
 
 
 def set_deep(obj, path, value):
