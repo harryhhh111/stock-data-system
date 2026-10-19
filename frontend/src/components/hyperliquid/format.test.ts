@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { plainDiagnostic } from './format.ts';
+import { plainDiagnostic, positionLegsLabel } from './format.ts';
+import type { HlV2Position } from '../../lib/types/hyperliquid';
 
 test('统一账户权益口径 → 白话', () => {
   assert.equal(
@@ -47,4 +48,28 @@ test('公告 API 源失败 → 白话', () => {
 
 test('未知诊断原文返回', () => {
   assert.equal(plainDiagnostic('一条全新的诊断'), '一条全新的诊断');
+});
+
+function leg(coin: string, side: HlV2Position['side']): HlV2Position {
+  return {
+    coin, side, size: '1', entry_px: '1', mark_px: '1', notional: '1',
+    unrealized_pnl: '0', margin_mode: 'cross', margin_used: '1', liquidation_px: null,
+  };
+}
+
+test('方向摘要直接展示两腿实际多空', () => {
+  assert.equal(
+    positionLegsLabel(['HYPE', 'BTC'], [leg('HYPE', 'long'), leg('BTC', 'short')], 'opposite'),
+    'HYPE 多 / BTC 空',
+  );
+  assert.equal(
+    positionLegsLabel(['HYPE', 'BTC'], [leg('HYPE', 'long')], 'single_leg'),
+    'HYPE 多 / BTC 无仓',
+  );
+  assert.equal(
+    positionLegsLabel(['HYPE', 'BTC'], [leg('HYPE', 'long'), leg('BTC', 'long')], 'same_direction'),
+    'HYPE 多 / BTC 多',
+  );
+  assert.equal(positionLegsLabel(['HYPE', 'BTC'], [], 'flat'), '空仓');
+  assert.equal(positionLegsLabel(['HYPE', 'BTC'], null, 'unknown'), '未知');
 });

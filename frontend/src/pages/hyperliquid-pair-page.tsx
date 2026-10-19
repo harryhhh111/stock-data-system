@@ -7,7 +7,7 @@ import { EChartsWrapper } from '@/components/charts/echarts-wrapper';
 import { PageHeader } from '@/components/layout/page-header';
 import {
   accountShort, dash, dexLabel, formatTime, NETWORK_LABEL, pctFromFraction, pctFromNumber,
-  plainDiagnostic, POSITION_STATE_LABEL, signed,
+  plainDiagnostic, positionLegsLabel, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import {
@@ -102,7 +102,7 @@ function DetailBody({ snapshot }: { snapshot: HlPairSnapshot }) {
       <Card>
         <CardContent className="py-4 text-sm">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2">
-            <span>方向 <span className="font-medium">{POSITION_STATE_LABEL[positions.position_state]}</span>
+            <span>方向 <span className="font-medium">{positionLegsLabel(descriptor.coins, positions.items, positions.position_state)}</span>
               {positions.position_state === 'same_direction' && <span className="ml-1 text-xs text-amber-600">（同向持仓，非对冲）</span>}
             </span>
             <span>两腿盈亏合计 <span className="font-mono">{signed(positions.unrealized_pnl)}</span></span>

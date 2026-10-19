@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, plainDiagnostic, POSITION_STATE_LABEL, signed,
+  accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, plainDiagnostic, positionLegsLabel, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import {
@@ -79,7 +79,7 @@ function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revi
               <p className="text-amber-600">刷新失败（{errorText(query.error)}），显示上次读数（{formatTime(snap.queried_at)}）。</p>
             )}
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
-              <span>方向 <span className="font-medium">{positions ? POSITION_STATE_LABEL[positions.position_state] : '—'}</span>
+              <span>方向 <span className="font-medium">{positions ? positionLegsLabel(descriptor.coins, positions.items, positions.position_state) : '—'}</span>
                 {positions?.position_state === 'same_direction' && <span className="ml-1 text-xs text-amber-600">（非对冲）</span>}
               </span>
               <span>两腿盈亏合计 <span className="font-mono">{signed(positions?.unrealized_pnl)}</span></span>

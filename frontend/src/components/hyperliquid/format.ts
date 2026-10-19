@@ -1,4 +1,4 @@
-import type { HlPositionState } from '@/lib/types/hyperliquid';
+import type { HlPositionState, HlV2Position } from '@/lib/types/hyperliquid';
 
 export const dash = (value: string | null | undefined) =>
   value == null || value === '' ? '—' : value;
@@ -26,6 +26,25 @@ export const POSITION_STATE_LABEL: Record<HlPositionState, string> = {
   same_direction: '同向持仓',
   unknown: '未知',
 };
+
+const POSITION_SIDE_LABEL: Record<HlV2Position['side'], string> = {
+  long: '多',
+  short: '空',
+};
+
+/** 按 pair 配置顺序展示两腿实际方向，例如“HYPE 多 / BTC 空”。 */
+export function positionLegsLabel(
+  coins: readonly string[],
+  items: HlV2Position[] | null,
+  state: HlPositionState,
+): string {
+  if (items == null) return POSITION_STATE_LABEL[state];
+  if (items.length === 0) return POSITION_STATE_LABEL.flat;
+  return coins.map((coin) => {
+    const item = items.find((p) => p.coin === coin);
+    return `${coin} ${item ? POSITION_SIDE_LABEL[item.side] : '无仓'}`;
+  }).join(' / ');
+}
 
 export const accountShort = (address: string) =>
   `${address.slice(0, 8)}…${address.slice(-6)}`;

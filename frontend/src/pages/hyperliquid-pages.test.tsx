@@ -102,3 +102,11 @@ test('解锁块不可用或 anchors 损坏时页面保留其他块且不显示�
   assert.match(html, /-45\.81403/);
   qc.clear();
 });
+
+test('总览和详情方向摘要显示具体两腿多空', () => {
+  const value = snapshot(hypeFixture);
+  const qc = seed(value);
+  assert.match(renderOverview(qc), /HYPE 多 \/ BTC 空/);
+  assert.match(renderDetail(qc, value.pair.id), /HYPE 多 \/ BTC 空/);
+  qc.clear();
+});
