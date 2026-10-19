@@ -2,7 +2,7 @@
 fetchers/us_financial.py — 美股 SEC EDGAR 数据拉取
 
 提供：
-- SECRateLimiter: 滑动窗口限流器（10次/秒）
+- SEC 网络请求统一经过 PostgreSQL 跨进程限流客户端（合计最多 2 次/秒）
 - USFinancialFetcher: 继承 BaseFetcher，获取 SEC Company Facts 数据
 - fetch_company_list(): 获取 CIK ↔ ticker 映射
 - fetch_sp500_constituents(): 获取 S&P 500 成分股列表
@@ -20,9 +20,7 @@ import logging
 import os
 import re
 import subprocess
-import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -45,7 +43,8 @@ from core.us_financial_versioning import (
 )
 from db import Connection, get_or_create_raw_snapshot_version, save_raw_snapshot_observation
 
-from .base import BaseFetcher, retry_with_backoff
+from .base import BaseFetcher
+from core import sec_client
 
 logger = logging.getLogger(__name__)
 
@@ -75,40 +74,6 @@ HEADERS = {
     "User-Agent": config.sec.user_agent,
     "Accept": "application/json",
 }
-
-
-# ═══════════════════════════════════════════════════════════
-# SEC 专用滑动窗口限流器（10次/秒）
-# ═══════════════════════════════════════════════════════════
-class SECRateLimiter:
-    """滑动窗口限流器：严格保证 1 秒内不超过 RATE 次请求。
-
-    SEC 规则：10 requests/second（所有 endpoint 合计）。
-    """
-
-    def __init__(self, rate: int = 10, window: float = 1.0) -> None:
-        self._rate = rate
-        self._window = window
-        self._timestamps: deque[float] = deque()
-        self._lock = threading.Lock()
-
-    def wait(self) -> None:
-        """在发起请求前调用，必要时 sleep。"""
-        with self._lock:
-            now = time.time()
-            # 清除窗口外的旧记录
-            while self._timestamps and self._timestamps[0] < now - self._window:
-                self._timestamps.popleft()
-            # 如果已达上限，等待直到最早的请求离开窗口
-            if len(self._timestamps) >= self._rate:
-                sleep_time = self._timestamps[0] + self._window - now + 0.05
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                # 清理窗口外的记录（sleep 后可能有过期的）
-                now = time.time()
-                while self._timestamps and self._timestamps[0] < now - self._window:
-                    self._timestamps.popleft()
-            self._timestamps.append(time.time())
 
 
 # ═══════════════════════════════════════════════════════════
@@ -194,9 +159,6 @@ class USFinancialFetcher(BaseFetcher):
 
     def __init__(self) -> None:
         super().__init__()
-        self._rate_limiter = SECRateLimiter(
-            rate=config.sec.rate_limit,
-        )
         self._ticker_to_cik: dict[str, str] = {}
         self._cik_to_ticker: dict[str, str] = {}
         self._company_list_loaded = False
@@ -219,7 +181,6 @@ class USFinancialFetcher(BaseFetcher):
             data = json.loads(cache_file.read_text())
         else:
             logger.info("从 SEC 下载公司列表...")
-            self._rate_limiter.wait()
             resp = self._request_sec(config.sec.ticker_url)
             data = resp.json()
             self._save_cache(cache_file, json.dumps(data))
@@ -656,7 +617,6 @@ class USFinancialFetcher(BaseFetcher):
         if data is None:
             url = config.sec.base_url.format(cik=expected_cik)
             logger.info("拉取 Company Facts: %s (CIK=%s)...", ticker, expected_cik)
-            self._rate_limiter.wait()
             resp = self._request_sec(url)
             data = resp.json()
             http_status = resp.status_code
@@ -1714,20 +1674,8 @@ class USFinancialFetcher(BaseFetcher):
     # ── 内部工具方法 ──────────────────────────────────────
 
     def _request_sec(self, url: str) -> requests.Response:
-        """向 SEC API 发送请求，带限流和重试。
-
-        Returns:
-            requests.Response 对象，调用方自行取 .json()
-        """
-        resp = requests.get(url, headers=HEADERS, timeout=30)
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "10"))
-            logger.warning("SEC 429 限流，等待 %ds...", retry_after)
-            time.sleep(retry_after)
-            self._rate_limiter.wait()
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-        resp.raise_for_status()
-        return resp
+        """All SEC IO, including retries, shares one cross-process budget."""
+        return sec_client.get(url, task="us_financial")
 
     def _compute_content_hash(self, data: dict) -> str:
         """计算 SEC 响应的 SHA-256 content_hash（稳定 JSON 序列化）。"""
@@ -1776,15 +1724,6 @@ if __name__ == "__main__":
     )
 
     fetcher = USFinancialFetcher()
-
-    # 测试限流器
-    print("\n=== 测试限流器 ===")
-    rl = SECRateLimiter(rate=10)
-    t0 = time.time()
-    for i in range(12):
-        rl.wait()
-        print(f"  请求 {i + 1}: {time.time() - t0:.3f}s")
-    print(f"12 次请求耗时: {time.time() - t0:.2f}s（应 >1s）")
 
     # 测试公司列表
     print("\n=== 测试公司列表 ===")

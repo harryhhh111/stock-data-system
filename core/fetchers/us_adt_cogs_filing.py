@@ -21,14 +21,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
 
-import config
+from core import sec_client
 from core.fetchers.us_inline_xbrl import localname, parse_inline_xbrl
 from db import get_or_create_raw_snapshot_version, save_raw_snapshot_observation
 
@@ -46,7 +45,6 @@ RAW_DATA_TYPE = "filing_xbrl_instance"
 RAW_SOURCE = "sec_edgar_archives"
 
 SEC_ARCHIVES = "https://www.sec.gov/Archives/edgar/data"
-HEADERS = {"User-Agent": config.sec.user_agent, "Accept": "*/*"}
 
 CACHE_ROOT = Path("data/sec_filing_cache") / ADT_STOCK
 
@@ -101,13 +99,7 @@ _USD_UNITS = {"USD", "ISO4217:USD"}
 # ── 抓取(缓存到 data/sec_filing_cache/ADT/)─────────────────
 
 def _http_get(url: str) -> bytes:
-    import requests
-
-    resp = requests.get(url, headers=HEADERS, timeout=60)
-    if resp.status_code != 200:
-        raise ADTIngestBlocked(f"SEC 请求失败 {resp.status_code}: {url}")
-    time.sleep(0.2)  # SEC 限流自律
-    return resp.content
+    return sec_client.get(url, task="adt_cogs_filing", identity=ADT_CIK).content
 
 
 def fetch_main_document(

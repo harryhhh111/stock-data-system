@@ -16,9 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import requests
-
-import config
+from core import sec_client
 from core.relations.us_financial import build_economic_fact_key
 from core.selectors.us_financial import USFactSelector
 from db import Connection, execute
@@ -140,7 +138,6 @@ class SECEvidenceCollector:
 
     def __init__(self, timeout: int = 30) -> None:
         self.timeout = timeout
-        self.headers = {"User-Agent": config.sec.user_agent}
 
     def collect(self, case: ReviewCase) -> list[dict[str, str]]:
         evidence: list[dict[str, str]] = []
@@ -177,43 +174,42 @@ class SECEvidenceCollector:
         compact = accession.replace("-", "")
         base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{compact}"
         index_url = f"{base}/{accession}-index.html"
-        try:
-            index = requests.get(index_url, headers=self.headers, timeout=self.timeout)
-            index.raise_for_status()
-            links = re.findall(r'href="([^"]+\.html?)"', index.text, re.I)
-            links = [
-                link for link in links
-                if f"/{compact}/" in link and "-index." not in link
-            ]
-            if not links:
-                return {"accession_no": accession, "url": index_url, "snippets": ""}
-            document_url = links[0] if links[0].startswith("http") else (
-                f"https://www.sec.gov{links[0]}" if links[0].startswith("/") else f"{base}/{links[0]}"
-            )
-            document_url = _direct_sec_document_url(document_url)
-            response = requests.get(document_url, headers=self.headers, timeout=self.timeout)
-            response.raise_for_status()
-            text = html.unescape(re.sub(r"<[^>]+>", " ", response.text))
-            text = re.sub(r"\s+", " ", text)
-            snippets: list[str] = []
-            lowered = text.lower()
-            for keyword in tuple(extra_keywords or []) + KEYWORDS:
-                start = 0
-                for _ in range(2):
-                    pos = lowered.find(keyword, start)
-                    if pos < 0:
-                        break
-                    snippet = text[max(0, pos - 350): pos + 850]
-                    if snippet not in snippets:
-                        snippets.append(snippet)
-                    start = pos + len(keyword)
-            return {
-                "accession_no": accession,
-                "url": document_url,
-                "snippets": "\n---\n".join(snippets[:8])[:12000],
-            }
-        except requests.RequestException:
-            return None
+        index = sec_client.get(
+            index_url, task="financial_review_index", identity=cik, timeout=self.timeout,
+        )
+        links = re.findall(r'href="([^"]+\.html?)"', index.text, re.I)
+        links = [
+            link for link in links
+            if f"/{compact}/" in link and "-index." not in link
+        ]
+        if not links:
+            return {"accession_no": accession, "url": index_url, "snippets": ""}
+        document_url = links[0] if links[0].startswith("http") else (
+            f"https://www.sec.gov{links[0]}" if links[0].startswith("/") else f"{base}/{links[0]}"
+        )
+        document_url = _direct_sec_document_url(document_url)
+        response = sec_client.get(
+            document_url, task="financial_review_document", identity=cik, timeout=self.timeout,
+        )
+        text = html.unescape(re.sub(r"<[^>]+>", " ", response.text))
+        text = re.sub(r"\s+", " ", text)
+        snippets: list[str] = []
+        lowered = text.lower()
+        for keyword in tuple(extra_keywords or []) + KEYWORDS:
+            start = 0
+            for _ in range(2):
+                pos = lowered.find(keyword, start)
+                if pos < 0:
+                    break
+                snippet = text[max(0, pos - 350): pos + 850]
+                if snippet not in snippets:
+                    snippets.append(snippet)
+                start = pos + len(keyword)
+        return {
+            "accession_no": accession,
+            "url": document_url,
+            "snippets": "\n---\n".join(snippets[:8])[:12000],
+        }
 
 
 def _direct_sec_document_url(url: str) -> str:

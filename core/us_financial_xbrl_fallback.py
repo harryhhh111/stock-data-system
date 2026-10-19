@@ -7,21 +7,19 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 from xml.etree import ElementTree as ET
 
-import config
+from core import sec_client
 
 logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────────
 
 _SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
-_SEC_REQUEST_DELAY = 0.5  # SEC 限速保护
 
 _TOTAL_TAGS = ("Assets", "LiabilitiesAndStockholdersEquity")
 _EQUITY_TAGS = (
@@ -109,16 +107,14 @@ def _discover_instance_url(accession_no: str, cik_stripped: str) -> str | None:
         f"{_SEC_ARCHIVES_BASE}/{cik_stripped}/{accn_dashes}/"
         f"{accession_no}-index.htm"
     )
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            index_url, headers={"User-Agent": config.sec.user_agent}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        logger.warning("Failed to fetch filing index %s: %s", index_url, exc)
+    response = sec_client.get(
+        index_url, task="xbrl_fallback_index", identity=cik_stripped,
+        allowed_statuses=(404,),
+    )
+    if response.status_code == 404:
+        logger.warning("SEC filing index absent (404): %s", index_url)
         return None
+    html = response.content.decode("utf-8", errors="replace")
 
     # 匹配 extracted XBRL instance: href="/Archives/edgar/data/…/…_htm.xml"
     m = re.search(
@@ -135,7 +131,6 @@ def _discover_instance_url(accession_no: str, cik_stripped: str) -> str | None:
             return None  # 不要 linkbase 文件
 
     if m:
-        time.sleep(_SEC_REQUEST_DELAY)
         return f"https://www.sec.gov{m.group(1)}"
 
     return None
@@ -143,16 +138,11 @@ def _discover_instance_url(accession_no: str, cik_stripped: str) -> str | None:
 
 def _parse_instance(url: str) -> tuple[list[XbrlFact], list[XbrlContext]]:
     """下载并解析 XBRL instance XML，返回 facts 和 contexts。"""
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            url, headers={"User-Agent": config.sec.user_agent}
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-    except Exception as exc:
-        logger.warning("Failed to download XBRL instance %s: %s", url, exc)
+    response = sec_client.get(url, task="xbrl_fallback_document", allowed_statuses=(404,))
+    if response.status_code == 404:
+        logger.warning("SEC XBRL instance absent (404): %s", url)
         return [], []
+    raw = response.content
 
     try:
         root = ET.fromstring(raw)

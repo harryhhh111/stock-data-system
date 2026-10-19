@@ -5,6 +5,7 @@ Filing XBRL fallback 测试。
 from __future__ import annotations
 
 from decimal import Decimal
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,8 @@ from core.us_financial_xbrl_fallback import (
 
 # ── WMT FY2026 真实数据 ────────────────────────────────────────
 
+@pytest.mark.sec_live
+@pytest.mark.skipif(os.environ.get("SEC_RUN_LIVE_TESTS") != "1", reason="explicit live SEC opt-in required")
 def test_wmt_fy2026_total_liabilities():
     """WMT FY2026: filing XBRL 推导 total_liabilities = 178,488M。"""
     result = fetch_total_liabilities_from_instance(
@@ -35,6 +38,8 @@ def test_wmt_fy2026_total_liabilities():
     assert "reconstruction_flag" in result or result.get("sec_tag")
 
 
+@pytest.mark.sec_live
+@pytest.mark.skipif(os.environ.get("SEC_RUN_LIVE_TESTS") != "1", reason="explicit live SEC opt-in required")
 def test_wmt_fy2025_total_liabilities():
     """WMT FY2025: 从独立 10-K instance 推导。"""
     result = fetch_total_liabilities_from_instance(
@@ -58,6 +63,8 @@ def test_quarterly_not_processed():
     assert result is None  # 10-Q 直接跳过
 
 
+@pytest.mark.sec_live
+@pytest.mark.skipif(os.environ.get("SEC_RUN_LIVE_TESTS") != "1", reason="explicit live SEC opt-in required")
 def test_standard_fact_company_not_affected():
     """有标准 Liabilities tag 的公司不应依赖 fallback（通过 fetcher 回归）。"""
     # 只测 AAPL — Company Facts 有 Liabilities

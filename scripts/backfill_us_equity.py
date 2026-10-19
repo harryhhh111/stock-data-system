@@ -6,8 +6,7 @@
   2. CommonStockSharesOutstanding (balance sheet)
   3. WeightedAverageNumberOfSharesOutstandingBasic (income stmt, 近似)
 
-速率: 10 req/s (SEC 官方限制)
-预计: ~1000 只 × 0.1s ≈ 2 分钟
+速率: 与其他 SEC 任务共享最多 2 req/s；实际速度取决于网络和排队
 
 Usage:
     python scripts/backfill_us_equity.py           # 全部 US 股票
@@ -18,14 +17,13 @@ import json
 import logging
 import sys
 import time
-from collections import deque
 from pathlib import Path
 
-import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db import execute, upsert as db_upsert
+from core import sec_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,46 +41,10 @@ SHARES_TAGS = [
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
-import os
-
-_SEC_USER_AGENT = os.environ.get(
-    "STOCK_SEC_USER_AGENT", "stock-data-system user@example.com"
-)
-HEADERS = {
-    "User-Agent": _SEC_USER_AGENT,
-    "Accept-Encoding": "gzip, deflate",
-}
-
-
-class SECRateLimiter:
-    """Sliding window rate limiter for SEC API (10 req/s)."""
-
-    def __init__(self, rate: int = 10, window: float = 1.0):
-        self._rate = rate
-        self._window = window
-        self._timestamps: deque[float] = deque()
-
-    def wait(self):
-        now = time.time()
-        while self._timestamps and self._timestamps[0] < now - self._window:
-            self._timestamps.popleft()
-        if len(self._timestamps) >= self._rate:
-            sleep_time = self._timestamps[0] + self._window - now + 0.05
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            now = time.time()
-            while self._timestamps and self._timestamps[0] < now - self._window:
-                self._timestamps.popleft()
-        self._timestamps.append(time.time())
-
-
-rate_limiter = SECRateLimiter()
-
 
 def fetch_ticker_to_cik() -> dict[str, str]:
     """从 SEC 下载 ticker → CIK 映射。"""
-    r = requests.get(COMPANY_TICKERS_URL, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    r = sec_client.get(COMPANY_TICKERS_URL, task="backfill_equity_tickers")
     data = r.json()
     return {
         item["ticker"].upper(): str(item["cik_str"]).zfill(10)
@@ -91,24 +53,15 @@ def fetch_ticker_to_cik() -> dict[str, str]:
 
 
 def fetch_company_facts(cik: str) -> dict | None:
-    """拉取单个公司的 Company Facts JSON。"""
-    url = COMPANY_FACTS_URL.format(cik=cik)
-    rate_limiter.wait()
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        if r.status_code == 429:
-            retry_after = int(r.headers.get("Retry-After", "10"))
-            logger.warning("429 限流, 等待 %ds", retry_after)
-            time.sleep(retry_after)
-            rate_limiter.wait()
-            r = requests.get(url, headers=HEADERS, timeout=30)
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        logger.error("CIK %s 请求异常: %s", cik, e)
+    """仅明确的 404 表示没有 Company Facts，其他错误向上传播。"""
+    response = sec_client.get(
+        COMPANY_FACTS_URL.format(cik=cik), task="backfill_equity_facts",
+        identity=cik, allowed_statuses=(404,),
+    )
+    if response.status_code == 404:
+        logger.warning("CIK %s: SEC Company Facts absent (404)", cik)
         return None
+    return response.json()
 
 
 def extract_shares_outstanding(facts: dict) -> list[dict]:

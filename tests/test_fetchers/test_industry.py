@@ -227,188 +227,52 @@ class TestSyncIndustry:
 
 
 class TestFetchUsIndustry:
-    """测试 fetch_us_industry 核心逻辑。"""
+    """SIC parsing remains unchanged; retry ownership moved to the SEC client."""
 
-    @patch("core.fetchers.industry.requests.Session")
-    def test_basic_fetch(self, mock_session_cls):
-        """测试基本拉取流程：2 只美股。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        def mock_get(url, timeout=10):
-            resp = MagicMock()
-            resp.status_code = 200
-            if "0000320193" in url:  # AAPL
-                resp.json.return_value = {
-                    "sic": "3571",
-                    "sicDescription": "Electronic Computers",
-                }
-            elif "0001067983" in url:  # BRK
-                resp.json.return_value = {
-                    "sic": "6331",
-                    "sicDescription": "Fire, Marine & Casualty Insurance",
-                }
-            else:
-                resp.json.return_value = {"sicDescription": ""}
-            resp.raise_for_status = MagicMock()
-            return resp
-
-        mock_session.get.side_effect = mock_get
-
+    @patch("core.fetchers.industry.sec_client.get")
+    def test_basic_fetch(self, get):
         from core.fetchers.industry import fetch_us_industry
-        stocks = [
-            {"stock_code": "AAPL", "cik": "0000320193"},
-            {"stock_code": "BRK.B", "cik": "0001067983"},
-        ]
-        results = fetch_us_industry(stocks, delay=0, max_retries=1)
+        get.return_value.json.return_value = {"sicDescription": "Software"}
+        results = fetch_us_industry([
+            {"stock_code": "AAPL", "cik": "320193"},
+            {"stock_code": "MSFT", "cik": "789019"},
+        ])
+        assert results == [{"stock_code": "AAPL", "industry_name": "Software"},
+                           {"stock_code": "MSFT", "industry_name": "Software"}]
+        assert "CIK0000320193" in get.call_args_list[0].args[0]
+        assert get.call_count == 2
+        assert get.call_args.kwargs["task"] == "us_industry"
 
-        assert len(results) == 2
-        assert results[0]["stock_code"] == "AAPL"
-        assert results[0]["industry_name"] == "Electronic Computers"
-        assert results[1]["stock_code"] == "BRK.B"
-        assert results[1]["industry_name"] == "Fire, Marine & Casualty Insurance"
-
-    @patch("core.fetchers.industry.requests.Session")
-    def test_empty_sic_description(self, mock_session_cls):
-        """测试 sicDescription 为空时仍记录空字符串。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        resp = MagicMock()
-        resp.json.return_value = {"sic": "1234"}  # no sicDescription
-        resp.raise_for_status = MagicMock()
-        mock_session.get.return_value = resp
-
+    @patch("core.fetchers.industry.sec_client.get")
+    def test_missing_sic_is_not_a_network_failure(self, get):
         from core.fetchers.industry import fetch_us_industry
-        results = fetch_us_industry(
-            [{"stock_code": "TEST", "cik": "0000000001"}],
-            delay=0, max_retries=1,
-        )
+        get.return_value.json.return_value = {"sic": "1234"}
+        assert fetch_us_industry([{"stock_code": "TEST", "cik": "1"}]) == [
+            {"stock_code": "TEST", "industry_name": ""}]
 
-        assert len(results) == 1
-        assert results[0]["industry_name"] == ""
-
-    @patch("core.fetchers.industry.requests.Session")
-    def test_retry_on_failure(self, mock_session_cls):
-        """测试请求失败时重试。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        call_count = {"n": 0}
-
-        def mock_get(url, timeout=10):
-            call_count["n"] += 1
-            if call_count["n"] <= 2:
-                raise ConnectionError("模拟超时")
-            resp = MagicMock()
-            resp.json.return_value = {"sicDescription": "Software"}
-            resp.raise_for_status = MagicMock()
-            return resp
-
-        mock_session.get.side_effect = mock_get
-
+    @patch("core.fetchers.industry.sec_client.get")
+    def test_coordination_failure_propagates_without_outer_retry(self, get):
         from core.fetchers.industry import fetch_us_industry
-        results = fetch_us_industry(
-            [{"stock_code": "MSFT", "cik": "0000789019"}],
-            delay=0, max_retries=3,
-        )
-
-        assert len(results) == 1
-        assert results[0]["industry_name"] == "Software"
-        assert call_count["n"] == 3
-
-    @patch("core.fetchers.industry.requests.Session")
-    def test_all_retries_fail(self, mock_session_cls):
-        """测试所有重试均失败时跳过该股票。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-        mock_session.get.side_effect = ConnectionError("持续失败")
-
-        from core.fetchers.industry import fetch_us_industry
-        results = fetch_us_industry(
-            [{"stock_code": "FAIL", "cik": "0000000001"}],
-            delay=0, max_retries=2,
-        )
-
-        assert len(results) == 0
-
-    @patch("core.fetchers.industry.requests.Session")
-    def test_cik_zero_padding(self, mock_session_cls):
-        """测试 CIK 自动补零到 10 位。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        captured_urls = []
-
-        def mock_get(url, timeout=10):
-            captured_urls.append(url)
-            resp = MagicMock()
-            resp.json.return_value = {"sicDescription": "Test Industry"}
-            resp.raise_for_status = MagicMock()
-            return resp
-
-        mock_session.get.side_effect = mock_get
-
-        from core.fetchers.industry import fetch_us_industry
-        fetch_us_industry(
-            [{"stock_code": "TEST", "cik": "320193"}],
-            delay=0, max_retries=1,
-        )
-
-        assert len(captured_urls) == 1
-        assert "CIK0000320193" in captured_urls[0]
+        from core.sec_client import SECCoordinationError
+        get.side_effect = SECCoordinationError("migration absent")
+        with pytest.raises(SECCoordinationError):
+            fetch_us_industry([{"stock_code": "TEST", "cik": "1"}], max_retries=3)
+        assert get.call_count == 1
 
 
 class TestSyncUsIndustry:
-    """测试 SyncManager.sync_us_industry 方法。"""
-
     @patch("core.sync.manager.batch_update_industry")
     @patch("core.sync.manager.execute")
-    @patch("core.fetchers.industry.requests.Session")
-    def test_sync_us_industry_updates_stock_info(
-        self, mock_session_cls, mock_execute, mock_batch
-    ):
-        """测试 sync_us_industry 正确调用 batch_update_industry。"""
-        mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        def mock_get(url, timeout=10):
-            resp = MagicMock()
-            resp.json.return_value = {"sicDescription": "Electronic Computers"}
-            resp.raise_for_status = MagicMock()
-            return resp
-
-        mock_session.get.side_effect = mock_get
-
-        # Mock execute: 返回美股列表 + 允许 UPDATE
-        def execute_side_effect(sql, params=None, **kwargs):
-            if "SELECT stock_code, cik FROM stock_info" in sql:
-                return [("AAPL", "0000320193"), ("MSFT", "0000789019")]
-            return None
-
-        mock_execute.side_effect = execute_side_effect
-        mock_batch.return_value = 2
-
+    @patch("core.fetchers.industry.sec_client.get")
+    def test_sync_us_industry_updates_stock_info(self, get, execute, batch):
         from core.sync import SyncManager
-        manager = SyncManager()
-        result = manager.sync_us_industry()
-
+        get.return_value.json.return_value = {"sicDescription": "Software"}
+        execute.return_value = [("AAPL", "320193"), ("MSFT", "789019")]
+        batch.return_value = 2
+        result = SyncManager().sync_us_industry()
         assert result["total"] == 2
         assert result["updated"] == 2
         assert result["empty_industry"] == 0
-        assert result["industry_count"] == 1  # 都是 Electronic Computers
-
-        mock_batch.assert_called_once()
-        assert mock_batch.call_args[0][1] == "US"
-
-    @patch("core.sync.manager.batch_update_industry")
-    @patch("core.sync.manager.execute")
-    def test_sync_us_industry_no_stocks(self, mock_execute, mock_batch):
-        """测试没有美股时返回空结果。"""
-        mock_execute.return_value = []
-
-        from core.sync import SyncManager
-        manager = SyncManager()
-        result = manager.sync_us_industry()
-
-        assert result["total"] == 0
+        assert result["industry_count"] == 1
+        batch.assert_called_once()
+        assert batch.call_args.args[1] == "US"

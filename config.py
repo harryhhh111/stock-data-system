@@ -143,8 +143,12 @@ class SECConfig:
             "StockDataSync/1.0 user@example.com",
         )
     )
-    rate_limit: int = field(
-        default_factory=lambda: _env("STOCK_SEC_RATE_LIMIT", "10", cast=int)
+    # Preserve invalid overrides for the SEC client to reject before network IO.
+    # Do not fail imports on CN/HK or offline-only paths.
+    rate_limit: int | str = field(
+        default_factory=lambda: int(os.environ.get("STOCK_SEC_RATE_LIMIT", "2"))
+        if os.environ.get("STOCK_SEC_RATE_LIMIT", "2") in ("1", "2")
+        else os.environ["STOCK_SEC_RATE_LIMIT"]
     )
     cache_ttl_days: int = field(
         default_factory=lambda: _env("STOCK_SEC_CACHE_TTL_DAYS", "7", cast=int)

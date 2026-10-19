@@ -12,6 +12,16 @@
 
 ## 数据分层
 
+### SEC 请求协调状态（2026-10-20，部署前需迁移）
+
+`scripts/sec_request_gate.sql` 新增独立表 `sec_request_gate`，仅用于本机 US
+采集任务协调，不属于财务事实或资讯存储。主键 `gate_key` 固定为 `sec_edgar`；
+`next_allowed_at`、`blocked_until`、`updated_at` 均为非空有限 `TIMESTAMPTZ`。
+前两者分别保存请求间隔/异常退出保护、共享退避；更新时间使用数据库时钟。
+迁移幂等插入初始行，不重置已有等待窗口。客户端使用固定会话级 advisory lock
+保护状态，只持有专用 autocommit 连接，不占用业务事务连接；网络期间不持有长事务。
+该表缺失或协调失败阻止 SEC 联网；不影响纯缓存读取和离线解析。
+
 ### 关注池元数据（2026-10-09）
 
 增量迁移 `scripts/watchlist_tables.sql` 新增独立表 `watchlist_item`。

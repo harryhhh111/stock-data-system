@@ -166,7 +166,7 @@ def get_industry_distribution(results: list[dict[str, str]]) -> pd.DataFrame:
 
 # ── 美股行业分类（SEC EDGAR SIC Code） ──────────────────────
 
-_SEC_EDGAR_USER_AGENT = "StockDataBot/1.0 (stock-data-sync@example.com)"
+from core import sec_client
 _SEC_EDGAR_BASE_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
 
@@ -175,90 +175,26 @@ def fetch_us_industry(
     delay: float = 0.5,
     max_retries: int = 3,
 ) -> list[dict[str, str]]:
-    """从 SEC EDGAR 获取美股 SIC 行业分类。
+    """获取 SIC 分类；HTTP 重试、UA 和全局额度由 SEC 客户端统一处理。
 
-    逐只请求 SEC EDGAR 的 Company Info 接口，获取 sicDescription 字段。
-
-    Args:
-        stocks: [{"stock_code": "AAPL", "cik": "0000320193"}, ...]
-        delay: 请求间隔（秒），SEC 限流 10 req/s
-        max_retries: 单只股票请求失败的最大重试次数
-
-    Returns:
-        [{"stock_code": "AAPL", "industry_name": "Electronic Computers"}, ...]
+    delay/max_retries 保留调用兼容性，不再控制 SEC 网络请求。
+    网络/协调失败明确抛错，不能把失败股票当成无行业记录。
     """
     logger.info("开始拉取美股行业分类: %d 只股票", len(stocks))
-
-    session = requests.Session()
-    session.headers.update({"User-Agent": _SEC_EDGAR_USER_AGENT})
-
     results: list[dict[str, str]] = []
-    failed: list[str] = []
-
-    for i, item in enumerate(stocks):
+    for item in stocks:
         stock_code = item["stock_code"]
-        cik = item["cik"]
-        # CIK 必须是 10 位零填充
-        cik_padded = str(cik).strip().zfill(10)
-
-        success = False
-        for attempt in range(max_retries):
-            try:
-                url = _SEC_EDGAR_BASE_URL.format(cik=cik_padded)
-                resp = session.get(url, timeout=10)
-                resp.raise_for_status()
-                data = resp.json()
-
-                sic_desc = data.get("sicDescription", "")
-                if sic_desc:
-                    results.append({
-                        "stock_code": stock_code,
-                        "industry_name": sic_desc,
-                    })
-                    success = True
-                else:
-                    logger.warning(
-                        "%s (CIK %s): sicDescription 为空",
-                        stock_code, cik_padded,
-                    )
-                    # 记录空行业但不视为失败
-                    results.append({
-                        "stock_code": stock_code,
-                        "industry_name": "",
-                    })
-                    success = True
-                break
-
-            except Exception as exc:
-                logger.warning(
-                    "%s (CIK %s) 拉取失败 (attempt %d/%d): %s",
-                    stock_code, cik_padded, attempt + 1, max_retries, exc,
-                )
-                if attempt < max_retries - 1:
-                    time.sleep(delay * (attempt + 1))
-
-        if not success:
-            failed.append(stock_code)
-            logger.error("  %s: 所有重试均失败，跳过", stock_code)
-
-        # 请求间延迟
-        time.sleep(delay)
-
-        # 进度日志
-        if (i + 1) % 50 == 0 or (i + 1) == len(stocks):
-            logger.info(
-                "美股行业进度: %d/%d (%.0f%%) 成功=%d 失败=%d",
-                i + 1, len(stocks), (i + 1) / len(stocks) * 100,
-                len(results), len(failed),
-            )
-
-    logger.info(
-        "美股行业分类拉取完成: %d/%d 只成功, %d 只失败",
-        len(results), len(stocks), len(failed),
-    )
-    if failed:
-        logger.warning("失败股票: %s", ", ".join(failed[:20]))
-
+        cik = str(item["cik"]).strip().zfill(10)
+        response = sec_client.get(
+            _SEC_EDGAR_BASE_URL.format(cik=cik), task="us_industry",
+            identity=f"{stock_code}/{cik}",
+        )
+        data = response.json()
+        sic_desc = data.get("sicDescription", "")
+        if not sic_desc:
+            logger.warning("%s (CIK %s): sicDescription 为空", stock_code, cik)
+        results.append({"stock_code": stock_code, "industry_name": sic_desc})
+    logger.info("美股行业分类拉取完成: %d/%d", len(results), len(stocks))
     return results
 
 

@@ -15,7 +15,7 @@
   非零退出。
 
 硬约束:
-- 不写数据库,不改 selector/projection/DDL/snapshot/读取者,不重放 ingest;
+- 不写财务业务数据；联网时仅更新 SEC 协调状态，不改 selector/projection/快照，不重放 ingest;
 - 不使用"同期间最大绝对值"选取规则,不以子项求和替代合并总额;
 - context 解析失败的事实不得假定为无维度;网络/解析失败显式记录,不静默跳过;
 - 结论仅适用 ADT,不推广到其他发行人或扩展 tag。
@@ -31,7 +31,6 @@ import csv
 import json
 import logging
 import sys
-import time
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -42,7 +41,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import config  # noqa: E402
+from core import sec_client  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +52,6 @@ CIK = "0001703056"
 CIK_NODASH = "1703056"
 SEC_ARCHIVES = "https://www.sec.gov/Archives/edgar/data"
 
-HEADERS = {
-    "User-Agent": config.sec.user_agent,
-    "Accept": "*/*",
-}
 
 # 目标扩展 tag(localname 大小写不敏感);其余 cost-of-revenue 类 tag 也完整导出
 TARGET_TAG_LOCAL = "costofrevenueexcludingdepreciationdepletionandamortization"
@@ -345,13 +340,7 @@ def match_statement_value(
 # ── SEC 抓取(IO 层)──────────────────────────────────────────
 
 def _http_get(url: str) -> bytes:
-    import requests
-
-    resp = requests.get(url, headers=HEADERS, timeout=60)
-    if resp.status_code != 200:
-        raise RuntimeError(f"SEC 请求失败 {resp.status_code}: {url}")
-    time.sleep(0.2)  # SEC 限流自律(上限 10 req/s,本脚本一次只抓几个文件)
-    return resp.content
+    return sec_client.get(url, task="audit_adt_cogs", identity=CIK).content
 
 
 def fetch_filing(accession: str, raw_dir: Path) -> dict[str, Path]:
