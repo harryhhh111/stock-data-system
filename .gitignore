@@ -59,3 +59,6 @@ archive/
 !docs/archive/README.md
 !docs/archive/ROADMAP_VALUE_QUANT_20260423_20260903.md
 sync.py.old
+
+# Agent run artifacts
+.agent-artifacts/

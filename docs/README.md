@@ -10,6 +10,7 @@
 - **关注股看板启用/API 说明** → [deployment/WATCHLIST_MVP.md](deployment/WATCHLIST_MVP.md)
 - **Hyperliquid 多 Pair 主网只读看板方案（供实施）** → [HYPERLIQUID_MULTIPAIR_PLAN.md](HYPERLIQUID_MULTIPAIR_PLAN.md)
 - **Hyperliquid 单 Pair 初版契约（v1 兼容参考）** → [HYPERLIQUID_DASHBOARD_MVP_PLAN.md](HYPERLIQUID_DASHBOARD_MVP_PLAN.md)
+- **关注股官方公告流方案（待审核）** → [WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md](WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md)
 - **研究索引与卡片方案（暂缓）** → [RESEARCH_WORKBENCH_R1_PLAN.md](RESEARCH_WORKBENCH_R1_PLAN.md)
 - **原事件采集方案（暂缓）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
 - **历史路线图与已关闭任务** → [archive/README.md](archive/README.md)
