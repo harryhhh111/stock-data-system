@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, POSITION_STATE_LABEL, signed,
+  accountShort, dash, formatTime, NETWORK_LABEL, pctFromFraction, plainDiagnostic, POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import {
@@ -96,7 +96,7 @@ function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revi
             {['account', 'positions', 'funding', 'ratio'].map((name) => {
               const block = snap.blocks[name as 'account' | 'positions' | 'funding' | 'ratio'];
               return block.status !== 'ok' && block.diagnostics.length > 0
-                ? <p key={name} className="text-xs text-amber-600">{name}: {block.diagnostics.join('；')}</p>
+                ? <p key={name} className="text-xs text-amber-600">{name}: {block.diagnostics.map(plainDiagnostic).join('；')}</p>
                 : null;
             })}
           </>
@@ -143,7 +143,7 @@ function AnnouncementsSection() {
                   </ul>
                 )}
             <p className="text-xs text-muted-foreground">查询时间 {block.queried_at ? formatTime(block.queried_at) : '—'}</p>
-            {block.diagnostics?.map((d, i) => <p key={i} className="text-xs text-amber-600">{d}</p>)}
+            {block.diagnostics?.map((d, i) => <p key={i} className="text-xs text-amber-600">{plainDiagnostic(d)}</p>)}
           </>
         )}
       </CardContent>

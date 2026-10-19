@@ -7,7 +7,7 @@ import { EChartsWrapper } from '@/components/charts/echarts-wrapper';
 import { PageHeader } from '@/components/layout/page-header';
 import {
   accountShort, dash, dexLabel, formatTime, NETWORK_LABEL, pctFromFraction, pctFromNumber,
-  POSITION_STATE_LABEL, signed,
+  plainDiagnostic, POSITION_STATE_LABEL, signed,
 } from '@/components/hyperliquid/format';
 import { snapshotIdentityMatches } from '@/components/hyperliquid/identity';
 import {
@@ -42,7 +42,7 @@ function BlockFrame({ title, block, hint, children }: {
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {children}
-        {block?.diagnostics?.map((d, i) => <p key={i} className="text-xs text-amber-600">{d}</p>)}
+        {block?.diagnostics?.map((d, i) => <p key={i} className="text-xs text-amber-600">{plainDiagnostic(d)}</p>)}
       </CardContent>
     </Card>
   );
