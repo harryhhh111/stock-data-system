@@ -86,6 +86,17 @@ class TestUnitScale:
         assert unit_scale("港幣億元") == (1e8, "HKD_100m")
         assert unit_scale("in millions of US$") == (1e6, "USD_mn")
 
+    def test_compound_currency_infix(self):
+        # 2026-10 unit_unknown 主因：千港元/千美元等币种夹中间的复合写法
+        # （"千港元"匹配不到"千元"，港字隔断）
+        header_hkd = "截至六月三十日止六個月 二零二六年 二零二五年 千港元 千港元 （未經審核）"
+        assert unit_scale(header_hkd) == (1e3, "HKD_thousand")
+        header_usd = "簡明綜合現金流量表 2026年 2025年 千美元 千美元 （未經審核）"
+        assert unit_scale(header_usd) == (1e3, "USD_thousand")
+        assert unit_scale("（以港元列示） 千港元 千港元") == (1e3, "HKD_thousand")
+        assert unit_scale("百萬港元") == (1e6, "HKD_mn")
+        assert unit_scale("億美元") == (1e8, "USD_100m")
+
     def test_magnitude_only(self):
         assert unit_scale("百萬元") == (1e6, "mn")
 
