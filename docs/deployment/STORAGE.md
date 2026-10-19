@@ -62,6 +62,13 @@
 - 恢复：`cat stock_data_*.dump.part-* > /tmp/full.dump`，核对 manifest 中的整包 sha256 后 `pg_restore -h 127.0.0.1 -U stock_user -d stock_data --clean --if-exists /tmp/full.dump`。
 - 状态：首个备份已完成（`stock_data_20261019_135651`，4 分片，整包 sha256 `03d84231…`，COS 端 cat 重算一致）。
 
+## 数据生命周期
+
+- **唯一证据永不删**：US 版本层 + raw_snapshot 原始响应，永久保留（已迁 `history_ts` 云盘表空间）。
+- **超龄可再获取数据 → COS 归档**：`data/sec_cache`（SEC 抓取缓存，TTL 7 天）由 `scripts/archive_sec_cache.sh` 每日 04:17 归档到 `/lhcos-data/sec_cache_archive/YYYY-MM/`，复制成功（含大小校验）才删本地，失败保留；日志 `logs/sec_cache_archive.log`。2026-10-19 首次归档 512 个（1.78G，其余 534 个在 7 天 TTL 内正常保留），本地 3.6G→1.9G。
+- **可再生产物直接清理**：`build/` 构建产物（203M，已清 2026-10-19）；`/tmp` 备份暂存 3 天滚动。
+- 系统日志（/var/log 1.7G：cron/secure/messages 未轮转 + journal）需 root 处理 logrotate，未列入自动化。
+
 ## 增长与告警
 
 - 版本层约 25 万行/月、300-500MB/月，迁移后写入云盘（20G，约 3 年量级）。
