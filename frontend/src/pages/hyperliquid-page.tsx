@@ -63,7 +63,10 @@ function PairCard({ descriptor, revision }: { descriptor: HlPairDescriptor; revi
               : <Badge variant="outline" title={descriptor.account_address}>{accountShort(descriptor.account_address)}</Badge>}
           </div>
         </div>
-        <CardDescription>只读快照，点击查看详情</CardDescription>
+        <CardDescription>
+          只读快照，
+          <Link to={`/hyperliquid/pairs/${descriptor.id}`} className="underline underline-offset-4 hover:text-primary">查看详情</Link>
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {query.isError && !snap && <p className="text-rose-600" role="alert">{errorText(query.error)}</p>}
