@@ -353,6 +353,105 @@ def test_v1_valid_snapshot_still_ok(client, monkeypatch):
     assert all(body['blocks'][n]['status'] == 'ok' for n in ('positions', 'funding', 'ratio', 'unlocks'))
 
 
+@pytest.mark.parametrize('field,value', [
+    ('schema_version', True),
+    ('schema_version', 1.0),
+    ('account_address', 'not-an-address'),
+    ('account_address', '0x' + '0' * 40),
+    ('account_address', 123),
+    ('queried_at', 'not-a-date'),
+    ('queried_at', '2026-02-30T08:00:00Z'),
+    ('queried_at', '2026-10-19T8:00:00Z'),
+    ('queried_at', '2026-10-19T08:00:00+00:00'),
+    ('queried_at', None),
+    ('blocks', None),
+    ('blocks', []),
+])
+def test_v1_bad_top_level_is_rejected_and_not_cached(client, monkeypatch, field, value):
+    runner = mock_runner(monkeypatch)
+    runner.side_effect = [full_snapshot(**{field: value}), full_snapshot()]
+    assert client.get('/api/v1/hyperliquid/dashboard').status_code == 503
+    assert service._cache['snapshot'] is None
+    assert client.get('/api/v1/hyperliquid/dashboard').status_code == 200
+    assert runner.call_count == 2
+
+
+@pytest.mark.parametrize('address', ['not-an-address', '0x' + '0' * 40,
+                                     '0x' + 'a' * 39, '0x' + 'a' * 41])
+def test_v1_bad_expected_address_does_not_start_child(client, monkeypatch, address):
+    monkeypatch.setenv('STOCK_HL_EXPECTED_ACCOUNT', address)
+    runner = mock_runner(monkeypatch, full_snapshot(account_address=address))
+    assert client.get('/api/v1/hyperliquid/dashboard').status_code == 503
+    assert service._cache['snapshot'] is None
+    runner.assert_not_called()
+    # Direct validation must reject equal but invalid addresses as well.
+    with pytest.raises(service.HyperliquidUnavailable, match='地址'):
+        service._validate(full_snapshot(account_address=address), address)
+
+
+@pytest.mark.parametrize('block_name,field', [
+    (name, field) for name, fields in service.V1_DATA_KEYS.items() for field in sorted(fields)
+])
+def test_v1_missing_business_field_degrades_complete_dto(client, monkeypatch, block_name, field):
+    snap = full_snapshot()
+    del snap['blocks'][block_name][field]
+    mock_runner(monkeypatch, snap)
+    body = client.get('/api/v1/hyperliquid/dashboard').json()['data']
+    block = body['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+    assert service.V1_DATA_KEYS[block_name] <= block.keys()
+    assert block['queried_at'] == snap['queried_at']
+    assert any('缺少字段' in d for d in block['diagnostics'])
+    other = 'positions' if block_name != 'positions' else 'ratio'
+    assert body['blocks'][other]['status'] == 'ok'
+
+
+@pytest.mark.parametrize('block_name', list(service.BLOCKS))
+def test_v1_empty_business_block_never_stays_ok(client, monkeypatch, block_name):
+    snap = full_snapshot()
+    snap['blocks'][block_name] = {'status': 'ok', 'queried_at': snap['queried_at'], 'diagnostics': []}
+    mock_runner(monkeypatch, snap)
+    block = client.get('/api/v1/hyperliquid/dashboard').json()['data']['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+
+
+@pytest.mark.parametrize('block_name', list(service.BLOCKS))
+@pytest.mark.parametrize('when', ['missing', 'not-a-date'])
+def test_v1_bad_block_time_uses_valid_fallback(client, monkeypatch, block_name, when):
+    snap = full_snapshot()
+    if when == 'missing':
+        del snap['blocks'][block_name]['queried_at']
+    else:
+        snap['blocks'][block_name]['queried_at'] = when
+    mock_runner(monkeypatch, snap)
+    block = client.get('/api/v1/hyperliquid/dashboard').json()['data']['blocks'][block_name]
+    assert block['status'] == 'unavailable'
+    assert block['queried_at'] == snap['queried_at']
+
+
+@pytest.mark.parametrize('field', ['mark_px', 'unrealized_pnl', 'notional'])
+def test_v1_position_nullable_field_must_be_present(client, monkeypatch, field):
+    snap = full_snapshot()
+    item = {'coin': 'HYPE', 'side': 'long', 'size': '1', 'mark_px': None,
+            'unrealized_pnl': None, 'notional': None}
+    del item[field]
+    snap['blocks']['positions']['positions'] = [item]
+    mock_runner(monkeypatch, snap)
+    block = client.get('/api/v1/hyperliquid/dashboard').json()['data']['blocks']['positions']
+    assert block['status'] == 'unavailable'
+    assert block['positions'] is None
+
+
+def test_v1_funding_degradation_keeps_v1_field_name(client, monkeypatch):
+    snap = full_snapshot()
+    snap['blocks']['funding']['annualized'] = 'invalid'
+    mock_runner(monkeypatch, snap)
+    block = client.get('/api/v1/hyperliquid/dashboard').json()['data']['blocks']['funding']
+    assert block['status'] == 'unavailable'
+    assert block['annualized'] == {'HYPE': None, 'BTC': None}
+    assert 'annualized_pct' not in block
+
+
 def test_flushed_output_then_sleep_obeys_deadline(tmp_path):
     """已有少量可读输出时也不能卡在定长读取，整体 deadline 仍然有效。"""
     pid_file = tmp_path / 'flushed-child.pid'

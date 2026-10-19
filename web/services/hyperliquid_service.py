@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import selectors
 import subprocess
 import threading
@@ -43,6 +44,8 @@ def _config() -> tuple[str, str, str]:
     if missing:
         message = f"未配置 {', '.join(missing)}"
         raise HyperliquidUnavailable(message, public=message)
+    if not _address(expected):
+        raise HyperliquidUnavailable("预期账户地址非法", public="STOCK_HL_EXPECTED_ACCOUNT 必须是合法非零账户地址")
     return bin_path, config_path, expected
 
 
@@ -144,19 +147,23 @@ def _run_hl_trader(bin_path: str, config_path: str) -> dict:
 
 
 def _validate(snapshot: dict, expected_account: str) -> dict:
-    if snapshot.get("schema_version") != 1:
+    if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] != 1:
         message = f"schema_version 不支持: {snapshot.get('schema_version')!r}"
         raise HyperliquidUnavailable(message, public=message)
     if snapshot.get("network") != "testnet":
         message = f"network 不是 testnet: {snapshot.get('network')!r}"
         raise HyperliquidUnavailable(message, public=message)
-    address = str(snapshot.get("account_address") or "").strip().lower()
-    if address != expected_account:
+    address = snapshot.get("account_address")
+    if not _address(expected_account) or not _address(address):
+        raise HyperliquidUnavailable("账户地址格式非法", public="账户地址格式非法")
+    if address.lower() != expected_account.lower():
         message = "account_address 与 STOCK_HL_EXPECTED_ACCOUNT 不一致"
         raise HyperliquidUnavailable(message, public=message)
-    if not isinstance(snapshot.get("queried_at"), str) or not snapshot["queried_at"]:
-        message = "快照缺少 queried_at"
+    if not _ts(snapshot.get("queried_at")):
+        message = "快照 queried_at 不是合法 UTC 时间"
         raise HyperliquidUnavailable(message, public=message)
+    if not isinstance(snapshot.get("blocks"), dict):
+        raise HyperliquidUnavailable("快照 blocks 不是对象", public="快照结构非法")
     return snapshot
 
 
@@ -174,10 +181,9 @@ def _normalize_blocks(snapshot: dict) -> dict:
         diagnostics = block.get("diagnostics")
         if not isinstance(diagnostics, list) or not all(isinstance(d, str) for d in diagnostics):
             block["diagnostics"] = [str(d) for d in diagnostics] if diagnostics else []
-        block.setdefault("queried_at", snapshot.get("queried_at", ""))
         reason = _validate_v1_block(name, block)
         if reason:
-            block = _degraded_v1_block(name, reason, block.get("queried_at") or snapshot["queried_at"])
+            block = _degraded_v1_block(name, reason, snapshot["queried_at"])
         blocks[name] = block
     snapshot["blocks"] = blocks
     return snapshot
@@ -200,7 +206,7 @@ def _nonneg_dec(value) -> bool:
 
 
 def _ts(value) -> bool:
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
         return False
     try:
         datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
@@ -210,7 +216,7 @@ def _ts(value) -> bool:
 
 
 def _date(value) -> bool:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         return False
     try:
         date.fromisoformat(value)
@@ -220,6 +226,19 @@ def _date(value) -> bool:
 
 
 V1_SOURCE_COINS = ("HYPE", "BTC")
+V1_DATA_KEYS = {
+    "positions": {"equity", "positions", "notional_ratio", "ratio_drift", "action_state", "open_orders"},
+    "funding": {"hourly_rates", "annualized", "daily_estimate", "window_start", "window_end",
+                "window_complete", "actual_48h_net", "recent_payments"},
+    "ratio": {"current", "ma30", "vs_ma30_pct", "as_of_date"},
+    "unlocks": {"anchors", "note"},
+    "announcements": {"items"},
+}
+
+
+def _address(value) -> bool:
+    return (isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value) is not None
+            and value.lower() != "0x" + "0" * 40)
 
 
 def _degraded_v1_block(name: str, reason: str, fallback_queried_at: str) -> dict:
@@ -227,12 +246,12 @@ def _degraded_v1_block(name: str, reason: str, fallback_queried_at: str) -> dict
     data = {
         "positions": {"equity": None, "positions": None, "notional_ratio": None,
                       "ratio_drift": None, "action_state": None, "open_orders": None},
-        "funding": {"hourly_rates": dict(null_coins), "annualized_pct": dict(null_coins),
+        "funding": {"hourly_rates": dict(null_coins), "annualized": dict(null_coins),
                     "daily_estimate": None, "window_start": None, "window_end": None,
                     "window_complete": False, "actual_48h_net": None, "recent_payments": None},
         "ratio": {"current": None, "ma30": None, "vs_ma30_pct": None, "as_of_date": None},
         "unlocks": {"anchors": [], "note": "日历预告不等于实际申领已发生"},
-        "announcements": {"items": None, "queried_at": None},
+        "announcements": {"items": None},
     }[name]
     block = {"status": "unavailable", "queried_at": fallback_queried_at,
              "diagnostics": [reason]}
@@ -244,6 +263,9 @@ def _validate_v1_block(name: str, block: dict) -> str | None:
     """校验 v1 区块数据；返回降级原因，None 表示通过。"""
     if not _ts(block.get("queried_at")):
         return f"{name} 区块 queried_at 非法"
+    missing = V1_DATA_KEYS[name] - block.keys()
+    if missing:
+        return f"{name} 区块缺少字段: {sorted(missing)}"
     if block["status"] == "ok" and block["diagnostics"]:
         return f"{name} 区块 ok 时不允许携带诊断"
     if name == "positions":
@@ -253,6 +275,7 @@ def _validate_v1_block(name: str, block: dict) -> str | None:
                 return "positions 必须是数组或 null"
             for item in items:
                 if (not isinstance(item, dict)
+                        or not {"coin", "side", "size", "mark_px", "unrealized_pnl", "notional"} <= item.keys()
                         or not isinstance(item.get("coin"), str)
                         or item.get("side") not in ("long", "short")
                         or not _nonneg_dec(item.get("size"))
@@ -293,6 +316,7 @@ def _validate_v1_block(name: str, block: dict) -> str | None:
                 return "recent_payments 非法"
             for p in payments:
                 if (not isinstance(p, dict)
+                        or not {"time", "coin", "usdc", "rate"} <= p.keys()
                         or not _ts(p.get("time"))
                         or not isinstance(p.get("coin"), str)
                         or not _dec(p.get("usdc"))
@@ -310,6 +334,7 @@ def _validate_v1_block(name: str, block: dict) -> str | None:
             return "anchors 必须是数组"
         for anchor in anchors:
             if (not isinstance(anchor, dict)
+                    or not {"date", "days_ahead", "label", "source_url", "verified_utc"} <= anchor.keys()
                     or not _date(anchor.get("date"))
                     or type(anchor.get("days_ahead")) is not int or anchor["days_ahead"] < 0
                     or not isinstance(anchor.get("label"), str)
@@ -325,6 +350,7 @@ def _validate_v1_block(name: str, block: dict) -> str | None:
                 return "公告条目必须是数组或 null"
             for item in items:
                 if (not isinstance(item, dict)
+                        or not {"kind", "text", "published_at", "url", "source"} <= item.keys()
                         or item.get("kind") not in ("general", "api")
                         or not isinstance(item.get("text"), str)
                         or (item.get("published_at") is not None
