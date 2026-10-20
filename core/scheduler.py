@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1177,11 +1177,13 @@ def run_scheduler(once: bool = False) -> None:
             from apscheduler.triggers.interval import IntervalTrigger
             from core.announcements.sync import run_round as _announcements_round
 
-            anchor = datetime.now()
+            anchor = datetime.now(timezone.utc)
+            trigger = IntervalTrigger(minutes=minutes, start_date=anchor)
             sched.add_job(
                 _announcements_round,
-                trigger=IntervalTrigger(minutes=minutes, start_date=anchor),
-                kwargs={"trigger": "scheduled", "schedule_anchor": anchor},
+                trigger=trigger,
+                kwargs={"trigger": "scheduled",
+                        "schedule_anchor": trigger.start_date},
                 id="watchlist_announcements",
                 name="关注股官方公告采集",
                 replace_existing=True,
