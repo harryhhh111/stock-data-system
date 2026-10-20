@@ -83,9 +83,12 @@
   `cursor` + `cursor_applicable` 仅在来源支持稳定游标时续页。
   本表不能代替 `checked_through` 完整检查点。
 
-整轮任务互斥锁（采集片实现）逻辑名固定 `watchlist_announcements:US`，数值
-advisory lock key 须避让现有 key（SEC gate、market cap 回算、财务版本 worker、
-快照事务锁），选定后写入代码注释与部署文档。
+整轮任务互斥锁（`core/announcements/sync.py`）逻辑名固定 `watchlist_announcements:US`，
+数值 advisory lock key 为 `0x414E4E4F554E4345`（ASCII "ANNOUNCE"），已核对避让
+现有 key：SEC HTTP gate `0x53454347415445`（core/sec_client.py）、market cap 回算
+`987654321`（scripts/backfill_historical_market_cap.py）、财务版本 worker 的 md5
+动态 key（core/us_financial_worker.py）、快照事务锁 `pg_advisory_xact_lock(snapshot_id)`
+（core/fetchers/us_financial.py，小整数序列）。
 
 
 

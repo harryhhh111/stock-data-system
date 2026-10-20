@@ -832,6 +832,23 @@ def _run_us_financial_orchestration(t0: float) -> dict:
     }
 
 
+# ── 关注股官方公告采集（默认关闭；方案 §3/§7.6）─────────────
+
+
+def _announcements_job_minutes() -> int | None:
+    """公告采集任务注册前的配置门。
+
+    任何非法配置（间隔非正整数、enabled 非布尔）在此明确报错——
+    任务注册前失败，不静默回退默认值。enabled=false 返回 None（不注册）。
+    本片只有 SEC 来源，整轮间隔取 SEC 默认间隔；IR 来源加入后取各来源
+    最小间隔，到期筛选仍按来源各自 next_due_at（见 core/announcements）。
+    """
+    config.announcements.validate()
+    if not config.announcements.validated_enabled():
+        return None
+    return config.announcements.validated_sec_interval()
+
+
 # ── 调度任务定义 ────────────────────────────────────────────
 
 JOB_DEFS: dict[str, dict] = {
@@ -1026,6 +1043,23 @@ def dry_run() -> None:
     else:
         print(f"  （未开启：市场不含 CN_HK 或 hk_capex_fallback_auto=false）")
 
+    # ── 关注股官方公告采集 ──
+    print(f"\n  {'─' * 66}")
+    print(f"  关注股官方公告采集（watchlist_announcements）")
+    print(f"  {'─' * 66}")
+    if "US" not in config.scheduler.markets:
+        print(f"  （未开启：市场不含 US）")
+    else:
+        try:
+            minutes = _announcements_job_minutes()
+        except ValueError as exc:
+            print(f"  （配置非法，注册前报错: {exc}）")
+        else:
+            if minutes is None:
+                print(f"  （未开启：STOCK_ANNOUNCEMENTS_ENABLED=false）")
+            else:
+                print(f"  SEC 检查间隔: 每 {minutes} 分钟（IR 来源后续片接入）")
+
     # ── 配置概要 ──
     print(f"\n  {'─' * 66}")
     print(f"  配置概要")
@@ -1130,6 +1164,35 @@ def run_scheduler(once: bool = False) -> None:
             replace_existing=True,
         )
         logger.info("注册任务: HK_capex_pdf → cron=%s", cron_expr)
+
+    # ── 关注股官方公告采集（默认关闭；US 市场）──
+    # coalesce=True：服务重启/积压只合并为一次到期检查，不补发周期触发；
+    # max_instances=1 只是进程内额外保护，跨进程互斥由
+    # core/announcements/sync.py 的 advisory lock 承担。
+    # schedule_anchor 与 IntervalTrigger.start_date 用同一时刻：整轮按此
+    # 相位计算计划槽位与 next_due，保证下次触发时来源必然已到期。
+    if "US" in markets:
+        minutes = _announcements_job_minutes()
+        if minutes is not None:
+            from apscheduler.triggers.interval import IntervalTrigger
+            from core.announcements.sync import run_round as _announcements_round
+
+            anchor = datetime.now()
+            sched.add_job(
+                _announcements_round,
+                trigger=IntervalTrigger(minutes=minutes, start_date=anchor),
+                kwargs={"trigger": "scheduled", "schedule_anchor": anchor},
+                id="watchlist_announcements",
+                name="关注股官方公告采集",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=300,
+            )
+            logger.info("注册任务: watchlist_announcements → 每 %d 分钟（锚点 %s）",
+                        minutes, anchor.isoformat(timespec="seconds"))
+        else:
+            logger.info("公告采集已禁用（STOCK_ANNOUNCEMENTS_ENABLED=false），不注册任务")
 
     if once:
         # 立即执行一次，按正确顺序：

@@ -8,11 +8,12 @@
 -- 不设计封闭枚举，新闻阶段直接扩展取值。
 -- 时间统一 TIMESTAMPTZ 存 UTC，同时保留来源原始时间字符串与时区。
 --
--- 整轮任务互斥锁（后续采集片实现）逻辑名固定为
+-- 整轮任务互斥锁（core/announcements/sync.py）逻辑名固定为
 --   watchlist_announcements:US
--- 其数值 advisory lock key 须避让现有 key：SEC HTTP gate
--- （core/sec_client.py）、market cap 回算、财务版本 worker、快照事务锁，
--- 选定后写入代码注释与部署文档。本迁移本身不使用 advisory lock。
+-- 数值 advisory lock key = 0x414E4E4F554E4345（ASCII "ANNOUNCE"），已避让：
+-- SEC HTTP gate（core/sec_client.py 0x53454347415445）、market cap 回算
+-- （987654321）、财务版本 worker md5 动态 key、快照事务锁（snapshot_id 序列）。
+-- 本迁移本身不使用 advisory lock。
 -- ============================================================
 
 -- ------------------------------------------------------------
