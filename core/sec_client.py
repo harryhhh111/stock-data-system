@@ -54,9 +54,12 @@ class SECWaitTimeout(SECError):
 
 
 class SECTransportError(SECError):
-    def __init__(self, message: str, *, retryable: bool = True):
+    def __init__(self, message: str, *, retryable: bool = True,
+                 status: int | None = None, retry_after: float | None = None):
         super().__init__(message)
         self.retryable = retryable
+        self.status = status
+        self.retry_after = retry_after
 
 
 class SECHTTPError(SECError):
@@ -209,7 +212,12 @@ def _physical_get(url: str, headers: dict, deadline: float, check) -> requests.R
         except (ValueError, UnicodeError) as exc:
             raise SECTransportError("SEC HTTP worker returned invalid data", retryable=False) from exc
         if "error" in data:
-            raise SECTransportError(data["error"], retryable=data["retryable"])
+            status = data.get("status")
+            err_headers = {k.lower(): v for k, v in data.get("headers", {}).items()}
+            raise SECTransportError(
+                data["error"], retryable=data["retryable"], status=status,
+                retry_after=_retry_after(err_headers.get("retry-after"))
+                if status in (429, 503) else None)
         response = requests.Response()
         response.status_code = data["status"]
         response.headers.update(data["headers"])
@@ -240,6 +248,17 @@ def _retry_after(value: str | None) -> float | None:
         pass
     logger.warning("SEC invalid Retry-After header")
     return None
+
+
+def _shared_cooldown(status: int | None, retries: int, retry_after: float | None) -> float:
+    """Persisted pause after a failed attempt; server demands win over local backoff."""
+    if status == 403:
+        return 60.0
+    cooldown = float(2 ** (retries + 1))
+    if status in (429, 503):
+        cooldown = max(cooldown, retry_after if retry_after is not None
+                       else (10.0 if status == 429 else 0.0))
+    return cooldown
 
 
 def get(url: str, *, task: str, identity: str = "", timeout: float = 60,
@@ -273,17 +292,13 @@ def get(url: str, *, task: str, identity: str = "", timeout: float = 60,
                 except SECTransportError as exc:
                     transport_error = exc
                     if exc.retryable:
-                        cooldown = float(2 ** (retries + 1))
+                        cooldown = _shared_cooldown(exc.status, retries, exc.retry_after)
                 if response is not None:
                     status = response.status_code
-                    if status == 403:
-                        cooldown = 60
-                    elif status in (429, 500, 502, 503, 504):
-                        cooldown = float(2 ** (retries + 1))
-                        if status in (429, 503):
-                            retry_after = _retry_after(response.headers.get("Retry-After"))
-                            cooldown = max(cooldown, retry_after if retry_after is not None
-                                           else (10 if status == 429 else 0))
+                    if status == 403 or status in (429, 500, 502, 503, 504):
+                        retry_after = (_retry_after(response.headers.get("Retry-After"))
+                                       if status in (429, 503) else None)
+                        cooldown = _shared_cooldown(status, retries, retry_after)
                 gate.finish(cooldown)
             logger.info("SEC task=%s identity=%s attempt=%s status=%s elapsed=%.3f cooldown=%.3f",
                         task, identity, retries + 1,

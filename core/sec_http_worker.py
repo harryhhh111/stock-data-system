@@ -43,18 +43,28 @@ def main() -> None:
                 timeout=(min(5, remaining), min(30, remaining)),
                 allow_redirects=False, stream=True,
             ) as response:
-                chunks = []
-                size = 0
-                for chunk in response.iter_content(65536):
-                    size += len(chunk)
-                    if size > 128 * 1024 * 1024:
-                        raise ValueError("SEC response exceeds 128 MiB")
-                    chunks.append(chunk)
-                result = {
-                    "status": response.status_code, "headers": dict(response.headers),
-                    "encoding": response.encoding, "url": response.url,
-                    "body": base64.b64encode(b"".join(chunks)).decode("ascii"),
-                }
+                try:
+                    chunks = []
+                    size = 0
+                    for chunk in response.iter_content(65536):
+                        size += len(chunk)
+                        if size > 128 * 1024 * 1024:
+                            raise ValueError("SEC response exceeds 128 MiB")
+                        chunks.append(chunk)
+                except requests.RequestException as exc:
+                    # Headers arrived before the body failed: the parent's shared
+                    # backoff needs the status and Retry-After the server sent.
+                    result = {
+                        "error": type(exc).__name__, "retryable": True,
+                        "status": response.status_code,
+                        "headers": dict(response.headers), "url": response.url,
+                    }
+                else:
+                    result = {
+                        "status": response.status_code, "headers": dict(response.headers),
+                        "encoding": response.encoding, "url": response.url,
+                        "body": base64.b64encode(b"".join(chunks)).decode("ascii"),
+                    }
     except requests.RequestException as exc:
         result = {"error": type(exc).__name__, "retryable": True}
     except Exception as exc:

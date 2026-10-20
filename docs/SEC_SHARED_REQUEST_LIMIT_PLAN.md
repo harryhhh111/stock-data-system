@@ -136,3 +136,9 @@ SEC 官方要求每个用户合计不超过 10 次/秒，不因机器数增加�
 - 最终定向结果：`tests/test_sec_client.py` **24 passed**（25.63 秒）；财务缓存/期间、行业、ADT、XBRL 离线逻辑、NASDAQ 列表、财务核查与版本回补单元回归 **146 passed, 3 deselected**（3.21 秒）。共 170 项通过，3 项真实 SEC 测试排除；`git diff --check` 通过。已修正数据库角色 search_path 潜在分歧后重新通过全部公共客户端测试。
 - 原有三项真实 SEC XBRL 测试改为 `sec_live` 标记，并要求显式 `SEC_RUN_LIVE_TESTS=1`。初次验证中的隔离数据库启动受沙箱 socket 限制，改在获准的沙箱外环境通过；原有版本库集成测试因默认数据库连接不可用未通过运行条件，后续定向回归排除 `us_integration` 与 `sec_live`，不把它们计入通过数。
 - 生产迁移、生产进程重启、真实 SEC 连通验证均未执行；[部署及回退说明](deployment/SEC_REQUEST_GATE.md)列出交付后的操作边界。全量回补耗时尚未实测，不承诺 30～50 分钟完成。
+
+### 部署与复验修复记录（2026-10-20 晚）
+
+- 生产已部署：协调表迁移完成，少量真实 SEC 请求验证通过（门控间隔生效），scheduler 以新代码重启。
+- 复验发现并已修复：响应头收到后正文传输中断时，下载子进程丢失状态码与 `Retry-After`，导致 429+`Retry-After: 60` 被按普通网络故障约 2 秒后重试。worker 现在随错误返回已收到的 status/headers，父进程按与完整响应相同的规则写入共享退避；回归测试 `test_retry_after_survives_truncated_429_body` 固化该场景（只发 1 次请求、`blocked_until` ≈60 秒、调用方收到 `SECWaitTimeout`）。
+- 修复后验证：`tests/test_sec_client.py` 25 passed；原复现脚本通过（sent=1，剩余暂停 59.99 秒）；调用方定向回归 337 passed, 42 deselected。全量 `tests/` 在本机受 pymupdf 缺失阻断（既有环境问题，与本次改动无关）。

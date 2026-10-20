@@ -181,6 +181,38 @@ def test_shared_429_cooldown_releases_lock_and_survives_caller_timeout(dsn, http
     assert events[1]["start"] - events[0]["end"] >= 2
 
 
+def test_retry_after_survives_truncated_429_body(dsn, monkeypatch):
+    sends = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+        def do_GET(self):
+            sends.append(time.monotonic())
+            self.send_response(429)
+            self.send_header("Retry-After", "60")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"x")
+            self.wfile.flush()
+            self.close_connection = True
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    allow_test_server(monkeypatch, base)
+    try:
+        with pytest.raises(sec.SECWaitTimeout):
+            sec.get(base + "/truncated", task="truncated_429", total_timeout=3.5)
+        remaining = float(sql(dsn, "SELECT EXTRACT(EPOCH FROM blocked_until-clock_timestamp()) "
+                                  "FROM sec_request_gate")[0][0])
+        assert len(sends) == 1  # Retry-After: 60 arrived; no early retry allowed
+        assert remaining > 55
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def test_redirect_counts_as_another_request(dsn, http, monkeypatch):
     base, events = http
     allow_test_server(monkeypatch, base)
