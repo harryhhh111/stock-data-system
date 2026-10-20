@@ -12,6 +12,7 @@
 - **Hyperliquid 单 Pair 初版契约（v1 兼容参考）** → [HYPERLIQUID_DASHBOARD_MVP_PLAN.md](HYPERLIQUID_DASHBOARD_MVP_PLAN.md)
 - **关注股官方公告流方案（已审核）** → [WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md](WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md)
 - **关注公司与行业每日资讯需求、来源验证（待审核）** → [WATCHLIST_DAILY_NEWS_REQUIREMENTS.md](WATCHLIST_DAILY_NEWS_REQUIREMENTS.md)
+- **每日资讯来源验证记录（2026-10-21 终审归档）** → [WATCHLIST_DAILY_NEWS_SOURCE_VALIDATION.md](WATCHLIST_DAILY_NEWS_SOURCE_VALIDATION.md)、[基准表 v2](WATCHLIST_DAILY_NEWS_BASELINE_V2.md)、[来源可访问性](WATCHLIST_DAILY_NEWS_SOURCE_ACCESSIBILITY.md)、[证据快照](evidence/watchlist_daily_news/)
 - **研究索引与卡片方案（暂缓）** → [RESEARCH_WORKBENCH_R1_PLAN.md](RESEARCH_WORKBENCH_R1_PLAN.md)
 - **原事件采集方案（暂缓）** → [event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md](event-driven/P1_EVENT_EVIDENCE_LEDGER_TASK.md)
 - **历史路线图与已关闭任务** → [archive/README.md](archive/README.md)

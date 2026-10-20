@@ -106,6 +106,8 @@
 
 本步完成标准是形成可复核的选源依据；是否接受覆盖、成本与延迟取舍，由用户审核。来源验证结束不等于生产信息流已可用。
 
+2026-10-21：来源验证记录已完成并经用户终审归档——[来源覆盖对照报告](WATCHLIST_DAILY_NEWS_SOURCE_VALIDATION.md)、[参考事件基准表 v2](WATCHLIST_DAILY_NEWS_BASELINE_V2.md)、[来源可访问性报告](WATCHLIST_DAILY_NEWS_SOURCE_ACCESSIBILITY.md)、[证据快照](evidence/watchlist_daily_news/)。结论：Google News RSS 主召回 + Finnhub 提供证券标签、稳定 ID 和交叉核对，可作为初期接入组合；持续额度、时效与稳定性未验证，具备进入接入验证的条件。
+
 ## 5. 与现有规划的关系
 
 - [官方公告 MVP](WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md) 保留为官方披露子能力的方案。其“不做媒体、行业新闻”只描述子阶段边界，不能代表完整产品目标；2026-10-20 审核修订已明确此定位并更新调度与恢复规则，整份方案仍待审核。本文不构成对该方案的实施批准。
