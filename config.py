@@ -175,6 +175,74 @@ class FinnhubConfig:
     rate_limit: int = 55  # 官方 60/min，留余量
 
 
+# ── 关注股官方公告采集配置 ────────────────────────────────
+def _parse_strict_bool(value: Any, name: str) -> bool:
+    """严格解析布尔配置，非法值报错，不静默回退。"""
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    if v in ("0", "false", "no"):
+        return False
+    raise ValueError(f"{name} 非法布尔值: {value!r}（允许 true/false/1/0/yes/no）")
+
+
+def _parse_positive_int(value: Any, name: str) -> int:
+    """严格解析正整数配置，非法值报错，不静默回退。"""
+    try:
+        ivalue = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} 必须为正整数分钟数，收到: {value!r}") from None
+    if ivalue <= 0:
+        raise ValueError(f"{name} 必须为正整数分钟数，收到: {value!r}")
+    return ivalue
+
+
+@dataclass
+class AnnouncementsConfig:
+    """关注股官方公告采集配置（docs/WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md §3）。
+
+    调度开关默认关闭；SEC/IR 默认检查间隔 60 分钟。
+    与 SECConfig.rate_limit 同理：环境变量原样保留（含非法值），不在
+    import 时失败（避免影响 CN/HK 或离线路径）；任务注册前必须调用
+    validate()，非法值明确报错，绝不静默回退默认值（永不静默失败）。
+    """
+
+    enabled: bool | str = field(
+        default_factory=lambda: os.environ.get("STOCK_ANNOUNCEMENTS_ENABLED", "false")
+    )
+    sec_interval_minutes: int | str = field(
+        default_factory=lambda: os.environ.get(
+            "STOCK_ANNOUNCEMENTS_SEC_INTERVAL_MINUTES", "60"
+        )
+    )
+    ir_interval_minutes: int | str = field(
+        default_factory=lambda: os.environ.get(
+            "STOCK_ANNOUNCEMENTS_IR_INTERVAL_MINUTES", "60"
+        )
+    )
+
+    def validated_enabled(self) -> bool:
+        return _parse_strict_bool(self.enabled, "STOCK_ANNOUNCEMENTS_ENABLED")
+
+    def validated_sec_interval(self) -> int:
+        return _parse_positive_int(
+            self.sec_interval_minutes, "STOCK_ANNOUNCEMENTS_SEC_INTERVAL_MINUTES"
+        )
+
+    def validated_ir_interval(self) -> int:
+        return _parse_positive_int(
+            self.ir_interval_minutes, "STOCK_ANNOUNCEMENTS_IR_INTERVAL_MINUTES"
+        )
+
+    def validate(self) -> None:
+        """任务注册前调用；任一配置非法即抛出 ValueError。"""
+        self.validated_enabled()
+        self.validated_sec_interval()
+        self.validated_ir_interval()
+
+
 # ── 熔断配置 ──────────────────────────────────────────────
 @dataclass
 class CircuitBreakerConfig:
@@ -290,6 +358,7 @@ retry: RetryConfig = RetryConfig()
 circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()
 sec: SECConfig = SECConfig()
 finnhub: FinnhubConfig = FinnhubConfig()
+announcements: AnnouncementsConfig = AnnouncementsConfig()
 scheduler: SchedulerConfig = SchedulerConfig()
 
 # ── 日志配置 ──────────────────────────────────────────────

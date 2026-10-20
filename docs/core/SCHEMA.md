@@ -31,6 +31,63 @@
 无本机 stock_info 外键，允许 US 元数据实例保存港股关注项；报价仍访问各市场实例，不跨库。
 只保存用户选择，不代表持仓。管理员凭据控制写入，读取沿用现有公开 API 边界。
 
+### 关注股官方公告存储（2026-10-20，部署前需迁移）
+
+迁移 `scripts/watchlist_announcements.sql` 新增六类对象（合同见
+`docs/WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md` §4），只新增、幂等，不改已有表。
+所有表保留 `market`；表单类型、来源类型、状态、错误类别均为开放 text，
+不做封闭枚举。时间统一 `TIMESTAMPTZ` 存 UTC，另保留来源原始时间字符串与时区。
+
+- `watchlist_announcement_source` — 受控来源注册表。`source_id` 主键；
+  `(market, source_kind, issuer_identifier, entry_url)` 唯一。`source_kind`
+  开放取值（`sec`/`ir`/未来媒体源）；`issuer_identifier` 为
+  `NOT NULL DEFAULT ''`，非发行人绑定来源用空字符串占位（NULL 会破坏唯一约束
+  去重语义）。含允许域名、固定入口 `entry_url`、来源时区、`parser_version`、
+  单源覆盖间隔 `interval_minutes`（NULL 用配置默认）、`enabled` 与生命周期状态
+  `source_status`（默认 `pending_verification`）及 `status_reason`。
+- `watchlist_announcement` — 公告主表，含时间与版本字段。
+  `(source_id, source_record_id, revision)` 唯一：`source_record_id` 是来源稳定
+  身份（SEC 为 accession，IR 为稳定发布 ID 或规范化 URL）；同一发布变更时追加
+  更高 `revision` 的不可变行，不覆盖旧证据；`/A` 修订有独立 accession 天然独立。
+  证券关联拆在 `watchlist_announcement_security`，主表不携带单一 `stock_code`。
+  `published_at` 可空（缺失单独标注，不补午夜伪装）；
+  `published_at_precision` 区分 `second`/`minute`/`day`/`unknown`，仅日期显示
+  "仅日期"；`source_published_raw`/`source_timezone` 原样保留来源时间；
+  `first_observed_at` 是系统实际首次发现时间，回补不倒填；`content_hash` +
+  `excerpt` 做变更检测与短摘录，不存完整受版权保护网页；`is_backfill` 标记回补条目。
+- `watchlist_announcement_security` — 公告—证券关联（一对多）。同一公告
+  （同一 `source_record_id`）可关联多个证券代码；主键
+  `(announcement_id, stock_code)`，重复抓取 `ON CONFLICT DO NOTHING` 不产生重复
+  关联。关联锚定在该公告的首个版本行（revision 最小的行），后续修订经
+  `(source_id, source_record_id)` 继承同一组关联。`stock_code` 无 `stock_info`
+  外键（同 `watchlist_item` 先例），不依赖会被删除的关注项 ID；
+  索引 `(market, stock_code)` 支撑关注股侧栏查询。
+- `watchlist_announcement_check_state` — 来源检查状态，主键
+  `(market, issuer_identifier, source_id)`（非发行人绑定源用空字符串占位）。
+  `last_attempt_status` 区分 `success_empty`/`success_new`/`failed`/`not_configured`/
+  `partial`/`skipped_running`；`last_attempt_at` 与 `last_success_at` 分列
+  "最近一次尝试"和"最近一次完整成功"；`checked_through` 是完整检查边界
+  （无新公告也推进），仅在目标区间整体成功提交后于同一事务中推进；
+  `covered_ranges`（`TSTZRANGE[]`）记录已完整覆盖区间。
+- `watchlist_announcement_gap` — 未补齐缺口独立行（持久表达）：`gap_range` +
+  `reason` + `detail`，未解决缺口按 `(market, issuer_identifier, source_id,
+  gap_range, reason)` 部分唯一索引去重；补齐后写 `resolved_at` 不删行，
+  检查点不得跨过缺口宣称完整。
+- `watchlist_announcement_run` — 采集运行记录。整轮共享 `task_id`（UUID），
+  按来源粒度记录开始/结束时间、`status`（含 `skipped_running`）、
+  `fetched_count`/`inserted_count`/`revised_count`（失败或 skipped 保持 NULL，
+  不伪造为 0）、`error_class`、`parser_version`、`trigger_kind`。
+- `watchlist_announcement_recovery` — 恢复进度，主键同 check_state。
+  `backfill_start`/`target_through` 在首次回补开始时固定、跨轮不滚动；
+  `completed_ranges`/`pending_ranges`（`TSTZRANGE[]`）记录已完成与未完成区间；
+  `cursor` + `cursor_applicable` 仅在来源支持稳定游标时续页。
+  本表不能代替 `checked_through` 完整检查点。
+
+整轮任务互斥锁（采集片实现）逻辑名固定 `watchlist_announcements:US`，数值
+advisory lock key 须避让现有 key（SEC gate、market cap 回算、财务版本 worker、
+快照事务锁），选定后写入代码注释与部署文档。
+
+
 
 | Layer | 用途 | 更新方式 |
 |-------|------|----------|
