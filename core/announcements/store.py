@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -44,6 +45,62 @@ def read_ranges(conn, table: str, column: str, key: dict) -> list[tuple[datetime
 
 
 # ── 来源注册表 ─────────────────────────────────────────────
+
+def ensure_ir_source(conn, *, issuer: str, platform: str, allowed_domain: str,
+                     entry_url: str, source_timezone: str,
+                     parser_version: int, interval_minutes: int | None,
+                     enabled: bool, source_status: str,
+                     status_reason: str | None) -> int:
+    """注册（或复用）IR 来源行，返回 source_id。
+
+    只在来源不存在时按 seed 初始状态插入；已存在的行不覆盖
+    enabled/source_status/interval_minutes（运营/部署阶段的显式调整优先）。
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO watchlist_announcement_source
+                (market, source_kind, platform, issuer_identifier, allowed_domain,
+                 entry_url, source_timezone, parser_version, interval_minutes,
+                 enabled, source_status, status_reason)
+            VALUES ('US', 'ir', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (market, source_kind, issuer_identifier, entry_url)
+            DO NOTHING
+            """,
+            (platform, issuer, allowed_domain, entry_url, source_timezone,
+             parser_version, interval_minutes, enabled, source_status,
+             status_reason),
+        )
+        cur.execute(
+            """
+            SELECT source_id FROM watchlist_announcement_source
+            WHERE market = 'US' AND source_kind = 'ir' AND issuer_identifier = %s
+              AND entry_url = %s
+            """,
+            (issuer, entry_url),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise RuntimeError(f"IR 来源注册失败: {issuer} {entry_url}")
+    return int(row[0])
+
+
+def load_ir_sources(conn) -> list[dict]:
+    """读取全部 IR 来源注册行（含受阻/待验证，用于整轮摘要展示）。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT source_id, platform, issuer_identifier, allowed_domain,
+                   entry_url, source_timezone, parser_version, interval_minutes,
+                   enabled, source_status, status_reason
+            FROM watchlist_announcement_source
+            WHERE market = 'US' AND source_kind = 'ir'
+            ORDER BY source_id
+            """
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
 
 def ensure_sec_source(conn, cik: str, *, parser_version: int) -> int:
     """注册（或复用）某发行人的 SEC 来源行，返回 source_id。
@@ -163,8 +220,28 @@ def upsert_check_state_success(
 
 # ── 公告写入（去重 / 修订 / last_seen）─────────────────────
 
+@dataclass(frozen=True)
+class AnnouncementRecord:
+    """来源无关的公告记录（SEC 适配器与 IR 适配器各自产出）。
+
+    published_at 为 None 表示来源仅提供日期：published_precision='day'，
+    不补午夜伪装精确时间。
+    """
+
+    source_record_id: str        # 稳定身份：SEC accession / IR 稳定 ID 或规范化 URL
+    form_type: str               # 开放 text：'8-K' / 'press_release' 等
+    title: str
+    url: str
+    published_at: datetime | None
+    published_precision: str     # 'second' | 'minute' | 'day' | 'unknown'
+    published_raw: str           # 来源原始时间字符串
+    source_timezone: str         # 来源时区（IANA 名或 UTC）
+    content_hash: str            # 变更检测
+    excerpt: str | None = None
+
+
 def upsert_announcement(conn, *, source_id: int, issuer: str,
-                        stock_codes: list[str], filing, title: str,
+                        stock_codes: list[str], record: AnnouncementRecord,
                         is_backfill: bool, observed_at: datetime) -> str:
     """写入一条公告，返回 'inserted' | 'revised' | 'seen'。
 
@@ -182,11 +259,11 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
             WHERE source_id = %s AND source_record_id = %s
             ORDER BY revision DESC LIMIT 1
             """,
-            (source_id, filing.accession),
+            (source_id, record.source_record_id),
         )
         existing = cur.fetchone()
 
-        if existing is not None and existing[2] == filing.content_hash:
+        if existing is not None and existing[2] == record.content_hash:
             cur.execute(
                 "UPDATE watchlist_announcement SET last_seen_at = %s WHERE id = %s",
                 (observed_at, existing[0]),
@@ -200,17 +277,17 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                     (market, issuer_identifier, source_id, source_record_id, title,
                      form_type, original_url, published_at, published_at_precision,
                      source_published_raw, source_timezone, first_observed_at,
-                     last_seen_at, content_hash, revision, is_backfill)
-                VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, 'America/New_York',
-                        %s, %s, %s, %s, %s)
+                     last_seen_at, content_hash, excerpt, revision, is_backfill)
+                VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (source_id, source_record_id, revision) DO NOTHING
                 RETURNING id
                 """,
-                (issuer, source_id, filing.accession, title, filing.form,
-                 filing.url, filing.published_at, filing.published_precision,
-                 filing.acceptance_raw or filing.filing_date.isoformat(),
-                 observed_at, observed_at, filing.content_hash, revision,
-                 is_backfill),
+                (issuer, source_id, record.source_record_id, record.title,
+                 record.form_type, record.url, record.published_at,
+                 record.published_precision, record.published_raw,
+                 record.source_timezone, observed_at, observed_at,
+                 record.content_hash, record.excerpt, revision, is_backfill),
             )
             outcome = "inserted" if revision == 1 else "revised"
 
@@ -225,7 +302,7 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                 WHERE source_id = %s AND source_record_id = %s AND revision = 1
                 ON CONFLICT (announcement_id, stock_code) DO NOTHING
                 """,
-                (stock_code, source_id, filing.accession),
+                (stock_code, source_id, record.source_record_id),
             )
     return outcome
 

@@ -840,13 +840,17 @@ def _announcements_job_minutes() -> int | None:
 
     任何非法配置（间隔非正整数、enabled 非布尔）在此明确报错——
     任务注册前失败，不静默回退默认值。enabled=false 返回 None（不注册）。
-    本片只有 SEC 来源，整轮间隔取 SEC 默认间隔；IR 来源加入后取各来源
-    最小间隔，到期筛选仍按来源各自 next_due_at（见 core/announcements）。
+    唤醒间隔取 SEC/IR 配置间隔的较小值：到期筛选按各来源 next_due_at
+    （core/announcements/sync.py），调度器必须按最短来源间隔唤醒，
+    否则 IR 15 分钟间隔实际只能 60 分钟采一次。
+    注意：注册表 interval_minutes 单源覆盖若短于配置默认，也只在
+    唤醒粒度上生效（已知限制，不为此引入 DB 读取进注册路径）。
     """
     config.announcements.validate()
     if not config.announcements.validated_enabled():
         return None
-    return config.announcements.validated_sec_interval()
+    return min(config.announcements.validated_sec_interval(),
+               config.announcements.validated_ir_interval())
 
 
 # ── 调度任务定义 ────────────────────────────────────────────

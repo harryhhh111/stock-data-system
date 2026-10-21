@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement_source (
     market              VARCHAR(10) NOT NULL,
     -- 来源类型，开放 text：'sec' | 'ir' | 未来 'media' 等，不做封闭枚举
     source_kind         TEXT NOT NULL,
+    -- 平台/站点结构标识（开放 text）：'nebius_newsroom' | 'q4_press_release'
+    -- 等。适配器按平台实现，平台识别显式存储、不靠域名猜测；
+    -- 新增公司只需新增注册行（换 entry_url），新平台才写新适配器
+    platform            TEXT,
     -- 发行人标识（SEC 为 CIK）。行业/媒体等非发行人绑定来源用空字符串占位
     -- （NOT NULL DEFAULT ''，与 check_state 等表惯例一致；NULL 会破坏
     -- 下方 UNIQUE 约束的去重语义——PostgreSQL 中 NULL ≠ NULL）
@@ -51,6 +55,9 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement_source (
 );
 CREATE INDEX IF NOT EXISTS idx_announcement_source_issuer
     ON watchlist_announcement_source (market, issuer_identifier);
+
+-- 已建库幂等补列（CREATE TABLE IF NOT EXISTS 不会为既有表补新列）
+ALTER TABLE watchlist_announcement_source ADD COLUMN IF NOT EXISTS platform TEXT;
 
 -- ------------------------------------------------------------
 -- 2. 公告 + 时间与版本字段 watchlist_announcement

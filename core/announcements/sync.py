@@ -32,6 +32,12 @@
 CLI（手工入口，§3.2 同一互斥锁）：
     python -m core.announcements.sync [--market US] [--stock-code MU]
 
+IR 来源（第三片）：注册表驱动（platform 列显式标识平台），适配器见
+core/announcements/ir_source.py；与 SEC 共用同一整轮锁与检查点表；
+HTTP 独立实现，不占 SEC gate；受阻/待验证来源不抓取、不计入成功率
+分母，状态与原因在整轮摘要 ir_inactive 中列出。首批种子 MU/WDC/NBIS
+（core/announcements/ir_source.py IR_SEEDS），默认均不启用。
+
 手工入口安全语义：要求 STOCK_ANNOUNCEMENTS_ENABLED=true 才运行，不提供
 --force 绕过——"默认关闭=无生产行为"不允许例外路径；要手工验证就显式
 改配置（留下 .env 痕迹），这同时覆盖调度与手工两个入口。
@@ -50,7 +56,7 @@ import psycopg2
 
 import config
 from core import sec_client
-from core.announcements import sec_source, store
+from core.announcements import ir_source, sec_source, store
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +350,14 @@ def _sync_sec_source(
         for f in unique_filings:
             outcome = store.upsert_announcement(
                 conn, source_id=source_id, issuer=cik, stock_codes=stock_codes,
-                filing=f, title=sec_source.neutral_title(f.form),
+                record=store.AnnouncementRecord(
+                    source_record_id=f.accession, form_type=f.form,
+                    title=sec_source.neutral_title(f.form), url=f.url,
+                    published_at=f.published_at,
+                    published_precision=f.published_precision,
+                    published_raw=f.acceptance_raw or f.filing_date.isoformat(),
+                    source_timezone="America/New_York",
+                    content_hash=f.content_hash),
                 is_backfill=backfill, observed_at=observed_at)
             if outcome == "inserted":
                 inserted += 1
@@ -482,6 +495,362 @@ def _sync_sec_source(
     }
 
 
+# ── 单来源同步（IR）────────────────────────────────────────
+
+def _consecutive_failures(conn, source_id: int, limit: int = 8) -> int:
+    """最近连续 failed 的运行次数（用于持续失败退避）。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT status FROM watchlist_announcement_run
+            WHERE source_id = %s ORDER BY id DESC LIMIT %s
+            """,
+            (source_id, limit),
+        )
+        n = 0
+        for (status,) in cur.fetchall():
+            if status != "failed":
+                break
+            n += 1
+    return n
+
+
+def _item_date(item: ir_source.IrItem) -> date | None:
+    """条目日期（窗口归属判断）：精确时间取 UTC 日期，仅日期解析原始串。"""
+    if item.published_at is not None:
+        return item.published_at.astimezone(timezone.utc).date()
+    try:
+        return date.fromisoformat(item.published_raw[:10])
+    except ValueError:
+        return None
+
+
+def _sync_ir_source(
+    conn, *, source: dict, stock_codes: list[str],
+    state: dict | None, target: datetime, slot: datetime,
+    interval_minutes: int, task_id: uuid.UUID, trigger: str,
+    deadline: float,
+) -> dict:
+    """同步一个 IR 来源；返回结果摘要（不抛采集异常）。
+
+    覆盖语义：IR 列表没有 SEC filings.files 那样的声明区间，覆盖能力
+    按列表实际深度诚实化——回补时列表最旧条目晚于回补起点，或列表
+    为空，则缺口写 gap 并标 partial，检查点不越过缺口。
+    增量窗口（checked_through - 7d 起）内列表新近条目即可覆盖：
+    无新条目为 success_empty。
+    """
+    source_id = source["source_id"]
+    issuer = source["issuer_identifier"]
+    adapter = ir_source.IR_ADAPTERS.get(source["platform"] or "")
+    started_at = datetime.now(timezone.utc)
+    next_due_at = slot + timedelta(minutes=interval_minutes)
+    fetched = inserted = revised = 0
+
+    if adapter is None:
+        # 注册表指向未知平台：配置错误，落 failed，不抓取
+        store.upsert_check_state_attempt(
+            conn, issuer, source_id, interval_minutes=interval_minutes,
+            attempt_at=started_at, status="failed",
+            next_due_at=next_due_at, error_class="unknown_platform")
+        store.insert_run(
+            conn, task_id=task_id, issuer=issuer, source_id=source_id,
+            started_at=started_at, finished_at=datetime.now(timezone.utc),
+            status="failed", error_class="unknown_platform",
+            error_detail=f"platform={source['platform']!r} 无适配器",
+            parser_version=None, trigger_kind=trigger)
+        return {"cik": issuer, "stock_codes": stock_codes, "status": "failed",
+                "fetched": 0, "inserted": 0, "revised": 0,
+                "error_class": "unknown_platform", "error_detail": None,
+                "backfill": state is None or state["checked_through"] is None,
+                "platform": source["platform"]}
+
+    backfill = state is None or state["checked_through"] is None
+    recovery = store.load_recovery(conn, issuer, source_id) if backfill else None
+    fresh_backfill = backfill and recovery is None
+    if backfill:
+        if fresh_backfill:
+            backfill_start = target - timedelta(days=BACKFILL_DAYS)
+            target_through = target
+        else:
+            backfill_start = recovery["backfill_start"]
+            target_through = recovery["target_through"]
+        # 回补起点固定（不随日期滚动），但扫描上界始终到当前时间：
+        # 历史缺口不能让新公告停止入库；覆盖完整性仍按回补起点判定
+        scan_from = backfill_start.date()
+        scan_to = target.date()
+    else:
+        backfill_start = target_through = None
+        scan_from = (state["checked_through"]
+                     - timedelta(days=OVERLAP_DAYS)).date()
+        scan_to = target.date()
+
+    try:
+        # 首次回补：请求前持久化固定起点并立即提交（同 SEC 路径语义）
+        if fresh_backfill:
+            store.upsert_recovery(
+                conn, issuer, source_id, backfill_start=backfill_start,
+                target_through=target_through, completed=[],
+                pending=[(backfill_start, target_through)])
+            conn.commit()
+
+        # 分页拉取：直到最旧条目早于窗口起点、分页耗尽、页数上限或
+        # 时间预算耗尽。预算/页数耗尽 = budget_cut（下轮恢复，不记缺口）
+        items: list[ir_source.IrItem] = []
+        exhausted = not adapter.supports_pagination
+        oldest_seen: date | None = None
+        pages_used = 0
+        budget_cut = False
+        for page in range(PER_SOURCE_MAX_PAGES):
+            if time.monotonic() >= deadline:
+                budget_cut = True
+                break
+            url = adapter.page_url(source["entry_url"], page)
+            if url is None:
+                exhausted = True
+                break
+            body = ir_source.http_get(
+                url, allowed_domain=source["allowed_domain"])
+            page_items = adapter.parse_listing(body, source["entry_url"])
+            pages_used += 1
+            if not page_items:
+                exhausted = True   # 空页 = 没有更多历史
+                break
+            items.extend(page_items)
+            page_dates = [d for d in (_item_date(it) for it in page_items)
+                          if d is not None]
+            if page_dates:
+                page_oldest = min(page_dates)
+                oldest_seen = (page_oldest if oldest_seen is None
+                               else min(oldest_seen, page_oldest))
+                if page_oldest <= scan_from:
+                    exhausted = True  # 列表深度已覆盖窗口起点
+                    break
+        else:
+            # 页数上限用尽而分页未耗尽：按预算截断处理，下轮恢复
+            budget_cut = adapter.supports_pagination
+
+        # 去重（同一来源稳定 ID），按窗口过滤
+        seen: set[str] = set()
+        unique_items = []
+        for it in items:
+            if it.source_record_id not in seen:
+                seen.add(it.source_record_id)
+                unique_items.append(it)
+        window_items = [
+            it for it in unique_items
+            if (d := _item_date(it)) is not None and scan_from <= d <= scan_to
+        ]
+        fetched = len(window_items)
+
+        observed_at = datetime.now(timezone.utc)
+        for it in window_items:
+            outcome = store.upsert_announcement(
+                conn, source_id=source_id, issuer=issuer,
+                stock_codes=stock_codes,
+                record=store.AnnouncementRecord(
+                    source_record_id=it.source_record_id,
+                    form_type="press_release", title=it.title, url=it.url,
+                    published_at=it.published_at,
+                    published_precision=it.precision,
+                    published_raw=it.published_raw,
+                    source_timezone=source["source_timezone"] or "UTC",
+                    content_hash=it.content_hash),
+                is_backfill=backfill, observed_at=observed_at)
+            if outcome == "inserted":
+                inserted += 1
+            elif outcome == "revised":
+                revised += 1
+
+        finished_at = datetime.now(timezone.utc)
+        open_gaps = store.load_open_gap_ranges(conn, issuer, source_id)
+
+        if budget_cut:
+            # 时间/页数预算耗尽：可重试 pending，不记缺口，检查点不动
+            attempt_status = "partial"
+            if backfill:
+                store.upsert_recovery(
+                    conn, issuer, source_id, backfill_start=backfill_start,
+                    target_through=target_through, completed=[],
+                    pending=[(backfill_start, target_through)])
+            store.upsert_check_state_attempt(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                attempt_at=started_at, status=attempt_status,
+                next_due_at=next_due_at, error_class="budget_exhausted")
+        elif not backfill:
+            # 增量：列表深度须达到窗口起点才算完整覆盖；停采期间落在列表
+            # 深度之外的区间不能当作已覆盖（缺口落库，检查点不动）。
+            # 存在未解决缺口时即使覆盖完整也只报 partial（缺口语义持续）。
+            # 列表突空（历史上有公告）= 可疑，落 failed 不掩盖。
+            shallow = bool(unique_items) and (
+                oldest_seen is None or oldest_seen > scan_from)
+            if not unique_items:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM watchlist_announcement "
+                        "WHERE source_id = %s LIMIT 1", (source_id,))
+                    had_items = cur.fetchone() is not None
+                if had_items:
+                    raise ir_source.IrFetchError(
+                        "IR 列表突空（该来源历史上有公告），疑似结构变更或截断",
+                        error_class="empty_listing")
+            if shallow:
+                attempt_status = "partial"
+                gap_end = min(oldest_seen - timedelta(days=1), scan_to)
+                store.record_gap(
+                    conn, issuer, source_id,
+                    (datetime.combine(scan_from, datetime.min.time(),
+                                      tzinfo=timezone.utc),
+                     datetime.combine(gap_end + timedelta(days=1),
+                                      datetime.min.time(), tzinfo=timezone.utc)),
+                    "history_unavailable",
+                    "IR 列表深度不足，中断期间区间不可枚举")
+                store.append_covered_ranges(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    ranges=[(datetime.combine(oldest_seen, datetime.min.time(),
+                                              tzinfo=timezone.utc), target)])
+                store.upsert_check_state_attempt(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, error_class=None)
+            elif open_gaps:
+                attempt_status = "partial"
+                store.append_covered_ranges(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    ranges=[(datetime.combine(scan_from, datetime.min.time(),
+                                              tzinfo=timezone.utc), target)])
+                store.upsert_check_state_attempt(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, error_class=None)
+            else:
+                attempt_status = ("success_new" if (inserted or revised)
+                                  else "success_empty")
+                store.upsert_check_state_success(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, checked_through=target,
+                    covered_add=(datetime.combine(scan_from, datetime.min.time(),
+                                                  tzinfo=timezone.utc), target))
+        else:
+            # 回补覆盖判定：列表耗尽且深度达到起点 → 覆盖完整；否则记录
+            # 实际覆盖范围与缺口，标 partial，检查点不越过缺口
+            complete_coverage = (exhausted and oldest_seen is not None
+                                 and oldest_seen <= scan_from)
+            if complete_coverage and not open_gaps:
+                attempt_status = ("success_new" if (inserted or revised)
+                                  else "success_empty")
+                store.delete_recovery(conn, issuer, source_id)
+                store.upsert_check_state_success(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, checked_through=target,
+                    covered_add=(backfill_start, target))
+            elif complete_coverage and open_gaps:
+                # 覆盖已完整但缺口未解决：不宣称完整成功，检查点不推进
+                attempt_status = "partial"
+                store.upsert_recovery(
+                    conn, issuer, source_id, backfill_start=backfill_start,
+                    target_through=target_through,
+                    completed=[(backfill_start, target)], pending=[])
+                store.append_covered_ranges(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    ranges=[(backfill_start, target)])
+                store.upsert_check_state_attempt(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, error_class=None)
+            else:
+                attempt_status = "partial"
+                # 缺口 = [回补起点, 实际覆盖起点)；列表完全为空 = 整段无覆盖证据
+                covered_from = (max(oldest_seen, scan_from)
+                                if oldest_seen is not None else None)
+                gap_end_date = (covered_from - timedelta(days=1)
+                                if covered_from is not None else scan_to)
+                store.record_gap(
+                    conn, issuer, source_id,
+                    (datetime.combine(scan_from, datetime.min.time(),
+                                      tzinfo=timezone.utc),
+                     datetime.combine(gap_end_date + timedelta(days=1),
+                                      datetime.min.time(), tzinfo=timezone.utc)),
+                    "history_unavailable",
+                    "IR 列表历史深度不足回补窗口"
+                    if covered_from is not None else
+                    "IR 列表为空，无覆盖证据")
+                if covered_from is not None:
+                    store.append_covered_ranges(
+                        conn, issuer, source_id,
+                        interval_minutes=interval_minutes,
+                        ranges=[(datetime.combine(
+                            covered_from, datetime.min.time(),
+                            tzinfo=timezone.utc), target)])
+                # 恢复行保留固定边界，pending 置空（缺口不自动重试）
+                store.upsert_recovery(
+                    conn, issuer, source_id, backfill_start=backfill_start,
+                    target_through=target_through,
+                    completed=[(datetime.combine(covered_from,
+                                                 datetime.min.time(),
+                                                 tzinfo=timezone.utc),
+                                target)]
+                    if covered_from is not None else [],
+                    pending=[])
+                store.upsert_check_state_attempt(
+                    conn, issuer, source_id, interval_minutes=interval_minutes,
+                    attempt_at=started_at, status=attempt_status,
+                    next_due_at=next_due_at, error_class=None)
+        store.insert_run(
+            conn, task_id=task_id, issuer=issuer, source_id=source_id,
+            started_at=started_at, finished_at=finished_at,
+            status=attempt_status, fetched=fetched, inserted=inserted,
+            revised=revised, error_class=None, error_detail=None,
+            parser_version=adapter.parser_version, trigger_kind=trigger)
+    except Exception as exc:
+        if isinstance(exc, ir_source.IrFetchError):
+            error_class = exc.error_class
+        else:
+            error_class = _error_class(exc)
+        error_detail = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception("IR 公告采集失败 %s", issuer)
+        finished_at = datetime.now(timezone.utc)
+        attempt_status = "failed"
+        conn.rollback()
+        # 持续失败退避：按最近连续失败次数指数拉长下次到期
+        # （不紧密重跑）；恢复条件 = 下次到期后自动重试，状态与原因可见
+        failures = 0
+        try:
+            failures = _consecutive_failures(conn, source_id)
+        except Exception:
+            failures = 0
+        backoff = min(2 ** failures, 8)
+        try:
+            if backfill:
+                store.upsert_recovery(
+                    conn, issuer, source_id, backfill_start=backfill_start,
+                    target_through=target_through, completed=[],
+                    pending=[(backfill_start, target_through)])
+            store.upsert_check_state_attempt(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                attempt_at=started_at, status="failed",
+                next_due_at=slot + timedelta(minutes=interval_minutes * backoff),
+                error_class=error_class)
+            store.insert_run(
+                conn, task_id=task_id, issuer=issuer, source_id=source_id,
+                started_at=started_at, finished_at=finished_at, status="failed",
+                fetched=None, inserted=None, revised=None,
+                error_class=error_class, error_detail=error_detail,
+                parser_version=adapter.parser_version, trigger_kind=trigger)
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "cik": issuer, "stock_codes": stock_codes, "status": attempt_status,
+        "fetched": fetched, "inserted": inserted, "revised": revised,
+        "error_class": None if attempt_status != "failed" else error_class,
+        "error_detail": None,
+        "backfill": backfill, "platform": source["platform"],
+    }
+
+
 # ── 整轮编排 ───────────────────────────────────────────────
 
 def _load_watchlist_ciks(conn) -> tuple[list[tuple[str, str]], list[str]]:
@@ -606,6 +975,67 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
         candidates.sort(key=lambda c: (c["last_attempt"] is not None,
                                        c["last_attempt"]))
 
+        # ── IR 来源：注册表驱动，受阻/待验证是一等状态 ──
+        # 关注名单内且有 seed 的公司确保注册行存在（初始状态见 IR_SEEDS）；
+        # 已存在的行不被 seed 覆盖（部署验证后逐家启用由运营显式调整）。
+        ir_interval_default = config.announcements.validated_ir_interval()
+        code_to_cik = {code: cik for cik, codes in companies for code in codes}
+        for code in (c for c in code_to_cik if c in ir_source.IR_SEEDS):
+            seed = ir_source.IR_SEEDS[code]
+            issuer = code_to_cik[code]
+            store.ensure_ir_source(
+                conn, issuer=issuer, platform=seed["platform"],
+                allowed_domain=seed["allowed_domain"],
+                entry_url=seed["entry_url"],
+                source_timezone=seed["source_timezone"],
+                parser_version=ir_source.IR_ADAPTERS[seed["platform"]].parser_version,
+                interval_minutes=None,  # None = 用配置默认；注册表可单源覆盖
+                enabled=False, source_status=seed["initial_status"],
+                status_reason=seed["initial_reason"])
+        conn.commit()
+        ir_all = store.load_ir_sources(conn)
+        watched_issuers = set(code_to_cik.values()) | set(code_to_cik)
+        # 取消关注停止主动轮询；受阻/未启用来源不抓取、不计入成功率分母，
+        # 在摘要中单独列出状态与原因（不用空列表掩盖）
+        # 取消关注停止主动轮询；只有 enabled 且 source_status='enabled' 的
+        # 来源才抓取——blocked/pending_verification 即使 enabled=true 也零
+        # 请求，且列入 ir_inactive（状态与原因可见，不进成功率分母）
+        def _ir_active(s) -> bool:
+            return bool(s["enabled"]) and s["source_status"] == "enabled"
+
+        ir_inactive = [
+            {"source_id": s["source_id"], "issuer": s["issuer_identifier"],
+             "platform": s["platform"], "status": s["source_status"],
+             "reason": s["status_reason"]}
+            for s in ir_all
+            if s["issuer_identifier"] in watched_issuers and not _ir_active(s)
+        ]
+        ir_candidates = []
+        for s in ir_all:
+            if not _ir_active(s):
+                continue
+            codes = ([c for c, cik in code_to_cik.items()
+                      if cik == s["issuer_identifier"]]
+                     or ([s["issuer_identifier"]]
+                         if s["issuer_identifier"] in code_to_cik else []))
+            if not codes:
+                continue
+            if stock_filter and stock_filter.strip().upper() not in codes:
+                continue
+            state = store.load_check_state(
+                conn, s["issuer_identifier"], s["source_id"])
+            interval = s["interval_minutes"] or ir_interval_default
+            if due_only and state is not None and state["next_due_at"] is not None \
+                    and state["next_due_at"] > now:
+                continue
+            ir_candidates.append({
+                "source": s, "stock_codes": sorted(codes), "state": state,
+                "interval_minutes": interval,
+                "last_attempt": (state or {}).get("last_attempt_at"),
+            })
+        ir_candidates.sort(key=lambda c: (c["last_attempt"] is not None,
+                                          c["last_attempt"]))
+
         budget_exhausted = False
         lock_lost = False
         for cand in candidates:
@@ -645,6 +1075,37 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
                 break
             results.append(result)
 
+        # ── IR 来源处理（同一持锁会话，同一提交节奏）──
+        for cand in ir_candidates:
+            if time.monotonic() >= deadline:
+                budget_exhausted = True
+                logger.warning("整轮预算耗尽，剩余 IR 来源下轮处理")
+                break
+            try:
+                lock.check_alive()
+            except psycopg2.Error:
+                logger.error("持锁会话失效，中止本轮剩余来源（不重连沿用旧许可）")
+                lock_lost = True
+                break
+            try:
+                result = _sync_ir_source(
+                    conn, source=cand["source"],
+                    stock_codes=cand["stock_codes"], state=cand["state"],
+                    target=now, slot=slot,
+                    interval_minutes=cand["interval_minutes"],
+                    task_id=task_id, trigger=trigger, deadline=deadline)
+            except psycopg2.Error:
+                logger.error("持锁会话失效，中止本轮剩余来源", exc_info=True)
+                lock_lost = True
+                break
+            try:
+                conn.commit()
+            except psycopg2.Error:
+                logger.error("提交失败（持锁会话失效？），中止本轮", exc_info=True)
+                lock_lost = True
+                break
+            results.append(result)
+
         # 整轮状态汇总：全部成功 / 部分成功 / 全部失败 / 预算耗尽 / 锁会话失效
         # （skipped_running 在上方提前返回；采集失败或协调失败不得汇总成成功）
         statuses = [r["status"] for r in results]
@@ -667,6 +1128,8 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
             "companies": len(companies),
             "missing_cik": missing_cik,
             "processed": len(results),
+            # 受阻/待验证 IR 来源：一等状态，不进成功率分母，原因可见
+            "ir_inactive": ir_inactive,
             "sources": results,
         }
         logger.info("公告采集整轮完成: %s", json.dumps(

@@ -42,7 +42,9 @@
   `(market, source_kind, issuer_identifier, entry_url)` 唯一。`source_kind`
   开放取值（`sec`/`ir`/未来媒体源）；`issuer_identifier` 为
   `NOT NULL DEFAULT ''`，非发行人绑定来源用空字符串占位（NULL 会破坏唯一约束
-  去重语义）。含允许域名、固定入口 `entry_url`、来源时区、`parser_version`、
+  去重语义）。`platform`（开放 text）标识平台/站点结构（如 `nebius_newsroom`、
+  `q4_press_release`）：适配器按平台实现，新增公司只需新增注册行。
+  含允许域名、固定入口 `entry_url`、来源时区、`parser_version`、
   单源覆盖间隔 `interval_minutes`（NULL 用配置默认）、`enabled` 与生命周期状态
   `source_status`（默认 `pending_verification`）及 `status_reason`。
 - `watchlist_announcement` — 公告主表，含时间与版本字段。
