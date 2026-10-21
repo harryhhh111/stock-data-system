@@ -89,6 +89,10 @@ class RoundLock:
             keepalives=1, keepalives_idle=5, keepalives_interval=5,
             keepalives_count=3, tcp_user_timeout=10000,
             application_name="watchlist_announcements_round",
+            # 与 db.py 连接池一致显式固定客户端编码：生产库 server_encoding
+            # 为 SQL_ASCII 时裸连接会让 psycopg2 退回 ascii codec，中文
+            # status_reason/error_detail 在客户端编码阶段直接 UnicodeEncodeError
+            options="-c client_encoding=utf8",
         )
         self.conn.autocommit = True
         with self.conn.cursor() as cur:

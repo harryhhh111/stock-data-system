@@ -1019,6 +1019,84 @@ class TestRoundMutex:
             cleanup_company(dsn, "TST12")
 
 
+# ── SQL_ASCII 生产库回归 ──────────────────────────────────
+
+@pytest.fixture(scope="module")
+def ascii_cluster():
+    """SQL_ASCII 编码集群（复刻生产历史库编码）。
+
+    默认 UTF8 集群覆盖不到：SQL_ASCII 服务器 + 客户端 ascii codec 时，
+    裸 psycopg2 连接写中文在客户端编码阶段直接 UnicodeEncodeError
+    （db.py 连接池带 client_encoding=utf8，RoundLock 裸连接曾不带）。
+    """
+    if not shutil.which("initdb") or not shutil.which("pg_ctl"):
+        pytest.skip("SQL_ASCII regression requires initdb/pg_ctl")
+    root = Path(tempfile.mkdtemp(prefix="anncascii-"))
+    data = root / "data"
+    started = False
+    try:
+        subprocess.run(["initdb", "-D", str(data), "-A", "trust", "--no-locale",
+                        "-E", "SQL_ASCII"], check=True, capture_output=True)
+        result = subprocess.run(
+            ["pg_ctl", "-D", str(data), "-l", str(root / "server.log"),
+             "-o", f"-k {root} -p 56437 -h '' -F", "-w", "start"], capture_output=True)
+        if result.returncode:
+            pytest.fail("SQL_ASCII PostgreSQL startup failed: " +
+                        (root / "server.log").read_text())
+        started = True
+        dsn = (f"host={root} port=56437 dbname=postgres "
+               f"user={getpass.getuser()} connect_timeout=2 "
+               f"options='-c client_encoding=utf8'")
+        sql(dsn, Path("scripts/watchlist_announcements.sql").read_text())
+        yield dsn, root
+    finally:
+        if started:
+            subprocess.run(["pg_ctl", "-D", str(data), "-m", "immediate", "-w", "stop"],
+                           check=True, capture_output=True)
+        shutil.rmtree(root)
+
+
+class TestSqlAsciiEncoding:
+    def test_round_lock_session_writes_chinese(self, ascii_cluster, monkeypatch):
+        """SQL_ASCII 库 + C locale 客户端（复刻生产条件）：持锁会话必须带
+        client_encoding=utf8，否则中文 status_reason 在客户端编码阶段
+        UnicodeEncodeError，整轮被拒。
+
+        注意不能用 PGCLIENTENCODING 模拟：libpq 对它做连接后 SET，
+        会覆盖 -c 启动参数（连修复都压不住）；生产条件是 C locale 下的
+        默认编码推导，用 setlocale 复刻。
+        """
+        import locale
+
+        dsn, root = ascii_cluster
+        monkeypatch.setattr(config.db, "host", str(root))
+        monkeypatch.setattr(config.db, "port", 56437)
+        monkeypatch.setattr(config.db, "dbname", "postgres")
+        monkeypatch.setattr(config.db, "user", getpass.getuser())
+        monkeypatch.setattr(config.db, "password", "")
+        monkeypatch.delenv("PGCLIENTENCODING", raising=False)
+        reason = "适配器按实测结构实现；启用前需真实采集验证"
+        old_locale = locale.setlocale(locale.LC_ALL)
+        try:
+            locale.setlocale(locale.LC_ALL, "C")  # 生产 C locale
+            with sync.RoundLock() as lock:
+                assert lock.acquired
+                store.ensure_ir_source(
+                    lock.conn, issuer="0003000001", platform="nebius_newsroom",
+                    allowed_domain="nebius.com",
+                    entry_url="https://nebius.com/newsroom",
+                    source_timezone="UTC", parser_version=1, interval_minutes=None,
+                    enabled=False, source_status="pending_verification",
+                    status_reason=reason)
+                lock.conn.commit()
+        finally:
+            locale.setlocale(locale.LC_ALL, old_locale)
+        rows = sql(dsn, "SELECT status_reason FROM watchlist_announcement_source "
+                        "WHERE issuer_identifier = '0003000001'")
+        assert rows[0][0] == reason
+        sql(dsn, "DELETE FROM watchlist_announcement_source "
+                 "WHERE issuer_identifier = '0003000001'")
+
 # ── 配置注册门（不需要数据库/HTTP）─────────────────────────
 
 class TestSchedulerRegistration:
