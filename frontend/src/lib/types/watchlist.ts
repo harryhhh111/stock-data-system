@@ -20,3 +20,49 @@ export interface WatchQuote {
   trend: { date: string; close: number | null }[];
 }
 export interface QuoteBatch { market: Market; currency: string; fetched_at: string; quotes: WatchQuote[] }
+
+// ── 官方公告（公告看板片，合同 docs/WATCHLIST_ANNOUNCEMENTS_UI_PLAN.md v2）──
+export interface AnnouncementSourceState {
+  kind: 'sec' | 'ir' | 'none';
+  state: string; // ok | pending_first_check | failed | partial | blocked | pending_verification | not_configured | disabled_global | unsupported_market
+  message: string;
+  source_status: string | null;
+  platform: string | null;
+  reason: string | null;
+  last_attempt_at: string | null;
+  last_attempt_status: string | null;
+  last_error_class: string | null;
+  last_success_at: string | null;
+  next_due_at: string | null;
+  checked_through: string | null;
+  effective_interval_minutes: number | null;
+  open_gaps: number;
+  earliest_gap_start: string | null;
+}
+export interface AnnouncementItem {
+  title: string; form_type: string; url: string; source_kind: string;
+  published_at: string | null; published_precision: string;
+  published_raw: string; source_timezone: string | null;
+  time_unknown: boolean; date_only: boolean;
+  first_observed_at: string | null; revision: number; is_backfill: boolean;
+  latest_by?: 'published' | 'first_observed';
+}
+export interface AnnouncementSummaryItem {
+  item_id: number; market: Market; stock_code: string;
+  count: number | null; latest: AnnouncementItem | null;
+  sources: AnnouncementSourceState[];
+}
+export interface AnnouncementSummary {
+  initialized: boolean; message?: string; announcements_enabled: boolean;
+  days: number; window: { start: string; end: string; timezone: string };
+  degraded: boolean; items: AnnouncementSummaryItem[];
+}
+export interface AnnouncementDetail {
+  item_id: number; market: Market; stock_code: string; stock_name: string;
+  supported: boolean; initialized: boolean; message?: string;
+  announcements_enabled: boolean;
+  total: number; has_more: boolean; items: AnnouncementItem[];
+  sources: AnnouncementSourceState[];
+  days: number; offset: number; limit: number; source: string;
+  window: { start: string; end: string; timezone: string };
+}

@@ -11,11 +11,106 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { Market } from '@/lib/types/common';
-import type { WatchItem, WatchQuote, WatchSuggestion } from '@/lib/types/watchlist';
+import type { AnnouncementItem, AnnouncementSummary, WatchItem, WatchQuote, WatchSuggestion } from '@/lib/types/watchlist';
 
 const markets: Market[] = ['US', 'CN_HK', 'CN_A'];
 const currency = { US: 'USD', CN_HK: 'HKD', CN_A: 'CNY' };
 const errorText = (error: unknown) => error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : '请求失败';
+
+// ── 官方公告列（公告看板片）────────────────────────────────
+// 时间一律北京时间展示并显式标注；仅日期不补午夜；SEC 标「SEC 接收时间」。
+function formatBeijing(iso: string | null) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+}
+
+function announcementTimeText(a: AnnouncementItem) {
+  if (a.time_unknown) return `时间未知，按发现时间 ${formatBeijing(a.first_observed_at) ?? '—'}（北京时间）`;
+  if (a.date_only) return `${a.published_raw.slice(0, 10)}（仅日期，来源时区 ${a.source_timezone || '未知'}）`;
+  const label = a.source_kind === 'sec' ? 'SEC 接收时间' : '发布时间';
+  return `${formatBeijing(a.published_at)}（北京时间，${label}）`;
+}
+
+const SOURCE_KIND_LABEL: Record<string, string> = { sec: 'SEC', ir: '公司官方发布', none: '—' };
+
+function safeHttpUrl(url: string) {
+  return /^https?:\/\//.test(url) ? url : null;
+}
+
+function bjDay(iso: string | null) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function latestShortLabel(a: AnnouncementItem) {
+  const day = a.time_unknown
+    ? bjDay(a.first_observed_at)
+    : a.date_only ? a.published_raw.slice(0, 10) : bjDay(a.published_at);
+  return a.time_unknown ? `时间未知（发现于 ${day ?? '—'}）` : `最新 ${day ?? '—'}`;
+}
+
+function AnnouncementsDialog({ item, onClose }: { item: WatchItem; onClose: () => void }) {
+  const [source, setSource] = useState<'all' | 'sec' | 'ir'>('all');
+  const [offset, setOffset] = useState(0);
+  const limit = 20;
+  const query = useQuery({
+    queryKey: ['watchlist-announcement-detail', item.id, source, offset],
+    queryFn: () => watchlistApi.itemAnnouncements(item.id, { days: 90, offset, limit, source }),
+    staleTime: 60_000, refetchInterval: 300_000, retry: 1,
+  });
+  const data = query.data;
+  const changeSource = (s: 'all' | 'sec' | 'ir') => { setSource(s); setOffset(0); };
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+    <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogHeader><DialogTitle>{item.stock_name} · 官方公告（近 {data?.days ?? 90} 日）</DialogTitle></DialogHeader>
+      {query.isPending && <p className="text-sm text-muted-foreground">读取公告中…</p>}
+      {query.error && <div role="alert" className="text-destructive text-sm">{errorText(query.error)}</div>}
+      {data && !data.supported && <p className="text-sm text-muted-foreground">{data.message}</p>}
+      {data && data.supported && !data.initialized && <p className="text-sm text-muted-foreground">{data.message}</p>}
+      {data && data.supported && data.initialized && <>
+        <div className="space-y-1">
+          {data.sources.map((s, i) => <div key={i} className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{SOURCE_KIND_LABEL[s.kind] ?? s.kind}</span>
+            {' '}{s.message}
+            {s.effective_interval_minutes != null && ` · 每 ${s.effective_interval_minutes} 分钟检查`}
+            {/* §3：历史状态字段有值即展示，与当前状态无关，不做条件隐藏 */}
+            {s.last_attempt_at && ` · 最近尝试 ${formatBeijing(s.last_attempt_at)}（北京时间）${s.last_attempt_status ? `：${s.last_attempt_status}` : ''}${s.last_error_class ? `/${s.last_error_class}` : ''}`}
+            {s.last_success_at && ` · 上次完整成功 ${formatBeijing(s.last_success_at)}（北京时间）`}
+            {s.next_due_at && ` · 下次检查 ${formatBeijing(s.next_due_at)}（北京时间）`}
+            {s.checked_through && ` · 完整覆盖至 ${formatBeijing(s.checked_through)}（北京时间）`}
+            {s.open_gaps > 0 && ` · ${s.open_gaps} 段历史缺口（最早 ${s.earliest_gap_start?.slice(0, 10)}）`}
+          </div>)}
+        </div>
+        <div className="flex gap-2 items-center text-sm">
+          {(['all', 'sec', 'ir'] as const).map(s => <Button key={s} size="sm" variant={source === s ? 'default' : 'outline'} onClick={() => changeSource(s)}>
+            {s === 'all' ? '全部来源' : SOURCE_KIND_LABEL[s]}
+          </Button>)}
+          <span className="ml-auto text-xs text-muted-foreground">共 {data.total} 条</span>
+        </div>
+        <ul className="space-y-3">
+          {data.items.map((a, i) => <li key={i} className="border-b pb-2 last:border-0">
+            <div className="text-sm font-medium">
+              {safeHttpUrl(a.url)
+                ? <a href={a.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{a.title}<ExternalLink className="inline w-3 h-3 ml-1" /></a>
+                : a.title}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {SOURCE_KIND_LABEL[a.source_kind] ?? a.source_kind} · {a.form_type} · {announcementTimeText(a)}
+              {` · 首次发现 ${formatBeijing(a.first_observed_at)}（北京时间）`}
+              {a.revision > 1 && ` · 第 ${a.revision} 版（有更新）`}
+              {a.is_backfill && ' · 回补'}
+            </div>
+          </li>)}
+          {!data.items.length && <p className="text-sm text-muted-foreground py-6 text-center">窗口内无已采集公告记录</p>}
+        </ul>
+        <div className="flex justify-between">
+          <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>上一页</Button>
+          <Button variant="outline" size="sm" disabled={!data.has_more} onClick={() => setOffset(offset + limit)}>下一页</Button>
+        </div>
+      </>}
+    </DialogContent>
+  </Dialog>;
+}
 
 function ResearchHint({ suggestion }: { suggestion: WatchSuggestion }) {
   const research = suggestion.research;
@@ -67,6 +162,11 @@ export function WatchlistPage() {
     const codes = items.filter(i => i.market === m).map(i => i.stock_code).sort();
     return { queryKey: ['watchlist-quotes', m, codes], queryFn: () => watchlistApi.quotes(m, codes), enabled: codes.length > 0, staleTime: 60_000, refetchInterval: 300_000, retry: 1 };
   }) });
+  // 官方公告批量摘要（对齐行情 5 分钟轮询；只读接口，不触发外网抓取）
+  const annQuery = useQuery({ queryKey: ['watchlist-announcements', 7], queryFn: () => watchlistApi.announcements(7), staleTime: 60_000, refetchInterval: 300_000, retry: 1 });
+  const annByItemId = new Map<number, AnnouncementSummary['items'][number]>();
+  annQuery.data?.items.forEach(a => annByItemId.set(a.item_id, a));
+  const [annItem, setAnnItem] = useState<WatchItem | null>(null);
   const quotes = new Map<string, WatchQuote>();
   quoteQueries.forEach((q, i) => q.data?.quotes.forEach(v => quotes.set(`${markets[i]}:${v.stock_code}`, v)));
   const groups = [...new Set(items.map(i => i.group_name).filter(Boolean))].sort();
@@ -102,8 +202,9 @@ export function WatchlistPage() {
     {itemsQuery.error && <div role="alert" className="text-destructive">{errorText(itemsQuery.error)}</div>}
     {actionError && !editor && <div role="alert" className="text-destructive">{actionError}</div>}
     {itemsQuery.isSuccess && !items.length && <Card><CardContent className="py-16 text-center"><Star className="w-9 h-9 mx-auto mb-4 text-muted-foreground" /><h3 className="text-lg font-medium">从第一只关注股开始</h3><p className="text-muted-foreground mt-2">添加你正在研究的公司，记录为什么关注它。</p></CardContent></Card>}
-    {items.length > 0 && <div className="border rounded-lg bg-card overflow-x-auto"><Table><TableHeader><TableRow>{['股票', '分组', '最新收盘价', '涨跌幅（较前次收盘）', '近 20 个交易日走势', '最新行情日期', '关注理由', '操作'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{visible.map(item => {
+    {items.length > 0 && <div className="border rounded-lg bg-card overflow-x-auto">{annQuery.data?.degraded && <p className="px-4 py-2 text-xs text-amber-600 border-b">部分来源不可用：详见各行公告列状态提示</p>}<Table><TableHeader><TableRow>{['股票', '分组', '最新收盘价', '涨跌幅（较前次收盘）', '近 20 个交易日走势', '最新行情日期', '官方公告', '关注理由', '操作'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{visible.map(item => {
       const quote = quotes.get(`${item.market}:${item.stock_code}`), response = quoteQueries[markets.indexOf(item.market)];
+      const ann = annByItemId.get(item.id);
       return <TableRow key={item.id}>
         <TableCell><Link className="font-medium hover:text-primary" to={`/analyzer?${new URLSearchParams({ code: item.stock_code, market: item.market })}`}>{item.stock_name}</Link><div className="text-xs text-muted-foreground">{item.stock_code} · {item.market}</div></TableCell>
         <TableCell>{item.group_name || '未分组'}</TableCell>
@@ -111,6 +212,21 @@ export function WatchlistPage() {
         <TableCell className="min-w-44"><div className={quote?.change_pct == null ? 'text-muted-foreground' : quote.change_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}>{quote?.change_pct == null ? '—' : `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%`}</div><div className="text-xs text-muted-foreground whitespace-nowrap">{quote?.status === 'review_price_basis' ? '价格口径待核对' : quote?.change_pct == null ? '暂无可比收盘价' : quote.previous_quote_date && quote.quote_date ? `${quote.previous_quote_date} → ${quote.quote_date}` : '比较日期未提供'}</div></TableCell>
         <TableCell><Sparkline quote={quote} /></TableCell>
         <TableCell className="min-w-40"><div>{quote?.quote_date || '—'}</div><div className="text-xs text-muted-foreground max-w-52">{response?.error ? errorText(response.error) : response?.isPending ? '读取行情中…' : quote?.status !== 'ok' ? quote?.warning : ''}{quote?.stale && ' · 行情滞后'}</div></TableCell>
+        <TableCell className="min-w-36">{(() => {
+          if (item.market !== 'US') return <span className="text-xs text-muted-foreground">该市场未接入公告源</span>;
+          if (annQuery.isPending) return <span className="text-xs text-muted-foreground">读取中…</span>;
+          if (annQuery.error) return <span className="text-xs text-destructive">{errorText(annQuery.error)}</span>;
+          if (!ann || ann.count == null) return <span className="text-xs text-muted-foreground">— 公告功能尚未初始化</span>;
+          const problems = ann.sources.filter(s => s.state !== 'ok');
+          const hint = problems.length
+            ? problems[0].message + (problems.length > 1 ? ` 等 ${problems.length} 项` : '')
+            : ann.count === 0 ? '已接入来源暂无公告' : '';
+          return <button type="button" className="text-left w-full group" aria-label={`查看${item.stock_code}官方公告`} onClick={() => setAnnItem(item)}>
+            <span className="font-medium group-hover:text-primary">近 7 日 {ann.count} 条</span>
+            <span className="block text-xs text-muted-foreground">{ann.latest ? latestShortLabel(ann.latest) : '暂无记录'}</span>
+            {hint && <span className="block text-xs text-muted-foreground">{hint}</span>}
+          </button>;
+        })()}</TableCell>
         <TableCell className="min-w-48 max-w-72">{item.note
           ? <button type="button" onClick={() => toggleNote(item.id)} className="text-left w-full max-w-72 group" aria-expanded={expandedNotes.has(item.id)} aria-label={`展开或收起${item.stock_code}的关注理由`}>
               <span className={expandedNotes.has(item.id) ? 'block whitespace-pre-wrap' : 'line-clamp-3'}>{item.note}</span>
@@ -120,6 +236,7 @@ export function WatchlistPage() {
         <TableCell><div className="flex gap-1">{item.research_url && <Button asChild variant="ghost" size="icon"><a href={item.research_url} target="_blank" rel="noopener noreferrer" aria-label="打开研究"><ExternalLink className="w-4 h-4" /></a></Button>}<Button variant="ghost" size="icon" aria-label={`编辑${item.stock_code}`} onClick={() => { setActionError(''); setEditor(item); }}><Pencil className="w-4 h-4" /></Button><Button variant="ghost" size="icon" disabled={remove.isPending || !canEdit} aria-label={`移除${item.stock_code}`} onClick={() => { if (window.confirm(`从关注列表移除 ${item.stock_name}？`)) remove.mutate(item.id); }}><Trash2 className="w-4 h-4" /></Button></div></TableCell>
       </TableRow>;
     })}</TableBody></Table>{!visible.length && <p className="p-8 text-center text-muted-foreground">该筛选条件下没有关注股</p>}</div>}
+    {annItem && <AnnouncementsDialog item={annItem} onClose={() => setAnnItem(null)} />}
     <Dialog open={editor != null} onOpenChange={open => { if (!open && !save.isPending) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto" onPointerDownOutside={e => e.preventDefault()} onEscapeKeyDown={e => e.preventDefault()}><DialogHeader><DialogTitle>{editor?.id ? '编辑关注股' : '添加关注股'}</DialogTitle></DialogHeader>{editor && <form className="space-y-4" onSubmit={e => { e.preventDefault(); if (editor.stock_code && canEdit) save.mutate(editor); }}>
       {!editor.id && <><select aria-label="搜索市场" className={selectStyle} value={editor.market || 'US'} onChange={e => setEditor({ ...editor, market: e.target.value as Market, stock_code: undefined, stock_name: undefined })}>{markets.map(m => <option key={m}>{m}</option>)}</select><StockSearch inline market={editor.market || 'US'} onSelect={stock => setEditor({ ...editor, ...stock })} /></>}
       {!editor.id && <details className="text-sm"><summary className="cursor-pointer text-muted-foreground">搜索不到？填写代码和名称</summary><div className="space-y-3 mt-3"><label className="block">股票代码<Input maxLength={20} value={editor.stock_code || ''} onChange={e => setEditor({ ...editor, market: editor.market || 'US', stock_code: e.target.value.toUpperCase() })} placeholder="例如 NBIS" /></label><label className="block">公司名称<Input maxLength={200} value={editor.stock_name || ''} onChange={e => setEditor({ ...editor, market: editor.market || 'US', stock_name: e.target.value })} placeholder="填写你研究的公司名称" /></label><p className="text-xs text-muted-foreground">代码须按所选市场填写，系统不校验证券身份；没有入库行情时显示缺失，不自动同步。</p></div></details>}

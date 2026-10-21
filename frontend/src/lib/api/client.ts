@@ -96,6 +96,16 @@ export const watchlistApi = {
     if (!batches.length) throw new Error('没有待查询股票');
     return { ...batches[0], quotes: batches.flatMap(batch => batch.quotes) };
   },
+  // 官方公告：数据统一走 US 后端（不按市场分流）
+  announcements: (days = 7) =>
+    apiFetch<import('@/lib/types/watchlist').AnnouncementSummary>(`/watchlist/announcements?days=${days}`, { market: 'US' }),
+  itemAnnouncements: (itemId: number, params: { days?: number; offset?: number; limit?: number; source?: 'all' | 'sec' | 'ir' } = {}) => {
+    const qs = new URLSearchParams({
+      days: String(params.days ?? 90), offset: String(params.offset ?? 0),
+      limit: String(params.limit ?? 20), source: params.source ?? 'all',
+    });
+    return apiFetch<import('@/lib/types/watchlist').AnnouncementDetail>(`/watchlist/${itemId}/announcements?${qs}`, { market: 'US' });
+  },
 };
 
 export const dashboardApi = {

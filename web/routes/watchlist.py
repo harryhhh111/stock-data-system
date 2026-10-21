@@ -12,6 +12,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 
 from web import ok
+from web.services import announcements_service as announcements
 from web.services import watchlist_service as service
 from web.services.research_reader import ResearchReadError
 
@@ -157,6 +158,19 @@ def remove_item(item_id: int):
 @router.post('/watchlist/quotes')
 def quotes(request: QuoteRequest):
     return call(service.quote_batch, request.market, request.codes)
+
+
+@router.get('/watchlist/announcements')
+def announcement_summary(days: int = 7):
+    """关注股官方公告批量摘要（只读，只查库；公告数据统一走 US 后端）。"""
+    return call(announcements.summary, days)
+
+
+@router.get('/watchlist/{item_id}/announcements')
+def announcement_detail(item_id: int, days: int = 90, offset: int = 0,
+                        limit: int = 20, source: str = 'all'):
+    """关注股公告详情分页（只读；按 market+stock_code 查询，删除重关注仍可见）。"""
+    return call(announcements.detail, item_id, days, offset, limit, source)
 
 
 @router.post('/watchlist/suggest', dependencies=[Depends(require_admin)])
