@@ -18,6 +18,10 @@ fi
 mkdir -p "$MONTH_DIR"
 
 archived=0; archived_bytes=0; failed=0; failed_files=""
+
+# 指数成分名单缓存不是"可再生产物"：Wikipedia live 源失效时它不可再生，
+# 是 fetcher 30 天 stale 兜底链的一环（2026-10-20 事故：缓存被归档删除后
+# 旧进程无兜底，整轮同步阻塞）。排除在归档/清理之外，生命周期由 fetcher 管理。
 while IFS= read -r f; do
   base="$(basename "$f")"
   src_size=$(stat -c %s "$f")
@@ -33,6 +37,7 @@ while IFS= read -r f; do
   else
     failed=$((failed + 1)); failed_files="$failed_files $base(cp失败)"
   fi
-done < <(find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mtime +"$TTL_DAYS" -print)
+done < <(find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mtime +"$TTL_DAYS" \
+    ! -name 'russell1000_tickers.json' -print)
 
 echo "[$(date '+%F %T')] TTL>${TTL_DAYS}d 归档 $archived 个（$((archived_bytes / 1024 / 1024)) MB）到 $MONTH_DIR，失败 $failed 个$failed_files"
