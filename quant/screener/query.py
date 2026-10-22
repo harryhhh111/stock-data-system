@@ -71,6 +71,7 @@ def get_universe(market: str | None = None) -> pd.DataFrame:
         -- FCF Yield（mv_fcf_yield 已计算）
         fy.fcf_yield,
         fy.fcf_ttm,
+        fy.fcf_ttm_estimated,
         fy.cfo_ttm AS fcf_cfo_ttm,
         fy.capex_ttm AS fcf_capex_ttm,
         fy.ttm_report_date,

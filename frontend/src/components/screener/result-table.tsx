@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ArrowUpDown, ArrowUp, ArrowDown, Download } from "lucide-react";
 import type { ScreenerStock } from "@/lib/types/screener";
+import { TtmEstimatedBadge } from "@/components/common/ttm-estimated-badge";
 import { fmtMcap, fmtPct } from "@/lib/utils/format";
 
 interface Props {
@@ -141,6 +142,7 @@ export function ResultTable({ results }: Props) {
                 <TableCell className="text-right">{stock.pb?.toFixed(2) ?? "-"}</TableCell>
                 <TableCell className={`text-right font-medium ${pctColor(stock.fcf_yield, 0.08, 0.02) ?? ""}`}>
                   {fmtPct(stock.fcf_yield)}
+                  {stock.fcf_ttm_estimated ? <TtmEstimatedBadge /> : null}
                 </TableCell>
                 <TableCell className={`text-right font-medium ${pctColor(stock.roe, 0.15, 0.05) ?? ""}`}>
                   {fmtPct(stock.roe)}

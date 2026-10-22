@@ -45,6 +45,8 @@ OUTPUT_COLUMNS = [
     "ttm_report_date", "ttm_notice_date", "currency",
     # Phase B2 溯源字段（仅 US snapshot 路径存在；CN/legacy 无此列时自动跳过）
     "quote_date", "financial_data_status", "net_income_basis",
+    # TTM NULL 回退口径标志（仅 CN 路径存在；US 无此列时自动跳过）
+    "fcf_ttm_estimated",
 ]
 
 STALE_DAYS = 180

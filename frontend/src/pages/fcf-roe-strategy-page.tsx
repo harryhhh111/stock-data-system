@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { DataTable } from "@/components/ui/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Target, AlertTriangle, RotateCcw, Download } from "lucide-react";
+import { TtmEstimatedBadge } from "@/components/common/ttm-estimated-badge";
 import { fmtMcap, fmtPct } from "@/lib/utils/format";
 import type { Market } from "@/lib/types/common";
 import type { StrategyStock, FcfRoeResult } from "@/lib/types/strategy";
@@ -121,7 +122,12 @@ const columns: ColumnDef<StrategyStock>[] = [
     accessorKey: "fcf_yield",
     header: "FCF Yield",
     size: 90,
-    cell: ({ getValue }) => <span className="font-mono tabular-nums">{fmtPct(getValue<number>())}</span>,
+    cell: ({ row }) => (
+      <span className="font-mono tabular-nums">
+        {fmtPct(row.original.fcf_yield)}
+        {row.original.fcf_ttm_estimated ? <TtmEstimatedBadge /> : null}
+      </span>
+    ),
   },
   {
     accessorKey: "roe",

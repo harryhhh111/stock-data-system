@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAnalyzerStore } from "@/lib/store/analyzer-store";
 import { PageHeader } from "@/components/layout/page-header";
+import { TtmEstimatedBadge } from "@/components/common/ttm-estimated-badge";
 import { LineChart, AlertTriangle } from "lucide-react";
 import type { Market } from "@/lib/types/common";
 import type { AnalysisReport, StockSearchResult } from "@/lib/types/analyzer";
@@ -146,7 +147,7 @@ export function AnalyzerPage() {
                 <div><span className="text-muted-foreground">市值</span><p className="font-medium">{fmtMcap(report.stock.market_cap)}</p></div>
                 <div><span className="text-muted-foreground">PE TTM</span><p className="font-medium">{fmtPe(report.stock.pe_ttm, report.stock.net_profit_ttm)}</p></div>
                 <div><span className="text-muted-foreground">PB</span><p className="font-medium">{report.stock.pb?.toFixed(2) ?? "-"}</p></div>
-                <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.stock.fcf_yield)}</p></div>
+                <div><span className="text-muted-foreground">FCF Yield</span><p className="font-medium">{fmtPct(report.stock.fcf_yield)}{report.stock.fcf_ttm_estimated ? <TtmEstimatedBadge /> : null}</p></div>
                 <div><span className="text-muted-foreground">营收 TTM</span><p className="font-medium">{fmtYi(report.stock.revenue_ttm)}</p></div>
               </div>
               {/* 数据状态与溯源（current snapshot 路径） */}

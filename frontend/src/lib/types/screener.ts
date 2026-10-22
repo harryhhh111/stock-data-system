@@ -42,6 +42,8 @@ export interface ScreenerStock {
   pb: number | null;
   dividend_yield: number | null;
   fcf_yield: number | null;
+  /** TTM NULL 回退口径：true = 年度代理值（中报未披露，用最近年报估算） */
+  fcf_ttm_estimated?: boolean | null;
   roe: number | null;
   roe_1y_ago: number | null;
   roe_2y_ago: number | null;

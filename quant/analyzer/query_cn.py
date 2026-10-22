@@ -13,7 +13,7 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
         SELECT s.stock_code, s.stock_name, s.market, s.industry, s.list_date,
                fy.close, fy.market_cap, fy.pe_ttm, fy.pb, fy.fcf_yield,
                fy.fcf_ttm, fy.revenue_ttm, fy.net_profit_ttm, fy.cfo_ttm,
-               fy.ttm_report_date,
+               fy.ttm_report_date, fy.fcf_ttm_estimated,
                t.notice_date AS ttm_notice_date
         FROM stock_info s
         LEFT JOIN mv_fcf_yield fy ON s.stock_code = fy.stock_code
@@ -29,7 +29,7 @@ def get_stock_info(stock_code: str, market: str) -> pd.DataFrame:
                q.close, q.market_cap, q.pe_ttm, q.pb,
                NULL AS fcf_yield, NULL AS fcf_ttm,
                NULL AS revenue_ttm, NULL AS net_profit_ttm, NULL AS cfo_ttm,
-               NULL AS ttm_report_date
+               NULL AS ttm_report_date, NULL AS fcf_ttm_estimated
         FROM stock_info s
         LEFT JOIN LATERAL (
             SELECT close, market_cap, pe_ttm, pb

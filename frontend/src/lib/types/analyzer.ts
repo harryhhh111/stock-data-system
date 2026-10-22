@@ -26,6 +26,8 @@ export interface StockInfo {
   pe_ttm: number | null;
   pb: number | null;
   fcf_yield: number | null;
+  /** TTM NULL 回退口径：true = 年度代理值（中报未披露，用最近年报估算） */
+  fcf_ttm_estimated?: boolean | null;
   revenue_ttm: number | null;
   net_profit_ttm: number | null;
   cfo_ttm: number | null;

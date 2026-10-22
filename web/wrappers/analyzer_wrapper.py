@@ -166,6 +166,12 @@ def get_report(stock_code: str, market: str | None) -> dict:
         "pe_ttm": _safe_val(row.get("pe_ttm")),
         "pb": _safe_val(row.get("pb")),
         "fcf_yield": _safe_val(row.get("fcf_yield")),
+        # numpy.bool_ 不能过 FastAPI jsonable_encoder，显式转 Python bool（NaN→None）
+        "fcf_ttm_estimated": (
+            bool(row.get("fcf_ttm_estimated"))
+            if pd.notna(row.get("fcf_ttm_estimated"))
+            else None
+        ),
         "revenue_ttm": _safe_val(row.get("revenue_ttm")),
         "net_profit_ttm": _safe_val(row.get("net_profit_ttm")),
         "cfo_ttm": _safe_val(row.get("cfo_ttm")),
