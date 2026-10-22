@@ -64,6 +64,10 @@
   理由（如 `ticker 直连：Finnhub symbol MU`），行业主题层同列扩展。
   运行记录 `watchlist_announcement_run` 另有 `dropped_count`：媒体过滤丢弃计数
   （可见、不静默）。
+  LLM 增强列（每日资讯 v1.1）：`title_zh`/`summary_zh`/`importance`，
+  NULL=未判断或判断失败，存量不回填；媒体条目三字段全出（一次 mmx 调用），
+  官方披露只算 `importance`。LLM 输出是增强字段，原标题/来源/时间原样保留，
+  页面标「AI 译」；增强失败不阻塞入库。
 - `watchlist_announcement_security` — 公告—证券关联（一对多）。同一公告
   （同一 `source_record_id`）可关联多个证券代码；主键
   `(announcement_id, stock_code)`，重复抓取 `ON CONFLICT DO NOTHING` 不产生重复

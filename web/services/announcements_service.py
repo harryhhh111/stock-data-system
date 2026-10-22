@@ -85,8 +85,8 @@ _LOGICAL_SQL = """
            a.title, a.form_type, a.original_url, a.published_at,
            a.published_at_precision, a.source_published_raw, a.source_timezone,
            a.first_observed_at, a.is_backfill, a.content_nature,
-           a.relation_reason, a.media_source, a.excerpt, s.source_kind,
-           s.platform
+           a.relation_reason, a.media_source, a.excerpt, a.title_zh,
+           a.summary_zh, a.importance, s.source_kind, s.platform
     FROM watchlist_announcement_security sec
     JOIN watchlist_announcement anchor ON anchor.id = sec.announcement_id
     JOIN watchlist_announcement a
@@ -156,6 +156,9 @@ def _public_item(row: dict) -> dict:
         "media_source": row.get("media_source"),
         "excerpt": row.get("excerpt"),
         "platform": row.get("platform"),
+        "title_zh": row.get("title_zh"),
+        "summary_zh": row.get("summary_zh"),
+        "importance": row.get("importance"),
     }
 
 

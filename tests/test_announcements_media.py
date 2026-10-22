@@ -167,6 +167,11 @@ def env(cluster, monkeypatch):
     db.close_pool()
     db._pool = None
     monkeypatch.setattr(config.announcements, "enabled", "true")
+    # LLM 增强离线：测试不调用真实 mmx（增强失败路径 = 字段留 NULL）
+    from core.announcements import llm_enhance
+    monkeypatch.setattr(llm_enhance, "_run_mmx",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            llm_enhance.EnhanceError("test: llm offline")))
     monkeypatch.setattr(config.announcements, "sec_interval_minutes", "60")
     monkeypatch.setattr(config.announcements, "ir_interval_minutes", "60")
     monkeypatch.setattr(config.announcements, "media_interval_minutes", "360")
@@ -298,3 +303,43 @@ class TestMediaRound:
         google = next(s for s in summary["sources"]
                       if s.get("platform") == "google_news_rss")
         assert google["status"] == "success_new"   # 单源失败不影响其他源
+
+
+class TestLlmEnhanceIntegration:
+    def test_media_rows_get_zh_fields(self, env, monkeypatch):
+        """增强成功：媒体条目入库带中文标题/摘要/importance。"""
+        from core.announcements import llm_enhance
+        dsn, _calls = env
+        seed_mu(dsn)
+        monkeypatch.setattr(llm_enhance, "_run_mmx", lambda *a, **kw:
+                            '{"title_zh": "中文标题", "summary_zh": "中文摘要",'
+                            ' "importance": "high"}')
+        run()
+        enable_media(dsn)
+        summary = run()
+        media = [s for s in summary["sources"]
+                 if s.get("platform") in media_source.MEDIA_PLATFORMS]
+        assert all(s.get("llm_ok", 0) > 0 for s in media)
+        row = sql(dsn, "SELECT title_zh, summary_zh, importance FROM "
+                       "watchlist_announcement WHERE title_zh IS NOT NULL "
+                       "LIMIT 1")
+        assert row and row[0] == ("中文标题", "中文摘要", "high")
+
+    def test_enhance_failure_keeps_row_with_null(self, env, monkeypatch):
+        """增强失败：条目正常入库、字段 NULL、计数可见（不静默）。"""
+        from core.announcements import llm_enhance
+        dsn, _calls = env
+        seed_mu(dsn)
+
+        def boom(*_a, **_kw):
+            raise llm_enhance.EnhanceError("test: mmx down")
+        monkeypatch.setattr(llm_enhance, "_run_mmx", boom)
+        run()
+        enable_media(dsn)
+        summary = run()
+        media = [s for s in summary["sources"]
+                 if s.get("platform") in media_source.MEDIA_PLATFORMS]
+        assert all(s["status"] == "success_new" for s in media)  # 入库不受影响
+        assert all(s.get("llm_failed", 0) > 0 for s in media)
+        assert sql(dsn, "SELECT COUNT(*) FROM watchlist_announcement "
+                        "WHERE title_zh IS NOT NULL")[0][0] == 0

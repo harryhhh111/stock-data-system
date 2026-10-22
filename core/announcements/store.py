@@ -244,6 +244,9 @@ class AnnouncementRecord:
     content_nature: str | None = None   # 媒体条目 v1 一律 'unclassified'
     relation_reason: str | None = None  # 机器可核对的关联理由
     media_source: str | None = None     # 媒体名（Reuters/Yahoo/…）
+    title_zh: str | None = None         # LLM 增强：中文标题（媒体条目）
+    summary_zh: str | None = None       # LLM 增强：中文摘要（媒体条目）
+    importance: str | None = None       # LLM 增强：high|normal（媒体+官方）
 
 
 def upsert_announcement(conn, *, source_id: int, issuer: str,
@@ -314,6 +317,28 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                 (stock_code, source_id, record.source_record_id),
             )
     return outcome
+
+
+def update_llm_fields(conn, *, source_id: int, source_record_id: str,
+                      title_zh=None, summary_zh=None, importance=None) -> None:
+    """新入库条目（revision=1）写 LLM 增强字段；只写非 None 字段。"""
+    sets, params = [], []
+    for col, val in (("title_zh", title_zh), ("summary_zh", summary_zh),
+                     ("importance", importance)):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            params.append(val)
+    if not sets:
+        return
+    params.extend([source_id, source_record_id])
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE watchlist_announcement SET {", ".join(sets)}
+            WHERE source_id = %s AND source_record_id = %s AND revision = 1
+            """,
+            params,
+        )
 
 
 # ── 恢复进度 ───────────────────────────────────────────────

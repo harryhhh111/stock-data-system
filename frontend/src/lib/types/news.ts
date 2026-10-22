@@ -23,6 +23,10 @@ export interface NewsEntry {
   bj_day: string | null;           // 北京时间日期（分组键）
   fold_count: number;              // 折叠组条目数（1 = 未折叠）
   fold_sources: { name: string; url: string; published_at: string | null; platform: string | null }[];
+  // LLM 增强（v1.1）：NULL = 未判断/失败；官方披露只有 importance
+  title_zh: string | null;
+  summary_zh: string | null;
+  importance: 'high' | 'normal' | null;
 }
 
 export interface NewsFeed {
@@ -43,6 +47,6 @@ export interface NewsPinned {
   announcements_enabled: boolean;
   as_of: string;
   timezone: string;
-  official: NewsEntry[];
-  media_groups: NewsEntry[];
+  ai_available: boolean;           // false = 回退机械规则（≥3 源 + 24h 官方）
+  entries: NewsEntry[];            // 热度×重要性，封顶 10
 }

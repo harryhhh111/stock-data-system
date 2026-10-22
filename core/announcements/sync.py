@@ -206,6 +206,7 @@ def _sync_sec_source(
     error_class = None
     error_detail = None
     fetched = inserted = revised = 0
+    llm_stats: dict = {}
     filings: list[sec_source.SecFiling] = []
     backfill = state is None or state["checked_through"] is None
     recovery = store.load_recovery(conn, cik, source_id) if backfill else None
@@ -351,6 +352,7 @@ def _sync_sec_source(
         fetched = len(unique_filings)
 
         observed_at = datetime.now(timezone.utc)
+        new_rows: list[tuple] = []
         for f in unique_filings:
             outcome = store.upsert_announcement(
                 conn, source_id=source_id, issuer=cik, stock_codes=stock_codes,
@@ -365,8 +367,15 @@ def _sync_sec_source(
                 is_backfill=backfill, observed_at=observed_at)
             if outcome == "inserted":
                 inserted += 1
+                new_rows.append((f.accession, sec_source.neutral_title(f.form),
+                                 f.form))
             elif outcome == "revised":
                 revised += 1
+        # 官方披露只算 importance（用户 2026-10-23 确认），不出中文标题
+        llm_stats: dict = {}
+        _enhance_new_rows(conn, source_id=source_id, kind="official",
+                          new_rows=new_rows, stock_code=stock_codes[0],
+                          deadline=deadline, result=llm_stats)
 
         has_open_gaps = bool(open_gap_dates or new_gaps)
         complete = not new_pending
@@ -495,7 +504,7 @@ def _sync_sec_source(
         "cik": cik, "stock_codes": stock_codes, "status": attempt_status,
         "fetched": fetched, "inserted": inserted, "revised": revised,
         "error_class": error_class, "error_detail": error_detail,
-        "backfill": backfill,
+        "backfill": backfill, **llm_stats,
     }
 
 
@@ -549,6 +558,7 @@ def _sync_ir_source(
     started_at = datetime.now(timezone.utc)
     next_due_at = slot + timedelta(minutes=interval_minutes)
     fetched = inserted = revised = 0
+    llm_stats: dict = {}
 
     if adapter is None:
         # 注册表指向未知平台：配置错误，落 failed，不抓取
@@ -647,6 +657,7 @@ def _sync_ir_source(
         fetched = len(window_items)
 
         observed_at = datetime.now(timezone.utc)
+        new_rows: list[tuple] = []
         for it in window_items:
             outcome = store.upsert_announcement(
                 conn, source_id=source_id, issuer=issuer,
@@ -662,8 +673,14 @@ def _sync_ir_source(
                 is_backfill=backfill, observed_at=observed_at)
             if outcome == "inserted":
                 inserted += 1
+                new_rows.append((it.source_record_id, it.title,
+                                 "press_release"))
             elif outcome == "revised":
                 revised += 1
+        # IR 官方发布只算 importance（同 SEC 口径）
+        _enhance_new_rows(conn, source_id=source_id, kind="official",
+                          new_rows=new_rows, stock_code=stock_codes[0],
+                          deadline=deadline, result=llm_stats)
 
         finished_at = datetime.now(timezone.utc)
         open_gaps = store.load_open_gap_ranges(conn, issuer, source_id)
@@ -851,8 +868,43 @@ def _sync_ir_source(
         "fetched": fetched, "inserted": inserted, "revised": revised,
         "error_class": None if attempt_status != "failed" else error_class,
         "error_detail": None,
-        "backfill": backfill, "platform": source["platform"],
+        "backfill": backfill, "platform": source["platform"], **llm_stats,
     }
+
+
+# ── LLM 增强（每日资讯 v1.1：新入库条目一次 mmx 调用）─────────
+
+def _enhance_new_rows(conn, *, source_id: int, kind: str,
+                      new_rows: list[tuple], stock_code: str,
+                      deadline: float, result: dict) -> None:
+    """对本来源新插入的条目做 LLM 增强并回写（revision=1 行）。
+
+    new_rows：[(source_record_id, title, aux)]；媒体 aux=摘要素材，
+    官方 aux=表单类型。失败/超时/JSON 非法 → 字段留 NULL，不阻塞采集；
+    预算耗尽停止增强（剩余条目正常入库、无增强字段），计数进整轮摘要。
+    """
+    from core.announcements import llm_enhance
+
+    ok = failed = skipped = 0
+    for record_id, title, aux in new_rows:
+        if time.monotonic() >= deadline:
+            skipped += len(new_rows) - (ok + failed + skipped)
+            break
+        try:
+            if kind == "media":
+                fields = llm_enhance.enhance_media(title, aux, stock_code)
+            else:
+                fields = llm_enhance.enhance_official(title, aux, stock_code)
+            store.update_llm_fields(
+                conn, source_id=source_id, source_record_id=record_id, **fields)
+            ok += 1
+        except llm_enhance.EnhanceError as exc:
+            logger.warning("LLM 增强失败（条目已正常入库）%s: %s",
+                           record_id, exc)
+            failed += 1
+    result["llm_ok"] = ok
+    result["llm_failed"] = failed
+    result["llm_skipped"] = skipped
 
 
 # ── 单来源同步（媒体：Google News RSS / Finnhub）─────────────
@@ -861,6 +913,7 @@ def _sync_media_source(
     conn, *, source: dict, stock_codes: list[str],
     state: dict | None, target: datetime, slot: datetime,
     interval_minutes: int, task_id: uuid.UUID, trigger: str,
+    deadline: float,
 ) -> dict:
     """同步一个媒体来源。返回结果摘要（不抛采集异常）。
 
@@ -878,6 +931,7 @@ def _sync_media_source(
     started_at = datetime.now(timezone.utc)
     next_due_at = slot + timedelta(minutes=interval_minutes)
     fetched = inserted = revised = 0
+    llm_stats: dict = {}
     dropped = None
     attempt_status = "failed"
     error_class = None
@@ -887,6 +941,7 @@ def _sync_media_source(
         items = media_source.fetch_and_parse(source, today=target.date())
         fetched = len(items)
         kept, dropped_items = [], 0
+        new_rows: list[tuple] = []
         for it in items:
             if media_source.matches_company(it.title, it.summary, match_terms):
                 kept.append(it)
@@ -921,8 +976,13 @@ def _sync_media_source(
                 observed_at=observed_at)
             if outcome == "inserted":
                 inserted += 1
+                new_rows.append((it.source_record_id, it.title, it.summary))
             elif outcome == "revised":
                 revised += 1
+        # 媒体条目一次调用产出 title_zh/summary_zh/importance 三字段
+        _enhance_new_rows(conn, source_id=source_id, kind="media",
+                          new_rows=new_rows, stock_code=stock_codes[0],
+                          deadline=deadline, result=llm_stats)
 
         finished_at = datetime.now(timezone.utc)
         attempt_status = "success_new" if (inserted or revised) else "success_empty"
@@ -975,7 +1035,7 @@ def _sync_media_source(
         "fetched": fetched, "inserted": inserted, "revised": revised,
         "dropped": dropped,
         "error_class": error_class, "error_detail": error_detail,
-        "backfill": False, "platform": source["platform"],
+        "backfill": False, "platform": source["platform"], **llm_stats,
     }
 
 
@@ -1304,7 +1364,7 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
                     stock_codes=cand["stock_codes"], state=cand["state"],
                     target=now, slot=slot,
                     interval_minutes=cand["interval_minutes"],
-                    task_id=task_id, trigger=trigger)
+                    task_id=task_id, trigger=trigger, deadline=deadline)
             except psycopg2.Error:
                 logger.error("持锁会话失效，中止本轮剩余来源", exc_info=True)
                 lock_lost = True

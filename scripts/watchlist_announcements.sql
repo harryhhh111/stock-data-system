@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement (
     relation_reason     TEXT,
     -- 媒体名（Reuters/Yahoo/…，媒体条目；官方披露为 NULL，来源名取注册表）
     media_source        TEXT,
+    -- LLM 增强（每日资讯 v1.1）：中文标题/摘要/重要性。NULL=未判断或
+    -- 判断失败（存量不回填）。官方披露只算 importance，不出中文标题/摘要
+    title_zh            TEXT,
+    summary_zh          TEXT,
+    importance          TEXT,
 
     UNIQUE (source_id, source_record_id, revision)
 );
@@ -270,4 +275,7 @@ ALTER TABLE watchlist_announcement_source ADD COLUMN IF NOT EXISTS query_config 
 ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS content_nature TEXT;
 ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS relation_reason TEXT;
 ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS media_source TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS title_zh TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS summary_zh TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS importance TEXT;
 ALTER TABLE watchlist_announcement_run ADD COLUMN IF NOT EXISTS dropped_count INTEGER;

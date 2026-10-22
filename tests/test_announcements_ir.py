@@ -207,6 +207,11 @@ def env(cluster, monkeypatch):
     db.close_pool()
     db._pool = None
     monkeypatch.setattr(config.announcements, "enabled", "true")
+    # LLM 增强离线：测试不调用真实 mmx（增强失败路径 = 字段留 NULL）
+    from core.announcements import llm_enhance
+    monkeypatch.setattr(llm_enhance, "_run_mmx",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            llm_enhance.EnhanceError("test: llm offline")))
     monkeypatch.setattr(config.announcements, "sec_interval_minutes", "60")
     monkeypatch.setattr(config.announcements, "ir_interval_minutes", "60")
 

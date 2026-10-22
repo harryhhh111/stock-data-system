@@ -93,6 +93,9 @@ def _entry_base(row: dict) -> dict:
         "first_observed_at": ann._iso(row["first_observed_at"]),
         "is_backfill": row["is_backfill"],
         "bj_day": day.isoformat() if day else None,
+        "title_zh": row.get("title_zh"),
+        "summary_zh": row.get("summary_zh"),
+        "importance": row.get("importance"),
     }
 
 
@@ -137,25 +140,6 @@ def _bj_day(row: dict) -> date | None:
         except ValueError:
             return None
     return row["first_observed_at"].astimezone(BJ).date()
-
-
-def _within_24h(row: dict, now: datetime) -> bool:
-    """置顶「近 24h」的口径按发布时间，不回退首次发现时间：
-    - 秒/分精度：published_at 在近 24h 内；
-    - 仅日期精度（published_at NULL）：按北京日期为今天或昨天
-      （一天精度的「近 24h」合理解释，保持「仅日期」标注）；
-    - 完全未知时间：永不进置顶。
-    回补条目（历史发布、近日首次发现）不得冒充新发生（需求 §3.1）。"""
-    if row["published_at"] is not None:
-        return row["published_at"] >= now - timedelta(hours=24)
-    if row["published_at_precision"] == "day" and row["source_published_raw"]:
-        try:
-            d = date.fromisoformat(row["source_published_raw"][:10])
-        except ValueError:
-            return False
-        today_bj = now.astimezone(BJ).date()
-        return d in (today_bj, today_bj - timedelta(days=1))
-    return False
 
 
 # ── 媒体来源状态（并入既有五态语义）─────────────────────────
@@ -282,8 +266,46 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
     return {**base, "initialized": True, "entries": entries, "sources": sources}
 
 
+PINNED_WINDOW = timedelta(hours=48)
+PINNED_MAX = 10
+
+
+def _within_48h_pinned(row: dict, now: datetime) -> bool:
+    """置顶候选（近 48h，发布时间口径；不回退发现时间）：
+    秒/分精度按 published_at；仅日期按北京日期为今天或昨天；
+    unknown 永不进。"""
+    if row["published_at"] is not None:
+        return row["published_at"] >= now - PINNED_WINDOW
+    if row["published_at_precision"] == "day" and row["source_published_raw"]:
+        try:
+            d = date.fromisoformat(row["source_published_raw"][:10])
+        except ValueError:
+            return False
+        today_bj = now.astimezone(BJ).date()
+        return d in (today_bj, today_bj - timedelta(days=1))
+    return False
+
+
+def _ai_available(rows: list[dict], now: datetime) -> bool:
+    """AI 持续不可用判定：近 24h 有新入库条目且全部无 importance
+    → 增强持续失败，回退机械规则。无新条目时无法判定失败，用正常规则。"""
+    recent = [r for r in rows
+              if r["first_observed_at"] is not None
+              and r["first_observed_at"] >= now - timedelta(hours=24)]
+    if not recent:
+        return True
+    return any(r.get("importance") for r in recent)
+
+
 def pinned() -> dict:
-    """GET /watchlist/news/pinned：近 24h 官方披露 + 折叠后来源数 ≥2 的媒体组。"""
+    """GET /watchlist/news/pinned（v1.1：热度 × 重要性，封顶 10）。
+
+    候选：近 48h（发布时间口径，仅日期/unknown 不回退发现时间）。
+    入选：importance='high' 或折叠后来源数 ≥3；官方媒体一视同仁。
+    排序：high 优先 → 来源数 → 发布时间。封顶 10。
+    AI 持续不可用（近 24h 新条目全部无 importance）时回退机械规则：
+    ≥3 源媒体组 + 近 24h 官方披露，同样封顶 10。
+    """
     enabled = ann._announcements_enabled()
     now = datetime.now(UTC)
     base = {"as_of": now.isoformat(), "timezone": "Asia/Shanghai",
@@ -294,20 +316,36 @@ def pinned() -> dict:
         logical = ann._load_logical_announcements()
     except psycopg2.errors.UndefinedTable:
         return {**base, "initialized": False, "message": "公告功能尚未初始化",
-                "official": [], "media_groups": []}
+                "entries": [], "ai_available": True}
     rows = [r for code, rs in logical.items() for r in rs if code in watched]
-    recent = [r for r in rows if _within_24h(r, now)]
+    ai_ok = _ai_available(rows, now)
+
+    candidates = [r for r in rows if _within_48h_pinned(r, now)]
     official = []
-    for r in recent:
+    for r in candidates:
         if r["source_kind"] in OFFICIAL_KINDS:
             e = _entry_base(r)
             e["fold_count"] = 1
             e["fold_sources"] = []
             official.append(e)
     groups = [_media_group_entry(c)
-              for c in fold_media([r for r in recent
-                                   if r["source_kind"] == "media"])
-              if len(c) >= 2]
-    return {**base, "initialized": True,
-            "official": _sort_entries(official),
-            "media_groups": _sort_entries(groups)}
+              for c in fold_media([r for r in candidates
+                                   if r["source_kind"] == "media"])]
+    entries = official + groups
+    if ai_ok:
+        picked = [e for e in entries
+                  if e.get("importance") == "high" or e["fold_count"] >= 3]
+    else:
+        # 机械回退：≥3 源媒体组 + 近 24h 官方披露
+        picked = [e for e in groups if e["fold_count"] >= 3]
+        picked += [e for e in official
+                   if e["published_at"] and
+                   datetime.fromisoformat(e["published_at"]) >= now - timedelta(hours=24)]
+    picked.sort(key=lambda e: (
+        0 if e.get("importance") == "high" else 1,
+        -e["fold_count"],
+        -(datetime.fromisoformat(e["published_at"]).timestamp()
+          if e["published_at"] else 0),
+    ))
+    return {**base, "initialized": True, "ai_available": ai_ok,
+            "entries": picked[:PINNED_MAX]}

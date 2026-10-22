@@ -31,12 +31,18 @@ function safeHttpUrl(url: string) {
 function NewsCard({ entry }: { entry: NewsEntry }) {
   const [showSources, setShowSources] = useState(false);
   const link = safeHttpUrl(entry.url);
+  // v1.1：中文标题/摘要为主，带「AI 译」标签；无中文回退原文标题；
+  // 原标题始终可对照（展开）
   return <Card>
     <CardContent className="py-4">
       <div className="text-sm font-medium leading-snug">
-        {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{entry.title}<ExternalLink className="inline w-3 h-3 ml-1" /></a> : entry.title}
+        {entry.importance === 'high' && <span className="inline-flex items-center rounded-sm bg-amber-100 text-amber-800 px-1.5 py-0.5 text-xs mr-1.5 align-middle">重要</span>}
+        {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{entry.title_zh || entry.title}<ExternalLink className="inline w-3 h-3 ml-1" /></a> : (entry.title_zh || entry.title)}
+        {entry.title_zh && <span className="inline-flex items-center rounded-sm border px-1 py-0.5 text-xs text-muted-foreground ml-1.5 align-middle">AI 译</span>}
       </div>
-      {entry.excerpt && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.excerpt}</p>}
+      {entry.summary_zh && <p className="text-xs mt-1">{entry.summary_zh}<span className="text-muted-foreground">（AI 译）</span></p>}
+      {!entry.summary_zh && entry.excerpt && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.excerpt}</p>}
+      {entry.title_zh && <details className="text-xs text-muted-foreground mt-1"><summary className="cursor-pointer">原标题对照</summary><p className="mt-1">{entry.title}</p></details>}
       <div className="text-xs text-muted-foreground mt-2 flex flex-wrap gap-x-2 gap-y-1 items-center">
         <span className="inline-flex items-center rounded-sm border px-1.5 py-0.5">{KIND_BADGE[entry.source_kind] ?? entry.source_kind}</span>
         {entry.media_source && <span>{entry.media_source}</span>}
@@ -95,11 +101,10 @@ export function NewsPage() {
       <Button variant="outline" onClick={() => { pinnedQuery.refetch(); feedQuery.refetch(); }}><RefreshCw className="w-4 h-4 mr-2" />刷新</Button>
     </PageHeader>
 
-    {pinnedQuery.isSuccess && pinned?.initialized && (pinned.official.length > 0 || pinned.media_groups.length > 0) && <section className="space-y-2">
-      <h2 className="text-sm font-semibold">置顶（近 24 小时官方披露 · 多来源媒体）</h2>
+    {pinnedQuery.isSuccess && pinned?.initialized && pinned.entries.length > 0 && <section className="space-y-2">
+      <h2 className="text-sm font-semibold">置顶（近 48 小时 · 重要性/多来源，封顶 10 条）{!pinned.ai_available && <span className="text-xs text-muted-foreground font-normal">（AI 暂不可用，按机械规则入选）</span>}</h2>
       <div className="grid gap-2 md:grid-cols-2">
-        {pinned.official.map((e, i) => <NewsCard key={`o${i}`} entry={e} />)}
-        {pinned.media_groups.map((e, i) => <NewsCard key={`m${i}`} entry={e} />)}
+        {pinned.entries.map((e, i) => <NewsCard key={i} entry={e} />)}
       </div>
     </section>}
 
