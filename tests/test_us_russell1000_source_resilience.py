@@ -165,3 +165,30 @@ def test_live_list_with_absurd_count_is_rejected_and_falls_back(env, monkeypatch
     fetcher = us_financial.USFinancialFetcher()
     assert len(fetcher.fetch_russell1000_constituents()) == 1000
     assert fetcher.get_index_source_status("RUSSELL1000")["mode"] == "stale_cache_fallback"
+
+
+def test_stale_builtin_snapshot_warns_even_on_fresh_cache(env, monkeypatch, caplog):
+    """内置快照超过 90 天未更新时提醒——即使本次走鲜缓存不经过兜底路径。"""
+    cache_dir, builtin = env
+    _write_cache(cache_dir / "russell1000_tickers.json", age_days=1)
+    _write_builtin(builtin)
+    old = time.time() - 100 * 86400
+    os.utime(builtin, (old, old))
+    monkeypatch.setattr(us_financial.requests, "get", _reject_live)
+
+    fetcher = us_financial.USFinancialFetcher()
+    with caplog.at_level("WARNING", logger=us_financial.logger.name):
+        fetcher.fetch_russell1000_constituents()
+    assert any("内置快照已" in r.message and "未更新" in r.message
+               for r in caplog.records)
+
+
+def test_recent_builtin_snapshot_does_not_warn(env, monkeypatch, caplog):
+    cache_dir, _ = env
+    _write_cache(cache_dir / "russell1000_tickers.json", age_days=1)
+    monkeypatch.setattr(us_financial.requests, "get", _reject_live)
+
+    fetcher = us_financial.USFinancialFetcher()
+    with caplog.at_level("WARNING", logger=us_financial.logger.name):
+        fetcher.fetch_russell1000_constituents()
+    assert not any("内置快照" in r.message for r in caplog.records)

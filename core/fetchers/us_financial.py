@@ -360,6 +360,7 @@ class USFinancialFetcher(BaseFetcher):
         Returns:
             ticker 字符串列表，如 ["AAPL", "MSFT", ...]
         """
+        self._warn_builtin_snapshot_stale()
         cache_file = CACHE_DIR / "russell1000_tickers.json"
         if self._load_cache(cache_file):
             tickers = self._load_russell1000_cache(cache_file)
@@ -499,6 +500,27 @@ class USFinancialFetcher(BaseFetcher):
     def _load_russell1000_builtin(cls) -> list[str]:
         """加载内置策展快照（与缓存同一格式与下限校验）。"""
         return cls._load_russell1000_cache(RUSSELL1000_BUILTIN_PATH)
+
+    # 内置快照超期提醒阈值（天）：Russell 每年 6 月重构、季度 IPO 增补，
+    # 超过一季度未人工更新即提醒（不论本次走的是 live/缓存哪条路径，
+    # 因为快照是最终兜底，平时不被察觉地过期正是 2026-10-20 事故的放大器）
+    BUILTIN_SNAPSHOT_WARN_DAYS = 90
+
+    def _warn_builtin_snapshot_stale(self) -> None:
+        try:
+            age = self._cache_age_days(RUSSELL1000_BUILTIN_PATH)
+        except OSError:
+            logger.warning(
+                "Russell 1000 内置快照缺失：%s 不存在，最后一道兜底不可用",
+                RUSSELL1000_BUILTIN_PATH,
+            )
+            return
+        if age > self.BUILTIN_SNAPSHOT_WARN_DAYS:
+            logger.warning(
+                "Russell 1000 内置快照已 %.0f 天未更新（每年 6 月重构、季度 "
+                "IPO 增补后需人工维护 data/russell1000_tickers.json）",
+                age,
+            )
 
     @staticmethod
     def _validate_russell1000_live(
