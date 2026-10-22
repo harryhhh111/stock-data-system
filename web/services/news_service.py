@@ -140,8 +140,22 @@ def _bj_day(row: dict) -> date | None:
 
 
 def _within_24h(row: dict, now: datetime) -> bool:
-    ref = row["published_at"] or row["first_observed_at"]
-    return ref is not None and ref >= now - timedelta(hours=24)
+    """置顶「近 24h」的口径按发布时间，不回退首次发现时间：
+    - 秒/分精度：published_at 在近 24h 内；
+    - 仅日期精度（published_at NULL）：按北京日期为今天或昨天
+      （一天精度的「近 24h」合理解释，保持「仅日期」标注）；
+    - 完全未知时间：永不进置顶。
+    回补条目（历史发布、近日首次发现）不得冒充新发生（需求 §3.1）。"""
+    if row["published_at"] is not None:
+        return row["published_at"] >= now - timedelta(hours=24)
+    if row["published_at_precision"] == "day" and row["source_published_raw"]:
+        try:
+            d = date.fromisoformat(row["source_published_raw"][:10])
+        except ValueError:
+            return False
+        today_bj = now.astimezone(BJ).date()
+        return d in (today_bj, today_bj - timedelta(days=1))
+    return False
 
 
 # ── 媒体来源状态（并入既有五态语义）─────────────────────────

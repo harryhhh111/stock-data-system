@@ -312,3 +312,46 @@ class TestFeed:
         assert data["official"][0]["title"] == "8-K 当前报告"
         assert len(data["media_groups"]) == 1
         assert data["media_groups"][0]["fold_count"] == 2
+
+    def test_pinned_day_precision_and_unknown(self, env, client):
+        """置顶时间口径：仅日期按北京日期（今天/昨天可进，不回退发现时间）；
+        旧回补条目不冒充新发生；unknown 永不进置顶。"""
+        dsn = env
+        seed_company(dsn, "NBIS", "0001713445")
+        ir = seed_source(dsn, "ir", "0001713445", "nebius_newsroom")
+        now = datetime.now(UTC)
+        today_bj = now.astimezone(BJ).date()
+        yesterday_bj = today_bj - timedelta(days=1)
+        # 生产故障复刻：8 月的仅日期 IR 公告、昨天回补首次发现 → 不进置顶
+        seed_item(dsn, ir, "old-backfill", "NBIS", title="August IR item",
+                  kind_form="press_release", published_at=None,
+                  precision="day", raw="2026-08-15",
+                  first_observed=now - timedelta(hours=3))
+        # 仅日期但日期为今天（北京）→ 进置顶，保持仅日期标注
+        seed_item(dsn, ir, "today-day", "NBIS", title="Today IR item",
+                  kind_form="press_release", published_at=None,
+                  precision="day", raw=today_bj.isoformat())
+        # 仅日期昨天（北京）→ 进置顶
+        seed_item(dsn, ir, "yday-day", "NBIS", title="Yesterday IR item",
+                  kind_form="press_release", published_at=None,
+                  precision="day", raw=yesterday_bj.isoformat())
+        # 仅日期前天 → 不进
+        seed_item(dsn, ir, "dbd-day", "NBIS", title="Day before yesterday",
+                  kind_form="press_release", published_at=None,
+                  precision="day",
+                  raw=(today_bj - timedelta(days=2)).isoformat())
+        # 未知时间、刚发现 → 永不进置顶
+        seed_item(dsn, ir, "unk", "NBIS", title="Unknown time item",
+                  kind_form="press_release", published_at=None,
+                  precision="unknown", raw="",
+                  first_observed=now - timedelta(minutes=30))
+        data = client.get("/api/v1/watchlist/news/pinned").json()["data"]
+        titles = [e["title"] for e in data["official"]]
+        assert "Today IR item" in titles
+        assert "Yesterday IR item" in titles
+        assert "August IR item" not in titles        # 回补不冒充新发生
+        assert "Day before yesterday" not in titles
+        assert "Unknown time item" not in titles
+        today_entry = next(e for e in data["official"]
+                           if e["title"] == "Today IR item")
+        assert today_entry["date_only"] is True      # 保持「仅日期」标注
