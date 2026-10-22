@@ -701,6 +701,19 @@ def _write_phase_c_summary(summary: dict) -> Path:
         f"- 新 filing 滚动队列: {summary.get('compare', {}).get('rolling_queue', 'n/a')}",
         f"- 零写入护栏: {summary['zero_write']}",
     ]
+    if summary.get("auto_registry"):
+        auto = summary["auto_registry"]
+        lines += [
+            "",
+            "## 自动登记（US_UNIVERSE_REGISTRY_AUTOMATION_PLAN）",
+            "",
+            f"- index-only 自动登记 {len(auto['index_only_registered'])} 条: "
+            f"{auto['index_only_registered']}",
+            f"- index-only 未通过（维持阻塞/人工待办）{len(auto['index_only_failed'])} 条: "
+            f"{auto['index_only_failed']}",
+            f"- supplement 自动纳入 {len(auto['supplement_registered'])} 条: "
+            f"{auto['supplement_registered']}",
+        ]
     (run_dir / "summary.md").write_text("\n".join(lines) + "\n")
     return run_dir
 
@@ -766,6 +779,33 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         set(reconciliation["universe_not_in_sync_scope"])
         - set(classification["expected_skip"]))
     summary["uncovered_universe"] = uncovered_universe
+
+    # ── 自动验证登记（US_UNIVERSE_REGISTRY_AUTOMATION_PLAN.md）──
+    # 对账之后、阻断判定之前：能自动验证为真实主体的登记进台账并放行；
+    # 未通过的维持阻塞进人工待办。只写 CSV，不自动 git commit。
+    if unregistered_index_only or uncovered_universe:
+        from core.us_universe_registry import auto_verify_and_register
+        auto = auto_verify_and_register(
+            unregistered_index_only, uncovered_universe,
+            index_only_csv=_PHASE_C_INDEX_ONLY_CSV,
+            supplement_csv=_PHASE_C_SUPPLEMENT_CSV)
+        summary["auto_registry"] = {
+            "index_only_registered": auto["index_only_registered"],
+            "index_only_failed": auto["index_only_failed"],
+            "supplement_registered": auto["supplement_registered"],
+        }
+        unregistered_index_only = sorted(
+            set(unregistered_index_only) - set(auto["index_only_registered"]))
+        uncovered_universe = sorted(
+            set(uncovered_universe) - set(auto["supplement_registered"]))
+        # 自动登记后刷新摘要中的阻塞清单（ supplement 条目下轮进入 scope ）
+        summary["unregistered_index_only"] = unregistered_index_only
+        summary["uncovered_universe"] = uncovered_universe
+        logger.info(
+            "自动登记: index-only 通过 %d 未通过 %d; supplement 纳入 %d",
+            len(auto["index_only_registered"]), len(auto["index_only_failed"]),
+            len(auto["supplement_registered"]),
+        )
 
     blocking_reasons = []
     if classification["blocking_failure"]:

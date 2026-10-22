@@ -517,7 +517,11 @@ class TestSupplementScopeMerge:
         assert out["expected_skip_in_universe"] == ["GFS"]
 
     def test_uncovered_universe_blocks(self, monkeypatch, tmp_path):
-        """C2 §4.1.5 旁证:universe 股票既不在 scope 又非 expected_skip → 阻断。"""
+        """C2 §4.1.5 旁证:universe 股票既不在 scope 又非 expected_skip → 阻断。
+
+        自动登记（US_UNIVERSE_REGISTRY_AUTOMATION_PLAN）默认会尝试放行；
+        本测试把自动化 mock 为全部未通过，验证未通过项维持阻断。
+        """
         calls = _orch_mocks(monkeypatch, tmp_path, {
             "success": 20, "failed": 0, "skipped": 982, "no_write": [],
             "errors": [], "index_tickers": {"A"},
@@ -527,9 +531,55 @@ class TestSupplementScopeMerge:
             "out_of_sync_scope": ["NEWSTOCK"], "index_only_tickers": ["Z9"],
             "universe_not_in_sync_scope": ["NEWSTOCK"], "expected_skip_in_universe": [],
         })
+        import core.us_universe_registry as reg_mod
+        monkeypatch.setattr(reg_mod, "auto_verify_and_register",
+                            lambda *a, **kw: {"index_only_registered": [],
+                                              "index_only_failed": [],
+                                              "supplement_registered": []})
         with pytest.raises(RuntimeError, match="未分类 universe"):
             sched._run_us_financial_orchestration(0.0)
         assert calls == []
+
+    def test_auto_registration_lifts_blocking(self, monkeypatch, tmp_path):
+        """自动验证通过的 index-only / 未分类 universe 解除阻断并写台账。
+
+        台账写入 tmp_path 副本，不碰仓库内真实 CSV。
+        """
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 982, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+        })
+        monkeypatch.setattr(sched, "_load_index_only_registry", lambda: set())
+        monkeypatch.setattr(sched, "_reconcile_us_universe", lambda scope, idx, es, raw_index_tickers=None, resolved_map=None: {
+            "universe_count": 1003, "index_ticker_count": 1000, "scope_ticker_count": 1032,
+            "out_of_sync_scope": ["NEWSTOCK"], "index_only_tickers": ["Z9"],
+            "universe_not_in_sync_scope": ["NEWSTOCK"], "expected_skip_in_universe": [],
+        })
+        # 身份解析：Z9 → CIK 无冲突；companyfacts 200
+        import core.us_universe_registry as reg_mod
+        from core.us_security_identity import SymbolRow
+        from core import sec_client
+        monkeypatch.setattr(reg_mod, "_load_identity", lambda: (
+            [SymbolRow("Z9", "Z9", "0007777777", "current")], {}))
+
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(sec_client, "get", lambda url, **kw: Resp())
+        monkeypatch.setattr(sched, "_PHASE_C_INDEX_ONLY_CSV",
+                            tmp_path / "index_only.csv")
+        monkeypatch.setattr(sched, "_PHASE_C_SUPPLEMENT_CSV",
+                            tmp_path / "supplement.csv")
+        result = sched._run_us_financial_orchestration(0.0)
+        assert calls == ["projection", "validate"]  # 阻断解除，流程走完
+        import csv as _csv
+        with open(tmp_path / "index_only.csv", newline="") as f:
+            rows = list(_csv.DictReader(f))
+        assert [r["stock_code"] for r in rows] == ["Z9"]
+        assert rows[0]["registered_by"] == "auto"
+        with open(tmp_path / "supplement.csv", newline="") as f:
+            srows = list(_csv.DictReader(f))
+        assert [r["stock_code"] for r in srows] == ["NEWSTOCK"]
+        assert srows[0]["registered_by"] == "auto"
 
 
 class TestSupplementSkipKindPrecision:
