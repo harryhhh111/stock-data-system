@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from web import ok
 from web.services import announcements_service as announcements
+from web.services import news_service as news
 from web.services import watchlist_service as service
 from web.services.research_reader import ResearchReadError
 
@@ -171,6 +172,18 @@ def announcement_detail(item_id: int, days: int = 90, offset: int = 0,
                         limit: int = 20, source: str = 'all'):
     """关注股公告详情分页（只读；按 market+stock_code 查询，删除重关注仍可见）。"""
     return call(announcements.detail, item_id, days, offset, limit, source)
+
+
+@router.get('/watchlist/news/feed')
+def news_feed(date: str | None = None, stock: str = '', kind: str = 'all'):
+    """每日资讯信息流（北京时间自然日，折叠后返回；只读只查库）。"""
+    return call(news.feed, date, stock, kind)
+
+
+@router.get('/watchlist/news/pinned')
+def news_pinned():
+    """每日资讯置顶区：近 24h 官方披露 + 折叠后来源数 ≥2 的媒体组。"""
+    return call(news.pinned)
 
 
 @router.post('/watchlist/suggest', dependencies=[Depends(require_admin)])

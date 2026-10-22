@@ -106,6 +106,15 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement (
     revision            INTEGER NOT NULL DEFAULT 1,
     -- 历史回补条目标记，避免被误认为刚发生的事件
     is_backfill         BOOLEAN NOT NULL DEFAULT false,
+    -- 内容性质（报道/评论/传闻区分；新闻阶段加列）：v1 媒体条目一律
+    -- 'unclassified'，UI 显示「内容性质未分类」，不伪造为「报道」；
+    -- 官方披露行不受此列约束（NULL）
+    content_nature      TEXT,
+    -- 关联理由（新闻阶段加列）：机器可核对，如 'ticker 直连：Finnhub symbol MU'
+    -- 行业主题层扩展时同列承载主题关联依据
+    relation_reason     TEXT,
+    -- 媒体名（Reuters/Yahoo/…，媒体条目；官方披露为 NULL，来源名取注册表）
+    media_source        TEXT,
 
     UNIQUE (source_id, source_record_id, revision)
 );
@@ -220,6 +229,8 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement_run (
     error_detail        TEXT,
     -- 本轮使用的解析器版本
     parser_version      INTEGER,
+    -- 过滤丢弃计数（媒体源相关率过滤）；可见、不静默
+    dropped_count       INTEGER,
     -- 触发入口，开放 text：'scheduled' | 'manual' | 'recovery'
     trigger_kind        TEXT
 );
@@ -251,3 +262,12 @@ CREATE TABLE IF NOT EXISTS watchlist_announcement_recovery (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (market, issuer_identifier, source_id)
 );
+
+-- ============================================================
+-- 每日资讯 MVP（公司新闻层）加列：媒体来源查询配置（JSON：公司名/别名
+-- 查询词、symbol 等）；公告内容性质与关联理由；运行记录丢弃计数
+ALTER TABLE watchlist_announcement_source ADD COLUMN IF NOT EXISTS query_config TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS content_nature TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS relation_reason TEXT;
+ALTER TABLE watchlist_announcement ADD COLUMN IF NOT EXISTS media_source TEXT;
+ALTER TABLE watchlist_announcement_run ADD COLUMN IF NOT EXISTS dropped_count INTEGER;

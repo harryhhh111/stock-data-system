@@ -40,10 +40,12 @@
 
 - `watchlist_announcement_source` — 受控来源注册表。`source_id` 主键；
   `(market, source_kind, issuer_identifier, entry_url)` 唯一。`source_kind`
-  开放取值（`sec`/`ir`/未来媒体源）；`issuer_identifier` 为
+  开放取值（`sec`/`ir`/`media`）；`issuer_identifier` 为
   `NOT NULL DEFAULT ''`，非发行人绑定来源用空字符串占位（NULL 会破坏唯一约束
   去重语义）。`platform`（开放 text）标识平台/站点结构（如 `nebius_newsroom`、
-  `q4_press_release`）：适配器按平台实现，新增公司只需新增注册行。
+  `q4_press_release`、`google_news_rss`、`finnhub`）：适配器按平台实现，
+  新增公司只需新增注册行。`query_config`（JSON 文本）承载来源查询配置
+  （媒体源公司名/别名查询词、symbol 等）。
   含允许域名、固定入口 `entry_url`、来源时区、`parser_version`、
   单源覆盖间隔 `interval_minutes`（NULL 用配置默认）、`enabled` 与生命周期状态
   `source_status`（默认 `pending_verification`）及 `status_reason`。
@@ -57,6 +59,11 @@
   "仅日期"；`source_published_raw`/`source_timezone` 原样保留来源时间；
   `first_observed_at` 是系统实际首次发现时间，回补不倒填；`content_hash` +
   `excerpt` 做变更检测与短摘录，不存完整受版权保护网页；`is_backfill` 标记回补条目。
+  `content_nature`（报道/评论/传闻）v1 媒体条目一律 `'unclassified'`，UI 显示
+  「内容性质未分类」，官方披露行不受约束；`relation_reason` 写机器可核对的关联
+  理由（如 `ticker 直连：Finnhub symbol MU`），行业主题层同列扩展。
+  运行记录 `watchlist_announcement_run` 另有 `dropped_count`：媒体过滤丢弃计数
+  （可见、不静默）。
 - `watchlist_announcement_security` — 公告—证券关联（一对多）。同一公告
   （同一 `source_record_id`）可关联多个证券代码；主键
   `(announcement_id, stock_code)`，重复抓取 `ON CONFLICT DO NOTHING` 不产生重复

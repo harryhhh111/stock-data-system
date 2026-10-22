@@ -4,11 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils/cn";
 import { useUiStore } from "@/lib/store/ui-store";
 import { hyperliquidPairsApi } from "@/lib/api/client";
-import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, Wallet, Target, Milestone, ChevronsLeft, ChevronsRight, ChevronDown, Flame } from "lucide-react";
+import { LayoutDashboard, RefreshCw, ShieldCheck, BarChart3, LineChart, TrendingUp, Wallet, Target, Milestone, ChevronsLeft, ChevronsRight, ChevronDown, Flame, Newspaper } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const nav = [
   { to: "/watchlist", label: "关注股", icon: Target },
+  { to: "/news", label: "每日资讯", icon: Newspaper },
   { to: "/screener", label: "选股筛选", icon: BarChart3 },
   { to: "/strategy/fcf-roe", label: "FCF+ROE 价值", icon: Target },
   { to: "/backtest", label: "策略回测", icon: TrendingUp },

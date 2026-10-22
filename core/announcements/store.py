@@ -50,8 +50,10 @@ def ensure_ir_source(conn, *, issuer: str, platform: str, allowed_domain: str,
                      entry_url: str, source_timezone: str,
                      parser_version: int, interval_minutes: int | None,
                      enabled: bool, source_status: str,
-                     status_reason: str | None) -> int:
-    """注册（或复用）IR 来源行，返回 source_id。
+                     status_reason: str | None,
+                     source_kind: str = "ir",
+                     query_config: str | None = None) -> int:
+    """注册（或复用）IR/媒体来源行，返回 source_id。
 
     只在来源不存在时按 seed 初始状态插入；已存在的行不覆盖
     enabled/source_status/interval_minutes（运营/部署阶段的显式调整优先）。
@@ -62,39 +64,40 @@ def ensure_ir_source(conn, *, issuer: str, platform: str, allowed_domain: str,
             INSERT INTO watchlist_announcement_source
                 (market, source_kind, platform, issuer_identifier, allowed_domain,
                  entry_url, source_timezone, parser_version, interval_minutes,
-                 enabled, source_status, status_reason)
-            VALUES ('US', 'ir', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 enabled, source_status, status_reason, query_config)
+            VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (market, source_kind, issuer_identifier, entry_url)
             DO NOTHING
             """,
-            (platform, issuer, allowed_domain, entry_url, source_timezone,
-             parser_version, interval_minutes, enabled, source_status,
-             status_reason),
+            (source_kind, platform, issuer, allowed_domain, entry_url,
+             source_timezone, parser_version, interval_minutes, enabled,
+             source_status, status_reason, query_config),
         )
         cur.execute(
             """
             SELECT source_id FROM watchlist_announcement_source
-            WHERE market = 'US' AND source_kind = 'ir' AND issuer_identifier = %s
+            WHERE market = 'US' AND source_kind = %s AND issuer_identifier = %s
               AND entry_url = %s
             """,
-            (issuer, entry_url),
+            (source_kind, issuer, entry_url),
         )
         row = cur.fetchone()
     if row is None:
-        raise RuntimeError(f"IR 来源注册失败: {issuer} {entry_url}")
+        raise RuntimeError(f"{source_kind} 来源注册失败: {issuer} {entry_url}")
     return int(row[0])
 
 
 def load_ir_sources(conn) -> list[dict]:
-    """读取全部 IR 来源注册行（含受阻/待验证，用于整轮摘要展示）。"""
+    """读取全部 IR/媒体来源注册行（含受阻/待验证，用于整轮摘要展示）。"""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT source_id, platform, issuer_identifier, allowed_domain,
-                   entry_url, source_timezone, parser_version, interval_minutes,
-                   enabled, source_status, status_reason
+            SELECT source_id, source_kind, platform, issuer_identifier,
+                   allowed_domain, entry_url, source_timezone, parser_version,
+                   interval_minutes, enabled, source_status, status_reason,
+                   query_config
             FROM watchlist_announcement_source
-            WHERE market = 'US' AND source_kind = 'ir'
+            WHERE market = 'US' AND source_kind IN ('ir', 'media')
             ORDER BY source_id
             """
         )
@@ -238,6 +241,9 @@ class AnnouncementRecord:
     source_timezone: str         # 来源时区（IANA 名或 UTC）
     content_hash: str            # 变更检测
     excerpt: str | None = None
+    content_nature: str | None = None   # 媒体条目 v1 一律 'unclassified'
+    relation_reason: str | None = None  # 机器可核对的关联理由
+    media_source: str | None = None     # 媒体名（Reuters/Yahoo/…）
 
 
 def upsert_announcement(conn, *, source_id: int, issuer: str,
@@ -277,9 +283,10 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                     (market, issuer_identifier, source_id, source_record_id, title,
                      form_type, original_url, published_at, published_at_precision,
                      source_published_raw, source_timezone, first_observed_at,
-                     last_seen_at, content_hash, excerpt, revision, is_backfill)
-                VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s)
+                     last_seen_at, content_hash, excerpt, content_nature,
+                     relation_reason, media_source, revision, is_backfill)
+                VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (source_id, source_record_id, revision) DO NOTHING
                 RETURNING id
                 """,
@@ -287,7 +294,9 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                  record.form_type, record.url, record.published_at,
                  record.published_precision, record.published_raw,
                  record.source_timezone, observed_at, observed_at,
-                 record.content_hash, record.excerpt, revision, is_backfill),
+                 record.content_hash, record.excerpt, record.content_nature,
+                 record.relation_reason, record.media_source,
+                 revision, is_backfill),
             )
             outcome = "inserted" if revision == 1 else "revised"
 
@@ -455,19 +464,22 @@ def append_covered_ranges(conn, issuer: str, source_id: int, *,
 def insert_run(conn, *, task_id, issuer: str = "", source_id=None,
                started_at: datetime, finished_at: datetime | None = None,
                status: str, fetched=None, inserted=None, revised=None,
+               dropped=None,
                error_class=None, error_detail=None, parser_version=None,
                trigger_kind="scheduled") -> None:
-    """按来源粒度记录一轮运行；失败/skipped 时数量保持 NULL（不伪造为 0）。"""
+    """按来源粒度记录一轮运行；失败/skipped 时数量保持 NULL（不伪造为 0）。
+    dropped：媒体源过滤丢弃计数（可见、不静默），无过滤语义的来源为 NULL。"""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO watchlist_announcement_run
                 (task_id, market, issuer_identifier, source_id, started_at,
                  finished_at, status, fetched_count, inserted_count, revised_count,
-                 error_class, error_detail, parser_version, trigger_kind)
-            VALUES (%s, 'US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 dropped_count, error_class, error_detail, parser_version,
+                 trigger_kind)
+            VALUES (%s, 'US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (str(task_id), issuer, source_id, started_at, finished_at, status,
-             fetched, inserted, revised, error_class, error_detail,
+             fetched, inserted, revised, dropped, error_class, error_detail,
              parser_version, trigger_kind),
         )

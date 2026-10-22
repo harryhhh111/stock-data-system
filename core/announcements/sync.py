@@ -855,6 +855,130 @@ def _sync_ir_source(
     }
 
 
+# ── 单来源同步（媒体：Google News RSS / Finnhub）─────────────
+
+def _sync_media_source(
+    conn, *, source: dict, stock_codes: list[str],
+    state: dict | None, target: datetime, slot: datetime,
+    interval_minutes: int, task_id: uuid.UUID, trigger: str,
+) -> dict:
+    """同步一个媒体来源。返回结果摘要（不抛采集异常）。
+
+    媒体语义无 90 天回补完整性（RSS 100 条上限/7~10 天回溯、Finnhub
+    from=当日−1 天，来源本身不支持历史枚举）：每轮快照落库 + 幂等去重，
+    成功推进 checked_through=当前；失败退避。首接的历史条目（发布时间
+    早于北京时间今日）标 is_backfill，不冒充新发生。
+    """
+    from zoneinfo import ZoneInfo
+
+    from core.announcements import media_source
+
+    source_id = source["source_id"]
+    issuer = source["issuer_identifier"]
+    started_at = datetime.now(timezone.utc)
+    next_due_at = slot + timedelta(minutes=interval_minutes)
+    fetched = inserted = revised = 0
+    dropped = None
+    attempt_status = "failed"
+    error_class = None
+    error_detail = None
+    try:
+        match_terms = media_source.match_terms_for(source)
+        items = media_source.fetch_and_parse(source, today=target.date())
+        fetched = len(items)
+        kept, dropped_items = [], 0
+        for it in items:
+            if media_source.matches_company(it.title, it.summary, match_terms):
+                kept.append(it)
+            else:
+                dropped_items += 1
+        dropped = dropped_items
+
+        first_run = state is None or state["last_success_at"] is None
+        today_bj = target.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        observed_at = datetime.now(timezone.utc)
+        for it in kept:
+            item_date = (it.published_at.astimezone(
+                ZoneInfo("Asia/Shanghai")).date()
+                if it.published_at is not None else None)
+            outcome = store.upsert_announcement(
+                conn, source_id=source_id, issuer=issuer,
+                stock_codes=stock_codes,
+                record=store.AnnouncementRecord(
+                    source_record_id=it.source_record_id,
+                    form_type="news", title=it.title, url=it.url,
+                    published_at=it.published_at,
+                    published_precision=it.precision,
+                    published_raw=it.published_raw,
+                    source_timezone=source["source_timezone"] or "UTC",
+                    content_hash=it.content_hash,
+                    excerpt=it.summary or None,
+                    content_nature="unclassified",
+                    relation_reason=media_source.relation_reason_for(source),
+                    media_source=it.source_name or None),
+                is_backfill=bool(first_run and item_date is not None
+                                 and item_date < today_bj),
+                observed_at=observed_at)
+            if outcome == "inserted":
+                inserted += 1
+            elif outcome == "revised":
+                revised += 1
+
+        finished_at = datetime.now(timezone.utc)
+        attempt_status = "success_new" if (inserted or revised) else "success_empty"
+        store.upsert_check_state_success(
+            conn, issuer, source_id, interval_minutes=interval_minutes,
+            attempt_at=started_at, status=attempt_status,
+            next_due_at=next_due_at, checked_through=target,
+            covered_add=(datetime.combine(target.date(), datetime.min.time(),
+                                          tzinfo=timezone.utc), target))
+        store.insert_run(
+            conn, task_id=task_id, issuer=issuer, source_id=source_id,
+            started_at=started_at, finished_at=finished_at,
+            status=attempt_status, fetched=fetched, inserted=inserted,
+            revised=revised, dropped=dropped,
+            parser_version=media_source.MEDIA_PARSER_VERSION,
+            trigger_kind=trigger)
+    except Exception as exc:
+        if isinstance(exc, ir_source.IrFetchError):
+            error_class = exc.error_class
+        else:
+            error_class = _error_class(exc)
+        error_detail = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception("媒体资讯采集失败 %s/%s", issuer, source["platform"])
+        finished_at = datetime.now(timezone.utc)
+        conn.rollback()
+        try:
+            failures = _consecutive_failures(conn, source_id)
+        except Exception:
+            failures = 0
+        backoff = min(2 ** failures, 8)
+        try:
+            store.upsert_check_state_attempt(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                attempt_at=started_at, status="failed",
+                next_due_at=slot + timedelta(minutes=interval_minutes * backoff),
+                error_class=error_class)
+            store.insert_run(
+                conn, task_id=task_id, issuer=issuer, source_id=source_id,
+                started_at=started_at, finished_at=finished_at, status="failed",
+                fetched=None, inserted=None, revised=None, dropped=None,
+                error_class=error_class, error_detail=error_detail,
+                parser_version=media_source.MEDIA_PARSER_VERSION,
+                trigger_kind=trigger)
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "cik": issuer, "stock_codes": stock_codes, "status": attempt_status,
+        "fetched": fetched, "inserted": inserted, "revised": revised,
+        "dropped": dropped,
+        "error_class": error_class, "error_detail": error_detail,
+        "backfill": False, "platform": source["platform"],
+    }
+
+
 # ── 整轮编排 ───────────────────────────────────────────────
 
 def _load_watchlist_ciks(conn) -> tuple[list[tuple[str, str]], list[str]]:
@@ -997,25 +1121,24 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
                 enabled=False, source_status=seed["initial_status"],
                 status_reason=seed["initial_reason"])
         conn.commit()
-        ir_all = store.load_ir_sources(conn)
+        ir_all = store.load_ir_sources(conn)  # source_kind IN ('ir','media')
         watched_issuers = set(code_to_cik.values()) | set(code_to_cik)
-        # 取消关注停止主动轮询；受阻/未启用来源不抓取、不计入成功率分母，
-        # 在摘要中单独列出状态与原因（不用空列表掩盖）
         # 取消关注停止主动轮询；只有 enabled 且 source_status='enabled' 的
         # 来源才抓取——blocked/pending_verification 即使 enabled=true 也零
         # 请求，且列入 ir_inactive（状态与原因可见，不进成功率分母）
         def _ir_active(s) -> bool:
             return bool(s["enabled"]) and s["source_status"] == "enabled"
 
+        ir_rows = [s for s in ir_all if s["source_kind"] == "ir"]
         ir_inactive = [
             {"source_id": s["source_id"], "issuer": s["issuer_identifier"],
              "platform": s["platform"], "status": s["source_status"],
              "reason": s["status_reason"]}
-            for s in ir_all
+            for s in ir_rows
             if s["issuer_identifier"] in watched_issuers and not _ir_active(s)
         ]
         ir_candidates = []
-        for s in ir_all:
+        for s in ir_rows:
             if not _ir_active(s):
                 continue
             codes = ([c for c, cik in code_to_cik.items()
@@ -1039,6 +1162,59 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
             })
         ir_candidates.sort(key=lambda c: (c["last_attempt"] is not None,
                                           c["last_attempt"]))
+
+        # ── 媒体来源（每日资讯公司新闻层）：每股 Google News RSS + Finnhub ──
+        # 注册行默认 enabled=false/pending_verification（真实启用属部署片）；
+        # 不占 SEC gate，每源每轮一次请求，无重试循环
+        from core.announcements import media_source
+        media_interval_default = config.announcements.validated_media_interval()
+        for code in (c for c in code_to_cik if c in media_source.MEDIA_SEEDS):
+            for spec in media_source.media_source_specs(code):
+                store.ensure_ir_source(
+                    conn, issuer=code_to_cik[code], platform=spec["platform"],
+                    allowed_domain=spec["allowed_domain"],
+                    entry_url=spec["entry_url"],
+                    source_timezone=spec["source_timezone"],
+                    parser_version=media_source.MEDIA_PARSER_VERSION,
+                    interval_minutes=None, enabled=False,
+                    source_status="pending_verification",
+                    status_reason="媒体来源，部署片验证后逐源启用",
+                    source_kind="media", query_config=spec["query_config"])
+        conn.commit()
+        media_rows = [s for s in store.load_ir_sources(conn)
+                      if s["source_kind"] == "media"]
+        media_inactive = [
+            {"source_id": s["source_id"], "issuer": s["issuer_identifier"],
+             "platform": s["platform"], "status": s["source_status"],
+             "reason": s["status_reason"]}
+            for s in media_rows
+            if s["issuer_identifier"] in watched_issuers and not _ir_active(s)
+        ]
+        media_candidates = []
+        for s in media_rows:
+            if not _ir_active(s):
+                continue
+            codes = ([c for c, cik in code_to_cik.items()
+                      if cik == s["issuer_identifier"]]
+                     or ([s["issuer_identifier"]]
+                         if s["issuer_identifier"] in code_to_cik else []))
+            if not codes:
+                continue
+            if stock_filter and stock_filter.strip().upper() not in codes:
+                continue
+            state = store.load_check_state(
+                conn, s["issuer_identifier"], s["source_id"])
+            interval = s["interval_minutes"] or media_interval_default
+            if due_only and state is not None and state["next_due_at"] is not None \
+                    and state["next_due_at"] > now:
+                continue
+            media_candidates.append({
+                "source": s, "stock_codes": sorted(codes), "state": state,
+                "interval_minutes": interval,
+                "last_attempt": (state or {}).get("last_attempt_at"),
+            })
+        media_candidates.sort(key=lambda c: (c["last_attempt"] is not None,
+                                             c["last_attempt"]))
 
         budget_exhausted = False
         lock_lost = False
@@ -1110,6 +1286,37 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
                 break
             results.append(result)
 
+        # ── 媒体来源处理（同一持锁会话，同一提交节奏）──
+        for cand in media_candidates:
+            if time.monotonic() >= deadline:
+                budget_exhausted = True
+                logger.warning("整轮预算耗尽，剩余媒体来源下轮处理")
+                break
+            try:
+                lock.check_alive()
+            except psycopg2.Error:
+                logger.error("持锁会话失效，中止本轮剩余来源（不重连沿用旧许可）")
+                lock_lost = True
+                break
+            try:
+                result = _sync_media_source(
+                    conn, source=cand["source"],
+                    stock_codes=cand["stock_codes"], state=cand["state"],
+                    target=now, slot=slot,
+                    interval_minutes=cand["interval_minutes"],
+                    task_id=task_id, trigger=trigger)
+            except psycopg2.Error:
+                logger.error("持锁会话失效，中止本轮剩余来源", exc_info=True)
+                lock_lost = True
+                break
+            try:
+                conn.commit()
+            except psycopg2.Error:
+                logger.error("提交失败（持锁会话失效？），中止本轮", exc_info=True)
+                lock_lost = True
+                break
+            results.append(result)
+
         # 整轮状态汇总：全部成功 / 部分成功 / 全部失败 / 预算耗尽 / 锁会话失效
         # （skipped_running 在上方提前返回；采集失败或协调失败不得汇总成成功）
         statuses = [r["status"] for r in results]
@@ -1134,6 +1341,8 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
             "processed": len(results),
             # 受阻/待验证 IR 来源：一等状态，不进成功率分母，原因可见
             "ir_inactive": ir_inactive,
+            # 媒体来源（每日资讯公司新闻层）同语义
+            "media_inactive": media_inactive,
             "sources": results,
         }
         logger.info("公告采集整轮完成: %s", json.dumps(

@@ -98,11 +98,15 @@ def _validate_url(url: str, allowed_domain: str) -> None:
 
 
 def http_get(url: str, *, allowed_domain: str, timeout: float = LISTING_TIMEOUT,
-             max_bytes: int = MAX_LISTING_BYTES, max_redirects: int = 3) -> bytes:
+             max_bytes: int = MAX_LISTING_BYTES, max_redirects: int = 3,
+             extra_headers: dict | None = None) -> bytes:
     """单次尝试 GET：超时、体积上限、重定向逐跳校验；不做自动重试
-    （退避由 next_due 推进承担，避免失败时紧密重跑）。"""
+    （退避由 next_due 推进承担，避免失败时紧密重跑）。
+    extra_headers：如 Finnhub token 头（凭据走 header，不进 URL/日志）。"""
     import requests
 
+    headers = {"User-Agent": IR_USER_AGENT, "Accept": "*/*"}
+    headers.update(extra_headers or {})
     current = url
     for _hop in range(max_redirects + 1):
         _validate_url(current, allowed_domain)
@@ -120,7 +124,7 @@ def http_get(url: str, *, allowed_domain: str, timeout: float = LISTING_TIMEOUT,
         try:
             with requests.get(
                 current,
-                headers={"User-Agent": IR_USER_AGENT, "Accept": "*/*"},
+                headers=headers,
                 timeout=timeout, allow_redirects=False, stream=True,
             ) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):

@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/app-layout";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { WatchlistPage } from "@/pages/watchlist-page";
+import { NewsPage } from "@/pages/news-page";
 import { SyncPage } from "@/pages/sync-page";
 import { QualityPage } from "@/pages/quality-page";
 import { ScreenerPage } from "@/pages/screener-page";
@@ -35,6 +36,7 @@ export default function App() {
       <Route path="/" element={<AppLayout />}>
         <Route index element={<Navigate to="/watchlist" replace />} />
         <Route path="watchlist" element={<WatchlistPage />} />
+        <Route path="news" element={<NewsPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="sync" element={<SyncPage />} />
         <Route path="quality" element={<QualityPage />} />

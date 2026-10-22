@@ -84,7 +84,9 @@ _LOGICAL_SQL = """
     SELECT sec.stock_code, a.id, a.source_id, a.source_record_id, a.revision,
            a.title, a.form_type, a.original_url, a.published_at,
            a.published_at_precision, a.source_published_raw, a.source_timezone,
-           a.first_observed_at, a.is_backfill, s.source_kind
+           a.first_observed_at, a.is_backfill, a.content_nature,
+           a.relation_reason, a.media_source, a.excerpt, s.source_kind,
+           s.platform
     FROM watchlist_announcement_security sec
     JOIN watchlist_announcement anchor ON anchor.id = sec.announcement_id
     JOIN watchlist_announcement a
@@ -148,6 +150,12 @@ def _public_item(row: dict) -> dict:
         "first_observed_at": _iso(row["first_observed_at"]),
         "revision": row["revision"],
         "is_backfill": row["is_backfill"],
+        "stock_code": row.get("stock_code"),
+        "content_nature": row.get("content_nature"),
+        "relation_reason": row.get("relation_reason"),
+        "media_source": row.get("media_source"),
+        "excerpt": row.get("excerpt"),
+        "platform": row.get("platform"),
     }
 
 

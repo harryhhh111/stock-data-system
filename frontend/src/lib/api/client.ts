@@ -108,6 +108,18 @@ export const watchlistApi = {
   },
 };
 
+// ── 每日资讯（公司新闻层；统一走 US 后端，只读）──
+export const newsApi = {
+  feed: (params: { date?: string; stock?: string; kind?: 'all' | 'official' | 'media' } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.date) qs.set('date', params.date);
+    if (params.stock) qs.set('stock', params.stock);
+    qs.set('kind', params.kind ?? 'all');
+    return apiFetch<import('@/lib/types/news').NewsFeed>(`/watchlist/news/feed?${qs}`, { market: 'US' });
+  },
+  pinned: () => apiFetch<import('@/lib/types/news').NewsPinned>('/watchlist/news/pinned', { market: 'US' }),
+};
+
 export const dashboardApi = {
   stats: (market?: Market) =>
     apiFetch<import("@/lib/types/dashboard").DashboardStats>("/dashboard/stats", { market }),

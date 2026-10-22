@@ -222,6 +222,12 @@ class AnnouncementsConfig:
             "STOCK_ANNOUNCEMENTS_IR_INTERVAL_MINUTES", "60"
         )
     )
+    # 媒体来源（Google News RSS / Finnhub）默认检查间隔 360 分钟（6 小时）
+    media_interval_minutes: int | str = field(
+        default_factory=lambda: os.environ.get(
+            "STOCK_ANNOUNCEMENTS_MEDIA_INTERVAL_MINUTES", "360"
+        )
+    )
 
     def validated_enabled(self) -> bool:
         return _parse_strict_bool(self.enabled, "STOCK_ANNOUNCEMENTS_ENABLED")
@@ -236,11 +242,17 @@ class AnnouncementsConfig:
             self.ir_interval_minutes, "STOCK_ANNOUNCEMENTS_IR_INTERVAL_MINUTES"
         )
 
+    def validated_media_interval(self) -> int:
+        return _parse_positive_int(
+            self.media_interval_minutes, "STOCK_ANNOUNCEMENTS_MEDIA_INTERVAL_MINUTES"
+        )
+
     def validate(self) -> None:
         """任务注册前调用；任一配置非法即抛出 ValueError。"""
         self.validated_enabled()
         self.validated_sec_interval()
         self.validated_ir_interval()
+        self.validated_media_interval()
 
 
 # ── 熔断配置 ──────────────────────────────────────────────
