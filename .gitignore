@@ -25,8 +25,12 @@ data/*.log
 logs/
 
 # Runtime outputs
-data/
+# 用 data/* 而非 data/：目录级排除会让否定规则失效（git 不进入被排除的目录）
+data/*
 !data/.gitkeep
+# Russell 1000 内置策展快照是 live/缓存之外的最后一道兜底，须入版本库
+# （换机器/重新部署仍可用）；每年 6 月重构与季度 IPO 增补后人工更新
+!data/russell1000_tickers.json
 scripts/start-vps.sh
 
 # IDE
