@@ -218,6 +218,21 @@ def matches_company(item_title: str, item_summary: str,
 # 媒体注册行默认 enabled=False（真实启用属部署片）。
 
 MEDIA_SEEDS: dict[str, dict] = {
+    "ADBE": {
+        "google_query": "Adobe",
+        "match_terms": ["Adobe", "ADBE"],
+        "finnhub_symbol": "ADBE",
+    },
+    "INTC": {
+        "google_query": "Intel",
+        "match_terms": ["Intel", "INTC"],
+        "finnhub_symbol": "INTC",
+    },
+    "PLTR": {
+        "google_query": "Palantir",
+        "match_terms": ["Palantir", "PLTR"],
+        "finnhub_symbol": "PLTR",
+    },
     "MU": {
         "google_query": "Micron Technology",
         "match_terms": ["Micron Technology", "Micron", "MU"],
