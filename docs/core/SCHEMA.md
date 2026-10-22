@@ -414,7 +414,11 @@ LEFT JOIN balance_sheet prev_a
 -- 优先取最新报告（不限类型），若最新为 annual 直接使用（本身是 12 个月数据），
 -- 若最新为 quarterly/semi 则用公式法计算，无上年同期则 fallback 到最近一期 annual。
 -- ⚠️ 旧版 ROWS BETWEEN 3 PRECEDING 窗口叠加法已废弃（会导致 annual+quarterly 混合、数值虚高 3 倍）。
--- 实际 DDL 见 scripts/materialized_views.sql，此处仅展示设计意图。
+-- NULL 回退口径（2026-10-22，docs/quant/TTM_NULL_FALLBACK_PLAN.md）：
+--   中报最新时，本期或去年同期分量为 NULL → 该分量 TTM 回退为最近年报值，
+--   并暴露逐分量 *_ttm_estimated 标志（true = 年度代理值）；真 TTM 与年报最新恒 false。
+-- mv_fcf_yield 追加 fcf_ttm_estimated = cfo_ttm_estimated OR capex_ttm_estimated。
+-- 实际 DDL 见 scripts/materialized_views.sql（基线）与 scripts/mv_ttm_null_fallback.sql（本次口径），此处仅展示设计意图。
 
 CREATE MATERIALIZED VIEW mv_indicator_ttm AS
 SELECT
@@ -423,8 +427,8 @@ SELECT
     ...
 FROM income_statement i
 LEFT JOIN cash_flow_statement cf ON ...
--- 实现细节：四层 fallback（annual → 公式法 → last_annual → latest）
--- 详见 scripts/materialized_views.sql
+-- 实现细节：四层 fallback（annual → 公式法[带 NULL 守卫] → last_annual → latest）
+-- 详见 scripts/materialized_views.sql 与 scripts/mv_ttm_null_fallback.sql
 
 CREATE UNIQUE INDEX idx_mv_indicator_pk ON mv_financial_indicator(stock_code, report_date, report_type);
 CREATE INDEX idx_mv_indicator_market ON mv_financial_indicator(market);
@@ -962,7 +966,8 @@ WITH latest_quote AS (
 latest_ttm AS (
     SELECT DISTINCT ON (stock_code)
         stock_code, report_date AS ttm_report_date,
-        fcf_ttm, revenue_ttm, net_profit_ttm, cfo_ttm
+        fcf_ttm, revenue_ttm, net_profit_ttm, cfo_ttm, capex_ttm,
+        fcf_ttm_estimated          -- 2026-10-22 NULL 回退口径：true = 年度代理值
     FROM mv_indicator_ttm
     WHERE fcf_ttm IS NOT NULL
     ORDER BY stock_code, report_date DESC
