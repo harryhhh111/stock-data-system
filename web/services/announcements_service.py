@@ -379,7 +379,9 @@ def summary(days: int = 7) -> dict:
             })
             continue
         cik = cik_by_code.get(code)
-        rows = logical.get(code, [])
+        # 官方公告接口只含 SEC/IR；媒体条目属每日资讯层（/news/feed）
+        rows = [r for r in logical.get(code, [])
+                if r["source_kind"] in ("sec", "ir")]
         count = sum(1 for r in rows
                     if _in_window(r["published_at"], r["published_at_precision"],
                                   r["source_published_raw"] or "", start, end))
@@ -436,7 +438,8 @@ def detail(item_id: int, days: int = 90, offset: int = 0, limit: int = 20,
     cik = str(cik_rows[0]["cik"]).zfill(10) \
         if cik_rows and cik_rows[0]["cik"] else None
     try:
-        logical = _load_logical_announcements().get(item["stock_code"], [])
+        logical = [r for r in _load_logical_announcements().get(
+            item["stock_code"], []) if r["source_kind"] in ("sec", "ir")]
         source_rows = _read_rows(
             "SELECT source_id, source_kind, platform, issuer_identifier, "
             "       interval_minutes, enabled, source_status, status_reason "

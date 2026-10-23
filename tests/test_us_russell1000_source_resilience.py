@@ -192,3 +192,40 @@ def test_recent_builtin_snapshot_does_not_warn(env, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger=us_financial.logger.name):
         fetcher.fetch_russell1000_constituents()
     assert not any("内置快照" in r.message for r in caplog.records)
+
+
+def test_as_of_date_wins_over_fresh_mtime(env, monkeypatch, caplog):
+    """as-of 日期优先于文件 mtime：重新检出/复制会重置 mtime，
+    快照年龄必须按随快照保存的实际更新日期计算。"""
+    cache_dir, builtin = env
+    _write_cache(cache_dir / "russell1000_tickers.json", age_days=1)
+    # 新格式快照：as_of 120 天前，但文件刚写入（mtime 极新）
+    builtin.write_text(json.dumps({
+        "as_of": "2026-06-23",
+        "tickers": [f"B{i}" for i in range(1000)],
+    }))
+    monkeypatch.setattr(us_financial.requests, "get", _reject_live)
+
+    fetcher = us_financial.USFinancialFetcher()
+    with caplog.at_level("WARNING", logger=us_financial.logger.name):
+        fetcher.fetch_russell1000_constituents()
+    assert any("内置快照已" in r.message and "未更新" in r.message
+               for r in caplog.records)
+
+
+def test_as_of_format_loads_and_legacy_format_compatible(tmp_path):
+    """新 {"as_of", "tickers"} 与旧纯数组格式均可加载；年龄口径：
+    新格式按 as_of，旧格式退回 mtime。"""
+    from datetime import date
+    new_file = tmp_path / "new.json"
+    new_file.write_text(json.dumps({
+        "as_of": date.today().isoformat(), "tickers": [f"T{i}" for i in range(900)]}))
+    tickers = us_financial.USFinancialFetcher._load_russell1000_cache(new_file)
+    assert len(tickers) == 900
+    assert us_financial.USFinancialFetcher._snapshot_as_of(new_file) == date.today()
+
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps([f"T{i}" for i in range(900)]))
+    assert len(us_financial.USFinancialFetcher._load_russell1000_cache(legacy)) == 900
+    assert us_financial.USFinancialFetcher._snapshot_as_of(legacy) is None
+    assert us_financial.USFinancialFetcher._snapshot_age_days(legacy) is not None

@@ -918,9 +918,10 @@ def _sync_media_source(
     """同步一个媒体来源。返回结果摘要（不抛采集异常）。
 
     媒体语义无 90 天回补完整性（RSS 100 条上限/7~10 天回溯、Finnhub
-    from=当日−1 天，来源本身不支持历史枚举）：每轮快照落库 + 幂等去重，
-    成功推进 checked_through=当前；失败退避。首接的历史条目（发布时间
-    早于北京时间今日）标 is_backfill，不冒充新发生。
+    from=当日−1 天，来源本身不支持历史枚举）：每轮快照落库 + 幂等去重；
+    上次完整检查点早于来源覆盖视野时，中断区间记缺口并标 partial，
+    完整检查点不越过缺口（同 IR gap 语义）；失败退避。首接的历史条目
+    （发布时间早于北京时间今日）标 is_backfill，不冒充新发生。
     """
     from zoneinfo import ZoneInfo
 
@@ -985,13 +986,37 @@ def _sync_media_source(
                           deadline=deadline, result=llm_stats)
 
         finished_at = datetime.now(timezone.utc)
-        attempt_status = "success_new" if (inserted or revised) else "success_empty"
-        store.upsert_check_state_success(
-            conn, issuer, source_id, interval_minutes=interval_minutes,
-            attempt_at=started_at, status=attempt_status,
-            next_due_at=next_due_at, checked_through=target,
-            covered_add=(datetime.combine(target.date(), datetime.min.time(),
-                                          tzinfo=timezone.utc), target))
+        # 停采缺口语义（参照 IR gap 语义）：上次完整检查点早于来源覆盖视野
+        # （Finnhub 约 2 天、RSS 约 7~10 天）时，本轮快照无法证明中断区间
+        # 的覆盖——记录缺口、标 partial，完整检查点不越过缺口推进
+        horizon_days = media_source.COVERAGE_HORIZON_DAYS.get(
+            source["platform"], 2)
+        stale_gap = None
+        if state is not None and state["checked_through"] is not None:
+            ct = state["checked_through"]
+            if ct < target - timedelta(days=horizon_days):
+                stale_gap = (ct + timedelta(days=horizon_days), target)
+        if stale_gap is not None:
+            attempt_status = "partial"
+            store.record_gap(
+                conn, issuer, source_id, stale_gap, "history_unavailable",
+                f"媒体来源覆盖视野约 {horizon_days} 天，停采区间无法补齐")
+            store.append_covered_ranges(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                ranges=[(target - timedelta(days=horizon_days), target)])
+            store.upsert_check_state_attempt(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                attempt_at=started_at, status=attempt_status,
+                next_due_at=next_due_at, error_class=None)
+        else:
+            attempt_status = ("success_new" if (inserted or revised)
+                              else "success_empty")
+            store.upsert_check_state_success(
+                conn, issuer, source_id, interval_minutes=interval_minutes,
+                attempt_at=started_at, status=attempt_status,
+                next_due_at=next_due_at, checked_through=target,
+                covered_add=(datetime.combine(target.date(), datetime.min.time(),
+                                              tzinfo=timezone.utc), target))
         store.insert_run(
             conn, task_id=task_id, issuer=issuer, source_id=source_id,
             started_at=started_at, finished_at=finished_at,

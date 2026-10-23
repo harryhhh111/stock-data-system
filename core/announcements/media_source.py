@@ -252,6 +252,13 @@ MEDIA_SEEDS: dict[str, dict] = {
 
 MEDIA_PLATFORMS = ("google_news_rss", "finnhub")
 
+# 各平台覆盖视野（天）：停采超过该视野后，快照无法证明中断区间覆盖，
+# 按 gap 语义记缺口并标 partial（不推进完整检查点）
+COVERAGE_HORIZON_DAYS = {
+    "google_news_rss": 10,   # when:14d 查询，实测回溯约 7~10 天
+    "finnhub": 2,            # from 取当日−1 天
+}
+
 
 def media_source_specs(stock_code: str) -> list[dict]:
     """一家公司按种子展开为媒体来源注册规格（每股两个来源）。"""

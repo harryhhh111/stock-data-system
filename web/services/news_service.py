@@ -30,10 +30,29 @@ OFFICIAL_KINDS = ("sec", "ir")
 
 # ── 折叠（展示层）──────────────────────────────────────────
 
-def normalize_title(title: str) -> str:
-    """规范化标题：去来源后缀（" - Reuters"）、小写、去标点、压缩空白。"""
+# 已知出版商后缀名单（仅这些后缀才可从标题剥离；横线后的语义子句
+# 如 " - raised"/" - cut" 不是媒体名，绝不能剥离后误折叠含义相反的新闻）
+KNOWN_PUBLISHERS = {
+    "reuters", "yahoo finance", "cnbc", "bloomberg.com", "bloomberg",
+    "barron's", "seeking alpha", "benzinga", "the motley fool",
+    "marketwatch", "investing.com", "associated press", "ap", "barchart",
+    "gurufocus", "zacks", "fortune", "business insider", "tom's hardware",
+    "blockspace", "24/7 wall st", "south china morning post", "wsj",
+    "financial times", "nikkei asia", "globenewswire",
+}
+
+
+def normalize_title(title: str, media_source: str = "") -> str:
+    """规范化标题：剥离确认匹配的媒体名后缀（等于该条 media_source 或
+    已知出版商名单）、小写、去标点、压缩空白。
+    横线后其他内容一律保留——它是标题语义的一部分。"""
     t = title.strip()
-    t = re.sub(r"\s+-\s+[^-]{1,40}$", "", t)  # 来源后缀
+    m = re.search(r"\s+-\s+([^-]{1,60})$", t)
+    if m:
+        suffix = m.group(1).strip().lower()
+        if suffix == (media_source or "").strip().lower() \
+                or suffix in KNOWN_PUBLISHERS:
+            t = t[:m.start()]
     t = t.lower()
     t = re.sub(r"[^\w\s]", "", t)
     return re.sub(r"\s+", " ", t).strip()
@@ -47,7 +66,9 @@ def fold_media(rows: list[dict]) -> list[list[dict]]:
     """
     by_title: dict[str, list[dict]] = {}
     for row in rows:
-        by_title.setdefault(normalize_title(row["title"]), []).append(row)
+        by_title.setdefault(
+            normalize_title(row["title"], row.get("media_source") or ""),
+            []).append(row)
     clusters: list[list[dict]] = []
     for group in by_title.values():
         timed = sorted((r for r in group if r["published_at"] is not None),
@@ -71,8 +92,24 @@ def fold_media(rows: list[dict]) -> list[list[dict]]:
 
 # ── 条目成形 ───────────────────────────────────────────────
 
+def _merge_by_announcement(rows) -> list[dict]:
+    """同一逻辑公告关联多家公司时合并为一条：保留全部关联公司
+    （stock_codes 列表），不为每家公司重复出一条。"""
+    merged: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["source_id"], r["source_record_id"])
+        if key in merged:
+            codes = set(merged[key]["stock_codes"])
+            codes.add(r["stock_code"])
+            merged[key]["stock_codes"] = sorted(codes)
+        else:
+            merged[key] = {**r, "stock_codes": [r["stock_code"]]}
+    return list(merged.values())
+
+
 def _entry_base(row: dict) -> dict:
     day = _bj_day(row)
+    stock_codes = row.get("stock_codes") or [row["stock_code"]]
     return {
         "title": row["title"],
         "url": row["original_url"],
@@ -81,7 +118,8 @@ def _entry_base(row: dict) -> dict:
         "media_source": row.get("media_source"),
         "form_type": row["form_type"],
         "content_nature": row.get("content_nature"),
-        "stock_code": row["stock_code"],
+        "stock_code": stock_codes[0],
+        "stock_codes": stock_codes,
         "relation_reason": row.get("relation_reason"),
         "excerpt": row.get("excerpt"),
         "published_at": ann._iso(row["published_at"]),
@@ -100,20 +138,33 @@ def _entry_base(row: dict) -> dict:
 
 
 def _media_group_entry(cluster: list[dict]) -> dict:
-    """折叠组：代表条（发布时间最新者优先）+ 来源数 + 全部来源入口。"""
+    """折叠组：代表条（发布时间最新者优先）+ 来源数 + 全部来源入口。
+
+    来源数按出版商（media_source）去重——同一出版商经 Google+Finnhub
+    两个渠道收录只算 1 个来源，不得虚增；全部关联公司保留在 stock_codes。
+    """
     rep = max(cluster, key=lambda r: (r["published_at"] is not None,
                                       r["published_at"] or datetime.min
                                       .replace(tzinfo=UTC),
                                       r["first_observed_at"], r["id"]))
     entry = _entry_base(rep)
-    entry["fold_count"] = len(cluster)
-    entry["fold_sources"] = [
-        {"name": r.get("media_source") or "", "url": r["original_url"],
-         "published_at": ann._iso(r["published_at"]),
-         "platform": r.get("platform")}
-        for r in sorted(cluster, key=lambda r: (
-            r["published_at"] or datetime.max.replace(tzinfo=UTC)))
-    ]
+    publishers = sorted({(r.get("media_source") or "unknown")
+                         for r in cluster})
+    entry["fold_count"] = len(publishers)
+    seen_urls: set[str] = set()
+    fold_sources = []
+    for r in sorted(cluster, key=lambda r: (
+            r["published_at"] or datetime.max.replace(tzinfo=UTC))):
+        key = (r.get("media_source") or "", r["original_url"])
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        fold_sources.append({
+            "name": r.get("media_source") or "", "url": r["original_url"],
+            "published_at": ann._iso(r["published_at"]),
+            "platform": r.get("platform")})
+    entry["fold_sources"] = fold_sources
+    entry["publishers"] = publishers
     return entry
 
 
@@ -144,42 +195,46 @@ def _bj_day(row: dict) -> date | None:
 
 # ── 媒体来源状态（并入既有五态语义）─────────────────────────
 
-def _media_source_entries(source_rows, checks, gaps_by_source, enabled):
+def _news_source_entries(source_rows, checks, gaps_by_source, enabled,
+                         kinds=("sec", "ir", "media")):
+    """全部来源状态（官方 SEC/IR + 媒体）——官方失败状态也返回，
+    区分「没有公告」与「采集失败」。"""
     entries = []
     for row in source_rows:
-        if row["source_kind"] != "media":
+        kind = row["source_kind"]
+        if kind not in kinds:
             continue
         check = checks.get(row["source_id"])
         gaps = gaps_by_source.get(row["source_id"], [])
         interval = row["interval_minutes"]
         if not enabled:
             entries.append(ann._source_entry(
-                "media", state="disabled_global", message="公告采集未启用",
+                kind, state="disabled_global", message="公告采集未启用",
                 row=row, check=check, gaps=gaps, interval=interval))
         elif row["source_status"] == "blocked":
             entries.append(ann._source_entry(
-                "media", state="blocked",
+                kind, state="blocked",
                 message=f"来源受阻：{row['status_reason'] or '未说明'}",
                 row=row, check=check, gaps=gaps, interval=interval))
         elif row["source_status"] == "pending_verification":
             entries.append(ann._source_entry(
-                "media", state="pending_verification",
+                kind, state="pending_verification",
                 message=f"待验证：{row['status_reason'] or '未说明'}",
                 row=row, check=check, gaps=gaps, interval=interval))
         elif not row["enabled"]:
             entries.append(ann._source_entry(
-                "media", state="not_configured",
+                kind, state="not_configured",
                 message=row["status_reason"] or "来源未启用",
                 row=row, check=check, gaps=gaps, interval=interval))
         elif check is None:
             entries.append(ann._source_entry(
-                "media", state="pending_first_check", message="待首次检查",
+                kind, state="pending_first_check", message="待首次检查",
                 row=row, gaps=gaps, interval=interval))
         else:
             state, message = ann._state_from_check(
                 check["last_attempt_status"], check["last_error_class"], gaps)
             entries.append(ann._source_entry(
-                "media", state=state, message=message, row=row, check=check,
+                kind, state=state, message=message, row=row, check=check,
                 gaps=gaps, interval=interval))
     return entries
 
@@ -232,9 +287,10 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
     base = {"days": [d.isoformat() for d in days], "kind": kind,
             "stock": stock, "timezone": "Asia/Shanghai",
             "announcements_enabled": enabled}
+    # watchlist_item 是基础表：缺失不属于公告降级范围，照常抛服务异常
+    watched = {r["stock_code"] for r in ann._read_rows(
+        "SELECT stock_code FROM watchlist_item WHERE market='US'")}
     try:
-        watched = {r["stock_code"] for r in ann._read_rows(
-            "SELECT stock_code FROM watchlist_item WHERE market='US'")}
         logical = ann._load_logical_announcements()
         source_rows, checks, gaps_by_source = _load_sources_block()
     except psycopg2.errors.UndefinedTable:
@@ -243,8 +299,9 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
                 "entries": [], "sources": []}
 
     day_set = set(days)
-    rows = [r for code, rs in logical.items() for r in rs
-            if code in watched and (not stock or code == stock)]
+    rows = _merge_by_announcement(
+        r for code, rs in logical.items() for r in rs
+        if code in watched and (not stock or code == stock))
     rows = [r for r in rows if _bj_day(r) in day_set]
     if kind == "official":
         rows = [r for r in rows if r["source_kind"] in OFFICIAL_KINDS]
@@ -262,7 +319,7 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
     entries = official_entries + [_media_group_entry(c) for c in media_clusters]
     entries = _sort_entries(entries)
 
-    sources = _media_source_entries(source_rows, checks, gaps_by_source, enabled)
+    sources = _news_source_entries(source_rows, checks, gaps_by_source, enabled)
     return {**base, "initialized": True, "entries": entries, "sources": sources}
 
 
@@ -313,11 +370,15 @@ def pinned() -> dict:
     try:
         watched = {r["stock_code"] for r in ann._read_rows(
             "SELECT stock_code FROM watchlist_item WHERE market='US'")}
+    except psycopg2.errors.UndefinedTable:
+        raise  # watchlist_item 是基础表：缺失不降级，照常 503
+    try:
         logical = ann._load_logical_announcements()
     except psycopg2.errors.UndefinedTable:
         return {**base, "initialized": False, "message": "公告功能尚未初始化",
                 "entries": [], "ai_available": True}
-    rows = [r for code, rs in logical.items() for r in rs if code in watched]
+    rows = _merge_by_announcement(
+        r for code, rs in logical.items() for r in rs if code in watched)
     ai_ok = _ai_available(rows, now)
 
     candidates = [r for r in rows if _within_48h_pinned(r, now)]

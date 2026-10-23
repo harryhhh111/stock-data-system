@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Newspaper, ExternalLink, RefreshCw } from 'lucide-react';
-import { ApiError, newsApi } from '@/lib/api/client';
+import { ApiError, newsApi, watchlistApi } from '@/lib/api/client';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -85,7 +85,11 @@ export function NewsPage() {
     staleTime: 60_000, refetchInterval: 300_000, retry: 1,
   });
   const feed = feedQuery.data;
-  const stocks = useMemo(() => [...new Set((feed?.entries ?? []).map(e => e.stock_code))].sort(), [feed]);
+  // 公司筛选选项用稳定的全量关注列表（US），不随筛选结果收窄
+  const watchlistQuery = useQuery({ queryKey: ['watchlist'], queryFn: watchlistApi.list });
+  const stocks = useMemo(() => [...new Set(
+    (watchlistQuery.data ?? []).filter(i => i.market === 'US').map(i => i.stock_code),
+  )].sort(), [watchlistQuery.data]);
   const byDay = useMemo(() => {
     const groups = new Map<string, NewsEntry[]>();
     (feed?.entries ?? []).forEach(e => {

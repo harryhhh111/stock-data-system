@@ -22,7 +22,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
@@ -460,7 +460,7 @@ class USFinancialFetcher(BaseFetcher):
             tickers = self._load_russell1000_builtin()
             self._index_source_status["RUSSELL1000"] = {
                 "mode": "builtin_snapshot",
-                "snapshot_age_days": self._cache_age_days(RUSSELL1000_BUILTIN_PATH),
+                "snapshot_age_days": self._snapshot_age_days(RUSSELL1000_BUILTIN_PATH),
                 "ticker_count": len(tickers),
             }
             logger.warning(
@@ -485,8 +485,42 @@ class USFinancialFetcher(BaseFetcher):
         return round((time.time() - cache_file.stat().st_mtime) / 86400, 3)
 
     @staticmethod
+    def _snapshot_as_of(cache_file: Path) -> date | None:
+        """快照的实际数据日期（as-of）。
+
+        新格式 {"as_of": "YYYY-MM-DD", "tickers": [...]} 直接读取；
+        旧格式（纯 ticker 数组）无 as-of 语义，返回 None——
+        文件 mtime 会因重新检出/复制而重置，不能代表数据年龄。
+        """
+        try:
+            data = json.loads(cache_file.read_text())
+        except (OSError, ValueError):
+            return None
+        if isinstance(data, dict):
+            raw = str(data.get("as_of") or "").strip()
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                return None
+        return None
+
+    @classmethod
+    def _snapshot_age_days(cls, cache_file: Path) -> float | None:
+        """快照年龄（天）：优先 as-of 日期；无 as-of 退回 mtime
+        （旧格式快照，年龄可能因重新检出被低估，调用方须显式标注）。"""
+        as_of = cls._snapshot_as_of(cache_file)
+        if as_of is not None:
+            return round((date.today() - as_of).days * 1.0, 3)
+        try:
+            return cls._cache_age_days(cache_file)
+        except OSError:
+            return None
+
+    @staticmethod
     def _load_russell1000_cache(cache_file: Path) -> list[str]:
-        tickers = json.loads(cache_file.read_text())
+        data = json.loads(cache_file.read_text())
+        # 兼容两种格式：新 {"as_of", "tickers"} / 旧纯数组
+        tickers = data.get("tickers") if isinstance(data, dict) else data
         if not isinstance(tickers, list):
             raise ValueError("Russell 1000 cache is not a ticker list")
         tickers = list(dict.fromkeys(
@@ -507,19 +541,22 @@ class USFinancialFetcher(BaseFetcher):
     BUILTIN_SNAPSHOT_WARN_DAYS = 90
 
     def _warn_builtin_snapshot_stale(self) -> None:
-        try:
-            age = self._cache_age_days(RUSSELL1000_BUILTIN_PATH)
-        except OSError:
+        age = self._snapshot_age_days(RUSSELL1000_BUILTIN_PATH)
+        if age is None:
             logger.warning(
                 "Russell 1000 内置快照缺失：%s 不存在，最后一道兜底不可用",
                 RUSSELL1000_BUILTIN_PATH,
             )
             return
         if age > self.BUILTIN_SNAPSHOT_WARN_DAYS:
+            missing_as_of = (
+                self._snapshot_as_of(RUSSELL1000_BUILTIN_PATH) is None)
             logger.warning(
                 "Russell 1000 内置快照已 %.0f 天未更新（每年 6 月重构、季度 "
-                "IPO 增补后需人工维护 data/russell1000_tickers.json）",
+                "IPO 增补后需人工维护 data/russell1000_tickers.json）%s",
                 age,
+                "；旧格式缺 as_of 日期，年龄按文件时间估算并可能因重新检出"
+                "被低估，请升级快照格式" if missing_as_of else "",
             )
 
     @staticmethod
