@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 MMX_BIN = (os.environ.get("STOCK_WATCHLIST_MMX_BIN", "").strip()
            or shutil.which("mmx")
            or str(Path.home() / ".nvm/versions/node/v22.22.2/bin/mmx"))
+# CLI 1.0.28 默认仍是 Preview 版，显式固定正式版模型；可用环境变量覆盖
+MMX_MODEL = os.environ.get("STOCK_WATCHLIST_MMX_MODEL", "MiniMax-M3.1-Flash")
 
 IMPORTANCE_LEVELS = ("high", "normal")
 
@@ -42,7 +44,7 @@ def _run_mmx(system: str, user: str) -> str:
     try:
         proc = subprocess.run(
             [str(MMX_BIN), "text", "chat", "--non-interactive", "--quiet",
-             "--system", system, "--message", user],
+             "--model", MMX_MODEL, "--system", system, "--message", user],
             capture_output=True, text=True, timeout=60,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:

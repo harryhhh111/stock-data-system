@@ -25,6 +25,8 @@ RESEARCH_REPO_PATH = Path(os.environ.get(
 MMX_BIN = (os.environ.get('STOCK_WATCHLIST_MMX_BIN', '').strip()
            or shutil.which('mmx')
            or str(Path.home() / '.nvm/versions/node/v22.22.2/bin/mmx'))
+# CLI 1.0.28 默认仍是 Preview 版，显式固定正式版模型；可用环境变量覆盖
+MMX_MODEL = os.environ.get('STOCK_WATCHLIST_MMX_MODEL', 'MiniMax-M3.1-Flash')
 
 
 def read_rows(sql, params=()):
@@ -177,7 +179,7 @@ def _run_mmx(system: str, user: str) -> str:
         raise RuntimeError('mmx CLI 不可用，请 npm i -g mmx-cli 并 mmx auth login')
     proc = subprocess.run(
         [str(MMX_BIN), 'text', 'chat', '--non-interactive', '--quiet',
-         '--system', system, '--message', user],
+         '--model', MMX_MODEL, '--system', system, '--message', user],
         capture_output=True, text=True, timeout=60,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
