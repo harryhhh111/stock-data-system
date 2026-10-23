@@ -33,7 +33,9 @@ def supplement_csv(tmp_path):
 
 @pytest.fixture
 def mock_identity(monkeypatch):
-    """默认身份表：GOOD1→CIK 0001111111，GOOD2→CIK 0002222222。"""
+    """默认身份源：策划表 GOOD1→CIK 0001111111，GOOD2→CIK 0002222222；
+    SEC 全量映射 FULL1→0008888881、TAKEN→0008888882（TAKEN 的 CIK 已被
+    stock_info 中 OTHER 占用）。"""
     symbols = make_symbols([
         ("GOOD1", "GOOD1", "0001111111", "current"),
         ("GOOD2", "GOOD2", "0002222222", "current"),
@@ -41,8 +43,12 @@ def mock_identity(monkeypatch):
         ("CONFLICT", "BBB", "0004444444", "legacy"),
         ("MISMATCH", "MISMATCH", "0005555555", "current"),
     ])
-    stock_cik = {"MISMATCH": "0009999999"}  # 与身份行不一致
-    monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, stock_cik))
+    stock_cik = {"MISMATCH": "0009999999",  # 与身份行不一致
+                 "OTHER": "0008888882"}     # 占用 TAKEN 的 CIK
+    sec_map = {"FULL1": "0008888881", "TAKEN": "0008888882",
+               "GOOD1": "0007777771"}      # GOOD1 策划表优先，不用此值
+    monkeypatch.setattr(reg, "_load_identity",
+                        lambda: (symbols, stock_cik, sec_map))
     return symbols
 
 
@@ -77,7 +83,9 @@ class TestIndexOnlyAutoRegister:
     def test_pass_writes_auto_row(self, csv_path, mock_identity, mock_sec):
         result = reg.auto_register_index_only(["GOOD1"], csv_path=csv_path,
                                               today=TODAY)
-        assert result == {"registered": ["GOOD1"], "failed": []}
+        assert result["registered"] == ["GOOD1"]
+        assert result["failed"] == []
+        assert result["failed_by_reason"] == {}
         rows = read_csv(csv_path)
         assert len(rows) == 1
         row = rows[0]
@@ -94,7 +102,7 @@ class TestIndexOnlyAutoRegister:
                                               today=TODAY)
         assert result["registered"] == []
         assert result["failed"][0][0] == "XE"
-        assert "无映射" in result["failed"][0][1]
+        assert "SEC 全量映射无此 ticker" in result["failed"][0][1]
         assert not csv_path.exists() or read_csv(csv_path) == []
         assert mock_sec == []          # 无 CIK 不发 SEC 请求
 
@@ -115,7 +123,7 @@ class TestIndexOnlyAutoRegister:
     def test_companyfacts_404_blocked(self, csv_path, mock_identity,
                                       mock_sec, monkeypatch):
         symbols = make_symbols([("GONE", "GONE", "0003333333", "current")])
-        monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, {}))
+        monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, {}, {}))
         result = reg.auto_register_index_only(["GONE"], csv_path=csv_path,
                                               today=TODAY)
         assert result["registered"] == []
@@ -124,7 +132,7 @@ class TestIndexOnlyAutoRegister:
     def test_companyfacts_error_blocked(self, csv_path, monkeypatch):
         """companyfacts 协调/传输失败不等于主体不存在：按未通过处理。"""
         symbols = make_symbols([("FLAKY", "FLAKY", "0006666666", "current")])
-        monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, {}))
+        monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, {}, {}))
 
         def boom(url, **kw):
             raise sec_client.SECCoordinationError("gate unavailable")
@@ -143,7 +151,9 @@ class TestRequestCap:
             (f"T{i:02d}", f"T{i:02d}", f"0001{i:06d}"[-10:], "current")
             for i in range(60)
         ])
-        monkeypatch.setattr(reg, "_load_identity", lambda: (symbols, {}))
+        monkeypatch.setattr(reg, "_load_identity", lambda: (
+            symbols, {}, {f"T{i:02d}": f"0001{i:06d}"[-10:]
+                          for i in range(60)}))
         calls = []
 
         class Resp:
@@ -217,3 +227,124 @@ class TestAutoVerifyEntry:
         assert result["index_only_registered"] == ["GOOD2"]
         assert result["index_only_failed"][0][0] == "XE"
         assert result["supplement_registered"] == ["ACME"]
+
+
+class TestR2IdentityResolution:
+    """R2：双身份源解析顺序与 fail-closed（方案 §测试）。"""
+
+    def test_curated_table_wins_over_full_map(self, csv_path, mock_identity,
+                                              monkeypatch):
+        """策划表命中优先于全量映射：GOOD1 在全量映射里指向别的 CIK，
+        登记证据必须用策划表 CIK。"""
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(sec_client, "get", lambda url, **kw: Resp())
+        result = reg.auto_register_index_only(["GOOD1"], csv_path=csv_path,
+                                              today=TODAY)
+        assert result["registered"] == ["GOOD1"]
+        row = read_csv(csv_path)[0]
+        assert "CIK0001111111" in row["evidence_ref"]
+        assert "CIK0007777771" not in row["evidence_ref"]
+
+    def test_full_map_hit_passes(self, csv_path, mock_identity, monkeypatch):
+        """策划表无映射 → SEC 全量映射命中 → companyfacts 200 → 通过。"""
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(sec_client, "get", lambda url, **kw: Resp())
+        result = reg.auto_register_index_only(["FULL1"], csv_path=csv_path,
+                                              today=TODAY)
+        assert result["registered"] == ["FULL1"]
+        row = read_csv(csv_path)[0]
+        assert "CIK0008888881" in row["evidence_ref"]
+        assert "不声明财务解析可用" in row["evidence_ref"]
+
+    def test_cik_occupied_by_other_code_conflicts(self, csv_path,
+                                                  mock_identity, monkeypatch):
+        """全量映射 CIK 已被 stock_info 其他代码占用 → 冲突失败写明双方。"""
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(sec_client, "get", lambda url, **kw: Resp())
+        result = reg.auto_register_index_only(["TAKEN"], csv_path=csv_path,
+                                              today=TODAY)
+        assert result["registered"] == []
+        reason = result["failed"][0][1]
+        assert "身份冲突" in reason and "OTHER" in reason and "TAKEN" in reason
+        assert not csv_path.exists() or read_csv(csv_path) == []
+
+    def test_full_map_miss_blocked(self, csv_path, mock_identity):
+        """两个身份源都无映射 → 阻塞，原因写明，不发 SEC 请求。"""
+        result = reg.auto_register_index_only(["XE"], csv_path=csv_path,
+                                              today=TODAY)
+        assert result["registered"] == []
+        assert "SEC 全量映射无此 ticker" in result["failed"][0][1]
+
+    def test_missing_cache_fail_closed(self, csv_path, monkeypatch):
+        """company_tickers.json 缓存缺失 → 本轮全部保持阻塞，零 SEC 请求。"""
+        monkeypatch.setattr(reg, "_load_identity", lambda: ([], {}, None))
+        calls = []
+        monkeypatch.setattr(sec_client, "get",
+                            lambda url, **kw: calls.append(url))
+        result = reg.auto_register_index_only(["FULL1", "XE"],
+                                              csv_path=csv_path, today=TODAY)
+        assert result["registered"] == []
+        assert len(result["failed"]) == 2
+        assert all("缓存缺失" in r for _, r in result["failed"])
+        assert result["failed_by_reason"] == {"身份映射缓存缺失": 2}
+        assert calls == []
+        assert not csv_path.exists() or read_csv(csv_path) == []
+
+
+# 2026-10-23 运行的 41 只 index-only 阻塞清单（方案背景）
+BLOCKED_41 = ("DY ENSG FIG FN FORM FPS GFL GH GLXY GSAT HL IESC IONQ IREN "
+              "JBS JMKE KTOS KVYO MBGL MDGL MFP MOD NXT OKLO PL POWL PRIM "
+              "RMBS SANM SITM SMTC SPXC STRL SUNB TTMI ULS VIAV VICR VMRK "
+              "WTS WULF").split()
+INDEX_ONLY_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "sec" / "company_tickers_index_only.json"
+)
+
+
+class TestBlocked41Replay:
+    """离线重放 41 只（fixture 为真实 company_tickers.json 的相关子集）。"""
+
+    @pytest.fixture
+    def replay_identity(self, monkeypatch):
+        sec_map = reg.load_sec_ticker_map(INDEX_ONLY_FIXTURE)
+        assert sec_map is not None and len(sec_map) == 41
+        # 策划表为空、stock_info 为空（index-only 不在 universe）
+        monkeypatch.setattr(reg, "_load_identity",
+                            lambda: ([], {}, sec_map))
+
+    def test_all_41_identity_verified(self, csv_path, replay_identity,
+                                      monkeypatch):
+        """全部 41 只经全量映射解析出 CIK；companyfacts 200 → 全部登记。"""
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(sec_client, "get", lambda url, **kw: Resp())
+        result = reg.auto_register_index_only(BLOCKED_41, csv_path=csv_path,
+                                              today=TODAY)
+        assert sorted(result["registered"]) == sorted(BLOCKED_41)
+        assert result["failed"] == []
+        assert len(read_csv(csv_path)) == 41
+
+    def test_companyfacts_failures_keep_blocking_with_reason(
+            self, csv_path, replay_identity, monkeypatch):
+        """companyfacts 非 200 者维持阻塞并带具体原因（GFL/JBS 形态：
+        身份可登记但探测/解析失败不豁免）。"""
+        class Resp:
+            def __init__(self, status):
+                self.status_code = status
+        def fake_get(url, **kw):
+            cik = url.split("CIK")[1].split(".")[0]
+            # GFL/JBS 探测 404：不解除阻塞
+            fail_ciks = {reg.load_sec_ticker_map(INDEX_ONLY_FIXTURE)[t]
+                         for t in ("GFL", "JBS")}
+            return Resp(404 if cik in fail_ciks else 200)
+        monkeypatch.setattr(sec_client, "get", fake_get)
+        result = reg.auto_register_index_only(BLOCKED_41, csv_path=csv_path,
+                                              today=TODAY)
+        assert len(result["registered"]) == 39
+        assert sorted(t for t, _ in result["failed"]) == ["GFL", "JBS"]
+        assert all("404" in r for _, r in result["failed"])
+        assert result["failed_by_reason"] == {"companyfacts HTTP 404": 2}
+        assert len(read_csv(csv_path)) == 39

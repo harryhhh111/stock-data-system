@@ -711,6 +711,8 @@ def _write_phase_c_summary(summary: dict) -> Path:
             f"{auto['index_only_registered']}",
             f"- index-only 未通过（维持阻塞/人工待办）{len(auto['index_only_failed'])} 条: "
             f"{auto['index_only_failed']}",
+            f"- 未通过原因分类: "
+            f"{auto.get('index_only_failed_by_reason', {})}",
             f"- supplement 自动纳入 {len(auto['supplement_registered'])} 条: "
             f"{auto['supplement_registered']}",
         ]

@@ -560,7 +560,7 @@ class TestSupplementScopeMerge:
         from core.us_security_identity import SymbolRow
         from core import sec_client
         monkeypatch.setattr(reg_mod, "_load_identity", lambda: (
-            [SymbolRow("Z9", "Z9", "0007777777", "current")], {}))
+            [SymbolRow("Z9", "Z9", "0007777777", "current")], {}, {}))
 
         class Resp:
             status_code = 200

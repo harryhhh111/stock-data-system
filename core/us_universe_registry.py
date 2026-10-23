@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -75,6 +77,37 @@ def _append_row(path: Path, row: dict) -> None:
         csv.DictWriter(f, fieldnames=INDEX_ONLY_HEADER, lineterminator="\n").writerow(row)
 
 
+# ── SEC 全量 ticker→CIK 映射（与 fetcher 同一缓存文件，避免两条真理）──
+
+def load_sec_ticker_map(path: Path | None = None) -> dict[str, str] | None:
+    """只读 SEC company_tickers.json 缓存（ticker → 10 位 CIK）。
+
+    与 core/fetchers/us_financial.py 的抓取路径共用同一文件
+    （data/sec_cache/company_tickers.json）。缓存缺失/不可解析返回 None
+    ——调用方必须 fail-closed（本轮自动验证全部保持阻塞），不得自行
+    发起网络抓取（该缓存由每日同步维护，正常必存在）。
+    ticker 键做 SEC 口径规范化：大写、"." → "-"（BRK.B → BRK-B，
+    与 fetcher 的 Wikipedia 侧规范化一致）。
+    """
+    path = path or (config.DATA_DIR / "sec_cache" / "company_tickers.json")
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    mapping: dict[str, str] = {}
+    try:
+        for item in data.values():
+            ticker = str(item["ticker"]).strip().upper().replace(".", "-")
+            cik = str(item.get("cik", item.get("cik_str", ""))).strip().zfill(10)
+            if ticker and cik.strip("0"):
+                mapping[ticker] = cik
+    except (AttributeError, TypeError, KeyError):
+        return None
+    return mapping or None
+
+
 # ── 自动验证 ───────────────────────────────────────────────
 
 def _load_identity():
@@ -84,25 +117,46 @@ def _load_identity():
                  for r in execute(
                      "SELECT stock_code, cik FROM stock_info WHERE market='US'",
                      fetch=True) or []}
-    return symbols, stock_cik
+    return symbols, stock_cik, load_sec_ticker_map()
 
 
-def _resolve_cik(ticker: str, symbols, stock_cik) -> tuple[str | None, str | None]:
-    """身份表解析 CIK 且无冲突。返回 (cik, None) 或 (None, 原因)。"""
+def _resolve_cik(ticker: str, symbols, stock_cik,
+                 sec_map: dict[str, str] | None) -> tuple[str | None, str | None]:
+    """身份解析（R2 修复后顺序）：
+
+    a) ticker 命中 us_security_ticker_symbol 策划表 → 沿用全部冲突规则
+       （多 canonical、多 current、与 stock_info.cik 不一致均失败）；
+    b) 否则查 SEC 全量映射：无映射 → 阻塞；解析出的 CIK 已被 stock_info
+       其他 stock_code 占用 → 冲突失败写明双方代码（防换码复用误登记）；
+       通过 → 返回 CIK。
+    sec_map 为 None（缓存缺失）由调用方在更早处 fail-closed。
+    返回 (cik, None) 或 (None, 原因)。
+    """
     matches = [s for s in symbols if s.ticker == ticker]
-    if not matches:
-        return None, "身份表无映射（疑似解析垃圾或未登记主体）"
-    canonicals = {s.canonical_stock_code for s in matches}
-    if len(canonicals) > 1:
-        return None, f"身份冲突: ticker 映射多个 canonical {sorted(canonicals)}"
-    canonical = canonicals.pop()
-    currents = [s for s in matches if s.symbol_role == "current"]
-    if len(currents) > 1:
-        return None, f"身份冲突: canonical {canonical} 多个 current ticker"
-    cik = (currents[0] if currents else matches[0]).cik
-    info_cik = stock_cik.get(canonical)
-    if info_cik and info_cik != cik:
-        return None, f"身份行 CIK {cik} 与 stock_info.cik {info_cik} 不一致"
+    if matches:
+        canonicals = {s.canonical_stock_code for s in matches}
+        if len(canonicals) > 1:
+            return None, f"身份冲突: ticker 映射多个 canonical {sorted(canonicals)}"
+        canonical = canonicals.pop()
+        currents = [s for s in matches if s.symbol_role == "current"]
+        if len(currents) > 1:
+            return None, f"身份冲突: canonical {canonical} 多个 current ticker"
+        cik = (currents[0] if currents else matches[0]).cik
+        info_cik = stock_cik.get(canonical)
+        if info_cik and info_cik != cik:
+            return None, f"身份行 CIK {cik} 与 stock_info.cik {info_cik} 不一致"
+        return cik, None
+    # b) SEC 全量映射（与抓取路径同源）
+    if sec_map is None:
+        return None, "身份映射缓存缺失"
+    key = ticker.upper().replace(".", "-")
+    cik = sec_map.get(key)
+    if cik is None:
+        return None, "SEC 全量映射无此 ticker"
+    occupants = sorted(code for code, k in stock_cik.items() if k == cik)
+    if occupants:
+        return None, (f"身份冲突: CIK {cik} 已被 stock_info 中 "
+                      f"{occupants} 占用（ticker {key}）")
     return cik, None
 
 
@@ -131,8 +185,16 @@ def auto_register_index_only(tickers: list[str], *, csv_path: Path,
     today = today or datetime.now().date()
     tickers = sorted({t.strip().upper() for t in tickers})
     if not tickers:
-        return {"registered": [], "failed": []}
-    symbols, stock_cik = _load_identity()
+        return {"registered": [], "failed": [], "failed_by_reason": {}}
+    symbols, stock_cik, sec_map = _load_identity()
+    if sec_map is None:
+        # 缓存缺失 → 本轮 fail-closed：全部保持阻塞，不发任何 SEC 请求
+        logger.error("company_tickers.json 缓存缺失/不可解析，"
+                     "本轮 index-only 自动验证全部保持阻塞")
+        return {"registered": [],
+                "failed": [(t, "身份映射缓存缺失（company_tickers.json）")
+                           for t in tickers],
+                "failed_by_reason": {"身份映射缓存缺失": len(tickers)}}
     registered: list[str] = []
     failed: list[tuple[str, str]] = []
     requests_used = 0
@@ -140,7 +202,7 @@ def auto_register_index_only(tickers: list[str], *, csv_path: Path,
         if requests_used >= max_requests:
             failed.append((ticker, f"本轮验证请求上限 {max_requests} 已耗尽，下轮继续"))
             continue
-        cik, reason = _resolve_cik(ticker, symbols, stock_cik)
+        cik, reason = _resolve_cik(ticker, symbols, stock_cik, sec_map)
         if cik is None:
             failed.append((ticker, reason))
             continue
@@ -154,9 +216,12 @@ def auto_register_index_only(tickers: list[str], *, csv_path: Path,
             continue
         _append_row(csv_path, {
             "stock_code": ticker,
+            # 只声明身份验证依据，不声明财务解析可用性；登记只解除
+            # 「未登记」阻断，抓取失败分类不变（IFRS 主体 0 事实仍阻塞）
             "evidence_ref": (
-                f"自动登记({today}): 身份表解析 CIK{cik} 无冲突; "
-                f"companyfacts HTTP 200 确认真实申报主体; "
+                f"自动登记({today}): CIK 解析无冲突（策划表/SEC 全量映射）+ "
+                f"companyfacts HTTP 200 确认真实申报主体（CIK{cik}）; "
+                f"仅确认身份可登记，不声明财务解析可用; "
                 f"指数成分但不在 stock_info US universe, 纳入 universe 或"
                 f"移出指数范围前不阻断"),
             "first_confirmed": today.isoformat(),
@@ -165,7 +230,14 @@ def auto_register_index_only(tickers: list[str], *, csv_path: Path,
         })
         registered.append(ticker)
         logger.info("index-only 自动登记: %s (CIK%s)", ticker, cik)
-    return {"registered": registered, "failed": failed}
+    failed_by_reason: dict[str, int] = {}
+    for _t, reason in failed:
+        category = re.split(r"[（:(]", reason, maxsplit=1)[0]
+        failed_by_reason[category] = failed_by_reason.get(category, 0) + 1
+    logger.info("index-only 自动验证: 身份验证通过 %d，未通过 %d（%s）",
+                len(registered), len(failed), failed_by_reason)
+    return {"registered": registered, "failed": failed,
+            "failed_by_reason": failed_by_reason}
 
 
 def auto_register_supplement(tickers: list[str], *, csv_path: Path,
@@ -206,5 +278,6 @@ def auto_verify_and_register(index_only: list[str], uncovered: list[str], *,
     return {
         "index_only_registered": io_result["registered"],
         "index_only_failed": io_result["failed"],
+        "index_only_failed_by_reason": io_result["failed_by_reason"],
         "supplement_registered": supplement_registered,
     }
