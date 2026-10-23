@@ -24,6 +24,40 @@ function entryTimeText(e: NewsEntry) {
 
 const KIND_BADGE: Record<string, string> = { sec: '官方披露', ir: '官方发布', media: '媒体' };
 
+// 置顶区紧凑时间：MM-DD HH:mm（北京时间）
+function bjShort(iso: string | null) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// 置顶条目：单行紧凑行（参考金十/aihot 置顶区形态），点击「详情」展开完整卡片
+function PinnedRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
+  const [open, setOpen] = useState(false);
+  const link = safeHttpUrl(entry.url);
+  const title = entry.title_zh || entry.title;
+  return <li className="py-1.5">
+    <div className="flex items-center gap-2 text-sm">
+      <span className={`w-5 shrink-0 text-right font-semibold ${rank <= 3 ? 'text-red-600' : 'text-muted-foreground'}`}>{rank}</span>
+      {link
+        ? <a href={link} target="_blank" rel="noopener noreferrer" className="font-medium hover:text-primary truncate">{title}</a>
+        : <span className="font-medium truncate">{title}</span>}
+      {entry.title_zh && <span className="shrink-0 rounded-sm border px-1 py-0.5 text-xs text-muted-foreground">AI 译</span>}
+      <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{entry.stock_code}</span>
+        {entry.fold_count > 1 && ` · ${entry.fold_count} 来源`}
+        {entry.published_at && ` · ${bjShort(entry.published_at)}`}
+      </span>
+      <button type="button" className="shrink-0 text-xs text-muted-foreground underline underline-offset-2" onClick={() => setOpen(!open)}>
+        详情{open ? ' ▲' : ' ▼'}
+      </button>
+    </div>
+    {open && <div className="mt-1 ml-7"><NewsCard entry={entry} /></div>}
+  </li>;
+}
+
 function safeHttpUrl(url: string) {
   return /^https?:\/\//.test(url) ? url : null;
 }
@@ -101,15 +135,15 @@ export function NewsPage() {
   const pinned = pinnedQuery.data;
   const selectStyle = 'h-9 rounded-md border bg-background px-3 text-sm';
   return <div className="space-y-6">
-    <PageHeader icon={Newspaper} title="每日资讯" description="关注公司的官方披露与媒体报道，按北京时间日期分组；原始标题不翻译、不做 AI 评分。">
+    <PageHeader icon={Newspaper} title="每日资讯" description="关注公司的官方披露与媒体报道，按北京时间日期分组；中文标题/摘要由 AI 生成并标注「AI 译」，原标题可展开对照。">
       <Button variant="outline" onClick={() => { pinnedQuery.refetch(); feedQuery.refetch(); }}><RefreshCw className="w-4 h-4 mr-2" />刷新</Button>
     </PageHeader>
 
     {pinnedQuery.isSuccess && pinned?.initialized && pinned.entries.length > 0 && <section className="space-y-2">
       <h2 className="text-sm font-semibold">置顶（近 48 小时 · 重要性/多来源，封顶 10 条）{!pinned.ai_available && <span className="text-xs text-muted-foreground font-normal">（AI 暂不可用，按机械规则入选）</span>}</h2>
-      <div className="grid gap-2 md:grid-cols-2">
-        {pinned.entries.map((e, i) => <NewsCard key={i} entry={e} />)}
-      </div>
+      <Card><CardContent className="py-2 px-3">
+        <ol className="divide-y">{pinned.entries.map((e, i) => <PinnedRow key={i} rank={i + 1} entry={e} />)}</ol>
+      </CardContent></Card>
     </section>}
 
     <div className="flex flex-wrap gap-3 items-center text-sm">
