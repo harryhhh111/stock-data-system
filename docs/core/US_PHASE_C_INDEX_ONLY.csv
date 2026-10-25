@@ -38,3 +38,43 @@ VGNT,"RUSSELL1000 指数成分解析存在但不在 stock_info US universe(2026-
 VIK,"RUSSELL1000 指数成分解析存在但不在 stock_info US universe(2026-08-11 对账,universe=1003/index=1013);纳入 universe 或移出指数范围前不阻断",2026-08-11,2026-11-11,manual
 XE,"RUSSELL1000 指数成分解析存在但不在 stock_info US universe(2026-08-11 对账,universe=1003/index=1013);纳入 universe 或移出指数范围前不阻断",2026-08-11,2026-11-11,manual
 XP,"RUSSELL1000 指数成分解析存在但不在 stock_info US universe(2026-08-11 对账,universe=1003/index=1013);纳入 universe 或移出指数范围前不阻断",2026-08-11,2026-11-11,manual
+DY,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000067215）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+ENSG,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001125376）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+FIG,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001579878）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+FN,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001408710）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+FORM,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001039399）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+FPS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0002080126）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+GFL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001780232）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+GH,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001576280）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+GLXY,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001859392）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+GSAT,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001366868）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+HL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000719413）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+IESC,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001048268）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+IONQ,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001824920）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+IREN,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001878848）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+JBS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001791942）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+JMKE,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0002127043）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+KTOS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001069258）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+KVYO,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001835830）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+MBGL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0002090312）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+MDGL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001157601）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+MFP,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0002088281）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+MOD,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000067347）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+NXT,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001852131）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+OKLO,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001849056）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+PL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001836833）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+POWL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000080420）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+PRIM,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001361538）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+RMBS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000917273）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+SANM,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000897723）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+SITM,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001451809）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+SMTC,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000088941）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+SPXC,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000088205）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+STRL,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000874238）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+SUNB,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0002083785）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+TTMI,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001116942）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+ULS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001901440）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+VIAV,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000912093）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+VICR,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000751978）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+WTS,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0000795403）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
+WULF,"自动登记(2026-10-24): CIK 解析无冲突（策划表/SEC 全量映射）+ companyfacts HTTP 200 确认真实申报主体（CIK0001083301）; 仅确认身份可登记，不声明财务解析可用; 指数成分但不在 stock_info US universe, 纳入 universe 或移出指数范围前不阻断",2026-10-24,2027-01-22,auto
