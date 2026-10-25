@@ -62,6 +62,62 @@ function safeHttpUrl(url: string) {
   return /^https?:\/\//.test(url) ? url : null;
 }
 
+// 信息流条目（aihot.news 形态）：左列序号+时间，右列来源行/标题/摘要，
+// 单列按时间排列，日期分组之间用分隔线而非卡片网格。
+function NewsRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
+  const [showSources, setShowSources] = useState(false);
+  const link = safeHttpUrl(entry.url);
+  const timeLabel = entry.time_unknown ? '时间未知'
+    : entry.date_only ? '仅日期'
+    : bjShort(entry.published_at)?.slice(6);  // HH:mm
+  return <li className="flex gap-3 py-3">
+    <div className="w-12 shrink-0 text-right select-none">
+      <div className="text-xs text-muted-foreground">{String(rank).padStart(2, '0')}.</div>
+      <div className="text-xs font-medium mt-0.5">{timeLabel}</div>
+    </div>
+    <div className="min-w-0 flex-1">
+      <div className="text-xs text-muted-foreground flex flex-wrap gap-x-2 items-center">
+        <span className="inline-flex items-center rounded-sm border px-1 py-0.5">{KIND_BADGE[entry.source_kind] ?? entry.source_kind}</span>
+        {entry.media_source && <span>{entry.media_source}</span>}
+        <span className="font-medium text-foreground">{entry.stock_code}</span>
+        {entry.importance === 'high' && <span className="rounded-sm bg-amber-100 text-amber-800 px-1 py-0.5">重要</span>}
+        {entry.fold_count > 1 && <button type="button" className="underline underline-offset-2" onClick={() => setShowSources(!showSources)}>
+          {entry.fold_count} 个来源{showSources ? ' ▲' : ' ▼'}
+        </button>}
+        {entry.title_zh && <span className="rounded-sm border px-1 py-0.5">AI 译</span>}
+      </div>
+      <div className="text-sm font-medium leading-snug mt-1">
+        {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{entry.title_zh || entry.title}<ExternalLink className="inline w-3 h-3 ml-1" /></a> : (entry.title_zh || entry.title)}
+      </div>
+      {entry.summary_zh && <p className="text-xs mt-1 leading-relaxed">{entry.summary_zh}<span className="text-muted-foreground">（AI 译）</span></p>}
+      {!entry.summary_zh && entry.excerpt && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.excerpt}</p>}
+      {entry.title_zh && <details className="text-xs text-muted-foreground mt-1"><summary className="cursor-pointer">原标题对照</summary><p className="mt-1">{entry.title}</p></details>}
+      <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-2">
+        <span>{entryTimeText(entry)}</span>
+        {entry.content_nature === 'unclassified' && <span>内容性质未分类</span>}
+        {entry.is_backfill && <span>回补</span>}
+        {entry.relation_reason && <span>关联：{entry.relation_reason}</span>}
+      </div>
+      {showSources && entry.fold_sources.length > 0 && <ul className="mt-1 space-y-0.5">
+        {entry.fold_sources.map((s, i) => <li key={i} className="text-xs">
+          {safeHttpUrl(s.url)
+            ? <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{s.name || s.url}</a>
+            : <span>{s.name}</span>}
+          <span className="text-muted-foreground">{s.published_at ? ` · ${bjTime(s.published_at)}（北京时间）` : ''}</span>
+        </li>)}
+      </ul>}
+    </div>
+  </li>;
+}
+
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+function dayHeader(day: string, count: number) {
+  // day 为北京时间 YYYY-MM-DD；附加星期几便于阅读
+  const d = new Date(`${day}T00:00:00+08:00`);
+  const weekday = Number.isNaN(d.getTime()) ? '' : ` 星期${WEEKDAYS[d.getDay()]}`;
+  return `${day}${weekday} · ${count} 条（北京时间）`;
+}
+
 function NewsCard({ entry }: { entry: NewsEntry }) {
   const [showSources, setShowSources] = useState(false);
   const link = safeHttpUrl(entry.url);
@@ -104,7 +160,7 @@ function NewsCard({ entry }: { entry: NewsEntry }) {
 export function NewsPage() {
   const [stock, setStock] = useState('');
   const [kind, setKind] = useState<'all' | 'official' | 'media'>('all');
-  const [dayOffset, setDayOffset] = useState(0);  // 0=今天（北京时间）
+  const [dayOffset, setDayOffset] = useState(-1);  // 默认最近 7 日时间流（避免凌晨“今天”为空造成误解）；0=今天（北京时间）
   const pinnedQuery = useQuery({ queryKey: ['news-pinned'], queryFn: newsApi.pinned, staleTime: 60_000, refetchInterval: 300_000, retry: 1 });
   // 默认（dayOffset=null 语义）拉最近 7 日时间流；选中某天则单日
   const feedQuery = useQuery({
@@ -168,11 +224,13 @@ export function NewsPage() {
     {feed?.initialized && <>
       {!feed.announcements_enabled && <p className="text-xs text-muted-foreground">公告采集未启用（STOCK_ANNOUNCEMENTS_ENABLED=false）：以下为既有库存数据。</p>}
       {byDay.length === 0 && <Card><CardContent className="py-16 text-center text-muted-foreground">
-        {feed.sources.some(s => s.state === 'ok') ? '已接入来源暂无资讯' : '来源未接入或不可用——见下方来源状态'}
+        {dayOffset >= 0
+          ? '该日暂无资讯（按北京时间划分），可切换到「最近 7 日」查看时间流'
+          : (feed.sources.some(s => s.state === 'ok') ? '已接入来源暂无资讯' : '来源未接入或不可用——见下方来源状态')}
       </CardContent></Card>}
-      {byDay.map(([day, entries]) => <section key={day} className="space-y-2">
-        <h2 className="text-sm font-semibold">{day} · {entries.length} 条（北京时间）</h2>
-        <div className="grid gap-2 md:grid-cols-2">{entries.map((e, i) => <NewsCard key={i} entry={e} />)}</div>
+      {byDay.map(([day, entries]) => <section key={day}>
+        <h2 className="text-sm font-semibold border-b pb-1">{dayHeader(day, entries.length)}</h2>
+        <ol className="divide-y">{entries.map((e, i) => <NewsRow key={i} rank={i + 1} entry={e} />)}</ol>
       </section>)}
       {feed.sources.length > 0 && <section className="space-y-1 pt-4 border-t">
         <h2 className="text-sm font-semibold">来源状态</h2>
