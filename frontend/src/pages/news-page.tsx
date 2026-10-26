@@ -196,9 +196,9 @@ export function NewsPage() {
     </PageHeader>
 
     {pinnedQuery.isSuccess && pinned?.initialized && pinned.entries.length > 0 && <section className="space-y-2">
-      <h2 className="text-sm font-semibold">置顶（近 48 小时 · 重要性/多来源，封顶 10 条）{!pinned.ai_available && <span className="text-xs text-muted-foreground font-normal">（AI 暂不可用，按机械规则入选）</span>}</h2>
+      <h2 className="text-sm font-semibold">置顶（近 48 小时 · 重要性/多来源，最多 5 条）{!pinned.ai_available && <span className="text-xs text-muted-foreground font-normal">（AI 暂不可用，按机械规则入选）</span>}</h2>
       <Card><CardContent className="py-2 px-3">
-        <ol className="divide-y">{pinned.entries.map((e, i) => <PinnedRow key={i} rank={i + 1} entry={e} />)}</ol>
+        <ol className="divide-y">{pinned.entries.slice(0, 5).map((e, i) => <PinnedRow key={i} rank={i + 1} entry={e} />)}</ol>
       </CardContent></Card>
     </section>}
 
