@@ -15,7 +15,15 @@
 
 研究索引与卡片方案 [R1](RESEARCH_WORKBENCH_R1_PLAN.md) 暂缓；下文 P1–P5 保留为原事件系统方向记录，暂缓执行。看板验收后再确定下一步，不自动开启研究索引或整条事件路线。
 
-2026-10-17 拟议下一步：[关注股官方公告流 MVP](WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md)，状态为待审核。只补关注股 SEC/公司官方信息的自动采集与看板展示，当前 US 环境先验证 MU/WDC/NBIS；不恢复整条 P1–P5 路线。
+2026-10-17 拟议下一步：[关注股官方公告流 MVP](WATCHLIST_ANNOUNCEMENTS_MVP_PLAN.md)。
+
+2026-10-26 现状更新：公告流四片（schema/SEC 采集器/IR 框架/看板）与每日资讯公司新闻层（媒体采集 + 中文增强 + 置顶，[MVP](WATCHLIST_DAILY_NEWS_MVP_PLAN.md)、[v1.1](WATCHLIST_DAILY_NEWS_V1_1_PLAN.md)）均已上线运行；生产已迁移 7 张公告表，6 家 SEC + NBIS IR 采集中，MU/WDC IR 维持 blocked（Q4 接口 403）。US universe 登记自动化（[方案](core/US_UNIVERSE_REGISTRY_AUTOMATION_PLAN.md)）与 R2 身份解析修复（[方案](core/US_INDEX_ONLY_IDENTITY_FIX_PLAN.md)，commit `4a767c9`）已上线：index-only 自动验证 40/41 通过，VMRK=EQR 更名事件已处置。
+
+挂账（2026-10-26）：
+- R3：IFRS 主体受控不支持机制（GFL/JBS 抓取失败仍阻塞，待 R3 落地）。
+- R1：universe 生命周期 / 指数纳入流程，另行讨论。
+- 行业新闻层：暂缓开工（用户明确）。
+- 积攒未复验的 codex 验收：`19561d3` / `4a767c9` / `93934fa` / `0ae7195` / `75d49c9`。
 
 ## 1. 路线切换
 

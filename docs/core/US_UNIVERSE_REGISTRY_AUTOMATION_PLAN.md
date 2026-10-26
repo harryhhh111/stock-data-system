@@ -1,6 +1,7 @@
-# US universe 登记/分类自动化 — 待审核
+# US universe 登记/分类自动化 — 已上线
 
 > 日期：2026-10-22。范围只覆盖「未登记 index-only ticker」和「未分类 universe 股票」两类阻塞的自动化。
+> 状态：已上线（2026-10-26 补记）。
 > 背景：2026-10-21 财务同步三次重试均因 39 个未登记 index-only + 32 个未分类 universe 阻塞（index 抓取本身已成功）。指数成分调整是常态，人工逐条登记跟不上。
 > 2026-10-22 用户确认分层自动化思路。本方案不含：Wikipedia 来源稳定性与 stale cache 疑点（问题一，单独排查）；GFL/JBS 等抓取失败的处置（属失败处理，非登记）。
 
@@ -47,3 +48,13 @@
 - 不改 Wikipedia 来源与缓存逻辑（问题一，另行排查）
 - 不改 expected_skip 台账的 kind 匹配规则；GFL/JBS 等抓取失败不在本片
 - 不自动提交 git、不做指数范围扩大/缩小的其他语义变更
+
+## 6. 实施记录（2026-10-26 补记）
+
+- 已上线。首次真实运行（2026-10-23）：supplement 自动登记 32 只闭环；
+  index-only 侧 41 只 0 通过——即 R2 根因现场（身份解析只查策划表，
+  全倒在「身份表无映射」）。
+- 交叉引用：身份解析源已在 R2 修复（commit `4a767c9`，见
+  [US_INDEX_ONLY_IDENTITY_FIX_PLAN.md](US_INDEX_ONLY_IDENTITY_FIX_PLAN.md)）
+  改为「策划表优先 + SEC 全量 company_tickers 映射兜底 + CIK 占用冲突
+  检查」。本文 §2「身份表解析出有效 CIK」的描述以 R2 为准。
