@@ -1148,3 +1148,39 @@ class TestSchedulerRegistration:
         rc = sync.main([])
         assert rc == 2
         assert "ENABLED" in capsys.readouterr().err
+
+
+class TestSecRevisionReenhance:
+    def test_amended_filing_recomputes_importance(self, env, monkeypatch):
+        """/内容变更产生新 revision 时 importance 重算并回写到新版本行，
+        旧版本行保持原值。"""
+        from core.announcements import llm_enhance
+        dsn, base, routes, _e = env
+        cik = "0001000025"
+        payload = submissions_doc(cik, [
+            mk_filing("0001000025-26-000001", "8-K", days_ago(2),
+                      "2026-10-21T13:05:11.000Z"),
+        ])
+        serve_json(routes, f"/submissions/CIK{cik}.json", payload)
+        seed_company(dsn, "TSTRV", cik)
+        monkeypatch.setattr(llm_enhance, "_run_mmx",
+                            lambda *a, **kw: '{"importance": "normal"}')
+        try:
+            run()
+            rows = sql(dsn, "SELECT revision, importance FROM "
+                            "watchlist_announcement ORDER BY revision")
+            assert rows == [(1, "normal")]
+            # 内容变更（主文件变化）→ revision 2，importance 重算
+            payload["filings"]["recent"]["primaryDocument"][0] = "amended.htm"
+            serve_json(routes, f"/submissions/CIK{cik}.json", payload)
+            monkeypatch.setattr(llm_enhance, "_run_mmx",
+                                lambda *a, **kw: '{"importance": "high"}')
+            summary = run()
+            src = summary["sources"][0]
+            assert src["revised"] == 1
+            rows = sql(dsn, "SELECT revision, importance FROM "
+                            "watchlist_announcement ORDER BY revision")
+            assert rows == [(1, "normal"), (2, "high")]
+            assert summary["llm"]["ok"] >= 1
+        finally:
+            cleanup_company(dsn, "TSTRV")

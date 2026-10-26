@@ -251,8 +251,10 @@ class AnnouncementRecord:
 
 def upsert_announcement(conn, *, source_id: int, issuer: str,
                         stock_codes: list[str], record: AnnouncementRecord,
-                        is_backfill: bool, observed_at: datetime) -> str:
-    """写入一条公告，返回 'inserted' | 'revised' | 'seen'。
+                        is_backfill: bool, observed_at: datetime,
+                        ) -> tuple[str, int]:
+    """写入一条公告，返回 (outcome, revision)，outcome ∈
+    'inserted' | 'revised' | 'seen'，revision 为该条目的当前版本号。
 
     - 未见过的 (source_id, source_record_id)：插入 revision=1，
       first_observed_at=observed_at（系统实际首次发现时间，不倒填）。
@@ -277,31 +279,30 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                 "UPDATE watchlist_announcement SET last_seen_at = %s WHERE id = %s",
                 (observed_at, existing[0]),
             )
-            outcome = "seen"
-        else:
-            revision = 1 if existing is None else int(existing[1]) + 1
-            cur.execute(
-                """
-                INSERT INTO watchlist_announcement
-                    (market, issuer_identifier, source_id, source_record_id, title,
-                     form_type, original_url, published_at, published_at_precision,
-                     source_published_raw, source_timezone, first_observed_at,
-                     last_seen_at, content_hash, excerpt, content_nature,
-                     relation_reason, media_source, revision, is_backfill)
-                VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (source_id, source_record_id, revision) DO NOTHING
-                RETURNING id
-                """,
-                (issuer, source_id, record.source_record_id, record.title,
-                 record.form_type, record.url, record.published_at,
-                 record.published_precision, record.published_raw,
-                 record.source_timezone, observed_at, observed_at,
-                 record.content_hash, record.excerpt, record.content_nature,
-                 record.relation_reason, record.media_source,
-                 revision, is_backfill),
-            )
-            outcome = "inserted" if revision == 1 else "revised"
+            return "seen", int(existing[1])
+        revision = 1 if existing is None else int(existing[1]) + 1
+        cur.execute(
+            """
+            INSERT INTO watchlist_announcement
+                (market, issuer_identifier, source_id, source_record_id, title,
+                 form_type, original_url, published_at, published_at_precision,
+                 source_published_raw, source_timezone, first_observed_at,
+                 last_seen_at, content_hash, excerpt, content_nature,
+                 relation_reason, media_source, revision, is_backfill)
+            VALUES ('US', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (source_id, source_record_id, revision) DO NOTHING
+            RETURNING id
+            """,
+            (issuer, source_id, record.source_record_id, record.title,
+             record.form_type, record.url, record.published_at,
+             record.published_precision, record.published_raw,
+             record.source_timezone, observed_at, observed_at,
+             record.content_hash, record.excerpt, record.content_nature,
+             record.relation_reason, record.media_source,
+             revision, is_backfill),
+        )
+        outcome = "inserted" if revision == 1 else "revised"
 
         # 证券关联锚定首个版本行；重复抓取 ON CONFLICT 不产生重复关联。
         # 共享发行人（同 CIK）的全部关注证券逐一关联。
@@ -316,12 +317,17 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                 """,
                 (stock_code, source_id, record.source_record_id),
             )
-    return outcome
+    return outcome, revision
 
 
 def update_llm_fields(conn, *, source_id: int, source_record_id: str,
+                      revision: int,
                       title_zh=None, summary_zh=None, importance=None) -> None:
-    """新入库条目（revision=1）写 LLM 增强字段；只写非 None 字段。"""
+    """给指定版本的公告行写 LLM 增强字段（只写非 None 字段）。
+
+    revision 必须显式指定：inserted 是 1，revised 是新追加的最高版本——
+    修订意味着内容已变，增强字段回写到最新版本行，不复用旧版本字段。
+    """
     sets, params = [], []
     for col, val in (("title_zh", title_zh), ("summary_zh", summary_zh),
                      ("importance", importance)):
@@ -330,12 +336,12 @@ def update_llm_fields(conn, *, source_id: int, source_record_id: str,
             params.append(val)
     if not sets:
         return
-    params.extend([source_id, source_record_id])
+    params.extend([source_id, source_record_id, revision])
     with conn.cursor() as cur:
         cur.execute(
             f"""
             UPDATE watchlist_announcement SET {", ".join(sets)}
-            WHERE source_id = %s AND source_record_id = %s AND revision = 1
+            WHERE source_id = %s AND source_record_id = %s AND revision = %s
             """,
             params,
         )

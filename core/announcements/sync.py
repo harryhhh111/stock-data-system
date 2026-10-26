@@ -354,7 +354,8 @@ def _sync_sec_source(
         observed_at = datetime.now(timezone.utc)
         new_rows: list[tuple] = []
         for f in unique_filings:
-            outcome = store.upsert_announcement(
+            # 修订（内容变更）同样重新增强：importance/中文字段不复用旧版本
+            outcome, rev = store.upsert_announcement(
                 conn, source_id=source_id, issuer=cik, stock_codes=stock_codes,
                 record=store.AnnouncementRecord(
                     source_record_id=f.accession, form_type=f.form,
@@ -368,14 +369,17 @@ def _sync_sec_source(
             if outcome == "inserted":
                 inserted += 1
                 new_rows.append((f.accession, sec_source.neutral_title(f.form),
-                                 f.form))
+                                 f.form, rev))
             elif outcome == "revised":
                 revised += 1
+                new_rows.append((f.accession, sec_source.neutral_title(f.form),
+                                 f.form, rev))
         # 官方披露只算 importance（用户 2026-10-23 确认），不出中文标题
         llm_stats: dict = {}
         _enhance_new_rows(conn, source_id=source_id, kind="official",
                           new_rows=new_rows, stock_code=stock_codes[0],
-                          deadline=deadline, result=llm_stats)
+                          deadline=deadline, result=llm_stats,
+                          label=f"sec/{cik}")
 
         has_open_gaps = bool(open_gap_dates or new_gaps)
         complete = not new_pending
@@ -659,7 +663,8 @@ def _sync_ir_source(
         observed_at = datetime.now(timezone.utc)
         new_rows: list[tuple] = []
         for it in window_items:
-            outcome = store.upsert_announcement(
+            # 修订（内容变更）同样重新增强：importance 不复用旧版本
+            outcome, rev = store.upsert_announcement(
                 conn, source_id=source_id, issuer=issuer,
                 stock_codes=stock_codes,
                 record=store.AnnouncementRecord(
@@ -674,13 +679,16 @@ def _sync_ir_source(
             if outcome == "inserted":
                 inserted += 1
                 new_rows.append((it.source_record_id, it.title,
-                                 "press_release"))
+                                 "press_release", rev))
             elif outcome == "revised":
                 revised += 1
+                new_rows.append((it.source_record_id, it.title,
+                                 "press_release", rev))
         # IR 官方发布只算 importance（同 SEC 口径）
         _enhance_new_rows(conn, source_id=source_id, kind="official",
                           new_rows=new_rows, stock_code=stock_codes[0],
-                          deadline=deadline, result=llm_stats)
+                          deadline=deadline, result=llm_stats,
+                          label=f"ir/{issuer}")
 
         finished_at = datetime.now(timezone.utc)
         open_gaps = store.load_open_gap_ranges(conn, issuer, source_id)
@@ -876,17 +884,21 @@ def _sync_ir_source(
 
 def _enhance_new_rows(conn, *, source_id: int, kind: str,
                       new_rows: list[tuple], stock_code: str,
-                      deadline: float, result: dict) -> None:
-    """对本来源新插入的条目做 LLM 增强并回写（revision=1 行）。
+                      deadline: float, result: dict,
+                      label: str = "") -> None:
+    """对本来源新插入/新修订的条目做 LLM 增强并回写对应版本行。
 
-    new_rows：[(source_record_id, title, aux)]；媒体 aux=摘要素材，
-    官方 aux=表单类型。失败/超时/JSON 非法 → 字段留 NULL，不阻塞采集；
-    预算耗尽停止增强（剩余条目正常入库、无增强字段），计数进整轮摘要。
+    new_rows：[(source_record_id, title, aux, revision)]；媒体 aux=摘要
+    素材，官方 aux=表单类型。revised 条目同样重新增强（修订=内容已变，
+    不复用旧版本字段），回写到该 revision 行（store.update_llm_fields）。
+    失败/超时/JSON 非法 → 字段留 NULL，不阻塞采集；预算耗尽停止增强
+    （剩余条目正常入库、无增强字段）。计数进整轮摘要并打 INFO 日志
+    （出问题可按来源排查）。
     """
     from core.announcements import llm_enhance
 
     ok = failed = skipped = 0
-    for record_id, title, aux in new_rows:
+    for record_id, title, aux, revision in new_rows:
         if time.monotonic() >= deadline:
             skipped += len(new_rows) - (ok + failed + skipped)
             break
@@ -896,12 +908,16 @@ def _enhance_new_rows(conn, *, source_id: int, kind: str,
             else:
                 fields = llm_enhance.enhance_official(title, aux, stock_code)
             store.update_llm_fields(
-                conn, source_id=source_id, source_record_id=record_id, **fields)
+                conn, source_id=source_id, source_record_id=record_id,
+                revision=revision, **fields)
             ok += 1
         except llm_enhance.EnhanceError as exc:
             logger.warning("LLM 增强失败（条目已正常入库）%s: %s",
                            record_id, exc)
             failed += 1
+    if new_rows:
+        logger.info("LLM 增强 %s: ok=%d failed=%d skipped=%d",
+                    label or source_id, ok, failed, skipped)
     result["llm_ok"] = ok
     result["llm_failed"] = failed
     result["llm_skipped"] = skipped
@@ -957,7 +973,7 @@ def _sync_media_source(
             item_date = (it.published_at.astimezone(
                 ZoneInfo("Asia/Shanghai")).date()
                 if it.published_at is not None else None)
-            outcome = store.upsert_announcement(
+            outcome, rev = store.upsert_announcement(
                 conn, source_id=source_id, issuer=issuer,
                 stock_codes=stock_codes,
                 record=store.AnnouncementRecord(
@@ -977,13 +993,16 @@ def _sync_media_source(
                 observed_at=observed_at)
             if outcome == "inserted":
                 inserted += 1
-                new_rows.append((it.source_record_id, it.title, it.summary))
+                new_rows.append((it.source_record_id, it.title, it.summary, rev))
             elif outcome == "revised":
+                # 修订 = 内容已变：重新增强并回写到新版本行
                 revised += 1
+                new_rows.append((it.source_record_id, it.title, it.summary, rev))
         # 媒体条目一次调用产出 title_zh/summary_zh/importance 三字段
         _enhance_new_rows(conn, source_id=source_id, kind="media",
                           new_rows=new_rows, stock_code=stock_codes[0],
-                          deadline=deadline, result=llm_stats)
+                          deadline=deadline, result=llm_stats,
+                          label=f"media/{issuer}/{source['platform']}")
 
         finished_at = datetime.now(timezone.utc)
         # 停采缺口语义（参照 IR gap 语义）：上次完整检查点早于来源覆盖视野
@@ -1428,6 +1447,12 @@ def run_round(*, market: str = "US", trigger: str = "scheduled",
             "ir_inactive": ir_inactive,
             # 媒体来源（每日资讯公司新闻层）同语义
             "media_inactive": media_inactive,
+            # LLM 增强整轮汇总（可见性：不靠手工查库排查增强故障）
+            "llm": {
+                "ok": sum(r.get("llm_ok", 0) for r in results),
+                "failed": sum(r.get("llm_failed", 0) for r in results),
+                "skipped": sum(r.get("llm_skipped", 0) for r in results),
+            },
             "sources": results,
         }
         logger.info("公告采集整轮完成: %s", json.dumps(

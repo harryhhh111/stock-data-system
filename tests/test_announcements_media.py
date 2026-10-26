@@ -343,3 +343,77 @@ class TestLlmEnhanceIntegration:
         assert all(s.get("llm_failed", 0) > 0 for s in media)
         assert sql(dsn, "SELECT COUNT(*) FROM watchlist_announcement "
                         "WHERE title_zh IS NOT NULL")[0][0] == 0
+
+
+class TestRevisedRowsReenhanced:
+    def test_revised_media_row_reenhanced_on_latest_revision(self, env, monkeypatch):
+        """revised（内容变更）条目重新增强并回写到最新 revision 行；
+        旧版本行保持原值。"""
+        import json as _json
+        from core.announcements import llm_enhance
+        dsn, _ = env
+        seed_mu(dsn)
+        now_ts = int(datetime.now(UTC).timestamp())
+        payload = [dict(category="company", datetime=now_ts,
+                        headline="Micron rises on AI demand", id=1,
+                        related="MU", source="Yahoo", summary="v1",
+                        url="https://example.com/1")]
+        empty_rss = b'<?xml version="1.0"?><rss><channel></channel></rss>'
+        monkeypatch.setattr(
+            ir_source, "http_get",
+            lambda url, **kw: (_json.dumps(payload).encode()
+                               if "finnhub.io" in url else empty_rss))
+        monkeypatch.setattr(llm_enhance, "_run_mmx", lambda *a, **kw:
+                            '{"title_zh": "旧中文", "summary_zh": "旧摘要",'
+                            ' "importance": "normal"}')
+        run()
+        enable_media(dsn)
+        run()
+        rows = sql(dsn, "SELECT revision, title_zh, importance FROM "
+                        "watchlist_announcement ORDER BY revision")
+        assert rows == [(1, "旧中文", "normal")]
+
+        # 内容变更 → revision 2，重新增强并回写新版本行
+        payload[0]["headline"] = "Micron surges on AI demand"
+        monkeypatch.setattr(llm_enhance, "_run_mmx", lambda *a, **kw:
+                            '{"title_zh": "新中文", "summary_zh": "新摘要",'
+                            ' "importance": "high"}')
+        summary = run()
+        finnhub = next(s for s in summary["sources"]
+                       if s.get("platform") == "finnhub")
+        assert finnhub["revised"] == 1
+        rows = sql(dsn, "SELECT revision, title_zh, importance FROM "
+                        "watchlist_announcement ORDER BY revision")
+        assert rows == [(1, "旧中文", "normal"), (2, "新中文", "high")]
+        # 整轮摘要汇总 llm 计数（不靠手工查库排查）
+        assert summary["llm"]["ok"] >= 1
+        assert summary["llm"]["failed"] == 0
+
+    def test_llm_counts_visible_in_summary_on_failure(self, env, monkeypatch):
+        """增强失败：条目正常入库，llm_failed 计数进整轮摘要。"""
+        import json as _json
+        from core.announcements import llm_enhance
+        dsn, _ = env
+        seed_mu(dsn)
+        now_ts = int(datetime.now(UTC).timestamp())
+        payload = [dict(category="company", datetime=now_ts,
+                        headline="Micron rises", id=1, related="MU",
+                        source="Yahoo", summary="s", url="https://example.com/1")]
+        monkeypatch.setattr(
+            ir_source, "http_get",
+            lambda url, **kw: (_json.dumps(payload).encode()
+                               if "finnhub.io" in url
+                               else b'<?xml version="1.0"?><rss><channel></channel></rss>'))
+        def boom(*_a, **_kw):
+            raise llm_enhance.EnhanceError("test: mmx down")
+        monkeypatch.setattr(llm_enhance, "_run_mmx", boom)
+        run()
+        enable_media(dsn)
+        summary = run()
+        finnhub = next(s for s in summary["sources"]
+                       if s.get("platform") == "finnhub")
+        assert finnhub["status"] == "success_new"     # 入库不受增强失败影响
+        assert finnhub["llm_failed"] == 1
+        assert summary["llm"]["failed"] == 1
+        row = sql(dsn, "SELECT title_zh, importance FROM watchlist_announcement")
+        assert row == [(None, None)]                  # 字段留 NULL
