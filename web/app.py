@@ -1,7 +1,9 @@
 """FastAPI 应用工厂"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
+import config
 from web.routes import health, dashboard, sync, quality, screener, analyzer, backtest, paper, strategy, storyline
 from web.routes import watchlist, hyperliquid
 
@@ -25,6 +27,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 响应压缩（§10 合同：级别 5、最小 1024B、框架标准中间件）。
+    # 进程级开关，默认关闭；只应在美股后端进程启用 STOCK_HTTP_GZIP_ENABLED=true。
+    # 开启后影响本进程内所有符合条件的 HTTP 响应（不止 news 两个接口）。
+    if config.http.gzip_enabled:
+        app.add_middleware(GZipMiddleware, compresslevel=5, minimum_size=1024)
 
     # 注册路由
     app.include_router(health.router, prefix="/api/v1", tags=["health"])

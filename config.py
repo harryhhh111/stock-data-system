@@ -362,8 +362,25 @@ class SchedulerConfig:
     )
 
 
+# ── HTTP 响应配置 ─────────────────────────────────────────
+@dataclass
+class HttpConfig:
+    """HTTP 响应配置。
+
+    gzip 响应压缩（docs/WATCHLIST_DAILY_NEWS_MVP_PLAN.md §10 响应压缩修订）：
+    进程级开关，默认关闭；只在美股后端进程以 STOCK_HTTP_GZIP_ENABLED=true
+    启用。级别与阈值固定（level 5、1024B），见 web/app.py 中间件注册。
+    """
+
+    gzip_enabled: bool = field(
+        default_factory=lambda: _env("STOCK_HTTP_GZIP_ENABLED", "false",
+            cast=lambda v: v.lower() in ("1", "true", "yes"))
+    )
+
+
 # ── 聚合配置对象 ──────────────────────────────────────────
 db: DBConfig = DBConfig()
+http: HttpConfig = HttpConfig()
 concurrency: ConcurrencyConfig = ConcurrencyConfig()
 throttle: ThrottleConfig = ThrottleConfig()
 retry: RetryConfig = RetryConfig()
