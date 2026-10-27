@@ -111,10 +111,10 @@ function NewsRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
 }
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
-function dayHeader(day: string, count: number) {
+export function dayHeader(day: string, count: number) {
   // day 为北京时间 YYYY-MM-DD；附加星期几便于阅读
-  const d = new Date(`${day}T00:00:00+08:00`);
-  const weekday = Number.isNaN(d.getTime()) ? '' : ` 星期${WEEKDAYS[d.getDay()]}`;
+  const d = new Date(`${day}T00:00:00Z`);
+  const weekday = Number.isNaN(d.getTime()) ? '' : ` 星期${WEEKDAYS[d.getUTCDay()]}`;
   return `${day}${weekday} · ${count} 条（北京时间）`;
 }
 
