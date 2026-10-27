@@ -92,25 +92,77 @@ def fold_media(rows: list[dict]) -> list[list[dict]]:
 
 # ── 条目成形 ───────────────────────────────────────────────
 
+def _reason_from_row(row: dict) -> dict | None:
+    text = (row.get("relation_reason") or "").strip()
+    if not text:
+        return None
+    return {
+        "text": text,
+        "source_id": row["source_id"],
+        "source_record_id": row["source_record_id"],
+        "url": row["original_url"],
+    }
+
+
 def _merge_by_announcement(rows) -> list[dict]:
-    """同一逻辑公告关联多家公司时合并为一条：保留全部关联公司
-    （stock_codes 列表），不为每家公司重复出一条。"""
-    merged: dict[tuple, dict] = {}
-    for r in rows:
-        key = (r["source_id"], r["source_record_id"])
-        if key in merged:
-            codes = set(merged[key]["stock_codes"])
-            codes.add(r["stock_code"])
-            merged[key]["stock_codes"] = sorted(codes)
-        else:
-            merged[key] = {**r, "stock_codes": [r["stock_code"]]}
-    return list(merged.values())
+    """合并逻辑公告及其公司关联；共享记录的公司级理由无法归属时留空。"""
+    grouped: dict[tuple, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault((row["source_id"], row["source_record_id"]), []).append(row)
+    merged = []
+    for versions in grouped.values():
+        codes = sorted({row["stock_code"] for row in versions})
+        relations = {code: [] for code in codes}
+        if len(codes) == 1:
+            reason = _reason_from_row(versions[0])
+            if reason:
+                relations[codes[0]].append(reason)
+        merged.append({**versions[0], "stock_codes": codes,
+                       "_relations": relations})
+    return merged
+
+
+def _combined_relations(rows: list[dict], stock_codes: list[str]) -> dict:
+    combined = {code: [] for code in stock_codes}
+    seen = {code: set() for code in stock_codes}
+    for row in rows:
+        for code, reasons in row.get("_relations", {}).items():
+            if code not in combined:
+                continue
+            for reason in reasons:
+                key = (reason["text"], reason["source_id"],
+                       reason["source_record_id"], reason["url"])
+                if key not in seen[code]:
+                    seen[code].add(key)
+                    combined[code].append(reason)
+    for reasons in combined.values():
+        reasons.sort(key=lambda r: (r["text"], r["source_id"],
+                                    r["source_record_id"], r["url"]))
+    return combined
+
+
+def _legacy_relation(stock_codes: list[str], relations: dict) -> str | None:
+    if len(stock_codes) != 1:
+        return None
+    texts = {reason["text"] for reason in relations[stock_codes[0]]}
+    return next(iter(texts)) if len(texts) == 1 else None
+
+
+def _apply_relations(entry: dict, rows: list[dict]) -> dict:
+    stock_codes = sorted({code for row in rows
+                          for code in row.get("stock_codes", [row["stock_code"]])})
+    relations = _combined_relations(rows, stock_codes)
+    entry["stock_code"] = stock_codes[0]
+    entry["stock_codes"] = stock_codes
+    entry["stock_relations"] = [
+        {"stock_code": code, "reasons": relations[code]} for code in stock_codes]
+    entry["relation_reason"] = _legacy_relation(stock_codes, relations)
+    return entry
 
 
 def _entry_base(row: dict) -> dict:
     day = _bj_day(row)
-    stock_codes = row.get("stock_codes") or [row["stock_code"]]
-    return {
+    entry = {
         "title": row["title"],
         "url": row["original_url"],
         "source_kind": row["source_kind"],
@@ -118,9 +170,6 @@ def _entry_base(row: dict) -> dict:
         "media_source": row.get("media_source"),
         "form_type": row["form_type"],
         "content_nature": row.get("content_nature"),
-        "stock_code": stock_codes[0],
-        "stock_codes": stock_codes,
-        "relation_reason": row.get("relation_reason"),
         "excerpt": row.get("excerpt"),
         "published_at": ann._iso(row["published_at"]),
         "published_precision": row["published_at_precision"],
@@ -135,19 +184,16 @@ def _entry_base(row: dict) -> dict:
         "summary_zh": row.get("summary_zh"),
         "importance": row.get("importance"),
     }
+    return _apply_relations(entry, [row])
 
 
 def _media_group_entry(cluster: list[dict]) -> dict:
-    """折叠组：代表条（发布时间最新者优先）+ 来源数 + 全部来源入口。
-
-    来源数按出版商（media_source）去重——同一出版商经 Google+Finnhub
-    两个渠道收录只算 1 个来源，不得虚增；全部关联公司保留在 stock_codes。
-    """
+    """折叠组保留代表字段、全部公司及其有明确归属的理由出处。"""
     rep = max(cluster, key=lambda r: (r["published_at"] is not None,
                                       r["published_at"] or datetime.min
                                       .replace(tzinfo=UTC),
                                       r["first_observed_at"], r["id"]))
-    entry = _entry_base(rep)
+    entry = _apply_relations(_entry_base(rep), cluster)
     publishers = sorted({(r.get("media_source") or "unknown")
                          for r in cluster})
     entry["fold_count"] = len(publishers)
@@ -300,8 +346,7 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
 
     day_set = set(days)
     rows = _merge_by_announcement(
-        r for code, rs in logical.items() for r in rs
-        if code in watched and (not stock or code == stock))
+        r for code, rs in logical.items() for r in rs if code in watched)
     rows = [r for r in rows if _bj_day(r) in day_set]
     if kind == "official":
         rows = [r for r in rows if r["source_kind"] in OFFICIAL_KINDS]
@@ -317,6 +362,8 @@ def feed(date_str: str | None = None, stock: str = "", kind: str = "all") -> dic
             official_entries.append(e)
     media_clusters = fold_media([r for r in rows if r["source_kind"] == "media"])
     entries = official_entries + [_media_group_entry(c) for c in media_clusters]
+    if stock:
+        entries = [entry for entry in entries if stock in entry["stock_codes"]]
     entries = _sort_entries(entries)
 
     sources = _news_source_entries(source_rows, checks, gaps_by_source, enabled)

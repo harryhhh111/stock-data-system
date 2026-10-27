@@ -239,6 +239,83 @@ class TestFeed:
         assert client.get("/api/v1/watchlist/news/feed?kind=x").status_code == 409
         assert client.get("/api/v1/watchlist/news/feed?date=bad").status_code == 409
 
+    def test_folded_companies_filter_invariance_reasons_and_pinned(self, env, client):
+        dsn = env
+        for code, cik in (("MU", "0000723125"), ("WDC", "0000106040"),
+                          ("NBIS", "0001713445")):
+            seed_company(dsn, code, cik)
+        mu = seed_source(dsn, "media", "0000723125", "google_news_rss")
+        wdc = seed_source(dsn, "media", "0000106040", "finnhub")
+        now = datetime.now(UTC)
+        seed_item(dsn, mu, "mu-story", "MU",
+                  title="Micron and Western Digital rise - Reuters",
+                  published_at=now - timedelta(hours=2), media_source="Reuters",
+                  relation_reason="Google 查询词 Micron", importance="high")
+        seed_item(dsn, wdc, "wdc-story", "WDC",
+                  title="Micron and Western Digital rise - Reuters",
+                  published_at=now - timedelta(hours=1), media_source="Reuters",
+                  relation_reason="Finnhub symbol WDC", importance="high")
+
+        def only_entry(stock=""):
+            query = f"&stock={stock}" if stock else ""
+            data = client.get(f"/api/v1/watchlist/news/feed?kind=media{query}").json()["data"]
+            assert len(data["entries"]) == 1
+            return data["entries"][0]
+
+        baseline = only_entry()
+        assert baseline["stock_codes"] == ["MU", "WDC"]
+        assert baseline["stock_code"] == "MU"
+        assert baseline["fold_count"] == 1       # 同一出版商，两个采集渠道不膨胀
+        assert len(baseline["fold_sources"]) == 2
+        assert baseline["url"].endswith("wdc-story")
+        for stock in ("MU", "WDC"):
+            selected = only_entry(stock)
+            for key in ("title", "url", "stock_codes", "fold_count", "fold_sources"):
+                assert selected[key] == baseline[key]
+        assert client.get("/api/v1/watchlist/news/feed?stock=NBIS").json()["data"]["entries"] == []
+        relations = {r["stock_code"]: r["reasons"] for r in baseline["stock_relations"]}
+        assert relations["MU"][0]["text"] == "Google 查询词 Micron"
+        assert relations["MU"][0]["url"].endswith("mu-story")
+        assert relations["WDC"][0]["text"] == "Finnhub symbol WDC"
+        assert relations["WDC"][0]["url"].endswith("wdc-story")
+        assert baseline["relation_reason"] is None
+
+        sql(dsn, "UPDATE watchlist_announcement SET published_at=%s "
+                 "WHERE source_record_id='mu-story'", (now,))
+        changed = only_entry()
+        assert changed["url"].endswith("mu-story")
+        assert changed["stock_codes"] == baseline["stock_codes"]
+        assert changed["stock_relations"] == baseline["stock_relations"]
+        pinned = client.get("/api/v1/watchlist/news/pinned").json()["data"]["entries"]
+        assert len(pinned) == 1
+        assert pinned[0]["stock_codes"] == ["MU", "WDC"]
+        assert pinned[0]["stock_relations"] == baseline["stock_relations"]
+        assert pinned[0]["fold_count"] == 1
+
+    def test_shared_logical_record_does_not_invent_company_reasons(self, env, client):
+        dsn = env
+        seed_company(dsn, "MU", "0000723125")
+        seed_company(dsn, "WDC", "0000106040")
+        sec = seed_source(dsn, "sec", "0000723125", "sec")
+        seed_item(dsn, sec, "shared", "MU", title="Shared filing",
+                  kind_form="8-K", published_at=datetime.now(UTC),
+                  relation_reason="新闻级理由，归属不明")
+        sql(dsn, """
+            INSERT INTO watchlist_announcement_security (announcement_id, market, stock_code)
+            SELECT id, 'US', 'WDC' FROM watchlist_announcement
+            WHERE source_id=%s AND source_record_id='shared' AND revision=1
+        """, (sec,))
+        entries = client.get("/api/v1/watchlist/news/feed?kind=official").json()["data"]["entries"]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["stock_codes"] == ["MU", "WDC"]
+        assert entry["stock_code"] == "MU"
+        assert entry["relation_reason"] is None
+        assert entry["stock_relations"] == [
+            {"stock_code": "MU", "reasons": []},
+            {"stock_code": "WDC", "reasons": []},
+        ]
+
     def test_feed_unknown_time_labeled(self, env, client):
         dsn = env
         seed_company(dsn, "MU", "0000723125")

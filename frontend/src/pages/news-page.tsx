@@ -5,6 +5,7 @@ import { ApiError, newsApi, watchlistApi } from '@/lib/api/client';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { StockRelations } from '@/components/news/stock-relations';
 import type { NewsEntry } from '@/lib/types/news';
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.detail || error.message : error instanceof Error ? error.message : '请求失败';
@@ -34,7 +35,7 @@ function bjShort(iso: string | null) {
 }
 
 // 置顶条目：单行紧凑行（参考金十/aihot 置顶区形态），点击「详情」展开完整卡片
-function PinnedRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
+export function PinnedRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
   const [open, setOpen] = useState(false);
   const link = safeHttpUrl(entry.url);
   const title = entry.title_zh || entry.title;
@@ -46,7 +47,7 @@ function PinnedRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
         : <span className="font-medium truncate">{title}</span>}
       {entry.title_zh && <span className="shrink-0 rounded-sm border px-1 py-0.5 text-xs text-muted-foreground">AI 译</span>}
       <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">{entry.stock_code}</span>
+        <StockRelations entry={entry} compact />
         {entry.fold_count > 1 && ` · ${entry.fold_count} 来源`}
         {entry.published_at && ` · ${bjShort(entry.published_at)}`}
       </span>
@@ -64,7 +65,7 @@ function safeHttpUrl(url: string) {
 
 // 信息流条目（aihot.news 形态）：左列序号+时间，右列来源行/标题/摘要，
 // 单列按时间排列，日期分组之间用分隔线而非卡片网格。
-function NewsRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
+export function NewsRow({ rank, entry, selectedStock = '' }: { rank: number; entry: NewsEntry; selectedStock?: string }) {
   const [showSources, setShowSources] = useState(false);
   const link = safeHttpUrl(entry.url);
   const timeLabel = entry.time_unknown ? '时间未知'
@@ -79,7 +80,7 @@ function NewsRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
       <div className="text-xs text-muted-foreground flex flex-wrap gap-x-2 items-center">
         <span className="inline-flex items-center rounded-sm border px-1 py-0.5">{KIND_BADGE[entry.source_kind] ?? entry.source_kind}</span>
         {entry.media_source && <span>{entry.media_source}</span>}
-        <span className="font-medium text-foreground">{entry.stock_code}</span>
+        <StockRelations entry={entry} compact selectedStock={selectedStock} />
         {entry.importance === 'high' && <span className="rounded-sm bg-amber-100 text-amber-800 px-1 py-0.5">重要</span>}
         {entry.fold_count > 1 && <button type="button" className="underline underline-offset-2" onClick={() => setShowSources(!showSources)}>
           {entry.fold_count} 个来源{showSources ? ' ▲' : ' ▼'}
@@ -96,7 +97,6 @@ function NewsRow({ rank, entry }: { rank: number; entry: NewsEntry }) {
         <span>{entryTimeText(entry)}</span>
         {entry.content_nature === 'unclassified' && <span>内容性质未分类</span>}
         {entry.is_backfill && <span>回补</span>}
-        {entry.relation_reason && <span>关联：{entry.relation_reason}</span>}
       </div>
       {showSources && entry.fold_sources.length > 0 && <ul className="mt-1 space-y-0.5">
         {entry.fold_sources.map((s, i) => <li key={i} className="text-xs">
@@ -118,7 +118,7 @@ export function dayHeader(day: string, count: number) {
   return `${day}${weekday} · ${count} 条（北京时间）`;
 }
 
-function NewsCard({ entry }: { entry: NewsEntry }) {
+export function NewsCard({ entry }: { entry: NewsEntry }) {
   const [showSources, setShowSources] = useState(false);
   const link = safeHttpUrl(entry.url);
   // v1.1：中文标题/摘要为主，带「AI 译」标签；无中文回退原文标题；
@@ -136,7 +136,6 @@ function NewsCard({ entry }: { entry: NewsEntry }) {
       <div className="text-xs text-muted-foreground mt-2 flex flex-wrap gap-x-2 gap-y-1 items-center">
         <span className="inline-flex items-center rounded-sm border px-1.5 py-0.5">{KIND_BADGE[entry.source_kind] ?? entry.source_kind}</span>
         {entry.media_source && <span>{entry.media_source}</span>}
-        <span className="font-medium text-foreground">{entry.stock_code}</span>
         {entry.content_nature === 'unclassified' && <span>内容性质未分类</span>}
         {entry.is_backfill && <span>回补</span>}
         {entry.fold_count > 1 && <button type="button" className="underline underline-offset-2" onClick={() => setShowSources(!showSources)}>
@@ -144,7 +143,7 @@ function NewsCard({ entry }: { entry: NewsEntry }) {
         </button>}
       </div>
       <div className="text-xs text-muted-foreground mt-1">{entryTimeText(entry)}</div>
-      {entry.relation_reason && <div className="text-xs text-muted-foreground">关联：{entry.relation_reason}</div>}
+      <div className="text-xs text-muted-foreground mt-1"><StockRelations entry={entry} showReasons /></div>
       {showSources && entry.fold_sources.length > 0 && <ul className="mt-1 space-y-0.5">
         {entry.fold_sources.map((s, i) => <li key={i} className="text-xs">
           {safeHttpUrl(s.url)
@@ -230,7 +229,7 @@ export function NewsPage() {
       </CardContent></Card>}
       {byDay.map(([day, entries]) => <section key={day}>
         <h2 className="text-sm font-semibold border-b pb-1">{dayHeader(day, entries.length)}</h2>
-        <ol className="divide-y">{entries.map((e, i) => <NewsRow key={i} rank={i + 1} entry={e} />)}</ol>
+        <ol className="divide-y">{entries.map((e, i) => <NewsRow key={i} rank={i + 1} entry={e} selectedStock={stock} />)}</ol>
       </section>)}
       {feed.sources.length > 0 && <section className="space-y-1 pt-4 border-t">
         <h2 className="text-sm font-semibold">来源状态</h2>
