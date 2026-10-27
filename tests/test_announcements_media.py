@@ -344,6 +344,24 @@ class TestLlmEnhanceIntegration:
         assert sql(dsn, "SELECT COUNT(*) FROM watchlist_announcement "
                         "WHERE title_zh IS NOT NULL")[0][0] == 0
 
+    def test_malformed_json_keeps_row_with_null(self, env, monkeypatch):
+        from core.announcements import llm_enhance
+        dsn, _calls = env
+        seed_mu(dsn)
+        monkeypatch.setattr(llm_enhance, "_run_mmx",
+                            lambda *a, **kw: '{"title_zh": "标题", malformed}')
+        run()
+        enable_media(dsn)
+        summary = run()
+        media = [s for s in summary["sources"]
+                 if s.get("platform") in media_source.MEDIA_PLATFORMS]
+        assert all(s["status"] == "success_new" for s in media)
+        assert all(s.get("llm_failed", 0) > 0 for s in media)
+        rows = sql(dsn, "SELECT title_zh, summary_zh, importance "
+                        "FROM watchlist_announcement")
+        assert len(rows) > 0
+        assert all(row == (None, None, None) for row in rows)
+
 
 class TestRevisedRowsReenhanced:
     def test_revised_media_row_reenhanced_on_latest_revision(self, env, monkeypatch):

@@ -64,7 +64,10 @@ def _extract_json(text: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         raise EnhanceError("模型输出不含 JSON")
-    data = json.loads(text[start:end + 1])
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise EnhanceError(f"模型输出 JSON 语法错误: {exc.msg}") from exc
     if not isinstance(data, dict):
         raise EnhanceError("模型输出不是 JSON 对象")
     return data

@@ -41,6 +41,11 @@ class TestMediaEnhance:
         with pytest.raises(llm_enhance.EnhanceError):
             llm_enhance.enhance_media("t", "", "MU")
 
+    def test_malformed_json_object(self, monkeypatch):
+        mock_mmx(monkeypatch, stdout='{"title_zh": "标题", malformed}')
+        with pytest.raises(llm_enhance.EnhanceError, match="JSON 语法错误"):
+            llm_enhance.enhance_media("t", "", "MU")
+
     def test_empty_output(self, monkeypatch):
         mock_mmx(monkeypatch, raises=llm_enhance.EnhanceError("空输出"))
         with pytest.raises(llm_enhance.EnhanceError):
