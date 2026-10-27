@@ -1014,7 +1014,7 @@ def _sync_media_source(
         if state is not None and state["checked_through"] is not None:
             ct = state["checked_through"]
             if ct < target - timedelta(days=horizon_days):
-                stale_gap = (ct + timedelta(days=horizon_days), target)
+                stale_gap = (ct, target - timedelta(days=horizon_days))
         if stale_gap is not None:
             attempt_status = "partial"
             store.record_gap(

@@ -340,6 +340,36 @@ class TestMediaRound:
         assert google["status"] == "success_new"   # 单源失败不影响其他源
 
 
+class TestMediaCoverageGap:
+    def test_gap_ends_where_recent_coverage_begins(self, env, monkeypatch):
+        dsn, _calls = env
+        source_id = sql(dsn, """
+            INSERT INTO watchlist_announcement_source
+                (market, source_kind, platform, issuer_identifier, allowed_domain,
+                 entry_url, enabled, source_status, query_config)
+            VALUES ('US', 'media', 'finnhub', 'MU', 'finnhub.io',
+                    'https://example.com/finnhub', true, 'enabled', '{}')
+            RETURNING source_id
+        """)[0][0]
+        monkeypatch.setattr(media_source, "fetch_and_parse", lambda *a, **kw: [])
+        old = datetime(2026, 10, 10, tzinfo=UTC)
+        target = datetime(2026, 10, 20, tzinfo=UTC)
+        source = dict(source_id=source_id, issuer_identifier="MU",
+                      platform="finnhub", source_timezone="UTC", query_config="{}")
+        with closing(psycopg2.connect(dsn)) as conn:
+            result = sync._sync_media_source(
+                conn, source=source, stock_codes=["MU"],
+                state={"checked_through": old, "last_success_at": old},
+                target=target, slot=target, interval_minutes=360,
+                task_id="00000000-0000-0000-0000-000000000000",
+                trigger="manual", deadline=0)
+            conn.commit()
+        assert result["status"] == "partial"
+        gaps = sql(dsn, "SELECT lower(gap_range), upper(gap_range) "
+                        "FROM watchlist_announcement_gap")
+        assert gaps == [(old, target - timedelta(days=2))]
+
+
 class TestLlmEnhanceIntegration:
     def test_media_rows_get_zh_fields(self, env, monkeypatch):
         """增强成功：媒体条目入库带中文标题/摘要/importance。"""
