@@ -274,6 +274,30 @@ def test_identity_change_after_precheck_is_rejected(env, monkeypatch):
     assert sql(dsn, "SELECT COUNT(*) FROM stock_info WHERE stock_code='NEW'")[0][0] == 0
 
 
+def test_failed_identity_recheck_invalidates_precheck_collectable(env, monkeypatch):
+    dsn, load, _tmp = env
+    load([("NEW", "New Company", "0000000002")])
+    real = directory._decide
+    calls = 0
+
+    def wrapped(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        items, warnings = real(*args, **kwargs)
+        if calls == 1:
+            sql(dsn, "INSERT INTO us_security_ticker_symbol "
+                     "(ticker, canonical_stock_code, cik, symbol_role) "
+                     "VALUES ('NEW', 'MISSING', '0000000002', 'current')")
+        return items, warnings
+
+    monkeypatch.setattr(directory, "_decide", wrapped)
+    result = run(env, ["NEW"], apply=True)
+    assert result["status"] == "failed"
+    assert "身份表冲突" in result["transaction_error"]
+    assert result["collectable_scope"] == []
+    assert result["complete"] is False
+
+
 def test_concurrent_apply_inserts_once(env):
     dsn, load, _tmp = env
     load([("CRWV", "CoreWeave, Inc.", "0001769628")])

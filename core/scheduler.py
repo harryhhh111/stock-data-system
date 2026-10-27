@@ -656,6 +656,21 @@ def _reconcile_us_universe(
     }
 
 
+def _missing_current_ttm_scope(scope_tickers: set[str]) -> list[str]:
+    """范围内已有版本事实但缺 current TTM 的证券，需补投影而非跳过。"""
+    codes = sorted(scope_tickers)
+    if not codes:
+        return []
+    rows = execute("""
+        SELECT DISTINCT f.stock_code
+        FROM us_financial_fact_version f
+        LEFT JOIN us_financial_current_ttm t ON t.stock_code = f.stock_code
+        WHERE f.stock_code = ANY(%s) AND t.stock_code IS NULL
+        ORDER BY f.stock_code
+    """, (codes,), fetch=True) or []
+    return [row[0] for row in rows]
+
+
 def _check_zero_write_baseline() -> list[dict]:
     """E-1(2026-08-21)后:六个旧对象已删除,本护栏改为退役断言(防复活)。
 
@@ -692,6 +707,7 @@ def _write_phase_c_summary(summary: dict) -> Path:
         f"- 时间: {summary.get('started_at', 'not_run')} → "
         f"{summary.get('finished_at', 'not_run')}",
         f"- 状态: {summary.get('status', 'unknown')}",
+        f"- 失败阶段: {summary.get('failure_stage', summary.get('stage', 'not_run'))}",
         "",
         "## 证券目录",
         "",
@@ -753,21 +769,38 @@ def _write_phase_c_summary(summary: dict) -> Path:
     return run_dir
 
 
-def _run_us_financial_orchestration(t0: float) -> dict:
-    """目录、财务、R2、projection 与校验的统一发布编排。"""
-    from scripts.project_us_financial_snapshots import run_projection
+def _persist_phase_c_summary(summary: dict) -> None:
+    _write_phase_c_summary(summary)
+    summary["_summary_written"] = True
 
+
+def _run_us_financial_orchestration(t0: float) -> dict:
+    """统一保存后续阶段异常，且保留已完成的目录与财务结果。"""
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()}"
     summary: dict = {
         "run_id": run_id,
         "started_at": datetime.now().isoformat(timespec="seconds"),
-        "status": "started",
+        "status": "started", "stage": "preflight",
         "sync": {"directory": {"status": "not_run", "items": []}},
-        "classification": {},
-        "reconciliation": {},
-        "projection": "not_run",
-        "validate": "not_run",
+        "classification": {}, "reconciliation": {},
+        "projection": "not_run", "validate": "not_run",
     }
+    try:
+        return _run_us_financial_orchestration_stages(t0, summary)
+    except Exception as exc:
+        if not summary.get("_summary_written"):
+            summary["status"] = "failed"
+            summary["failure_stage"] = summary.get("stage", "unknown")
+            summary.setdefault("blocking_reasons", []).append(
+                f"{summary['failure_stage']}: {type(exc).__name__}: {exc}")
+            summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _persist_phase_c_summary(summary)
+        raise
+
+
+def _run_us_financial_orchestration_stages(t0: float, summary: dict) -> dict:
+    """目录、财务、R2、projection 与校验的统一发布编排。"""
+    from scripts.project_us_financial_snapshots import run_projection
     from core.us_security_identity import (
         resolve_us_symbols_batch, validate_us_security_symbols,
     )
@@ -776,6 +809,7 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         if identity_conflicts:
             raise RuntimeError(f"US 身份表冲突,禁止同步: {identity_conflicts}")
         skips = _load_expected_skips()
+        summary["stage"] = "sync"
         sync_result = _sync_us()
     except Exception as exc:
         reason = f"US 前置或同步执行失败: {type(exc).__name__}: {exc}"
@@ -784,7 +818,7 @@ def _run_us_financial_orchestration(t0: float) -> dict:
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "zero_write": "not_run",
         })
-        _write_phase_c_summary(summary)
+        _persist_phase_c_summary(summary)
         raise RuntimeError(reason) from exc
 
     directory = sync_result.get("directory")
@@ -798,7 +832,13 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         }
         sync_result["directory"] = directory
     directory_status = directory["status"]
+    summary["stage"] = "reconciliation"
+    summary["sync"] = {
+        k: (sorted(v) if isinstance(v, set) else v)
+        for k, v in sync_result.items() if k != "index_tickers"
+    }
     classification = _classify_us_sync_outcome(sync_result, skips)
+    summary["classification"] = classification
     index_tickers = sync_result.get("index_tickers", set())
     raw_index_tickers = sync_result.get("raw_index_tickers", set())
     supplement_tickers = set(sync_result.get("supplement_tickers", []))
@@ -807,11 +847,6 @@ def _run_us_financial_orchestration(t0: float) -> dict:
     reconciliation = _reconcile_us_universe(
         scope_tickers, index_tickers, classification["expected_skip"],
         raw_index_tickers=raw_index_tickers, resolved_map=resolved_map)
-    summary["sync"] = {
-        k: (sorted(v) if isinstance(v, set) else v)
-        for k, v in sync_result.items() if k != "index_tickers"
-    }
-    summary["classification"] = classification
     summary["reconciliation"] = reconciliation
     logger.info(
         "Phase C1 分类: directory=%s synced=%d skip=%d expected_skip=%s blocking=%s",
@@ -819,6 +854,7 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         classification["expected_skip"], classification["blocking_failure"],
     )
 
+    summary["stage"] = "r2"
     unregistered_index_only = sorted(
         set(reconciliation["index_only_tickers"]) - _load_index_only_registry())
     summary["unregistered_index_only"] = unregistered_index_only
@@ -869,6 +905,7 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["unregistered_index_only"] = unregistered_index_only
         summary["uncovered_universe"] = uncovered_universe
 
+    summary["stage"] = "blocking"
     blocking_reasons = []
     if directory_status != "success":
         blocking_reasons.append(
@@ -889,22 +926,33 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["zero_write"] = "not_run"
         summary["projection"] = "not_run"
         summary["validate"] = "not_run"
-        _write_phase_c_summary(summary)
+        _persist_phase_c_summary(summary)
         raise RuntimeError("US sync blocking: " + "; ".join(blocking_reasons))
 
+    summary["stage"] = "zero_write"
     violations = _check_zero_write_baseline()
     summary["zero_write"] = "pass" if not violations else violations
     if violations:
         summary["status"] = "blocked_zero_write"
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
-        _write_phase_c_summary(summary)
+        _persist_phase_c_summary(summary)
         raise RuntimeError(f"已退役对象仍存在: {[v['object'] for v in violations]}")
 
+    summary["stage"] = "projection"
+    projection_trigger = {
+        "financial_writes": sync_result["success"] > 0 or bool(sync_result["no_write"]),
+        "directory_inserted": list(directory.get("inserted", [])),
+        "missing_current_ttm": [],
+    }
     if sync_result["success"] == 0 and not sync_result["no_write"]:
+        projection_trigger["missing_current_ttm"] = _missing_current_ttm_scope(scope_tickers)
+    summary["projection_trigger"] = projection_trigger
+    needs_projection = any(projection_trigger.values())
+    if not needs_projection:
         summary["status"] = "no_new_filings"
         summary["projection"] = None
         summary["validate"] = "not_run"
-        logger.info("全部 ticker 已同步跳过: 不运行 projection(no_new_filings)")
+        logger.info("全部 ticker 已同步跳过且快照完整: 不运行 projection(no_new_filings)")
     else:
         proj = run_projection(
             out_of_sync_scope=set(reconciliation["out_of_sync_scope"]))
@@ -912,19 +960,21 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["status"] = "projected"
 
     if summary["projection"]:
+        summary["stage"] = "validate"
         from core.validate import run_after_sync
         val = run_after_sync(market="US")
         summary["validate"] = val
         if not val.get("success"):
             summary["status"] = "validate_failed"
             summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
-            _write_phase_c_summary(summary)
+            _persist_phase_c_summary(summary)
             raise RuntimeError(f"US validate 失败: {val.get('error')}")
 
+    summary["stage"] = "finalizing"
     summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
     if summary["status"] == "projected":
         summary["status"] = "success"
-    _write_phase_c_summary(summary)
+    _persist_phase_c_summary(summary)
     return {
         "success": sync_result["success"],
         "failed": sync_result["failed"],

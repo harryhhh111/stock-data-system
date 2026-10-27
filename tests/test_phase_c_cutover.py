@@ -174,6 +174,7 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
         "universe_not_in_sync_scope": [], "expected_skip_in_universe": ["Z1"],
     })
     monkeypatch.setattr(sched, "_check_zero_write_baseline", lambda: [])
+    monkeypatch.setattr(sched, "_missing_current_ttm_scope", lambda scope: [])
     monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
 
     import scripts.project_us_financial_snapshots as proj_mod
@@ -372,6 +373,36 @@ class TestDirectoryOrchestration:
         assert summary["auto_registry"]["index_only_registered"] == ["SAFE"]
         assert summary["status"] == "blocked"
 
+    def test_directory_insert_forces_projection_with_existing_facts(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 0, "failed": 0, "skipped": 1, "no_write": [],
+            "errors": [], "index_tickers": {"CRWV"},
+            "directory": {
+                "status": "success", "complete": True,
+                "planned_scope": ["CRWV"], "collectable_scope": ["CRWV"],
+                "blocked_tickers": [], "items": [], "inserted": ["CRWV"], "rejected": [],
+            },
+        })
+        sched._run_us_financial_orchestration(0.0)
+        assert calls == ["projection", "validate"]
+        assert self.summary(tmp_path)["projection_trigger"]["directory_inserted"] == ["CRWV"]
+
+    def test_missing_snapshot_from_prior_insert_triggers_recovery_projection(
+            self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 0, "failed": 0, "skipped": 1, "no_write": [],
+            "errors": [], "index_tickers": {"CRWV"},
+            "directory": {
+                "status": "success", "complete": True,
+                "planned_scope": ["CRWV"], "collectable_scope": ["CRWV"],
+                "blocked_tickers": [], "items": [], "inserted": [], "rejected": [],
+            },
+        })
+        monkeypatch.setattr(sched, "_missing_current_ttm_scope", lambda scope: ["CRWV"])
+        sched._run_us_financial_orchestration(0.0)
+        assert calls == ["projection", "validate"]
+        assert self.summary(tmp_path)["projection_trigger"]["missing_current_ttm"] == ["CRWV"]
+
     def test_failed_directory_with_all_financial_skipped_is_not_no_new_filings(
             self, monkeypatch, tmp_path):
         calls = _orch_mocks(monkeypatch, tmp_path, {
@@ -455,6 +486,39 @@ class TestDirectoryOrchestration:
         assert summary["status"] == "blocked"
         assert summary["sync"]["directory"]["status"] == "not_run"
         assert summary["projection"] == "not_run"
+
+    def test_reconciliation_failure_preserves_completed_sync_summary(self, monkeypatch, tmp_path):
+        _orch_mocks(monkeypatch, tmp_path, {
+            "success": 1, "failed": 0, "skipped": 0, "no_write": [],
+            "errors": [], "index_tickers": {"CRWV"},
+        })
+        monkeypatch.setattr(sched, "_reconcile_us_universe",
+                            lambda *a, **kw: (_ for _ in ()).throw(
+                                RuntimeError("reconciliation connection lost")))
+        with pytest.raises(RuntimeError, match="connection lost"):
+            sched._run_us_financial_orchestration(0.0)
+        summary = self.summary(tmp_path)
+        assert summary["status"] == "failed"
+        assert summary["failure_stage"] == "reconciliation"
+        assert summary["sync"]["directory"]["status"] == "success"
+        assert summary["sync"]["success"] == 1
+
+    def test_projection_failure_records_stage_and_keeps_sync_summary(self, monkeypatch, tmp_path):
+        _orch_mocks(monkeypatch, tmp_path, {
+            "success": 1, "failed": 0, "skipped": 0, "no_write": [],
+            "errors": [], "index_tickers": {"CRWV"},
+        })
+        import scripts.project_us_financial_snapshots as proj_mod
+        monkeypatch.setattr(proj_mod, "run_projection",
+                            lambda **kw: (_ for _ in ()).throw(
+                                RuntimeError("projection connection lost")))
+        with pytest.raises(RuntimeError, match="projection connection lost"):
+            sched._run_us_financial_orchestration(0.0)
+        summary = self.summary(tmp_path)
+        assert summary["status"] == "failed"
+        assert summary["failure_stage"] == "projection"
+        assert summary["sync"]["directory"]["status"] == "success"
+        assert summary["sync"]["success"] == 1
 
 
 # ── 6. 停刷 US 物化视图 ───────────────────────────────────────

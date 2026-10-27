@@ -288,8 +288,9 @@ def _summarize(result: dict) -> dict:
                 if item["insert_result"] == "inserted"]
     existing = [item["canonical_code"] for item in items
                 if item["decision"] == "existing"]
-    collectable = [item["canonical_code"] for item in items
-                   if item["decision"] in ("approved", "existing")]
+    collectable = [] if result.get("fatal_error") or result.get("transaction_error") else [
+        item["canonical_code"] for item in items
+        if item["decision"] in ("approved", "existing")]
     blocked = sorted({ticker for item in rejected
                       for ticker in [item["canonical_code"], *item["raw_tickers"]]})
     result.update({
@@ -391,6 +392,10 @@ def sync_us_security_directory(*, planned_scope: list[str],
         for item in result["items"]:
             if item["insert_result"] == "inserted":
                 item["insert_result"] = "rolled_back"
+            if apply and item["decision"] == "approved":
+                item["action"] = "rejected"
+                item["decision"] = "rejected"
+                item["reasons"].append("事务内身份复核或写入未完成，预检批准失效")
 
     result = _summarize(result)
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
