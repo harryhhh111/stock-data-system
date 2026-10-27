@@ -249,6 +249,21 @@ class AnnouncementRecord:
     importance: str | None = None       # LLM 增强：high|normal（媒体+官方）
 
 
+def _link_announcement_securities(cur, *, source_id: int, source_record_id: str,
+                                  stock_codes: list[str]) -> None:
+    for stock_code in stock_codes:
+        cur.execute(
+            """
+            INSERT INTO watchlist_announcement_security
+                (announcement_id, market, stock_code)
+            SELECT id, 'US', %s FROM watchlist_announcement
+            WHERE source_id = %s AND source_record_id = %s AND revision = 1
+            ON CONFLICT (announcement_id, stock_code) DO NOTHING
+            """,
+            (stock_code, source_id, source_record_id),
+        )
+
+
 def upsert_announcement(conn, *, source_id: int, issuer: str,
                         stock_codes: list[str], record: AnnouncementRecord,
                         is_backfill: bool, observed_at: datetime,
@@ -258,7 +273,8 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
 
     - 未见过的 (source_id, source_record_id)：插入 revision=1，
       first_observed_at=observed_at（系统实际首次发现时间，不倒填）。
-    - 已见且 content_hash 相同：只推进 last_seen_at，不动 first_observed_at。
+    - 已见且 content_hash 相同：推进 last_seen_at 并补齐证券关联，
+      不动 first_observed_at。
     - 已见但内容变更：追加 revision+1 不可变行，不覆盖旧版本。
     证券关联挂在该逻辑公告的首个版本行（revision 最小）；同一公告可关联
     多个证券（共享 CIK 的多个关注代码逐一写入，重复抓取不重复关联）。
@@ -279,6 +295,10 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
                 "UPDATE watchlist_announcement SET last_seen_at = %s WHERE id = %s",
                 (observed_at, existing[0]),
             )
+            _link_announcement_securities(
+                cur, source_id=source_id,
+                source_record_id=record.source_record_id,
+                stock_codes=stock_codes)
             return "seen", int(existing[1])
         revision = 1 if existing is None else int(existing[1]) + 1
         cur.execute(
@@ -304,19 +324,10 @@ def upsert_announcement(conn, *, source_id: int, issuer: str,
         )
         outcome = "inserted" if revision == 1 else "revised"
 
-        # 证券关联锚定首个版本行；重复抓取 ON CONFLICT 不产生重复关联。
-        # 共享发行人（同 CIK）的全部关注证券逐一关联。
-        for stock_code in stock_codes:
-            cur.execute(
-                """
-                INSERT INTO watchlist_announcement_security
-                    (announcement_id, market, stock_code)
-                SELECT id, 'US', %s FROM watchlist_announcement
-                WHERE source_id = %s AND source_record_id = %s AND revision = 1
-                ON CONFLICT (announcement_id, stock_code) DO NOTHING
-                """,
-                (stock_code, source_id, record.source_record_id),
-            )
+        _link_announcement_securities(
+            cur, source_id=source_id,
+            source_record_id=record.source_record_id,
+            stock_codes=stock_codes)
     return outcome, revision
 
 

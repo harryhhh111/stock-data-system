@@ -224,6 +224,41 @@ def run(**kw):
     return sync.run_round(**params)
 
 
+class TestAnnouncementSecurityLinks:
+    def test_seen_record_adds_new_watched_share_class(self, env):
+        dsn, _calls = env
+        source_id = sql(dsn, """
+            INSERT INTO watchlist_announcement_source
+                (market, source_kind, platform, issuer_identifier, allowed_domain,
+                 entry_url, enabled, source_status)
+            VALUES ('US', 'sec', 'sec', '0001652044', 'sec.gov',
+                    'https://example.com/sec', true, 'enabled')
+            RETURNING source_id
+        """)[0][0]
+        now = datetime.now(UTC)
+        record = store.AnnouncementRecord(
+            source_record_id="same", form_type="8-K", title="Report",
+            url="https://example.com/report", published_at=now,
+            published_precision="second", published_raw=now.isoformat(),
+            source_timezone="UTC", content_hash="same")
+        with closing(psycopg2.connect(dsn)) as conn:
+            first = store.upsert_announcement(
+                conn, source_id=source_id, issuer="0001652044",
+                stock_codes=["GOOG"], record=record, is_backfill=False,
+                observed_at=now)
+            second = store.upsert_announcement(
+                conn, source_id=source_id, issuer="0001652044",
+                stock_codes=["GOOG", "GOOGL"], record=record,
+                is_backfill=False, observed_at=now)
+            conn.commit()
+        assert first == ("inserted", 1)
+        assert second == ("seen", 1)
+        codes = sql(dsn, "SELECT stock_code FROM watchlist_announcement_security "
+                         "ORDER BY stock_code")
+        assert codes == [("GOOG",), ("GOOGL",)]
+        assert sql(dsn, "SELECT COUNT(*) FROM watchlist_announcement")[0][0] == 1
+
+
 class TestMediaRound:
     def test_media_sources_registered_disabled_by_default(self, env):
         dsn, calls = env
