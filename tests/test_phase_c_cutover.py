@@ -153,6 +153,12 @@ def _orch_mocks(monkeypatch, tmp_path, sync_result):
     sync_result.setdefault("failures", [])
     sync_result.setdefault("index_errors", [])
     sync_result.setdefault("raw_index_tickers", set(sync_result.get("index_tickers", set())))
+    planned = sorted(sync_result.get("index_tickers", set()))
+    sync_result.setdefault("directory", {
+        "status": "success", "complete": True,
+        "planned_scope": planned, "collectable_scope": planned,
+        "blocked_tickers": [], "items": [], "inserted": [], "rejected": [],
+    })
     monkeypatch.setattr(sched, "_sync_us", lambda: sync_result)
     monkeypatch.setattr(sched, "_load_expected_skips", lambda today=None: {})
     monkeypatch.setattr(sched, "_load_index_only_registry", lambda: {"Z9"})
@@ -285,6 +291,170 @@ class TestOrchestration:
         result = sched._run_us_financial_orchestration(0.0)
         assert "projection" not in calls and "validate" not in calls
         assert result["projection"] is None  # no_new_filings
+
+
+class TestDirectoryOrchestration:
+    @staticmethod
+    def summary(tmp_path):
+        runs = list(tmp_path.iterdir())
+        assert len(runs) == 1
+        return json.loads((runs[0] / "summary.json").read_text())
+
+    @staticmethod
+    def rejected(code="Z9"):
+        return {
+            "canonical_code": code, "raw_ticker": code, "raw_tickers": [code],
+            "decision": "rejected", "reasons": ["fixture identity conflict"],
+        }
+
+    @pytest.mark.parametrize("registry", [{"Z9"}, set()])
+    def test_directory_rejection_cannot_be_cleared_by_csv_or_r2(
+            self, monkeypatch, tmp_path, registry):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 0, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+            "directory": {
+                "status": "partial", "complete": True,
+                "planned_scope": ["A", "Z9"], "collectable_scope": ["A"],
+                "blocked_tickers": ["Z9"], "items": [self.rejected()],
+                "rejected": [self.rejected()], "inserted": [],
+            },
+        })
+        monkeypatch.setattr(sched, "_load_index_only_registry", lambda: registry)
+        import core.us_universe_registry as reg_mod
+        registered = []
+        monkeypatch.setattr(reg_mod, "auto_verify_and_register",
+                            lambda *a, **kw: registered.append(a) or {
+                                "index_only_registered": ["Z9"],
+                                "index_only_failed": [],
+                                "supplement_registered": []})
+        with pytest.raises(RuntimeError, match="证券目录 partial"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == [] and registered == []
+        summary = self.summary(tmp_path)
+        assert summary["status"] == "blocked"
+        assert summary["projection"] == "not_run"
+        assert summary["auto_registry"]["skipped_by_directory"][0]["stock_code"] == "Z9"
+
+    def test_r2_keeps_unaffected_duties_but_cannot_publish(self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 1, "failed": 0, "skipped": 0, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+            "directory": {
+                "status": "partial", "complete": True,
+                "planned_scope": ["A", "Z9"], "collectable_scope": ["A"],
+                "blocked_tickers": ["Z9"], "items": [self.rejected()],
+                "rejected": [self.rejected()], "inserted": [],
+            },
+        })
+        monkeypatch.setattr(sched, "_load_index_only_registry", lambda: set())
+        monkeypatch.setattr(sched, "_reconcile_us_universe",
+                            lambda scope, idx, es, raw_index_tickers=None, resolved_map=None: {
+            "universe_count": 1, "index_ticker_count": 2, "scope_ticker_count": 2,
+            "raw_index_ticker_count": 2, "out_of_sync_scope": [],
+            "index_only_tickers": ["Z9", "SAFE"],
+            "universe_not_in_sync_scope": [], "expected_skip_in_universe": [],
+        })
+        import core.us_universe_registry as reg_mod
+        received = []
+
+        def auto(index_only, uncovered, **kw):
+            received.append((index_only, uncovered))
+            return {"index_only_registered": ["SAFE"], "index_only_failed": [],
+                    "supplement_registered": []}
+
+        monkeypatch.setattr(reg_mod, "auto_verify_and_register", auto)
+        with pytest.raises(RuntimeError, match="证券目录 partial"):
+            sched._run_us_financial_orchestration(0.0)
+        assert received == [(["SAFE"], [])]
+        assert calls == []
+        summary = self.summary(tmp_path)
+        assert summary["auto_registry"]["index_only_registered"] == ["SAFE"]
+        assert summary["status"] == "blocked"
+
+    def test_failed_directory_with_all_financial_skipped_is_not_no_new_filings(
+            self, monkeypatch, tmp_path):
+        calls = _orch_mocks(monkeypatch, tmp_path, {
+            "success": 0, "failed": 0, "skipped": 1000, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+            "directory": {
+                "status": "failed", "complete": False, "planned_scope": ["A"],
+                "collectable_scope": ["A"], "blocked_tickers": [], "items": [],
+                "rejected": [], "inserted": [], "fatal_error": "SEC unavailable",
+            },
+        })
+        with pytest.raises(RuntimeError, match="证券目录 failed"):
+            sched._run_us_financial_orchestration(0.0)
+        assert calls == []
+        summary = self.summary(tmp_path)
+        assert summary["status"] == "blocked" and summary["projection"] == "not_run"
+
+    def test_outer_sync_job_logs_failed_after_directory_block(self, monkeypatch, tmp_path):
+        _orch_mocks(monkeypatch, tmp_path, {
+            "success": 20, "failed": 0, "skipped": 0, "no_write": [],
+            "errors": [], "index_tickers": {"A"},
+            "directory": {
+                "status": "partial", "complete": True, "planned_scope": ["A"],
+                "collectable_scope": ["A"], "blocked_tickers": ["Z9"],
+                "items": [self.rejected()], "rejected": [self.rejected()], "inserted": [],
+            },
+        })
+        monkeypatch.setattr(sched.config.scheduler, "max_retries", 1)
+        import core.sync._utils as utils
+        logged = []
+        monkeypatch.setattr(utils, "log_sync_result",
+                            lambda **kw: logged.append(kw))
+        result = sched._run_sync_job("US")
+        assert result["success"] is False
+        assert logged[-1]["status"] == "failed"
+        assert self.summary(tmp_path)["status"] == "blocked"
+
+    def test_sync_us_uses_safe_scope_without_shrinking_plan(self, monkeypatch):
+        planned = ["A", "B"]
+        scope_result = {
+            "total": 0, "success": 0, "failed": 0, "skipped": 0, "elapsed": 0,
+            "indexes_synced": ["TEST"], "errors": [], "failures": [],
+            "index_errors": [], "no_write": [], "index_sources": {},
+            "index_tickers": {"A", "B"}, "raw_index_tickers": {"A", "B"},
+            "supplement_tickers": [],
+        }
+        monkeypatch.setattr(sched, "build_us_sync_scope", lambda: {
+            "scope_result": scope_result, "scope": planned,
+            "raw_index": {"A", "B"}, "resolved_map": {"A": "A", "B": "B"},
+        })
+        import core.sync.us_security_directory as directory_mod
+        import core.sync as sync_mod
+        calls = []
+
+        def fake_directory(**kw):
+            calls.append("directory")
+            return {"status": "partial", "complete": True,
+                    "planned_scope": planned, "collectable_scope": ["A"],
+                    "blocked_tickers": ["B"], "items": [], "rejected": []}
+
+        def fake_financial(args):
+            calls.append(f"financial:{args.us_tickers}")
+            return {"total": 1, "success": 1, "failed": 0, "skipped": 0,
+                    "elapsed": 0, "no_write": [], "errors": [], "failures": []}
+
+        monkeypatch.setattr(directory_mod, "sync_us_security_directory", fake_directory)
+        monkeypatch.setattr(sync_mod, "sync_us_market", fake_financial)
+        result = sched._sync_us()
+        assert calls == ["directory", "financial:A"]
+        assert result["planned_scope"] == planned
+        assert result["collectable_scope"] == ["A"]
+
+    def test_identity_preflight_failure_writes_not_run_summary(self, monkeypatch, tmp_path):
+        import core.us_security_identity as ident_mod
+        monkeypatch.setattr(ident_mod, "validate_us_security_symbols",
+                            lambda symbols=None: ["broken"])
+        monkeypatch.setattr(sched, "_PHASE_C_SUMMARY_DIR", tmp_path)
+        with pytest.raises(RuntimeError, match="身份表冲突"):
+            sched._run_us_financial_orchestration(0.0)
+        summary = self.summary(tmp_path)
+        assert summary["status"] == "blocked"
+        assert summary["sync"]["directory"]["status"] == "not_run"
+        assert summary["projection"] == "not_run"
 
 
 # ── 6. 停刷 US 物化视图 ───────────────────────────────────────

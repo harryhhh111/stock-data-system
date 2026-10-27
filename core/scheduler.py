@@ -373,85 +373,100 @@ def _run_hk_pdf_queue_job() -> None:
         _refresh_materialized_views("financial", "CN_HK")
 
 
-def _sync_us() -> dict:
-    """执行美股增量同步。
-
-    Phase C-US-IDENTITY(2026-08-12):指数 ticker 先经身份表 canonical 化
-    (BNY→BK 等),与补充清单 canonical code 求并集去重,每个 canonical
-    security 只同步一次;SEC 请求/事实/snapshot 全部落在 canonical key。
-    """
-    from core.sync import sync_us_market
+def build_us_sync_scope() -> dict:
+    """构造目录与财务共用的 US 计划范围，不启动财务或目录写入。"""
     from core.us_security_identity import resolve_us_symbols_batch
 
-    # 从环境变量读取要同步的指数列表
     indexes_str = os.environ.get("STOCK_US_INDEXES", "SP500")
     indexes = [idx.strip().upper() for idx in indexes_str.split(",") if idx.strip()]
-
     logger.info("美股同步范围: %s", ", ".join(indexes))
-
-    total_result = {
-        "total": 0,
-        "success": 0,
-        "failed": 0,
-        "skipped": 0,
-        "elapsed": 0,
-        "indexes_synced": [],
-        "errors": [],
-        "failures": [],       # ticker 级结构化失败(Phase C1)
-        "index_errors": [],   # 指数级失败(公司列表/整指数异常)——一律 blocking
-        "no_write": [],
-        "index_sources": {},  # 来源/缓存降级状态，写入 Phase C 运行摘要
-        "index_tickers": set(),      # canonical 化后的同步 ticker(去重)
-        "raw_index_tickers": set(),  # 原始指数 ticker(审计留痕,对账用)
+    scope_result = {
+        "total": 0, "success": 0, "failed": 0, "skipped": 0, "elapsed": 0,
+        "indexes_synced": [], "errors": [], "failures": [], "index_errors": [],
+        "no_write": [], "index_sources": {}, "index_tickers": set(),
+        "raw_index_tickers": set(),
     }
-
-    # 1. 解析所有指数 → 原始 ticker → canonical 化
     from core.fetchers.us_financial import USFinancialFetcher
     raw_index: set[str] = set()
     for index in indexes:
         fetcher = USFinancialFetcher()
         try:
             tickers = set(fetcher.get_tickers_by_index(index))
-            total_result["index_sources"][index] = fetcher.get_index_source_status(index)
+            scope_result["index_sources"][index] = fetcher.get_index_source_status(index)
             if not tickers:
-                total_result["index_errors"].append(f"{index}: 指数成分解析为空")
+                scope_result["index_errors"].append(f"{index}: 指数成分解析为空")
                 logger.error("指数 %s 成分解析为空", index)
                 continue
             raw_index |= tickers
-            total_result["indexes_synced"].append(index)
+            scope_result["indexes_synced"].append(index)
         except Exception as exc:
             error_msg = f"{index}: {type(exc).__name__}: {exc}"
             logger.error("指数 %s 解析失败: %s", index, exc)
-            total_result["index_sources"][index] = fetcher.get_index_source_status(index)
-            total_result["index_errors"].append(error_msg)
-    total_result["raw_index_tickers"] = raw_index
+            scope_result["index_sources"][index] = fetcher.get_index_source_status(index)
+            scope_result["index_errors"].append(error_msg)
+    scope_result["raw_index_tickers"] = raw_index
+    if scope_result["index_errors"]:
+        scope_result["error"] = "index constituent resolution failed"
+        return {"scope_result": scope_result, "scope": [],
+                "raw_index": raw_index, "resolved_map": {}}
 
-    # 指数级失败在已知时必须 fail fast，不能只靠补充清单继续同步少数 ticker 后
-    # 才阻断；避免本次 2026-08-13 观察到的 partial version-layer 写入。
-    if total_result["index_errors"]:
-        total_result["error"] = "index constituent resolution failed"
-        return total_result
-
-    canonical_index = set(resolve_us_symbols_batch(raw_index).values())
-    total_result["index_tickers"] = canonical_index
-
-    # 2. Phase C2 补充清单(canonical code),求并集去重
+    resolved_map = resolve_us_symbols_batch(raw_index)
+    canonical_index = set(resolved_map.values())
+    scope_result["index_tickers"] = canonical_index
     supplement = _load_supplement_tickers()
-    total_result["supplement_tickers"] = sorted(supplement)
-    total_result["supplement_now_in_index"] = sorted(supplement & canonical_index)
+    scope_result["supplement_tickers"] = sorted(supplement)
+    scope_result["supplement_now_in_index"] = sorted(supplement & canonical_index)
     scope = sorted(canonical_index | supplement)
-
     if not scope:
-        total_result["index_errors"].append("empty scope: 无有效指数成分")
-        total_result["error"] = "empty scope"
+        scope_result["index_errors"].append("empty scope: 无有效指数成分")
+        scope_result["error"] = "empty scope"
+    return {"scope_result": scope_result, "scope": scope,
+            "raw_index": raw_index, "resolved_map": resolved_map}
+
+
+def _sync_us() -> dict:
+    """目录准入后，对同一计划范围内身份安全的证券执行财务同步。"""
+    from core.sync import sync_us_market
+    from core.sync.us_security_directory import sync_us_security_directory
+
+    built = build_us_sync_scope()
+    total_result = built["scope_result"]
+    scope = built["scope"]
+    if total_result.get("error"):
+        total_result["directory"] = {
+            "status": "not_run", "complete": False, "planned_scope": scope,
+            "collectable_scope": [], "blocked_tickers": [], "items": [],
+        }
         return total_result
 
-    # 3. 每个 canonical security 只同步一次
+    try:
+        directory = sync_us_security_directory(
+            planned_scope=scope, raw_index_tickers=built["raw_index"],
+            resolved_map=built["resolved_map"],
+            index_sources=total_result.get("index_sources"), apply=True)
+    except Exception as exc:
+        logger.exception("US 证券目录同步失败")
+        directory = {
+            "status": "failed", "complete": False,
+            "planned_scope": scope, "collectable_scope": [],
+            "blocked_tickers": [], "items": [],
+            "fatal_error": f"{type(exc).__name__}: {exc}",
+        }
+        total_result["errors"].append(f"directory: {type(exc).__name__}: {exc}")
+    total_result["directory"] = directory
+    total_result["planned_scope"] = scope
+    total_result["resolved_map"] = built["resolved_map"]
+    collectable = sorted(directory.get("collectable_scope", []))
+    total_result["collectable_scope"] = collectable
+
     class Args:
         us_index = None
-        us_tickers = ",".join(scope)
+        us_tickers = ",".join(collectable)
         force = config.scheduler.force_sync
 
+    if not collectable:
+        logger.error("US 目录未确认可采集证券，财务阶段不启动；计划范围=%d", len(scope))
+        return total_result
     try:
         result = sync_us_market(Args())
         total_result["total"] += result.get("total", 0)
@@ -465,16 +480,15 @@ def _sync_us() -> dict:
         if result.get("error"):
             total_result["index_errors"].append(f"sync: {result['error']}")
         logger.info(
-            "美股同步完成: scope=%d success=%d failed=%d skipped=%d",
-            len(scope), result.get("success", 0), result.get("failed", 0),
-            result.get("skipped", 0),
+            "美股同步完成: planned=%d collectable=%d success=%d failed=%d skipped=%d",
+            len(scope), len(collectable), result.get("success", 0),
+            result.get("failed", 0), result.get("skipped", 0),
         )
     except Exception as exc:
         error_msg = f"sync: {type(exc).__name__}: {exc}"
         logger.error("美股同步失败: %s", exc)
         total_result["errors"].append(error_msg)
         total_result["index_errors"].append(error_msg)
-
     return total_result
 
 
@@ -662,44 +676,62 @@ def _check_zero_write_baseline() -> list[dict]:
 
 def _write_phase_c_summary(summary: dict) -> Path:
     run_dir = _PHASE_C_SUMMARY_DIR / summary["run_id"]
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+    sync = summary.get("sync", {})
+    classification = summary.get("classification", {})
+    reconciliation = summary.get("reconciliation", {})
+    directory = sync.get("directory") or {"status": "not_run", "items": []}
+    rejected = directory.get("rejected", [
+        item for item in directory.get("items", []) if item.get("decision") == "rejected"])
     lines = [
         "# Phase C1 US financial run 摘要",
         "",
         f"- run_id: {summary['run_id']}",
-        f"- 时间: {summary['started_at']} → {summary['finished_at']}",
-        f"- 状态: {summary['status']}",
+        f"- 时间: {summary.get('started_at', 'not_run')} → "
+        f"{summary.get('finished_at', 'not_run')}",
+        f"- 状态: {summary.get('status', 'unknown')}",
+        "",
+        "## 证券目录",
+        "",
+        f"- directory: {directory.get('status', 'not_run')} | "
+        f"计划范围: {len(directory.get('planned_scope', sync.get('planned_scope', [])))} | "
+        f"可采集范围: {len(directory.get('collectable_scope', sync.get('collectable_scope', [])))} | "
+        f"实际新增: {directory.get('inserted', [])}",
+        f"- 拒绝/未完成: {rejected}",
+        f"- 目录证据: {directory.get('evidence_ref', 'not_run')}",
         "",
         "## sync 分类",
         "",
-        f"- synced(success): {summary['sync']['success']} | no_new_filing(skip): "
-        f"{summary['sync']['skipped']} | expected_skip: {summary['classification']['expected_skip']} | "
-        f"blocking_failure: {summary['classification']['blocking_failure']}",
-        f"- 零写入(no_write): {summary['sync'].get('no_write', [])}",
+        f"- synced(success): {sync.get('success', 'not_run')} | no_new_filing(skip): "
+        f"{sync.get('skipped', 'not_run')} | expected_skip: "
+        f"{classification.get('expected_skip', 'not_run')} | "
+        f"blocking_failure: {classification.get('blocking_failure', 'not_run')}",
+        f"- 零写入(no_write): {sync.get('no_write', 'not_run')}",
         "",
         "## 范围对账",
         "",
-        f"- universe: {summary['reconciliation']['universe_count']} | "
-        f"index tickers: {summary['reconciliation']['index_ticker_count']} | "
-        f"最终 scope: {summary['reconciliation'].get('scope_ticker_count', 'n/a')} | "
-        f"out_of_sync_scope: {len(summary['reconciliation']['out_of_sync_scope'])} | "
-        f"index-only: {summary['reconciliation']['index_only_tickers']}",
+        f"- universe: {reconciliation.get('universe_count', 'not_run')} | "
+        f"index tickers: {reconciliation.get('index_ticker_count', 'not_run')} | "
+        f"最终计划 scope: {reconciliation.get('scope_ticker_count', 'not_run')} | "
+        f"out_of_sync_scope: {len(reconciliation.get('out_of_sync_scope', []))} | "
+        f"index-only: {reconciliation.get('index_only_tickers', 'not_run')}",
         f"- universe_not_in_sync_scope: "
-        f"{summary['reconciliation'].get('universe_not_in_sync_scope', 'n/a')}",
+        f"{reconciliation.get('universe_not_in_sync_scope', 'not_run')}",
         f"- expected_skip_in_universe: "
-        f"{summary['reconciliation'].get('expected_skip_in_universe', 'n/a')}",
-        f"- supplement: {summary['sync'].get('supplement_tickers', 'n/a')}",
-        f"- supplement_now_in_index: {summary['sync'].get('supplement_now_in_index', 'n/a')}",
-        f"- index sources: {summary['sync'].get('index_sources', 'n/a')}",
+        f"{reconciliation.get('expected_skip_in_universe', 'not_run')}",
+        f"- supplement: {sync.get('supplement_tickers', 'not_run')}",
+        f"- supplement_now_in_index: {sync.get('supplement_now_in_index', 'not_run')}",
+        f"- index sources: {sync.get('index_sources', 'not_run')}",
         "",
         "## projection / compare",
         "",
-        f"- projection: {summary.get('projection')}",
+        f"- projection: {summary.get('projection', 'not_run')}",
         f"- compare UNEXPLAINED: {summary.get('compare', {}).get('UNEXPLAINED', 'n/a')}",
         f"- 新 filing 滚动队列: {summary.get('compare', {}).get('rolling_queue', 'n/a')}",
-        f"- 零写入护栏: {summary['zero_write']}",
+        f"- 零写入护栏: {summary.get('zero_write', 'not_run')}",
+        f"- 全部阻断原因: {summary.get('blocking_reasons', [])}",
     ]
     if summary.get("auto_registry"):
         auto = summary["auto_registry"]
@@ -707,51 +739,71 @@ def _write_phase_c_summary(summary: dict) -> Path:
             "",
             "## 自动登记（US_UNIVERSE_REGISTRY_AUTOMATION_PLAN）",
             "",
-            f"- index-only 自动登记 {len(auto['index_only_registered'])} 条: "
-            f"{auto['index_only_registered']}",
-            f"- index-only 未通过（维持阻塞/人工待办）{len(auto['index_only_failed'])} 条: "
-            f"{auto['index_only_failed']}",
-            f"- 未通过原因分类: "
-            f"{auto.get('index_only_failed_by_reason', {})}",
-            f"- supplement 自动纳入 {len(auto['supplement_registered'])} 条: "
-            f"{auto['supplement_registered']}",
+            f"- index-only 自动登记 {len(auto.get('index_only_registered', []))} 条: "
+            f"{auto.get('index_only_registered', [])}",
+            f"- index-only 未通过（维持阻塞/人工待办）"
+            f"{len(auto.get('index_only_failed', []))} 条: "
+            f"{auto.get('index_only_failed', [])}",
+            f"- 未通过原因分类: {auto.get('index_only_failed_by_reason', {})}",
+            f"- supplement 自动纳入 {len(auto.get('supplement_registered', []))} 条: "
+            f"{auto.get('supplement_registered', [])}",
+            f"- 目录阻断跳过: {auto.get('skipped_by_directory', [])}",
         ]
     (run_dir / "summary.md").write_text("\n".join(lines) + "\n")
     return run_dir
 
 
 def _run_us_financial_orchestration(t0: float) -> dict:
-    """Phase C1 §3.4:US financial job 的原子编排。
-
-    分类完成且无 blocking → 一次全 universe projection → US validate → 运行摘要。
-    任何阻断:不 projection、不 validate、保留上一版 snapshot,抛错标记 job 失败。
-    """
+    """目录、财务、R2、projection 与校验的统一发布编排。"""
     from scripts.project_us_financial_snapshots import run_projection
 
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()}"
     summary: dict = {
         "run_id": run_id,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "status": "started",
+        "sync": {"directory": {"status": "not_run", "items": []}},
+        "classification": {},
+        "reconciliation": {},
+        "projection": "not_run",
+        "validate": "not_run",
     }
-
-    # 0. 身份冲突启动期校验(Phase C-US-IDENTITY §3.2):任何冲突禁止同步
     from core.us_security_identity import (
         resolve_us_symbols_batch, validate_us_security_symbols,
     )
-    identity_conflicts = validate_us_security_symbols()
-    if identity_conflicts:
-        raise RuntimeError(f"US 身份表冲突,禁止同步: {identity_conflicts}")
+    try:
+        identity_conflicts = validate_us_security_symbols()
+        if identity_conflicts:
+            raise RuntimeError(f"US 身份表冲突,禁止同步: {identity_conflicts}")
+        skips = _load_expected_skips()
+        sync_result = _sync_us()
+    except Exception as exc:
+        reason = f"US 前置或同步执行失败: {type(exc).__name__}: {exc}"
+        summary.update({
+            "status": "blocked", "blocking_reasons": [reason],
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "zero_write": "not_run",
+        })
+        _write_phase_c_summary(summary)
+        raise RuntimeError(reason) from exc
 
-    # 1. sync + 分类
-    skips = _load_expected_skips()
-    sync_result = _sync_us()
+    directory = sync_result.get("directory")
+    if not isinstance(directory, dict) or directory.get("status") not in {
+            "success", "partial", "failed", "not_run"}:
+        directory = {
+            "status": "failed", "complete": False,
+            "planned_scope": sync_result.get("planned_scope", []),
+            "collectable_scope": [], "blocked_tickers": [], "items": [],
+            "fatal_error": "目录结果缺失或非法",
+        }
+        sync_result["directory"] = directory
+    directory_status = directory["status"]
     classification = _classify_us_sync_outcome(sync_result, skips)
-    index_tickers = sync_result["index_tickers"]
+    index_tickers = sync_result.get("index_tickers", set())
     raw_index_tickers = sync_result.get("raw_index_tickers", set())
     supplement_tickers = set(sync_result.get("supplement_tickers", []))
     scope_tickers = index_tickers | supplement_tickers
-    resolved_map = resolve_us_symbols_batch(raw_index_tickers)
+    resolved_map = sync_result.get("resolved_map") or resolve_us_symbols_batch(raw_index_tickers)
     reconciliation = _reconcile_us_universe(
         scope_tickers, index_tickers, classification["expected_skip"],
         raw_index_tickers=raw_index_tickers, resolved_map=resolved_map)
@@ -762,54 +814,66 @@ def _run_us_financial_orchestration(t0: float) -> dict:
     summary["classification"] = classification
     summary["reconciliation"] = reconciliation
     logger.info(
-        "Phase C1 分类: synced=%d skip=%d expected_skip=%s blocking=%s",
-        sync_result["success"], sync_result["skipped"],
+        "Phase C1 分类: directory=%s synced=%d skip=%d expected_skip=%s blocking=%s",
+        directory_status, sync_result["success"], sync_result["skipped"],
         classification["expected_skip"], classification["blocking_failure"],
-    )
-    logger.info(
-        "范围对账: universe=%d index=%d out_of_sync_scope=%d index_only=%s",
-        reconciliation["universe_count"], reconciliation["index_ticker_count"],
-        len(reconciliation["out_of_sync_scope"]), reconciliation["index_only_tickers"],
     )
 
     unregistered_index_only = sorted(
         set(reconciliation["index_only_tickers"]) - _load_index_only_registry())
     summary["unregistered_index_only"] = unregistered_index_only
-
-    # universe 内既不在 scope 又非受控 expected_skip 的股票 = 未分类,阻断
     uncovered_universe = sorted(
         set(reconciliation["universe_not_in_sync_scope"])
         - set(classification["expected_skip"]))
     summary["uncovered_universe"] = uncovered_universe
 
-    # ── 自动验证登记（US_UNIVERSE_REGISTRY_AUTOMATION_PLAN.md）──
-    # 对账之后、阻断判定之前：能自动验证为真实主体的登记进台账并放行；
-    # 未通过的维持阻塞进人工待办。只写 CSV，不自动 git commit。
-    if unregistered_index_only or uncovered_universe:
+    blocked_by_directory = set(directory.get("blocked_tickers", []))
+    if directory_status in ("failed", "not_run") and not directory.get("complete", False):
+        skipped_by_directory = set(unregistered_index_only)
+    else:
+        skipped_by_directory = set(reconciliation["index_only_tickers"]) & blocked_by_directory
+    rejected_items = directory.get("rejected", [
+        item for item in directory.get("items", []) if item.get("decision") == "rejected"])
+    reason_by_ticker = {}
+    for item in rejected_items:
+        for ticker in [item.get("canonical_code"), *item.get("raw_tickers", [])]:
+            if ticker:
+                reason_by_ticker[ticker] = item.get("reasons", [])
+    skipped_detail = [
+        {"stock_code": ticker,
+         "reasons": reason_by_ticker.get(ticker, ["目录未完成，禁止 R2 自动登记"])}
+        for ticker in sorted(skipped_by_directory)
+    ]
+    summary["auto_registry"] = {
+        "index_only_registered": [], "index_only_failed": [],
+        "index_only_failed_by_reason": {}, "supplement_registered": [],
+        "skipped_by_directory": skipped_detail,
+    }
+    r2_index_candidates = sorted(set(unregistered_index_only) - skipped_by_directory)
+    if r2_index_candidates or uncovered_universe:
         from core.us_universe_registry import auto_verify_and_register
         auto = auto_verify_and_register(
-            unregistered_index_only, uncovered_universe,
+            r2_index_candidates, uncovered_universe,
             index_only_csv=_PHASE_C_INDEX_ONLY_CSV,
             supplement_csv=_PHASE_C_SUPPLEMENT_CSV)
-        summary["auto_registry"] = {
+        summary["auto_registry"].update({
             "index_only_registered": auto["index_only_registered"],
             "index_only_failed": auto["index_only_failed"],
+            "index_only_failed_by_reason": auto.get("index_only_failed_by_reason", {}),
             "supplement_registered": auto["supplement_registered"],
-        }
+        })
         unregistered_index_only = sorted(
             set(unregistered_index_only) - set(auto["index_only_registered"]))
         uncovered_universe = sorted(
             set(uncovered_universe) - set(auto["supplement_registered"]))
-        # 自动登记后刷新摘要中的阻塞清单（ supplement 条目下轮进入 scope ）
         summary["unregistered_index_only"] = unregistered_index_only
         summary["uncovered_universe"] = uncovered_universe
-        logger.info(
-            "自动登记: index-only 通过 %d 未通过 %d; supplement 纳入 %d",
-            len(auto["index_only_registered"]), len(auto["index_only_failed"]),
-            len(auto["supplement_registered"]),
-        )
 
     blocking_reasons = []
+    if directory_status != "success":
+        blocking_reasons.append(
+            f"证券目录 {directory_status}: 拒绝/未完成 "
+            f"{[item.get('canonical_code') for item in rejected_items] or directory.get('fatal_error')}")
     if classification["blocking_failure"]:
         blocking_reasons.append(f"ticker 级未登记失败: {classification['blocking_failure']}")
     if classification["index_errors"]:
@@ -823,10 +887,11 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["blocking_reasons"] = blocking_reasons
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
         summary["zero_write"] = "not_run"
+        summary["projection"] = "not_run"
+        summary["validate"] = "not_run"
         _write_phase_c_summary(summary)
         raise RuntimeError("US sync blocking: " + "; ".join(blocking_reasons))
 
-    # 2. 退役护栏(E-1 后:六对象必须不存在;此前为零写入护栏)
     violations = _check_zero_write_baseline()
     summary["zero_write"] = "pass" if not violations else violations
     if violations:
@@ -835,10 +900,10 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         _write_phase_c_summary(summary)
         raise RuntimeError(f"已退役对象仍存在: {[v['object'] for v in violations]}")
 
-    # 3. projection(全部跳过且无成功写入 → no_new_filings,保留原 snapshot)
     if sync_result["success"] == 0 and not sync_result["no_write"]:
         summary["status"] = "no_new_filings"
         summary["projection"] = None
+        summary["validate"] = "not_run"
         logger.info("全部 ticker 已同步跳过: 不运行 projection(no_new_filings)")
     else:
         proj = run_projection(
@@ -846,11 +911,6 @@ def _run_us_financial_orchestration(t0: float) -> dict:
         summary["projection"] = proj
         summary["status"] = "projected"
 
-    # 4. validate(仅 projection 后;Phase C1 修复 US 校验入口)
-    # (E-1 后 compare 步骤已摘除:旧对象已删除,新旧对比使命终结,
-    #  scripts/compare_us_snapshot_vs_old.py 亦已随旧对象退役删除。)
-    # validate 失败 = job 失败:不得把部分成功报成完整成功(snapshot 已投影,
-    # 但 job 状态必须反映校验失败)
     if summary["projection"]:
         from core.validate import run_after_sync
         val = run_after_sync(market="US")
