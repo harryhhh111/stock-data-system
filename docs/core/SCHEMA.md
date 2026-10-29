@@ -721,6 +721,20 @@ cik, sic_code, fiscal_year_end, sec_filing_count
 以下为实际字段顺序的紧凑清单。类型、NOT NULL、默认值、外键和索引以同名 SQL DDL 为准；
 此处用于避免文档遗漏事实层辅助表。
 
+#### 历史对象物理归属（2026-10-29 实测）
+
+以下 7 张表的 heap、TOAST 和普通索引均位于 `history_ts`，范围内没有普通索引遗留在 `pg_default`。heap、TOAST 与索引分开统计，数值是当时的物理大小而非固定 schema 属性。
+
+| 表 | heap | TOAST heap | TOAST 索引 | 普通索引 |
+|---|---:|---:|---:|---:|
+| `us_financial_fact_version` | 2636 MB | 0 | 8192 bytes | 6 个，2377 MB |
+| `us_financial_fact_source` | 1581 MB | 0 | 0 | 5 个，1170 MB |
+| `us_fact_version_relation` | 775 MB | 0 | 8192 bytes | 6 个，763 MB |
+| `us_fact_selection_audit` | 707 MB | 0 | 8192 bytes | 5 个，561 MB |
+| `us_financial_fact_staging` | 49 MB | 0 | 8192 bytes | 5 个，22 MB |
+| `raw_snapshot_version` | 768 kB | 1785 MB | 20 MB | 3 个，840 kB |
+| `raw_snapshot` | 200 kB | 1064 MB | 17 MB | 5 个，488 kB |
+
 #### Raw source 与 filing
 
 | 表 | 实际字段 |

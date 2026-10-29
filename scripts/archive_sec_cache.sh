@@ -11,11 +11,11 @@ COS_ROOT="/lhcos-data/sec_cache_archive"
 TTL_DAYS="${STOCK_SEC_CACHE_TTL_DAYS:-7}"
 MONTH_DIR="$COS_ROOT/$(date +%Y-%m)"
 
-if [ ! -d "/lhcos-data" ]; then
-  echo "ERROR: COS 未挂载（/lhcos-data 不存在）" >&2
+if ! mountpoint -q /lhcos-data || [ "$(findmnt -n -o FSTYPE -T /lhcos-data)" != "fuse.cosfs" ]; then
+  echo "ERROR: COS 未挂载为 fuse.cosfs，保留全部本地 SEC 缓存，停止归档" >&2
   exit 1
 fi
-mkdir -p "$MONTH_DIR"
+mkdir -p "$MONTH_DIR" || exit 1
 
 archived=0; archived_bytes=0; failed=0; failed_files=""
 
@@ -25,14 +25,23 @@ archived=0; archived_bytes=0; failed=0; failed_files=""
 while IFS= read -r f; do
   base="$(basename "$f")"
   src_size=$(stat -c %s "$f")
+  if ! src_sha=$(sha256sum "$f" | awk '{print $1}'); then
+    failed=$((failed + 1)); failed_files="$failed_files $base(源文件校验失败)"
+    continue
+  fi
   if cp "$f" "$MONTH_DIR/$base" 2>>/dev/null; then
     dst_size=$(stat -c %s "$MONTH_DIR/$base" 2>/dev/null || echo -1)
-    if [ "$dst_size" = "$src_size" ]; then
-      rm -f "$f"
+    dst_sha=$(sha256sum "$MONTH_DIR/$base" 2>/dev/null | awk '{print $1}')
+    current_src_sha=$(sha256sum "$f" 2>/dev/null | awk '{print $1}')
+    if [ "$dst_size" = "$src_size" ] && [ "$dst_sha" = "$src_sha" ] && [ "$current_src_sha" = "$src_sha" ]; then
+      if ! rm -f "$f"; then
+        failed=$((failed + 1)); failed_files="$failed_files $base(本地删除失败)"
+        continue
+      fi
       archived=$((archived + 1)); archived_bytes=$((archived_bytes + src_size))
     else
       rm -f "$MONTH_DIR/$base"
-      failed=$((failed + 1)); failed_files="$failed_files $base(size $src_size->$dst_size)"
+      failed=$((failed + 1)); failed_files="$failed_files $base(大小/内容校验不一致，保留源文件)"
     fi
   else
     failed=$((failed + 1)); failed_files="$failed_files $base(cp失败)"
@@ -41,3 +50,4 @@ done < <(find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mtime +"$TTL_DAYS" \
     ! -name 'russell1000_tickers.json' -print)
 
 echo "[$(date '+%F %T')] TTL>${TTL_DAYS}d 归档 $archived 个（$((archived_bytes / 1024 / 1024)) MB）到 $MONTH_DIR，失败 $failed 个$failed_files"
+if [ "$failed" -gt 0 ]; then exit 1; fi
